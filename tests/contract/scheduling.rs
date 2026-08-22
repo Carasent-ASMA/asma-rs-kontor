@@ -60,8 +60,8 @@ use kontor_scheduler::{
     AccountAdmissionEvidence, AccountPin, AdaptiveWindow, AdaptiveWindowConfig, AdmissionEventId,
     AdmittedCandidate, AuthorizationEvidence, CalendarAdmission, Candidate, CapacityConfig,
     CapacityUsage, ExternalWorkEvidence, FleetPreflight, PreflightOutcome, ReconciliationEvidence,
-    ReconciliationScope, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
-    minimum_launch_capabilities, plan,
+    ReconciliationScope, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth,
+    SchedulingSnapshot, TaskOrigin, minimum_launch_capabilities, plan,
 };
 use kontor_store::{AdmissionCommit, SqliteStore};
 use kontor_teams::run::{SlotLaunch, TeamRunLease, TeamRunSlots};
@@ -320,6 +320,7 @@ impl World {
             revision: AggregateRevision::INITIAL,
             created_at: now(),
             priority: 500,
+            governance: RosterGovernance::Seated,
             module: Some(ModuleKey::parse("directory.app").expect("a valid module key")),
             changed_modules: BTreeSet::new(),
             worktree: None,

@@ -46,7 +46,8 @@ use kontor_core::spec::IntakeResult;
 use kontor_core::state::{DesiredRunState, ObservedRunState, RunLifecycle};
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AuthorizationEvidence, CalendarAdmission, Candidate,
-    ExternalWorkEvidence, IntakeLineage, RuntimeAdmissionEvidence, TaskOrigin, covering_authority,
+    ExternalWorkEvidence, IntakeLineage, RosterGovernance, RuntimeAdmissionEvidence, TaskOrigin,
+    covering_authority,
 };
 use rusqlite::{Row, params};
 
@@ -735,6 +736,13 @@ impl SqliteStore {
     /// * **external work** — default. Ticket ownership gating is read from live
     ///   convergence state, which is `kontor-integrations-asma`'s to supply.
     /// * **worktree** — none. A candidate claims one at admission, not before.
+    /// * **governance** — the frozen-roster half only. Whether an epic froze a
+    ///   roster is a row this crate owns and is read for real; whether its
+    ///   mandatory seats are *bound* is not, because locating a control plane
+    ///   needs the topology vocabulary that says which kind is one, and that is
+    ///   pinned per project rather than stored per node. `kontor-daemon`'s
+    ///   epic-scoped assembler answers both halves and is what the scheduler
+    ///   actually plans from.
     ///
     /// Every one of those defaults either fails closed or is genuinely neutral. An
     /// absent authorization is default-allow. A revoked covering grant is a stop.
@@ -779,11 +787,31 @@ impl SqliteStore {
 
         let mut candidates = Vec::new();
         let mut without_workflow = Vec::new();
+        // One lookup per epic, not per task: a roster is frozen by the epic, so
+        // every task under it has the same answer.
+        let mut governance = BTreeMap::new();
+        for epic_id in tasks
+            .iter()
+            .filter_map(|task| task.mini_project_id)
+            .collect::<BTreeSet<_>>()
+        {
+            let answer = if self.get_epic_roster(project_id, epic_id)?.is_some() {
+                RosterGovernance::Seated
+            } else {
+                RosterGovernance::RosterUnfrozen
+            };
+            governance.insert(epic_id, answer);
+        }
         for task in &tasks {
             let Some(workflow) = self.get_active_task_workflow(project_id, task.id)? else {
                 without_workflow.push(task.id);
                 continue;
             };
+            // A task under no epic has no roster to freeze, so the question does
+            // not apply to it and it is not refused for an answer it cannot have.
+            let task_governance = task
+                .mini_project_id
+                .map_or(RosterGovernance::Seated, |epic_id| governance[&epic_id]);
             let (authorization, blocked_by) =
                 covering_authority(&active, &revoked, task.mini_project_id, task.id);
             candidates.push(Candidate {
@@ -795,6 +823,7 @@ impl SqliteStore {
                 revision: task.revision,
                 created_at: task.created_at,
                 priority: ASSEMBLED_PRIORITY,
+                governance: task_governance,
                 module: task.module.clone(),
                 changed_modules: self.task_changed_modules(project_id, task.id)?,
                 worktree: None,

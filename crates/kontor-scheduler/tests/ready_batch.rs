@@ -38,9 +38,9 @@ use kontor_scheduler::{
     CalendarPolicyEvidence, Candidate, CandidateDecision, CapacityConfig, CapacityLimitKind,
     CapacityObservation, CapacityUsage, ExternalOwnership, ExternalWorkEvidence, FleetPreflight,
     IntakeLineage, MAX_PRIORITY, Plan, PreflightOutcome, ReconciliationEvidence,
-    ReconciliationScope, RejectionCode, RejectionEvidence, RuntimeAdmissionEvidence, RuntimeHealth,
-    SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, covering_authority,
-    explain, minimum_launch_capabilities, plan,
+    ReconciliationScope, RejectionCode, RejectionEvidence, RosterGovernance,
+    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
+    WorktreeVerification, covering_authority, explain, minimum_launch_capabilities, plan,
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +131,7 @@ fn candidate(project: ProjectId, task: TaskId) -> Candidate {
         revision: AggregateRevision::INITIAL,
         created_at: at("2026-08-12T08:00:00Z"),
         priority: 500,
+        governance: RosterGovernance::Seated,
         module: None,
         changed_modules: BTreeSet::new(),
         worktree: None,
@@ -335,6 +336,7 @@ fn the_blocker_order_is_the_declared_order_and_covers_every_blocker() {
         BLOCKER_ORDER,
         &[
             Blocker::Readiness,
+            Blocker::Governance,
             Blocker::Origin,
             Blocker::Dependencies,
             Blocker::Authorization,
@@ -387,6 +389,48 @@ fn a_task_that_already_has_work_in_flight_is_refused_for_that_reason() {
         in_flight: true,
     });
     assert_admitted(&plan(&idle).expect("the pass runs"), task);
+}
+
+/// An epic with no governed leadership is refused, and says which half is missing.
+///
+/// The two states are not interchangeable. "This epic froze no Core Team roster"
+/// and "the roster is frozen but a mandatory seat holds no binding" need
+/// different repairs, so a pass that collapsed them into one code would send an
+/// operator to the wrong tool. Governance also sits ahead of authorization: an
+/// ungoverned epic is refused for being ungoverned, not for a grant it has.
+#[test]
+fn an_epic_without_governed_leadership_is_refused_for_the_half_it_is_missing() {
+    let project = ProjectId::generate();
+
+    let mut unfrozen = candidate(project, TaskId::generate());
+    unfrozen.governance = RosterGovernance::RosterUnfrozen;
+    // Unauthorized as well, so the assertion proves the order and not just the
+    // code: authorization would otherwise be a plausible reported reason.
+    unfrozen.authorization = None;
+    let unfrozen_task = unfrozen.task_id;
+    assert_refused(
+        &plan(&snapshot(vec![unfrozen])).expect("the pass runs"),
+        unfrozen_task,
+        RejectionCode::EpicRosterUnfrozen,
+    );
+
+    let mut unbound = candidate(project, TaskId::generate());
+    unbound.governance = RosterGovernance::LeadershipSeatUnbound;
+    let unbound_task = unbound.task_id;
+    assert_refused(
+        &plan(&snapshot(vec![unbound])).expect("the pass runs"),
+        unbound_task,
+        RejectionCode::LeadershipSeatUnbound,
+    );
+
+    // And a seated epic is admitted, so the blocker refuses the missing
+    // leadership rather than every candidate that reaches it.
+    let seated = candidate(project, TaskId::generate());
+    let seated_task = seated.task_id;
+    assert_admitted(
+        &plan(&snapshot(vec![seated])).expect("the pass runs"),
+        seated_task,
+    );
 }
 
 #[test]

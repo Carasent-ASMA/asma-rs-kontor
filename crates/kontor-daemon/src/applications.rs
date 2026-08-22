@@ -188,8 +188,8 @@ use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
     CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope,
-    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
-    WorktreeVerification, covering_authority,
+    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    WorktreeClaim, WorktreeVerification, covering_authority,
 };
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
@@ -2826,6 +2826,10 @@ impl Services {
             .collect();
 
         let runtime = self.runtime_evidence(project_id, now).await?;
+        // Once per epic, not once per task: leadership is a property of the epic,
+        // and asking it per candidate would resolve the same control plane for
+        // every task in the batch to get the same answer.
+        let governance = self.roster_governance(project_id, epic_id)?;
         let mut active = Vec::new();
         let mut revoked = Vec::new();
         for stored in &authorizations {
@@ -2868,6 +2872,7 @@ impl Services {
                 revision: task.revision,
                 created_at: task.created_at,
                 priority: 0,
+                governance,
                 module: task.module.clone(),
                 changed_modules,
                 worktree,
@@ -3490,6 +3495,102 @@ impl Services {
                     "this epic has frozen no Core Team roster",
                 )
             })
+    }
+
+    /// The roster a new epic freezes.
+    ///
+    /// The project's published Core Team when it has one, and otherwise the two
+    /// mandatory roles alone: [`CoreTeamRevision::resolve`] inserts `LSA` and
+    /// `TPM` into every revision it resolves, so resolving no selections at all
+    /// against the catalog this build ships yields exactly the smallest roster
+    /// that satisfies the guarantee.
+    ///
+    /// Refusing instead would make publishing a Core Team a precondition for
+    /// having an epic at all. Nothing else in the contract imposes that, and the
+    /// realm that prompted this — two epics, eighteen tasks done, no governed
+    /// architecture lead — is what happens when the structure is optional.
+    fn epic_bootstrap_roster(&self, project_id: ProjectId) -> Result<FrozenRoster, ApiError> {
+        let revision = match self.stored_core_team(project_id)? {
+            Some(published) => published,
+            None => CoreTeamRevision::resolve(SpecVersion::FIRST, &self.published_catalog()?, &[])
+                .map_err(|error| self.refuse_domain(&error))?,
+        };
+        Ok(FrozenRoster {
+            revision,
+            revision_of_epic: AggregateRevision::INITIAL,
+            quick_session_id: None,
+        })
+    }
+
+    /// Give one epic the governed leadership every epic is required to have.
+    ///
+    /// The same three steps `apply_roster_upgrade` performs, in the same order:
+    /// freeze the roster, ensure the control plane the seats hang off, create
+    /// the seats the roster declares. That capability was never missing — it was
+    /// named an *upgrade* and wired only to an explicit operator call, so an
+    /// epic acquired leadership only if somebody remembered to ask for it.
+    ///
+    /// Every step is idempotent, so a re-apply, a replay and an apply resumed
+    /// after a crash all converge on the same structure. A roster already frozen
+    /// is left exactly where it is: moving it is what an upgrade deliberately
+    /// does, and doing it as a side effect of re-applying an epic would restaff
+    /// a running one behind its operator's back.
+    fn govern_epic(&self, project_id: ProjectId, epic_id: MiniProjectId) -> Result<(), ApiError> {
+        let now = kontor_api::now();
+        let roster = match self.optional_frozen_roster(project_id, epic_id)? {
+            Some(frozen) => frozen,
+            None => {
+                let roster = self.epic_bootstrap_roster(project_id)?;
+                self.freeze_roster(project_id, epic_id, &roster, None, now)?;
+                roster
+            }
+        };
+        let control = self.ensure_scope_chain(
+            project_id,
+            &self.resolve_scope(
+                project_id,
+                &SemanticTopologyTargetDto::EpicControl { epic_id },
+            )?,
+        )?;
+        self.materialize_roster_seats(project_id, &control, &roster, now)?;
+        Ok(())
+    }
+
+    /// Whether one epic has the governed leadership its roster mandates.
+    ///
+    /// The snapshot's answer to [`RosterGovernance`], resolved here rather than
+    /// in the scheduler because it needs the topology vocabulary — which kind is
+    /// a control plane — and the scheduler holds none.
+    ///
+    /// A refusal that *is* the fact is reported as the fact: an epic with no
+    /// pinned spec, no control plane or no live seat for a mandatory role has no
+    /// governed leadership, which is exactly what this is asking. Anything else
+    /// — a store that cannot be read, a build with no topology — is a failure to
+    /// answer and propagates, because reporting it as ungoverned would refuse
+    /// admission for a reason that was never established.
+    fn roster_governance(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<RosterGovernance, ApiError> {
+        if self.optional_frozen_roster(project_id, epic_id)?.is_none() {
+            return Ok(RosterGovernance::RosterUnfrozen);
+        }
+        for role_code in [MANDATORY_PROGRAM_ROLE, MANDATORY_LEAD_ROLE] {
+            match self.epic_control_seat(project_id, epic_id, role_code) {
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ApiErrorCode::PlacementBlocked | ApiErrorCode::RoleSlotUnbound
+                    ) =>
+                {
+                    return Ok(RosterGovernance::LeadershipSeatUnbound);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(RosterGovernance::Seated)
     }
 
     /// The comparison side of a roster preview.
@@ -14129,6 +14230,11 @@ impl ApplicationOperations for Services {
                     "the idempotency key was already used for a different operation",
                 ));
             };
+            // Also on replay. The governed structure is written after the graph,
+            // so an apply whose process died in between recorded a receipt for
+            // an epic that has none — and the replay is the only call that ever
+            // comes back for it.
+            self.govern_epic(project_id, mini_project_id)?;
             return self.applied_epic_replay(project_id, mini_project_id, &bundle);
         }
 
@@ -14169,6 +14275,12 @@ impl ApplicationOperations for Services {
                 Ok::<_, RepositoryError>(applied)
             })
             .map_err(|error| self.refuse(&error))?;
+
+        // An epic is born governed. The scheduler refuses work under an epic
+        // with no frozen roster or no bound leadership seat, and that refusal is
+        // an invariant rather than a workflow step precisely because this call
+        // creates the structure it checks for.
+        self.govern_epic(project_id, applied.mini_project_id)?;
 
         // The receipt is recorded *after* the graph, because the goal it targets
         // has to exist for the target reference to resolve. It is what makes the

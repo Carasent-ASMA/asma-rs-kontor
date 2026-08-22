@@ -917,6 +917,26 @@ pub struct CapacitySnapshot {
 // Candidates
 // ---------------------------------------------------------------------------
 
+/// Whether a candidate's epic has the governed leadership its roster mandates.
+///
+/// A property of the snapshot, computed where the snapshot is assembled, so the
+/// blocker stays answerable from the snapshot alone.
+///
+/// [`Self::Seated`] is the serde default on purpose: it is what older persisted
+/// admission evidence means. That evidence records work already admitted, not a
+/// decision being taken now, so reading it must not retroactively refuse it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RosterGovernance {
+    /// A roster is frozen and every mandatory seat is bound.
+    #[default]
+    Seated,
+    /// The epic never froze a Core Team roster.
+    RosterUnfrozen,
+    /// A roster is frozen, but a mandatory leadership seat has no binding.
+    LeadershipSeatUnbound,
+}
+
 /// One task the scheduler is deciding about, with everything a blocker reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {
@@ -938,6 +958,11 @@ pub struct Candidate {
     pub created_at: Timestamp,
     /// Scheduling priority, higher first. The first sort key.
     pub priority: u32,
+    /// Whether the owning epic has the governed leadership its roster mandates.
+    ///
+    /// Defaults to [`RosterGovernance::Seated`] for older persisted evidence.
+    #[serde(default)]
+    pub governance: RosterGovernance,
     /// The module the task contends for, if any.
     pub module: Option<ModuleKey>,
     /// Additional modules this task changes, besides [`Self::module`].
@@ -1144,6 +1169,12 @@ closed_enum! {
         /// second envelope for it is the one double-admission no module lease
         /// catches, because a task never contends with itself for its own module.
         TaskAlreadyInFlight => "task_already_in_flight",
+        /// The epic never froze a Core Team roster, so it has no governed
+        /// leadership at all.
+        EpicRosterUnfrozen => "epic_roster_unfrozen",
+        /// The roster is frozen, but a mandatory leadership seat holds no
+        /// binding.
+        LeadershipSeatUnbound => "leadership_seat_unbound",
         /// A dependency has not finished.
         DependencyIncomplete => "dependency_incomplete",
         /// A task it may not run beside is in flight or already selected.
@@ -1220,6 +1251,12 @@ impl RejectionCode {
             }
             Self::TaskAlreadyInFlight => {
                 "this task already has a run; inspect that seat or wait for it to settle"
+            }
+            Self::EpicRosterUnfrozen => {
+                "this epic froze no Core Team roster; kontor_roster_upgrade_preview then kontor_roster_upgrade_apply gives it one"
+            }
+            Self::LeadershipSeatUnbound => {
+                "a mandatory leadership seat is missing; kontor_core_team_materialize creates the seats the frozen roster declares"
             }
             Self::DependencyIncomplete => "wait for the named dependency to finish, then re-plan",
             Self::SerializationPeerInFlight => {

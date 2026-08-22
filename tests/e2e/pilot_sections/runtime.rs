@@ -56,7 +56,7 @@ use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdaptiveWindowConfig, AuthorizationEvidence,
     CalendarAdmission, Candidate, CandidateDecision, CapacityConfig, CapacityUsage,
     ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope, RejectionCode,
-    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
 };
 use kontor_scheduler::ready::{minimum_launch_capabilities, plan};
 use kontor_tests_contract::{SESSION_KINDS, closes, drain_history, sequences, text};
@@ -1625,6 +1625,7 @@ fn dispatch_decision(open_replay_gap: bool) -> (usize, Option<String>) {
         revision: AggregateRevision::INITIAL,
         created_at: taken_at,
         priority: 500,
+        governance: RosterGovernance::Seated,
         module: Some(ModuleKey::parse("pilot.code").expect("a legal module key")),
         changed_modules: BTreeSet::new(),
         worktree: None,
