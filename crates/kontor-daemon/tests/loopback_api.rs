@@ -5490,7 +5490,8 @@ async fn an_account_ensure_compares_every_supplied_field_and_never_echoes_the_al
         // reported here and told the caller to retry with a fresher revision --
         // advice an ensure takes no argument for, so following it loops.
         assert_eq!(
-            drifted.json()["code"], "ensure_mismatch",
+            drifted.json()["code"],
+            "ensure_mismatch",
             "case {index} must name the mismatch: {}",
             drifted.body
         );
@@ -11339,6 +11340,247 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
             .binding
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successor() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, account, seats) = seated_turns(&world, "replace-abandoned").await;
+    let seat_list = seats.as_array().expect("the seated roster").clone();
+    let seat = seat_list[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let team_run = seat["team_run_id"].as_str().expect("the team run");
+
+    finish_natively(&world, predecessor).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["observed"], "cancelled");
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a canonical team run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_id = view.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the task id")
+        .to_owned();
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task_revision,
+        "binding_generation": old_binding.identity.generation,
+    });
+
+    world.script(r#"{"steps":[{"step":"transport_failure","operation":"prepare_project"}]}"#);
+    let failed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-abandoned-failed-launch")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 503, "{}", failed.body);
+
+    let abandoned_run = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the member reads")
+                    .expect("the member exists")
+            })
+            .find(|run| run.parent_agent_run_id == Some(predecessor_id))
+            .expect("the failed launch recorded one successor")
+    });
+    assert!(abandoned_run.binding.is_none());
+    assert!(abandoned_run.terminal.is_none());
+
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            abandoned_run.id
+        ),
+        &serde_json::json!({
+            "expected_revision": abandoned_run.revision.get(),
+            "reason": "The replacement never bound a native session"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-abandon")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(abandoned.json()["outcome"], "abandoned");
+
+    world.script(HISTORY_LIVE);
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-abandoned-mint")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert_eq!(replaced.json()["applied"], "created");
+    let successor_id = replaced.json()["successor_agent_run_id"]
+        .as_str()
+        .expect("the minted successor")
+        .to_owned();
+    assert_ne!(
+        successor_id,
+        abandoned_run.id.to_string(),
+        "an operator-abandoned unbound successor must not be reused as the launch target"
+    );
+
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(
+                project_id,
+                AgentRunId::parse(&successor_id).expect("a canonical successor id"),
+            )
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+    assert!(successor.binding.is_some(), "the minted successor is bound");
+    let parked = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, abandoned_run.id)
+            .expect("the abandoned successor reads")
+            .expect("the abandoned successor remains")
+    });
+    assert_eq!(
+        parked
+            .terminal
+            .expect("the abandoned row stays terminal")
+            .outcome,
+        TerminalOutcome::Abandoned
+    );
+
+    for (index, original) in seat_list.iter().enumerate() {
+        let original_id = original["agent_run_id"].as_str().expect("id");
+        let slot = original["role_slot"].as_str().expect("slot");
+        let agent_run = if original_id == predecessor {
+            successor_id.as_str()
+        } else {
+            original_id
+        };
+        let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let revision = projected.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a revision");
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+            &serde_json::json!({
+                "role_slot": slot,
+                "expected_task_revision": revision,
+                "artifacts": ["change-set"]
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("replace-abandoned-turn-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "slot `{slot}`: {}", settled.body);
+    }
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let gates = projection.json()["tasks"][0]["gates"]
+        .as_array()
+        .expect("gates")
+        .clone();
+    let workflow_revision = projection.json()["tasks"][0]["workflow_revision"]
+        .as_u64()
+        .expect("a workflow revision");
+    for (index, gate) in gates.iter().enumerate() {
+        let name = gate["gate"].as_str().expect("a gate");
+        let evaluator = gate["evaluator_roles"][0]
+            .as_str()
+            .expect("an authorized evaluator");
+        let evidence: Vec<&str> = gate["required_evidence"]
+            .as_array()
+            .expect("evidence")
+            .iter()
+            .map(|item| item.as_str().expect("an artifact"))
+            .collect();
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/tasks/{task_id}/gates/{name}/record"),
+            &serde_json::json!({
+                "expected_revision": workflow_revision,
+                "verdict": "passed",
+                "evaluator_role": evaluator,
+                "evaluator_account": account,
+                "evidence": evidence,
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("replace-abandoned-gate-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(recorded.status, 200, "gate `{name}`: {}", recorded.body);
+    }
+
+    let after_gates = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let after_body = after_gates.json();
+    let artifacts: Vec<&str> = after_body["tasks"][0]["required_artifacts"]
+        .as_array()
+        .expect("required artifacts")
+        .iter()
+        .map(|item| item.as_str().expect("an artifact"))
+        .collect();
+    let done = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+        &serde_json::json!({
+            "action": "complete_task", "task_id": task_id,
+            "expected_revision": after_body["tasks"][0]["revision"]
+                .as_u64()
+                .expect("a revision"),
+            "reason": "the minted successor settled after the abandoned child was skipped",
+            "evidence": artifacts,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-complete")
+    .send(&world)
+    .await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    assert_eq!(done.json()["state"], "done");
 }
 
 #[tokio::test]
@@ -21811,9 +22053,8 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
         .to_owned();
     let revision = account.json()["revision"].as_u64().expect("a revision");
 
-    let uri = format!(
-        "/v1/projects/{project}/provider-account-profiles/{account_id}/settings:amend"
-    );
+    let uri =
+        format!("/v1/projects/{project}/provider-account-profiles/{account_id}/settings:amend");
 
     // A plan tier went stale in ten days, so the label is corrected to the
     // identity it holds. The enabled flag is absent and must be left alone.
@@ -21828,7 +22069,8 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
     assert_eq!(renamed.status, 200, "{}", renamed.body);
     assert_eq!(renamed.json()["label"], "Codex · Personal");
     assert_eq!(
-        renamed.json()["enabled"], true,
+        renamed.json()["enabled"],
+        true,
         "an absent field leaves the current value"
     );
 
@@ -21846,7 +22088,8 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
     assert_eq!(retired.status, 200, "{}", retired.body);
     assert_eq!(retired.json()["enabled"], false);
     assert_eq!(
-        retired.json()["label"], "Codex · Personal",
+        retired.json()["label"],
+        "Codex · Personal",
         "the corrected label survives the retirement"
     );
 
@@ -21871,7 +22114,10 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
         .iter()
         .find(|entry| entry["account_profile_id"] == account_id.as_str())
         .expect("the profile is still listed");
-    assert_eq!(found["enabled"], false, "the retirement is what a reader sees");
+    assert_eq!(
+        found["enabled"], false,
+        "the retirement is what a reader sees"
+    );
     assert!(
         !listed.body.contains("codex-personal"),
         "an alias must not appear in a response: {}",
