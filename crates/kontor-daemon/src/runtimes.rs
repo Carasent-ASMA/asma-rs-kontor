@@ -211,6 +211,15 @@ pub struct PaseoSetting {
     /// Provider keys temporarily excluded by an operational outage decision.
     #[serde(default)]
     pub unavailable_providers: BTreeSet<String>,
+    /// Whether this deployment registered one Paseo provider alias per coding
+    /// account, so `--provider` selects the account and an account-pinned launch
+    /// is provable on this plane.
+    ///
+    /// Defaults to `false`, which keeps the v1.0 refusal: absent an explicit
+    /// declaration, Kontor must not claim an account guarantee Paseo does not
+    /// make.
+    #[serde(default)]
+    pub provider_selects_account: bool,
     /// Temporary explicit model routes keyed by unavailable provider.
     #[serde(default)]
     pub provider_fallbacks: BTreeMap<String, kontor_core::spec::ModelRung>,
@@ -489,6 +498,7 @@ fn compose_paseo(
         },
         max_concurrent_sessions: setting.max_concurrent_sessions,
         unavailable_providers: setting.unavailable_providers.clone(),
+        provider_selects_account: setting.provider_selects_account,
         provider_fallbacks: setting.provider_fallbacks.clone(),
         // An empty map means this plane adopts nothing and creates what it
         // needs, which is right for a topology with one root above the seat.
@@ -546,6 +556,7 @@ mod tests {
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             unavailable_providers: BTreeSet::new(),
+            provider_selects_account: false,
             provider_fallbacks: BTreeMap::new(),
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),
@@ -742,6 +753,7 @@ mod tests {
             orchestrator_agent_id: "agent-1".to_owned(),
             max_concurrent_sessions: 2,
             unavailable_providers: BTreeSet::new(),
+            provider_selects_account: false,
             provider_fallbacks: BTreeMap::new(),
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),

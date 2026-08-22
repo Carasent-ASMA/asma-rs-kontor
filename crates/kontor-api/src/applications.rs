@@ -1629,6 +1629,35 @@ pub struct CapacityCeilingsDto {
     pub runtime_max_in_flight: u32,
     /// The adaptive window's shape.
     pub adaptive: AdaptiveWindowDto,
+    /// The provider-headroom policy, when this deployment declares one.
+    ///
+    /// Absent by default so a ceilings document written before OP-REQ-042 keeps
+    /// parsing. Absence means no window threshold was chosen, not that a
+    /// permissive one was.
+    #[serde(default)]
+    pub headroom: Option<HeadroomCeilingsDto>,
+}
+
+/// The provider-headroom policy on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HeadroomCeilingsDto {
+    /// Share of a session window a seat may take it to.
+    pub session_percent: u8,
+    /// Share of a daily window.
+    pub daily_percent: u8,
+    /// Share of a weekly window.
+    pub weekly_percent: u8,
+    /// Share of a monthly window or billing cycle.
+    pub monthly_percent: u8,
+    /// Percentage points held back from delivery seats for the epic's own
+    /// control seats.
+    pub control_plane_reserve_percent: u8,
+    /// A window returning within this span is waited for rather than descended
+    /// around.
+    pub short_horizon_seconds: i64,
+    /// Beyond this span, total exhaustion becomes a question for a human.
+    pub escalation_horizon_seconds: i64,
 }
 
 /// The current immutable capacity configuration revision.
@@ -2428,7 +2457,7 @@ pub struct ProviderQuotaStateDto {
     pub account_profile_id: AccountProfileId,
     /// The provider, spelled as the model catalog spells it.
     pub provider: String,
-    /// `available`, `exhausted`, `drained` or `unknown`.
+    /// `available`, `exhausted`, `drained`, `unknown` or `cannot_report`.
     pub state: String,
     /// When an exhausted allowance returns. Absent for every other state.
     pub resets_at: Option<String>,
@@ -2438,9 +2467,44 @@ pub struct ProviderQuotaStateDto {
     pub observed_at: String,
     /// Whether it still holds a launch back, as of this read.
     pub blocking: bool,
+    /// Every concurrent window observed on this pair, ordered by kind.
+    pub windows: Vec<QuotaWindowDto>,
+    /// The depleting balance and its floor, where this provider has one.
+    pub credit: Option<CreditBalanceDto>,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
+}
+
+/// One concurrent quota window, on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuotaWindowDto {
+    /// `session`, `daily`, `weekly` or `monthly`.
+    ///
+    /// Classified from the provider's window *length* and never from the name of
+    /// the field it arrived in — see [`kontor_core::quota::QuotaWindowKind`].
+    pub kind: String,
+    /// When it refills.
+    pub resets_at: String,
+    /// How much of it the provider reports consumed, as a percentage.
+    pub used_percent: u8,
+}
+
+/// A depleting prepaid balance and the floor under it, on the wire.
+///
+/// Both amounts share one currency: they are never converted into each other and
+/// never compared across currencies, so there is deliberately no second currency
+/// field for a reserve to disagree in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreditBalanceDto {
+    /// What is left, in integer minor units.
+    pub remaining_minor_units: u64,
+    /// The floor new work may not eat into, in the same minor units.
+    pub reserve_minor_units: u64,
+    /// The currency both amounts are denominated in.
+    pub currency: String,
 }
 
 /// What `provider-quota-states:record` is asked for.
@@ -2455,12 +2519,20 @@ pub struct RecordProviderQuotaRequest {
     pub account_profile_id: String,
     /// The provider.
     pub provider: String,
-    /// `available`, `exhausted`, `drained` or `unknown`.
+    /// `available`, `exhausted`, `drained`, `unknown` or `cannot_report`.
     pub state: String,
     /// When an exhausted allowance returns. Required for `exhausted` and
     /// refused for everything else — a drained balance recovers on payment, not
     /// on a clock, and a reset instant here would put it on a retry timer.
     pub resets_at: Option<String>,
+    /// Every concurrent window this pair holds. Replaces the stored set
+    /// wholesale rather than merging into it: a collector reports what the
+    /// provider offers *now*, and a merge would keep a window it has withdrawn.
+    #[serde(default)]
+    pub windows: Vec<QuotaWindowDto>,
+    /// The depleting balance and its floor, where this provider has one.
+    #[serde(default)]
+    pub credit: Option<CreditBalanceDto>,
     /// The revision the caller believes is current; `1` for the first record.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
@@ -2932,9 +3004,36 @@ pub struct AuthorizationProjectionDto {
     pub allowed_end: Timestamp,
     /// Maximum concurrent runs it authorizes.
     pub max_concurrency: u32,
+    /// The bounds this grant was actually taken under.
+    ///
+    /// Reported because a receipt records what was authorized. When the grant
+    /// defaulted from the pinned work profile, this is what it defaulted to —
+    /// and a later change to that profile does not rewrite it.
+    pub budget: BudgetBoundsDto,
     /// Whether it has been disarmed, and when.
     #[schema(value_type = Option<String>, format = DateTime)]
     pub revoked_at: Option<Timestamp>,
+}
+
+/// The resource bounds one grant was taken under, on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct BudgetBoundsDto {
+    /// Maximum tokens across the bounded work. A recorded quantity.
+    pub max_tokens: u64,
+    /// Maximum runtime commands. A genuine stop on a looping seat.
+    pub max_commands: u64,
+    /// Maximum wall-clock seconds. A genuine stop on a wedged seat.
+    pub max_duration_seconds: u64,
+    /// The recorded cost ceiling, in integer minor units.
+    ///
+    /// Kept because a receipt records what was authorized, not because money is
+    /// the control that prevents exhaustion — under OP-REQ-043 it is not. The
+    /// control money still has is the depleting credit balance and its reserve
+    /// on a provider account, which is a property of the account and not of a
+    /// task.
+    pub max_cost_minor_units: u64,
+    /// The currency those minor units are in.
+    pub cost_currency: String,
 }
 
 /// The whole of one epic, read at one control-plane position.
@@ -3015,8 +3114,21 @@ pub struct ArmRequest {
     pub allowed_end: Timestamp,
     /// Maximum concurrent runs.
     pub max_concurrency: u32,
-    /// The budget ceiling.
-    pub budget: BudgetBoundsRequest,
+    /// The budget ceiling, when the caller narrows it.
+    ///
+    /// Absent takes the pinned work profile's `budget_defaults`. A budget bounds
+    /// a **runaway**, not a subscription: `max_commands` and
+    /// `max_duration_seconds` are genuine stops on a looping seat and
+    /// `max_tokens` is a recorded quantity, none of which depends on how the
+    /// account is billed. `max_cost` is no longer a per-task ceiling — on a
+    /// subscription the money spent is an output worth reporting, and capping it
+    /// per task cannot prevent the quota exhaustion that actually halts work
+    /// while it *can* refuse work that would have cost nothing.
+    ///
+    /// Supplied bounds may only narrow the profile's. Arming wider than the
+    /// pinned profile allows is not a grant this endpoint can make.
+    #[serde(default)]
+    pub budget: Option<BudgetBoundsRequest>,
     /// The account profile acting as the granting authority.
     #[schema(value_type = String)]
     pub granted_by: AccountProfileId,

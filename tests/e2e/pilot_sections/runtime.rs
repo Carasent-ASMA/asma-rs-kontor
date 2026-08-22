@@ -1698,6 +1698,9 @@ fn dispatch_decision(open_replay_gap: bool) -> (usize, Option<String>) {
             provider_max_in_flight: 16,
             runtime_max_in_flight: 16,
             adaptive: window,
+
+            // No headroom policy: these fixtures judge the in-flight ceilings.
+            headroom: None,
         },
         adaptive_window: AdaptiveWindow::start(window),
         freshness: SignedDuration::from_secs(120),

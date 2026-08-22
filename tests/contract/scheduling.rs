@@ -417,6 +417,9 @@ impl World {
                     ceiling: 7,
                     growth_step: 1,
                 },
+
+                // No headroom policy: these fixtures judge the in-flight ceilings.
+                headroom: None,
             },
             adaptive_window: AdaptiveWindow::start(AdaptiveWindowConfig {
                 initial: 4,
@@ -453,6 +456,9 @@ impl World {
                     ceiling: 7,
                     growth_step: 1,
                 },
+
+                // No headroom policy: these fixtures judge the in-flight ceilings.
+                headroom: None,
             },
             team_run: NewTeamRun {
                 id: self.team_run,

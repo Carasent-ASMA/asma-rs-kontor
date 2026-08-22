@@ -415,6 +415,7 @@ fn config() -> PaseoConfig {
         scope: scope(),
         max_concurrent_sessions: 8,
         unavailable_providers: BTreeSet::new(),
+        provider_selects_account: false,
         provider_fallbacks: BTreeMap::new(),
         adopted_containers: BTreeMap::new(),
         // No seat MCP composition in the contract fixtures: the cwds here are

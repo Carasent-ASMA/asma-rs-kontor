@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 50;
+pub const SCHEMA_VERSION: i64 = 51;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -217,6 +217,10 @@ const MIGRATIONS: &[&str] = &[
     // v50 admits the provider's own usage endpoint as a quota authority, so a
     // window can be recorded as reopened without a human noticing it did.
     include_str!("../migrations/0050_provider_report_quota_source.sql"),
+    // v51 adds concurrent quota windows, credit headroom and `cannot_report`
+    // on top of that poller. It does not replace v50's source or invent a
+    // second collector.
+    include_str!("../migrations/0051_provider_quota_headroom.sql"),
 ];
 
 const _: () = assert!(

@@ -23,6 +23,15 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
 # about to hand the child, so it can verify the non-secret marker inside it.
 kontor-accounts = { path = "../kontor-accounts", version = "=0.2.0" }
 async-trait = { workspace = true }
+# The usage probe's transport. Already pinned at the workspace root and used by
+# other members, so this adds a member edge rather than a new dependency: the
+# pre-flight quota read is one authenticated GET, and hand-rolling TLS and JSON
+# for it would be a far larger surface than the one call it makes.
+reqwest = { workspace = true }
+# The usage token is the one credential this crate holds. `SecretString` zeroizes
+# it on drop, which is the same discipline `kontor-accounts` applies to a
+# resolved credential.
+secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -45,3 +54,10 @@ kontor-tests-contract = { path = "../../tests/contract", version = "=0.2.0" }
 # stated in `SecretString`. Stubbing the resolved environment instead would have
 # made this ticket's central claim untestable.
 secrecy = { workspace = true }
+# The usage-probe tests write a fixture `auth.json` into a real directory, so the
+# credential read is exercised against a filesystem rather than a stub of one.
+tempfile = { workspace = true }
+# The live probe's request path — header, status handling, body decode — proved
+# against a recorded server rather than against the vendor.
+wiremock = { workspace = true }
+tokio = { workspace = true }

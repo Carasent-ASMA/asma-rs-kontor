@@ -353,12 +353,22 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
         None => kontor_core::id::AggregateRevision::INITIAL,
     };
 
+    // ponytail: copy the stored windows/credit. This poller still does not
+    // observe them (#82's UsageReading is header-only). set_provider_quota_state
+    // replaces the set wholesale, so writing empty here deletes operator-recorded
+    // windows on every ProviderHomes tick. Mapping UsageReading.primary is a
+    // later increment.
     let request = NewProviderQuotaState {
         project_id: profile.project_id,
         account_profile_id: profile.id,
         provider: observed.provider.clone(),
         state: observed.kind,
         resets_at: observed.resets_at,
+        windows: existing
+            .as_ref()
+            .map(|row| row.windows.clone())
+            .unwrap_or_default(),
+        credit: existing.as_ref().and_then(|row| row.credit),
         evidence_hash: evidence,
         source: ProviderQuotaSource::ProviderReport,
         observed_at: now,
@@ -433,6 +443,17 @@ pub async fn poll_until_stopped(poller: UsagePoller, state: ApiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Daemon, DaemonConfig};
+    use kontor_api::state::RuntimeRegistry;
+    use kontor_core::id::{
+        AccountProfileId, CanonicalDocument, CredentialAlias, CurrencyCode, ExternalName,
+        Money, ProjectId, RuntimeKindKey, parse_utc_timestamp,
+    };
+    use kontor_core::quota::{CreditBalance, QuotaWindow, QuotaWindowKind};
+    use kontor_core::repository::{
+        CredentialReference, NewAccountProfile, NewProject, NewProviderQuotaState, ProjectRepository,
+    };
+    use kontor_core::spec::ProviderQuotaKind;
 
     #[test]
     fn an_absent_provider_homes_directory_approves_nothing() {
@@ -510,6 +531,120 @@ mod tests {
         let token = access_token(directory.path()).expect("the token reads");
         assert_eq!(token.expose_secret(), "sk-not-a-real-token");
         assert!(!format!("{token:?}").contains("sk-not-a-real-token"));
+    }
+
+    #[test]
+    fn an_operator_window_set_survives_a_later_poller_record_of_the_same_header() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path()).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .expect("the realm starts");
+        let state = daemon.state();
+
+        let project_id = ProjectId::generate();
+        let account_profile_id = AccountProfileId::generate();
+        let created_at = parse_utc_timestamp("2026-08-22T09:00:00Z").expect("an instant");
+        let windows = vec![
+            QuotaWindow {
+                kind: QuotaWindowKind::Session,
+                resets_at: parse_utc_timestamp("2026-08-22T14:00:00Z").expect("an instant"),
+                used_percent: 28,
+            },
+            QuotaWindow {
+                kind: QuotaWindowKind::Weekly,
+                resets_at: parse_utc_timestamp("2026-08-23T09:35:00Z").expect("an instant"),
+                used_percent: 62,
+            },
+        ];
+        let credit = CreditBalance {
+            remaining: Money {
+                minor_units: 40_000,
+                currency: CurrencyCode::parse("EUR").expect("a currency"),
+            },
+            reserve: Money {
+                minor_units: 10_000,
+                currency: CurrencyCode::parse("EUR").expect("a currency"),
+            },
+        };
+        let empty = CanonicalDocument::from_value(&serde_json::json!({ "schema_version": 1 }))
+            .expect("a document");
+        let profile = state.with_store(|store| {
+            store
+                .create_project(&NewProject {
+                    id: project_id,
+                    name: ExternalName::parse("quota").expect("a name"),
+                    root_path: ExternalName::parse("/tmp/quota").expect("a path"),
+                    created_at,
+                })
+                .expect("the project is created");
+            let profile = store
+                .create_account_profile(&NewAccountProfile {
+                    id: account_profile_id,
+                    project_id,
+                    label: ExternalName::parse("work").expect("a name"),
+                    external_account_id: None,
+                    harness: RuntimeKindKey::parse("paseo").expect("a runtime"),
+                    credential_ref: CredentialReference {
+                        kind: CredentialReferenceKind::Keychain,
+                        alias: CredentialAlias::parse("codex-work").expect("an alias"),
+                    },
+                    environment: empty.clone(),
+                    routing: empty.clone(),
+                    capability: empty,
+                    provider_identity: None,
+                    enabled: true,
+                    created_at,
+                })
+                .expect("the profile is created");
+            store
+                .set_provider_quota_state(&NewProviderQuotaState {
+                    project_id,
+                    account_profile_id,
+                    provider: "codex".into(),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: windows.clone(),
+                    credit: Some(credit),
+                    evidence_hash: ContentHash::of(b"the operator said so"),
+                    source: ProviderQuotaSource::Operator,
+                    observed_at: created_at,
+                    expected_revision: kontor_core::id::AggregateRevision::INITIAL,
+                    updated_at: created_at,
+                })
+                .expect("the operator row is recorded");
+            profile
+        });
+
+        let written = record(
+            &state,
+            &profile,
+            &UsageReading {
+                provider: "codex".into(),
+                limit_reached: false,
+                primary: None,
+                credits_exhausted: false,
+            },
+        );
+        assert!(written, "an operator row is never skipped as unchanged");
+
+        let restored = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .expect("the read succeeds")
+            .into_iter()
+            .find(|row| row.account_profile_id == account_profile_id && row.provider == "codex")
+            .expect("the header is still there");
+        assert_eq!(
+            restored.windows, windows,
+            "a poller tick must not DELETE the operator-recorded window set"
+        );
+        assert_eq!(
+            restored.credit,
+            Some(credit),
+            "a poller tick must not null the operator-recorded credit"
+        );
+        assert_eq!(restored.source, ProviderQuotaSource::ProviderReport);
     }
 
     fn alias(name: &str) -> CredentialAlias {

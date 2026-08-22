@@ -101,6 +101,21 @@ crate::closed_enum! {
         Drained => "drained",
         /// Something refused and this state cannot say what.
         Unknown => "unknown",
+        /// This provider structurally cannot report its headroom, so it is used
+        /// reactively: run until it refuses, then record the reset it states.
+        ///
+        /// Deliberately not [`Self::Unknown`]. Both describe an absence of
+        /// numbers, but they are opposite instructions. `Unknown` is *this
+        /// reading failed* — a refusal nobody could parse, or an observation too
+        /// old to act on — and it fails closed, because a state nobody could
+        /// establish is not a permission. `CannotReport` is *this provider has
+        /// no such number to give*: OpenRouter's `:free` routes under
+        /// FND-005/DEC-001 answer `limit_remaining: null` and a dollar-
+        /// denominated counter that stays at zero, and no future reading will
+        /// improve on that. Failing closed on it would render such a provider
+        /// permanently unusable on the strength of a number it was never going
+        /// to have.
+        CannotReport => "cannot_report",
     }
 }
 
@@ -108,10 +123,12 @@ impl ProviderQuotaKind {
     /// Whether a launch may be placed on this provider now.
     ///
     /// `Unknown` fails closed, the same way account availability does: a state
-    /// nobody could establish is not a permission.
+    /// nobody could establish is not a permission. [`Self::CannotReport`] is
+    /// usable for the opposite reason — see its own documentation for why
+    /// collapsing the two is the defect this split exists to prevent.
     #[must_use]
     pub const fn is_usable(self) -> bool {
-        matches!(self, Self::Available)
+        matches!(self, Self::Available | Self::CannotReport)
     }
 }
 
