@@ -6259,6 +6259,193 @@ fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
     );
 }
 
+#[test]
+fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
+    let fixture = fixture();
+
+    // A team run and one seat, so a turn has something to settle against.
+    let template = TeamTemplateId::generate();
+    fixture
+        .store
+        .insert_team_template(
+            fixture.project,
+            &TeamTemplateRevision {
+                template_id: template,
+                version: SpecVersion::FIRST,
+                name: name("One-slot team"),
+                definition: slotted_team_definition(&["zz.maker"]),
+                role_authority: Vec::new(),
+            },
+        )
+        .expect("the team revision is stored");
+    let revision = fixture
+        .store
+        .get_team_template(fixture.project, template, SpecVersion::FIRST)
+        .expect("the read succeeds")
+        .expect("the revision exists");
+    let team_run = TeamRunId::generate();
+    fixture
+        .store
+        .create_team_run(&NewTeamRun {
+            id: team_run,
+            project_id: fixture.project,
+            task_id: fixture.task,
+            snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
+            created_at: now(),
+        })
+        .expect("the team run is created");
+    let run = AgentRunId::generate();
+    fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: run,
+            project_id: fixture.project,
+            team_run_id: team_run,
+            parent_agent_run_id: None,
+            role: role("zz.maker"),
+            account_profile_id: Some(fixture.account),
+            binding: None,
+            created_at: now(),
+        })
+        .expect("the seat is created");
+
+    // Nothing has been produced yet, so the gate sees nothing.
+    assert!(
+        fixture
+            .store
+            .list_task_artifact_keys(fixture.project, fixture.task)
+            .expect("the read succeeds")
+            .is_empty(),
+        "an unsettled task evidences no artifact"
+    );
+
+    // The turn declares one contract key beside the free-form labels a real turn
+    // carries — a filename and a commit sha. `artifact_evidence` stays empty:
+    // this is the ordinary delivery path, which registers no locator.
+    fixture
+        .store
+        .settle_role_turn(&kontor_store::NewRoleTurn {
+            id: kontor_core::id::RoleTurnId::generate(),
+            project_id: fixture.project,
+            task_id: fixture.task,
+            team_run_id: team_run,
+            agent_run_id: run,
+            role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+            idempotency_key: "turn-artifact-evidence".to_owned(),
+            task_revision: AggregateRevision::INITIAL,
+            binding_generation: 1,
+            authority_tier: "operator",
+            account_profile: Some(fixture.account),
+            artifacts: [
+                artifact("zz.output"),
+                artifact("architecture.md"),
+                artifact("commit-6f884a0e552272d05583c3db6f4edcf414a44f40"),
+            ]
+            .into_iter()
+            .collect(),
+            evidence_hash: ContentHash::of(b"turn"),
+            settled_at: now(),
+        })
+        .expect("the turn settles");
+
+    let keys = fixture
+        .store
+        .list_task_artifact_keys(fixture.project, fixture.task)
+        .expect("the read succeeds");
+
+    // The declared contract key is evidence. Without this the completion ticket
+    // gate is unsatisfiable for every task closed through `turn-settle`.
+    assert!(
+        keys.contains(&name("zz.output")),
+        "a settled turn's declared artifact is evidence: {keys:?}"
+    );
+    // The free-form labels are carried through rather than failing the read.
+    assert!(
+        keys.contains(&name("architecture.md")),
+        "a filename label does not break the read: {keys:?}"
+    );
+    assert_eq!(keys.len(), 3, "every declared label is reported once: {keys:?}");
+}
+
+#[test]
+fn only_a_passed_gate_contributes_its_cited_artifacts_as_evidence() {
+    let fixture = fixture();
+    let workflow = with_workflow(&fixture);
+    let cite = |actor: &str, verdict: GateVerdict, evidence: Vec<ArtifactKey>| NewGateEvaluation {
+        project_id: fixture.project,
+        workflow_id: workflow,
+        gate: GateKey::parse("zz.gate").expect("a valid gate key"),
+        verdict,
+        evaluator_role: role(actor),
+        evaluator_account: fixture.account,
+        evidence,
+        agent_run_id: None,
+        reviewer_principal: None,
+        policy_evaluation_id: None,
+        recorded_at: now(),
+    };
+
+    // A rejection cites the artifact it looked at. Refusing the work is not
+    // evidence that the artifact contract was met.
+    fixture
+        .store
+        .append_gate_evaluation(&cite(
+            "zz.reviewer",
+            GateVerdict::Rejected,
+            vec![artifact("zz.rejected-only")],
+        ))
+        .expect("the rejection records");
+    // A waiver excuses the requirement; it does not produce the artifact. Only
+    // the distinct waiver authority may record one, and the store makes it cite
+    // the profile's required evidence just as a pass must — so this waiver names
+    // `zz.output` itself. That is precisely the leak worth guarding: the artifact
+    // is *named* by a verdict that never accepted the work.
+    fixture
+        .store
+        .append_gate_evaluation(&cite(
+            "zz.waiver",
+            GateVerdict::Waived,
+            vec![artifact("zz.output"), artifact("zz.waived-only")],
+        ))
+        .expect("the waiver records");
+
+    assert!(
+        fixture
+            .store
+            .list_task_artifact_keys(fixture.project, fixture.task)
+            .expect("the read succeeds")
+            .is_empty(),
+        "neither a rejection nor a waiver evidences an artifact, even one it cites"
+    );
+
+    // The same evaluator then passes, citing the contract artifact.
+    fixture
+        .store
+        .append_gate_evaluation(&cite(
+            "zz.reviewer",
+            GateVerdict::Passed,
+            vec![artifact("zz.output")],
+        ))
+        .expect("the gate passes");
+
+    let keys = fixture
+        .store
+        .list_task_artifact_keys(fixture.project, fixture.task)
+        .expect("the read succeeds");
+    assert!(
+        keys.contains(&name("zz.output")),
+        "a passed gate's citation is evidence: {keys:?}"
+    );
+    assert!(
+        !keys.contains(&name("zz.rejected-only")),
+        "a rejected verdict's citation must not leak in: {keys:?}"
+    );
+    assert!(
+        !keys.contains(&name("zz.waived-only")),
+        "a waived gate's citation must not leak in: {keys:?}"
+    );
+}
+
 /// A team definition whose second slot may be waived by the first slot's role.
 fn waivable_team_definition() -> CanonicalDocument {
     CanonicalDocument::from_value(&serde_json::json!({
