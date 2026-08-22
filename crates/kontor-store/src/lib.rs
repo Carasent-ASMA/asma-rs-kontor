@@ -51,7 +51,8 @@ use rusqlite::Connection;
 
 pub use commands::intent::DispatchClaim;
 pub use commands::receipts::{
-    CommandRecovery, CommandTransition, ReceiptTransition, RecordedTransition,
+    CommandRecovery, CommandTransition, LaunchReceiptReconciliation, ReceiptTransition,
+    RecordedTransition,
 };
 pub use events::types::{
     ConsumerPage, ContentDiscontinuity, ContentGapOutcome, ControlGap, ControlObservation,

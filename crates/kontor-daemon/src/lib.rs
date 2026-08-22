@@ -499,19 +499,39 @@ impl Daemon {
                 "legacy partial topology upgrades could not be converged"
             ),
         }
-        let recovered = self.state.with_store(recover);
+        let launch_reconciliation = self
+            .state
+            .with_store(|store| store.reconcile_legacy_launch_receipts(kontor_api::now()));
+        match &launch_reconciliation {
+            Ok(report) if report.confirmed + report.failed > 0 => info!(
+                realm_id = %realm_id,
+                confirmed = report.confirmed,
+                failed = report.failed,
+                pending = report.pending,
+                "legacy launch receipts reconciled from durable run evidence"
+            ),
+            Ok(_) => {}
+            Err(detail) => warn!(
+                realm_id = %realm_id,
+                detail = %detail,
+                "legacy launch receipts could not be reconciled"
+            ),
+        }
+        let recovered = launch_reconciliation
+            .map(|_| ())
+            .and_then(|()| self.state.with_store(recover));
         match &recovered {
             Ok(report) => info!(
                 realm_id = %realm_id,
-                undispatched = report.undispatched,
-                ambiguous = report.ambiguous,
-                settled = report.settled,
-                "unfinished command receipts recovered"
+                ready_to_dispatch = report.undispatched,
+                needs_native_lookup = report.ambiguous,
+                already_settled = report.settled,
+                "command dispatch inventory recovered"
             ),
             Err(detail) => warn!(
                 realm_id = %realm_id,
                 detail = %detail,
-                "unfinished command receipts could not be inventoried"
+                "command dispatch inventory could not be recovered"
             ),
         }
 
@@ -799,11 +819,13 @@ pub struct RecoveryReport {
     pub settled: usize,
 }
 
-/// Classify every unsettled command receipt in the Realm.
+/// Classify every non-terminal dispatch receipt in the Realm.
 ///
 /// Nothing is dispatched, retried or rewritten here. The point of the sweep is
-/// that the *count* of ambiguous commands is known before scheduling opens, so a
-/// dispatcher cannot mistake "we restarted" for "nothing was sent".
+/// Local application receipts are deliberately absent: they never authorize a
+/// native dispatch. The point of the sweep is that the *count* of ambiguous
+/// dispatches is known before scheduling opens, so a dispatcher cannot mistake
+/// "we restarted" for "nothing was sent".
 ///
 /// # Errors
 /// Returns the repository's own refusal when the inventory cannot be read.

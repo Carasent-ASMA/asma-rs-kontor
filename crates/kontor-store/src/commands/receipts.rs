@@ -15,7 +15,8 @@
 
 use kontor_core::DomainError;
 use kontor_core::id::{
-    CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, ProjectId, Timestamp,
+    CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, ExternalName, ProjectId,
+    RuntimeKindKey, Timestamp,
 };
 use kontor_core::receipt::{CommandReceipt, CommandReceiptState, NoEffectEvidence};
 use kontor_core::repository::{ReceiptAdvance, RepositoryError, RepositoryResult};
@@ -207,6 +208,17 @@ pub enum CommandRecovery {
         /// Its final state.
         state: CommandReceiptState,
     },
+}
+
+/// What durable launch evidence let startup settle without guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LaunchReceiptReconciliation {
+    /// Launches whose native binding proves the session exists.
+    pub confirmed: usize,
+    /// Launches whose unbound run closed with terminal evidence.
+    pub failed: usize,
+    /// Open, unbound launches that remain real dispatch obligations.
+    pub pending: usize,
 }
 
 impl CommandRecovery {
@@ -621,6 +633,164 @@ impl SqliteStore {
         })
     }
 
+    /// Settle legacy launch receipts from evidence already durable in Kontor.
+    ///
+    /// A binding proves the launch took effect. A closed, unbound run with a
+    /// terminal evidence hash proves the launch can no longer take effect. An
+    /// open unbound run proves neither and remains pending. No clock or absence
+    /// of activity is treated as evidence.
+    pub fn reconcile_legacy_launch_receipts(
+        &self,
+        reconciled_at: Timestamp,
+    ) -> RepositoryResult<LaunchReceiptReconciliation> {
+        type Candidate = (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let candidates: Vec<Candidate> = {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT receipt.project_id, receipt.id, receipt.state, receipt.correlation,
+                            binding.id, binding.runtime_kind, binding.host, binding.generation,
+                            binding.native_id, run.closed_at, run.terminal_evidence_hash
+                     FROM command_receipts AS receipt
+                     JOIN command_targets AS target
+                       ON target.project_id = receipt.project_id
+                      AND target.receipt_id = receipt.id
+                     JOIN agent_runs AS run
+                       ON run.project_id = receipt.project_id
+                      AND run.id = target.target_agent_run_id
+                     LEFT JOIN runtime_bindings AS binding
+                       ON binding.project_id = run.project_id
+                      AND binding.agent_run_id = run.id
+                     WHERE receipt.execution_mode = 'dispatch'
+                       AND receipt.kind = 'launch_run'
+                       AND receipt.state NOT IN ('confirmed', 'failed')
+                     ORDER BY receipt.created_at, receipt.id",
+                )
+                .map_err(backend)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                    ))
+                })
+                .map_err(backend)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(backend)?
+        };
+
+        let mut report = LaunchReceiptReconciliation::default();
+        for (
+            project,
+            receipt,
+            state,
+            correlation,
+            binding_id,
+            runtime_kind,
+            host,
+            generation,
+            native_id,
+            closed_at,
+            terminal_evidence,
+        ) in candidates
+        {
+            let project_id = ProjectId::parse(&project)?;
+            let receipt_id = CommandReceiptId::parse(&receipt)?;
+            let state = CommandReceiptState::parse(&state)?;
+            let correlation = correlation.as_deref().map(ExternalId::parse).transpose()?;
+            let binding = match (runtime_kind, host, generation, native_id) {
+                (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) => {
+                    Some(NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            RepositoryError::Backend {
+                                detail: "a runtime binding generation is negative".to_owned(),
+                            }
+                        })?,
+                        native_id: ExternalId::parse(&native_id)?,
+                    })
+                }
+                (None, None, None, None) => None,
+                _ => {
+                    return Err(RepositoryError::Backend {
+                        detail: "a runtime binding is only partially stored".to_owned(),
+                    });
+                }
+            };
+
+            if let Some(binding) = binding {
+                if state == CommandReceiptState::DispatchPending {
+                    self.apply_command_transition(&CommandTransition {
+                        project_id,
+                        receipt_id,
+                        to: CommandReceiptState::Dispatched,
+                        correlation: correlation.clone(),
+                        native_identity: Some(binding.clone()),
+                        evidence_ref: None,
+                        no_effect: None,
+                        occurred_at: reconciled_at,
+                    })?;
+                }
+                let evidence =
+                    ExternalId::parse(binding_id.as_deref().ok_or(RepositoryError::Backend {
+                        detail: "a loaded runtime binding has no binding id".to_owned(),
+                    })?)?;
+                self.apply_command_transition(&CommandTransition {
+                    project_id,
+                    receipt_id,
+                    to: CommandReceiptState::Confirmed,
+                    correlation,
+                    native_identity: Some(binding),
+                    evidence_ref: Some(evidence),
+                    no_effect: None,
+                    occurred_at: reconciled_at,
+                })?;
+                report.confirmed += 1;
+                continue;
+            }
+
+            if closed_at.is_some()
+                && let Some(evidence) = terminal_evidence
+            {
+                self.apply_command_transition(&CommandTransition {
+                    project_id,
+                    receipt_id,
+                    to: CommandReceiptState::Failed,
+                    correlation,
+                    native_identity: None,
+                    evidence_ref: Some(ExternalId::parse(&evidence)?),
+                    no_effect: None,
+                    occurred_at: reconciled_at,
+                })?;
+                report.failed += 1;
+            } else {
+                report.pending += 1;
+            }
+        }
+        Ok(report)
+    }
+
     /// Decide what a restart may do about one command.
     ///
     /// The answer comes from the durable receipt and nothing else — not from how
@@ -650,6 +820,21 @@ impl SqliteStore {
                 .ok_or(RepositoryError::NotFound {
                     subject: "command receipt",
                 })?;
+        let execution_mode: String = self
+            .connection
+            .query_row(
+                "SELECT execution_mode FROM command_receipts
+                 WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), receipt_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if execution_mode == "local" {
+            return Ok(CommandRecovery::Settled {
+                receipt_id,
+                state: receipt.state,
+            });
+        }
         if receipt.state.is_terminal() {
             return Ok(CommandRecovery::Settled {
                 receipt_id,
@@ -708,7 +893,8 @@ impl SqliteStore {
             .connection
             .prepare(
                 "SELECT project_id, id FROM command_receipts
-                 WHERE state NOT IN ('confirmed', 'failed')
+                 WHERE execution_mode = 'dispatch'
+                   AND state NOT IN ('confirmed', 'failed')
                  ORDER BY created_at, id",
             )
             .map_err(backend)?;
