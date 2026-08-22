@@ -41,7 +41,8 @@ use kontor_runtime::RuntimeCapability;
 use crate::model::{
     AccountPin, AdmittedCandidate, Candidate, CandidateDecision, CapacityLimitKind,
     CapacitySnapshot, CapacityUsage, Plan, PreflightOutcome, RejectionCode, RejectionEvidence,
-    RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification,
+    RosterGovernance, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
+    WorktreeVerification,
 };
 
 closed_enum! {
@@ -57,6 +58,8 @@ closed_enum! {
     Blocker, "Blocker" {
         /// The task is not in `ready`.
         Readiness => "readiness",
+        /// Whether the owning epic has the leadership its roster mandates.
+        Governance => "governance",
         /// Where the work came from, and whether that authorizes it.
         Origin => "origin",
         /// Its dependencies.
@@ -152,6 +155,7 @@ pub fn plan(snapshot: &SchedulingSnapshot) -> DomainResult<Plan> {
 fn verdict(snapshot: &SchedulingSnapshot, candidate: &Candidate, blocker: Blocker) -> Refusal {
     match blocker {
         Blocker::Readiness => readiness(snapshot, candidate),
+        Blocker::Governance => governance(candidate),
         Blocker::Origin => origin(candidate),
         Blocker::Dependencies => dependencies(snapshot, candidate),
         Blocker::Authorization => authorization(snapshot, candidate),
@@ -276,6 +280,22 @@ fn readiness(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> Refusal {
         return bare(RejectionCode::TaskAlreadyInFlight);
     }
     None
+}
+
+/// The owning epic must have the governed leadership its roster mandates.
+///
+/// Declaring `LSA` and `TPM` mandatory only binds a roster that was actually
+/// resolved. An epic that never froze one has no governed leadership at all, and
+/// admitting its work is how eighteen tasks reach `done` with no architecture
+/// lead. Refusing here is the check that makes the declaration mean something.
+fn governance(candidate: &Candidate) -> Refusal {
+    match candidate.governance {
+        RosterGovernance::Seated => None,
+        RosterGovernance::RosterUnfrozen => with(RejectionCode::EpicRosterUnfrozen, Vec::new()),
+        RosterGovernance::LeadershipSeatUnbound => {
+            with(RejectionCode::LeadershipSeatUnbound, Vec::new())
+        }
+    }
 }
 
 /// Manual work needs no receipt; event-origin work needs its lineage.

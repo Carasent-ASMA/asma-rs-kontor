@@ -7362,9 +7362,18 @@ async fn settlement_closes_the_team_and_unlocks_the_whole_epic_close_out() {
         let seats = store
             .list_seat_bindings(project_id, control.id)
             .expect("the control seats read");
-        assert!(!seats.is_empty(), "the epic had a control seat to close");
+        // The owner seat specifically. `release_epic_control_seat` touches the
+        // declared control role and nothing else — the rest of the epic's
+        // leadership is not dismissed by closing the epic — so asserting that
+        // every seat on the plane released would be asserting a contract the
+        // close path does not have.
+        let owners: Vec<_> = seats
+            .iter()
+            .filter(|seat| seat.role.role_code == domain.delivery.control_role_code)
+            .collect();
+        assert!(!owners.is_empty(), "the epic had a control seat to close");
         assert!(
-            seats.iter().all(|seat| seat.released_at.is_some()),
+            owners.iter().all(|seat| seat.released_at.is_some()),
             "closing the epic released its control seat"
         );
     });
@@ -9372,7 +9381,14 @@ async fn a_delivery_seat_whose_owner_closed_is_orphaned_and_holds_no_progress() 
         let owners: Vec<_> = store
             .list_seat_bindings(project_id, control.id)
             .expect("the control seats read");
-        let owner = owners.first().expect("one control seat owns this epic");
+        // The owner is the seat holding the declared control role, not whichever
+        // seat is first. Every epic is born with its whole mandatory leadership
+        // pair, so the control plane holds more than one seat and "the first
+        // one" would name the architect rather than the owner.
+        let owner = owners
+            .iter()
+            .find(|it| it.role.role_code == domain.delivery.control_role_code)
+            .expect("the control seat that owns this epic");
 
         // Every delivery seat names that exact owner. `None` here is the defect
         // this test exists for: a seat with no owner is a root, and a root is
@@ -9519,15 +9535,19 @@ async fn a_project_with_no_topology_is_seeded_one_rather_than_placed_outside_it(
     let project_id = ProjectId::parse(&project).expect("a project id");
     let task_id = TaskId::parse(&task).expect("a task id");
 
-    // Nothing about a topology exists yet. This is the state the removed escape
-    // was written for.
+    // The project configured no topology, and applying the epic seeded it one
+    // rather than leaving the epic to be placed outside any — which is this
+    // test's subject, now answered at apply time because that is where an epic
+    // acquires its control plane. What is still absent is the task's own node:
+    // admission places that, and the removed escape was the code that let it be
+    // placed without a topology at all.
     world.daemon.state().with_store(|store| {
         assert!(
             store
                 .get_project_topology_default(project_id)
                 .expect("the default reads")
-                .is_none(),
-            "the project has selected no topology revision"
+                .is_some(),
+            "applying the epic seeded the project a topology revision"
         );
         assert!(
             store
@@ -9705,47 +9725,23 @@ async fn a_task_placed_on_a_node_that_hosts_no_session_is_refused_before_anythin
     let task_id = TaskId::parse(&task).expect("a task id");
     let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
     let topology_spec = domain.topology_specs.first().expect("a topology").clone();
-    let stamp = kontor_core::spec::Shareability::default_for(
-        kontor_core::spec::ShareabilityTier::ProjectKnowledge,
-    )
-    .expect("a default stamp");
     let at = kontor_api::now();
     world.daemon.state().with_store(|store| {
-        let canonical_hash = store
-            .publish_topology_spec(project_id, &topology_spec, &stamp, at)
-            .expect("the topology publishes");
-        let topology = kontor_core::spec::TopologySnapshot {
-            spec_id: topology_spec.spec_id,
-            version: topology_spec.version,
-            canonical_hash,
-        };
-        store
-            .set_project_topology_default(&kontor_core::repository::ProjectTopologyDefault {
-                project_id,
-                topology: topology.clone(),
-                selected_at: at,
-            })
-            .expect("the project default is selected");
-        store
-            .pin_mini_project_topology(&kontor_core::repository::MiniProjectTopologySnapshot {
-                project_id,
-                mini_project_id: epic_id,
-                topology: topology.clone(),
-                pinned_at: at,
-            })
-            .expect("the epic is pinned");
+        // Applying the epic already published this specification, selected it,
+        // pinned the epic to it and created the project root — governance needs
+        // all four to place a control plane. So the seed reuses them and adds
+        // only the one node this test is about.
+        let topology = store
+            .get_project_topology_default(project_id)
+            .expect("the default reads")
+            .expect("applying the epic selected a topology")
+            .topology;
         let root = store
-            .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
-                id: TopologyNodeId::generate(),
-                project_id,
-                mini_project_id: None,
-                topology: topology.clone(),
-                kind: topology_spec.root_kind.clone(),
-                parent_id: None,
-                task_id: None,
-                created_at: at,
-            })
-            .expect("the project root is created");
+            .list_topology_nodes(project_id, None)
+            .expect("the unscoped nodes read")
+            .into_iter()
+            .find(|node| node.kind == topology_spec.root_kind && node.parent_id.is_none())
+            .expect("applying the epic created the project root");
         store
             .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
                 id: TopologyNodeId::generate(),
@@ -17435,10 +17431,12 @@ async fn materializing_binds_a_seat_only_on_a_kind_declared_a_session_host() {
         "an epic is a native root and hosts no session: {}",
         projection.body
     );
+    // The mandatory pair, and only it: an epic is born with the `LSA` and `TPM`
+    // its Core Team roster declares, and nothing here adds a third.
     assert_eq!(
         seats_on("ECP"),
-        1,
-        "the control plane is a session host and holds exactly one control seat: {}",
+        2,
+        "the control plane is a session host and holds the mandatory leadership pair: {}",
         projection.body
     );
 }
@@ -17712,6 +17710,18 @@ async fn replaying_ticket_materialization_repairs_a_missing_epic_control_plane()
     // TSW and native binding exist, but the epic's owner/control node does not.
     let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
     let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    // Its seats go first. A legacy writer left no control plane and so left no
+    // seats on one either; an epic born governed has both, and the foreign key
+    // between them is what says so.
+    connection
+        .execute(
+            "DELETE FROM seat_bindings
+             WHERE project_id = ?1 AND topology_node_id IN (
+                 SELECT id FROM topology_nodes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND kind = 'ECP')",
+            rusqlite::params![composed.project.to_string(), composed.epic.to_string()],
+        )
+        .expect("the legacy control seats clear");
     let removed = connection
         .execute(
             "DELETE FROM topology_nodes
@@ -17774,15 +17784,26 @@ async fn a_node_is_retired_by_the_id_an_answer_returned_and_children_block_it() 
         .as_array()
         .expect("nodes")
         .clone();
+    // The revision each node actually stands at, rather than the initial one.
+    // A node created when the epic was applied and bound when it was ensured has
+    // already moved, and presenting a guessed revision would refuse this retire
+    // as a conflict — proving nothing about children blocking a parent.
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
     let node_of = |kind: &str| -> (String, u64) {
         let node = nodes
             .iter()
             .find(|node| node["kind_key"] == kind)
             .unwrap_or_else(|| panic!("a {kind} node exists: {ensured:?}", ensured = ensured.body));
-        (
-            node["topology_node_id"].as_str().expect("an id").to_owned(),
-            1,
-        )
+        let id = node["topology_node_id"].as_str().expect("an id").to_owned();
+        let node_id = kontor_core::id::TopologyNodeId::parse(&id).expect("a node id");
+        let revision = world.daemon.state().with_store(|store| {
+            store
+                .get_topology_node(project_id, node_id)
+                .expect("the node reads")
+                .expect("the ensured node exists")
+                .revision
+        });
+        (id, revision.get())
     };
     let (control, control_revision) = node_of("ECP");
     let (epic_node, epic_revision) = node_of("ESW");
@@ -17801,6 +17822,21 @@ async fn a_node_is_retired_by_the_id_an_answer_returned_and_children_block_it() 
     .send(world)
     .await;
     assert_eq!(blocked.status, 409, "{}", blocked.body);
+
+    // The control plane hosts the epic's mandatory leadership, and a node that
+    // still hosts a live seat is refused for that — a different rule, proved by
+    // its own test. Retire the seats first so what is left is the leaf case.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let concluded = connection
+        .execute(
+            "UPDATE seat_bindings SET lifecycle = 'retired'
+             WHERE project_id = ?1 AND topology_node_id = ?2 AND lifecycle = 'active'",
+            rusqlite::params![composed.project.to_string(), control.as_str()],
+        )
+        .expect("the control seats conclude");
+    assert_eq!(concluded, 2, "the epic was born with its leadership pair");
+    drop(connection);
 
     // The leaf retires, and says so in the projection it returns.
     let retired = Call::post(
@@ -20268,6 +20304,31 @@ async fn a_legacy_epic_bootstraps_one_frozen_roster_and_one_leadership_pair() {
     assert!(before.contains_key("ESW"), "{}", ensured.body);
     assert!(before.contains_key("ECP"), "{}", ensured.body);
 
+    // Recreate the durable shape a legacy epic actually has. `epics:apply` now
+    // freezes a roster and seats the mandatory pair, so an epic that predates
+    // that is no longer reachable through the API — only through rows written
+    // before it existed. The ESW and ECP stay, because the legacy writer left
+    // those; it is the roster pin and its seats that were never written.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    connection
+        .execute(
+            "DELETE FROM seat_bindings
+             WHERE project_id = ?1 AND topology_node_id IN (
+                 SELECT id FROM topology_nodes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND kind = 'ECP')",
+            rusqlite::params![project.to_string(), epic.to_string()],
+        )
+        .expect("the legacy control seats clear");
+    let unpinned = connection
+        .execute(
+            "DELETE FROM epic_rosters WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![project.to_string(), epic.to_string()],
+        )
+        .expect("the legacy gap is seeded");
+    assert_eq!(unpinned, 1, "the epic was born with a frozen roster to remove");
+    drop(connection);
+
     let previewed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
         &serde_json::json!({
@@ -21017,22 +21078,19 @@ async fn a_refused_first_advance_creates_no_completion_run_and_no_receipt() {
         "the initial revision must pass the guard: {}",
         corrected.body
     );
-    // It gets past the guard and then refuses for the real missing dependency:
-    // this epic has no control plane, so there is no TPM seat for completion to
-    // wake. That refusal is also before any insert.
-    assert!(
-        corrected.status.is_client_error() || corrected.status.is_server_error(),
-        "an epic with no control plane cannot start completion: {}",
-        corrected.body
-    );
-    let still_absent = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+    // And it is *this* call — the first one to get past the revision guard —
+    // that brings the run into existence. Which is the whole property: before it
+    // the read was an absence, and the refused call is not what ended that. What
+    // the advance then reports about the ticket gate is a different question,
+    // asked of a run that now exists.
+    let present = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
     assert_eq!(
-        still_absent.status, 404,
-        "a start that could not resolve its seat must leave no run: {}",
-        still_absent.body
+        present.status, 200,
+        "the advance that passed the guard is the one that created the run: {}",
+        present.body
     );
 }
 

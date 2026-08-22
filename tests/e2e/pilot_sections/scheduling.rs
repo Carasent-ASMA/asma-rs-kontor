@@ -27,8 +27,8 @@ use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdaptiveWindowConfig, AuthorizationEvidence,
     CalendarAdmission, CalendarPolicyEvidence, Candidate, CapacityConfig, CapacityUsage,
     ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope, RejectionCode,
-    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
-    WorktreeVerification,
+    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    WorktreeClaim, WorktreeVerification,
 };
 use kontor_scheduler::ready::{explain, minimum_launch_capabilities, plan};
 use kontor_tests_e2e::Bundle;
@@ -631,6 +631,7 @@ fn candidate(
         revision: AggregateRevision::INITIAL,
         created_at: taken_at,
         priority: 500,
+        governance: RosterGovernance::Seated,
         module: Some(module(module_key)),
         changed_modules: BTreeSet::new(),
         worktree,
