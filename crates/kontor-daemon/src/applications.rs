@@ -31,19 +31,18 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use kontor_accounts::{AccountAvailability, AdaptivePosition, CapacityReading, ProbeOutcome};
 use kontor_api::applications::{
-    AmendAccountProfileRequest,
-    AbandonRunRequest, AbandonedRunDto, AccountProfileDto, ApplicationOperations, AppliedDto,
-    AppliedEpicDto, AppliedLinkDto, AppliedTaskDto, ApplyEpicRequest, ArmRequest,
-    AuthorizationProjectionDto, BlockedTaskDto, BudgetBoundsDto, BudgetBoundsRequest,
-    CreditBalanceDto, DisarmRequest, EnsureAccountProfileRequest, EnsureProjectRequest,
-    EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto, EpicTaskProjectionDto,
-    HeadroomCeilingsDto, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto,
-    PreviewEpicDto, PreviewEpicTaskDto, ProjectDto, ProviderQuotaStateDto,
-    PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
-    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, TeamDraftDto, TeamDraftRequest,
-    TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto, TeamsProjectionDto,
-    WorkProfileCatalogDto,
+    AbandonRunRequest, AbandonedRunDto, AccountProfileDto, AmendAccountProfileRequest,
+    ApplicationOperations, AppliedDto, AppliedEpicDto, AppliedLinkDto, AppliedTaskDto,
+    ApplyEpicRequest, ArmRequest, AuthorizationProjectionDto, BlockedTaskDto, BudgetBoundsDto,
+    BudgetBoundsRequest, CreditBalanceDto, DisarmRequest, EnsureAccountProfileRequest,
+    EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto,
+    EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction, LifecycleOutcomeDto,
+    LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto, ProjectDto,
+    ProviderQuotaStateDto, PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto,
+    ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
+    TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -16324,9 +16323,9 @@ impl ApplicationOperations for Services {
         }
 
         let members = self.team_members(project_id, predecessor.team_run_id)?;
-        let recorded_successor = members
-            .iter()
-            .find(|run| run.parent_agent_run_id == Some(agent_run_id));
+        let recorded_successor = members.iter().find(|run| {
+            run.parent_agent_run_id == Some(agent_run_id) && !run.is_operator_abandoned_unbound()
+        });
         if let Some((successor, successor_binding)) = recorded_successor.and_then(|successor| {
             successor
                 .binding
@@ -16347,16 +16346,13 @@ impl ApplicationOperations for Services {
         }
 
         let recorded_successor_id = recorded_successor.map(|successor| successor.id);
-        let slot_members = recorded_successor_id.map_or_else(
-            || members.clone(),
-            |successor_id| {
-                members
-                    .iter()
-                    .filter(|run| run.id != successor_id)
-                    .cloned()
-                    .collect()
-            },
-        );
+        let slot_members: Vec<_> = members
+            .iter()
+            .filter(|run| {
+                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
+            })
+            .cloned()
+            .collect();
 
         let bindings: Vec<_> = members
             .iter()

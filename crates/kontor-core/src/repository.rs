@@ -51,7 +51,8 @@ use crate::state::{
     AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeContainerBinding,
     NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RunLifecycle, RunProjection,
     SeatAttachment, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
-    TeamTerminalEvidence, TerminalEvidence, TerminalOutcome, TopologyLifecycle,
+    TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
+    TopologyLifecycle,
 };
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -1177,6 +1178,26 @@ pub struct AgentRun {
     pub created_at: Timestamp,
     /// When it closed.
     pub closed_at: Option<Timestamp>,
+}
+
+impl AgentRun {
+    /// True when this row is an operator-abandoned launch that never bound a native.
+    ///
+    /// Those rows stay as evidence, but they are not a reusable replacement
+    /// target and they do not occupy the role slot's successor chain.
+    #[must_use]
+    pub fn is_operator_abandoned_unbound(&self) -> bool {
+        self.binding.is_none()
+            && matches!(
+                self.terminal.as_ref(),
+                Some(evidence)
+                    if evidence.outcome == TerminalOutcome::Abandoned
+                        && matches!(
+                            evidence.source,
+                            TerminalEvidenceSource::OperatorAbandon { .. }
+                        )
+            )
+    }
 }
 
 /// A new agent run.

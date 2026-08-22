@@ -888,6 +888,9 @@ impl TeamRunSlots {
                     "a run belongs to a different team run",
                 ));
             }
+            if run.is_operator_abandoned_unbound() {
+                continue;
+            }
             let slot = RoleSlotId::new(run.role.clone());
             if !slots.contains_key(&slot) {
                 return Err(DomainError::invalid(
