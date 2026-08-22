@@ -617,6 +617,14 @@ impl ApiError {
             .advising(
                 "use an authorized eligible fallback route or retry after the provider recovers",
             ),
+            RuntimeError::DeliveryConfirmationUnknown { .. } => Self::new(
+                realm_id,
+                ApiErrorCode::Unavailable,
+                "the message may have reached the session but canonical history has not confirmed its position",
+            )
+            .advising(
+                "read the canonical session timeline for this exact idempotency key; do not resend until that read proves the outcome",
+            ),
             RuntimeError::Transport { .. } => Self::new(
                 realm_id,
                 ApiErrorCode::Unavailable,
@@ -853,5 +861,24 @@ mod tests {
             refusal.action,
             "correct the declared worktree or its Git branch conflict, then retry the same materialization"
         );
+    }
+
+    #[test]
+    fn an_unknown_message_confirmation_never_claims_nothing_changed() {
+        let refusal = ApiError::from_runtime(
+            RealmId::generate(),
+            &RuntimeError::DeliveryConfirmationUnknown {
+                rule: "canonical history did not finish",
+            },
+        );
+
+        assert_eq!(refusal.code, ApiErrorCode::Unavailable);
+        assert_eq!(refusal.code.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            refusal.rule,
+            "the message may have reached the session but canonical history has not confirmed its position"
+        );
+        assert!(refusal.action.contains("do not resend"));
+        assert!(!refusal.action.contains("nothing was changed"));
     }
 }

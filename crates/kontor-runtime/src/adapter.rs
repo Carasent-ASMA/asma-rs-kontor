@@ -203,6 +203,17 @@ pub enum RuntimeError {
         /// Why the identifier was refused.
         rule: &'static str,
     },
+    /// A message may have crossed the runtime boundary, but canonical history
+    /// has not yet established its exact position.
+    ///
+    /// This is deliberately not [`Self::Transport`]: telling a caller that
+    /// "nothing changed" here would authorize the duplicate delivery the
+    /// idempotency ledger exists to prevent.
+    #[error("message delivery confirmation is unknown: {rule}")]
+    DeliveryConfirmationUnknown {
+        /// Why canonical history could not settle the delivery.
+        rule: &'static str,
+    },
     /// The runtime could not be talked to. This is a fact about the channel and
     /// never about the work.
     #[error("runtime transport failed: the {rule}")]
