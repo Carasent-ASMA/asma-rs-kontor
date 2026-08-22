@@ -49,6 +49,10 @@ kontor-context = { path = "../kontor-context", version = "=0.2.0" }
 kontor-integrations-asma = { path = "../kontor-integrations-asma", version = "=0.2.0" }
 async-trait = { workspace = true }
 axum = { workspace = true }
+# The usage poller is the one thing in this crate that talks to a host
+# outside the machine: it asks each account's provider what its own quota
+# is doing, because a refusal-derived state can never say a window reopened.
+reqwest = { workspace = true }
 jiff = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

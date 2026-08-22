@@ -55,6 +55,7 @@ mod launch;
 mod profile;
 mod quota;
 mod resolver;
+mod usage;
 
 pub use admission::{AdaptivePosition, fold};
 pub use capacity::{
@@ -70,6 +71,9 @@ pub use profile::{
     AccountEnvironmentMap, AccountError, AccountProfileDraft, AccountService, ENVIRONMENT_SCHEMA,
 };
 pub use quota::{ObservedQuota, QuotaBasis, QuotaSignal, classify};
+pub use usage::{
+    UsageFailure, UsageReading, UsageWindow, observe, read_chatgpt_usage,
+};
 pub use resolver::{
     AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
