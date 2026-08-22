@@ -692,6 +692,92 @@ fn two_schedulers_never_admit_the_same_module_twice_even_across_projects() {
     assert_eq!(count(&connection, "SELECT count(*) FROM agent_runs"), 1);
 }
 
+/// One canonical repository path survives the whole store round-trip and is one
+/// lock.
+///
+/// The 2026-08-19 QNR admission above had to spell its module
+/// `shared.asma-core-helpers` because the key rule refused `/`, so the lock, the
+/// `mod:` tag and the checkout on disk were three names for one place. This is
+/// that path rerun on an isolated fixture, against the spelling the tag actually
+/// carries.
+#[test]
+fn a_canonical_repository_path_is_one_module_through_the_store_and_back() {
+    let harness = Harness::new();
+    let scope = harness.scope("canonical-path");
+    let path = "shared/asma-core-helpers";
+    let shared = module(path);
+    let peers = BTreeSet::new();
+
+    let task_a = harness.task(&scope, "Path holder", TaskState::Ready);
+    let admitted_a = harness.admitted(&scope, task_a, Some(shared.clone()), None);
+    let parts_a = Parts::new("path-holder");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted_a,
+            &peers,
+            &parts_a,
+            &scope.template,
+            now(),
+        ))
+        .expect("a path-spelled module admits");
+
+    // Persisted as the path itself. A surrogate written here would be a second
+    // name for the one place the lock exists to serialize.
+    let connection = harness.raw();
+    let stored: String = connection
+        .query_row(
+            "SELECT resource_key FROM resource_leases WHERE lease_kind = 'module'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the module lease is readable");
+    assert_eq!(stored, path);
+
+    // And read back through the scheduler's own claim query as the same key —
+    // the read that used to fail, because the row could not re-parse.
+    let claims = harness
+        .store
+        .active_module_claims(now())
+        .expect("the claims are readable");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].module, shared);
+    assert_eq!(claims[0].module.as_str(), path);
+
+    // Two callers spelling the module the same canonical way contend for the one
+    // lock, with no dotted surrogate anywhere between them.
+    let task_b = harness.task(&scope, "Path contender", TaskState::Ready);
+    let admitted_b = harness.admitted(&scope, task_b, Some(module(path)), None);
+    let parts_b = Parts::new("path-contender");
+    let error = harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &admitted_b,
+            &peers,
+            &parts_b,
+            &scope.template,
+            now(),
+        ))
+        .expect_err("one canonical path is one lock");
+    assert!(
+        matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "resource lease",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        count(&connection, "SELECT count(*) FROM resource_leases"),
+        1,
+        "the refused contender left no second lease"
+    );
+}
+
 #[test]
 fn the_exclusion_holds_against_direct_sql_that_never_came_through_the_store() {
     let harness = Harness::new();

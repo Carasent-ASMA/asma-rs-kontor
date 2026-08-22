@@ -8845,9 +8845,11 @@ async fn distinct_task_worktrees_isolate_one_module_through_admission() {
             "Isolated module epic",
             &category,
             serde_json::json!([
-                {"title": "Tree A", "module": "asma-rs-kontor", "worktree": "/w/isolated-a"},
-                {"title": "Tree B", "module": "asma-rs-kontor", "worktree": "/w/isolated-b"},
-                {"title": "No tree", "module": "asma-rs-kontor", "worktree": null}
+                {"title": "Tree A", "module": "_tools/asma-rs-kontor",
+                 "worktree": "/w/isolated-a"},
+                {"title": "Tree B", "module": "_tools/asma-rs-kontor",
+                 "worktree": "/w/isolated-b"},
+                {"title": "No tree", "module": "_tools/asma-rs-kontor", "worktree": null}
             ]),
         ),
     )
@@ -8931,7 +8933,7 @@ async fn distinct_task_worktrees_isolate_one_module_through_admission() {
         .expect("module claims");
     let trees: BTreeSet<_> = claims
         .iter()
-        .filter(|claim| claim.module.as_str() == "asma-rs-kontor")
+        .filter(|claim| claim.module.as_str() == "_tools/asma-rs-kontor")
         .filter_map(|claim| claim.worktree.as_ref().map(ExternalName::as_str))
         .collect();
     assert_eq!(

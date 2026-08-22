@@ -23,9 +23,9 @@ use kontor_core::calendar::{
 use kontor_core::compaction::CompactionStatus;
 use kontor_core::id::{
     AccountProfileId, ArtifactKey, CanonicalDocument, CommandReceiptId, ContentHash, ExternalName,
-    GateKey, IdempotencyKey, IntakeReceiptId, PhaseKey, ProjectId, RoleKey, SchemaVersion,
-    SourceEventId, SpecVersion, TaskId, Timestamp, WorkProfileKey, parse_utc_timestamp,
-    validate_open_key,
+    GateKey, IdempotencyKey, IntakeReceiptId, ModuleKey, PhaseKey, ProjectId, RoleKey,
+    SchemaVersion, SkillKey, SourceEventId, SpecVersion, TaskId, Timestamp, WorkProfileKey,
+    parse_utc_timestamp, validate_module_key, validate_open_key,
 };
 use kontor_core::id::{AggregateRevision, CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
 use kontor_core::spec::ProjectSessionTopologySpec;
@@ -211,6 +211,123 @@ fn internal_keys_follow_one_conservative_rule() {
             "`{}` must be rejected",
             rejected.escape_debug()
         );
+    }
+}
+
+#[test]
+fn module_keys_round_trip_canonical_repository_paths() {
+    for accepted in [
+        "editor/asma-bunjs-editor",
+        "_tools/asma-rs-kontor",
+        "_tools/cdc_cli",
+        "shared/asma-ui-core",
+        "code",
+        "q7.delivery",
+        "a/b/c/d",
+        "0abc/1def",
+        // The whole-key limit is inclusive, and `tasks.module_key` is
+        // `CHECK (length(module_key) BETWEEN 1 AND 128)`: a path of exactly 128
+        // characters is the longest module the store can hold, so it must parse.
+        &format!("{}/{}", "a".repeat(63), "b".repeat(64)),
+    ] {
+        let key =
+            ModuleKey::parse(accepted).unwrap_or_else(|_| panic!("`{accepted}` is a legal module"));
+        // Byte-for-byte: a module key that normalized its own spelling would
+        // hand the collision lock a different name than the `mod:` tag carries.
+        assert_eq!(key.as_str(), accepted, "`{accepted}` must round-trip");
+        assert_eq!(
+            key.to_string(),
+            accepted,
+            "`{accepted}` must display as itself"
+        );
+        let json = serde_json::to_string(&key).expect("a module key serializes");
+        assert_eq!(json, format!("\"{accepted}\""));
+        let back: ModuleKey = serde_json::from_str(&json).expect("a module key deserializes");
+        assert_eq!(back, key);
+    }
+}
+
+#[test]
+fn module_keys_refuse_every_non_canonical_path_spelling() {
+    for rejected in [
+        // A place named two ways is two locks on one place.
+        "/editor/asma-bunjs-editor",
+        "editor/asma-bunjs-editor/",
+        "editor//asma-bunjs-editor",
+        "./editor",
+        "editor/./asma-bunjs-editor",
+        "editor/../editor",
+        "..",
+        ".",
+        "editor\\asma-bunjs-editor",
+        "/",
+        // Everything the shared open-key rule already refused stays refused.
+        "",
+        " leading/x",
+        "trailing/x ",
+        "Editor/asma-bunjs-editor",
+        // Uppercase is non-canonical wherever it falls, not only in the position
+        // the shared rule happens to check first.
+        "editor/asmaBunjsEditor",
+        "editor/asma bunjs editor",
+        "-dash/x",
+        ".hidden/x",
+        "editor/\tasma",
+        "editor/\nasma",
+        "ünicode/x",
+        &"x".repeat(129),
+        &format!("editor/{}", "x".repeat(129)),
+        // The limit is on the whole key, not on each segment: `tasks.module_key`
+        // is `CHECK (length(module_key) BETWEEN 1 AND 128)`, so a per-segment
+        // length check would let this through validation and fail the insert as
+        // a backend error instead of a typed refusal.
+        &format!("{}/{}", "a".repeat(64), "b".repeat(64)),
+    ] {
+        assert!(
+            ModuleKey::parse(rejected).is_err(),
+            "`{}` must be rejected",
+            rejected.escape_debug()
+        );
+    }
+
+    // The path rule keeps the secret screen its siblings have. A token is
+    // lexically a fine path segment, so only the screen refuses it.
+    let token = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    for spelling in [token.to_owned(), format!("shared/{token}")] {
+        assert!(
+            matches!(
+                ModuleKey::parse(&spelling),
+                Err(DomainError::SensitiveMaterial { .. })
+            ),
+            "a credential must not pass as a module path"
+        );
+    }
+}
+
+#[test]
+fn only_the_module_key_carries_a_path_separator() {
+    // The relaxation is one key wide. A mutant that moved it into
+    // `validate_open_key`, or that pointed a sibling key at the module rule,
+    // dies on these.
+    assert!(validate_open_key("test", "editor/asma-bunjs-editor").is_err());
+    assert!(validate_open_key("test", "_tools").is_err());
+    for parsed in [
+        WorkProfileKey::parse("editor/asma-bunjs-editor").is_ok(),
+        RoleKey::parse("editor/asma-bunjs-editor").is_ok(),
+        SkillKey::parse("editor/asma-bunjs-editor").is_ok(),
+        PhaseKey::parse("editor/asma-bunjs-editor").is_ok(),
+        GateKey::parse("editor/asma-bunjs-editor").is_ok(),
+        ArtifactKey::parse("editor/asma-bunjs-editor").is_ok(),
+        WorkProfileKey::parse("_tools").is_ok(),
+        RoleKey::parse("_tools").is_ok(),
+    ] {
+        assert!(!parsed, "only `ModuleKey` may spell a repository path");
+    }
+    // And the module rule is a *relaxation*, not a replacement: everything the
+    // shared rule accepts as a single segment is still a legal module.
+    for accepted in ["a", "q7.delivery", "ux-ui-layout", "0abc", "a.b_c-d"] {
+        validate_module_key("test", accepted)
+            .unwrap_or_else(|_| panic!("`{accepted}` is still a legal module"));
     }
 }
 

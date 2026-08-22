@@ -6,7 +6,9 @@
 //!   lowercase hyphenated text.
 //! * **Open keys** — deployment-defined names (`WorkProfileKey`, `PhaseKey`, …).
 //!   They follow one conservative lexical rule so they are safe in paths, URLs,
-//!   SQL and JSON; the core never enumerates their values.
+//!   SQL and JSON; the core never enumerates their values. [`ModuleKey`] is the
+//!   single exception: it names a place in the repository, so it carries `/`
+//!   under a rule of its own.
 //! * **External strings** — names and ids owned by a foreign system
 //!   ([`ExternalName`], [`ExternalId`]). They are Unicode, may contain spaces
 //!   and are *never* forced through the internal-key rule.
@@ -317,13 +319,74 @@ pub fn validate_open_key(subject: &'static str, text: &str) -> DomainResult<()> 
     reject_sensitive_text(subject, text)
 }
 
+/// Validate one module key: a canonical repository-relative path.
+///
+/// A module key names a place in the repository, and the collision lock, the
+/// `mod:` tag and the checkout on disk must all spell that place the same way.
+/// The rule is therefore [`validate_open_key`]'s applied to every `/`-separated
+/// segment, with one addition: a segment may also begin with `_`, because a
+/// repository conventionally reserves that prefix for its tooling directories —
+/// `_tools/asma-rs-kontor` is a real module and cannot be spelled otherwise.
+///
+/// Only the canonical spelling is accepted. An absolute path, a repeated or
+/// trailing separator, a `.` or `..` segment and a backslash are refused rather
+/// than normalized: normalizing would let two callers name one module two ways
+/// and take two locks on the one place the lock exists to serialize.
+///
+/// # Errors
+/// Returns [`DomainError::Invalid`] naming `subject`; the offending value is
+/// never included.
+pub fn validate_module_key(subject: &'static str, text: &str) -> DomainResult<()> {
+    if text.is_empty() {
+        return Err(DomainError::invalid(subject, "must not be empty"));
+    }
+    if text.chars().count() > MAX_KEY_LEN {
+        return Err(DomainError::invalid(subject, "longer than 128 characters"));
+    }
+    for segment in text.split('/') {
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return Err(DomainError::invalid(
+                subject,
+                "must be a relative path with no empty segment",
+            ));
+        };
+        // `.` and `..` need no case of their own: a segment may not open with a
+        // dot at all, so both traversal spellings die here.
+        if !first.is_ascii_lowercase() && !first.is_ascii_digit() && first != '_' {
+            return Err(DomainError::invalid(
+                subject,
+                "every path segment must start with a lowercase ASCII letter, digit or '_'",
+            ));
+        }
+        for character in chars {
+            let allowed = character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-');
+            if !allowed {
+                return Err(DomainError::invalid(
+                    subject,
+                    "may contain only lowercase ASCII letters, digits, '.', '_', '-' \
+                     and '/' between path segments",
+                ));
+            }
+        }
+    }
+    reject_sensitive_text(subject, text)
+}
+
 macro_rules! open_keys {
-    ($( $(#[$meta:meta])* $name:ident ),+ $(,)?) => {
+    // The lexical rule a key is validated by, defaulting to the shared one. A
+    // key names its own only when it is genuinely a different rule.
+    (@validator) => { validate_open_key };
+    (@validator $validate:path) => { $validate };
+    ($( $(#[$meta:meta])* $name:ident $(=> $validate:path)? ),+ $(,)?) => {
         $(
             $(#[$meta])*
             ///
-            /// An open, deployment-defined key. See [`validate_open_key`] for the
-            /// lexical rule; the core never enumerates the legal values.
+            /// An open, deployment-defined key. Its lexical rule is
+            /// [`validate_open_key`] unless the declaration names another; the
+            /// core never enumerates the legal values.
             #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
             pub struct $name(String);
 
@@ -331,9 +394,12 @@ macro_rules! open_keys {
                 /// Parse and validate an open key.
                 ///
                 /// # Errors
-                /// See [`validate_open_key`].
+                /// Returns [`DomainError::Invalid`] when the text breaks this
+                /// key's lexical rule.
                 pub fn parse(text: &str) -> DomainResult<Self> {
-                    validate_open_key(stringify!($name), text)?;
+                    let validate: fn(&'static str, &str) -> DomainResult<()> =
+                        open_keys!(@validator $($validate)?);
+                    validate(stringify!($name), text)?;
                     Ok(Self(text.to_owned()))
                 }
 
@@ -389,8 +455,13 @@ open_keys! {
     ExternalIssueTypeKey,
     /// Names an internal, semantic milestone that external statuses map to.
     SemanticMilestoneKey,
-    /// Names a module or code area that work can contend for.
-    ModuleKey,
+    /// Names a module or code area that work can contend for, spelled as the
+    /// canonical repository-relative path of that place —
+    /// `editor/asma-bunjs-editor`, `_tools/asma-rs-kontor`. See
+    /// [`validate_module_key`]: unlike its siblings this key carries `/`, so the
+    /// collision lock, the `mod:` tag and the checkout on disk are one name
+    /// rather than three.
+    ModuleKey => validate_module_key,
     /// Names a kind of inbound event source.
     SourceKindKey,
     /// Names one configured connection of a source kind.

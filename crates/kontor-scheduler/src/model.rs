@@ -135,8 +135,8 @@ impl AccountCapabilityKey {
     /// Parse and validate a capability key.
     ///
     /// # Errors
-    /// As [`validate_open_key`]: the one lexical rule every internal open key in
-    /// Kontor obeys.
+    /// As [`validate_open_key`]: the shared lexical rule for internal open
+    /// keys.
     pub fn parse(text: &str) -> DomainResult<Self> {
         validate_open_key("AccountCapabilityKey", text)?;
         Ok(Self(text.to_owned()))
