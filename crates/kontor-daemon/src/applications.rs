@@ -6129,10 +6129,7 @@ impl Services {
         profile: &AdvisorProfileSpec,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        // The row itself is no longer read — placement is keyed by the topology
-        // node, not the project's checkout — but the call stays as the existence
-        // guard, so an unknown project still refuses here rather than deeper in.
-        self.project_row(run.project_id)?;
+        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -6149,7 +6146,7 @@ impl Services {
                 "the runtime selected for Advisor placement is not configured",
             )
         })?;
-        let cwd = self.consultation_root(run.project_id, node.mini_project_id, node.id)?;
+        let cwd = self.consultation_root(project.root_path.as_str(), node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -6454,10 +6451,7 @@ impl Services {
         include_judge: bool,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        // The row itself is no longer read — placement is keyed by the topology
-        // node, not the project's checkout — but the call stays as the existence
-        // guard, so an unknown project still refuses here rather than deeper in.
-        self.project_row(run.project_id)?;
+        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -6474,7 +6468,7 @@ impl Services {
                 "the runtime selected for Committee placement is not configured",
             )
         })?;
-        let cwd = self.consultation_root(run.project_id, node.mini_project_id, node.id)?;
+        let cwd = self.consultation_root(project.root_path.as_str(), node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -19716,26 +19710,28 @@ impl Services {
     ///
     /// Keyed by the topology node rather than the run: the node is the durable
     /// identity a re-materialization of the same consultation resolves to, so a
-    /// retry adopts the directory it already made instead of stranding one per
+    /// retry adopts the worktree it already made instead of stranding one per
     /// attempt.
+    ///
+    /// Under the project's `.worktrees/` deliberately, and not beside the ECP in
+    /// `runtime-roots/`. A consultation seat is verified as a ticket role, which
+    /// refuses "a root or plain local workspace", and the runtime only provisions
+    /// a managed git worktree for a path under `.worktrees/` — anywhere else it
+    /// assumes an externally provisioned root and leaves a plain directory the
+    /// check then rejects. The ECP may sit in `runtime-roots/` because it is a
+    /// session host rather than a ticket role.
     fn consultation_root(
         &self,
-        project_id: ProjectId,
-        epic_id: Option<MiniProjectId>,
+        project_root: &str,
         node_id: TopologyNodeId,
     ) -> Result<WorkspaceRoot, ApiError> {
-        let mut root = PathBuf::from(self.runtime_root(project_id, epic_id)?.as_str());
-        root.push(node_id.to_string());
-        std::fs::create_dir_all(&root).map_err(|_| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the consultation registration directory could not be created",
-            )
-        })?;
+        let mut root = PathBuf::from(project_root);
+        root.push(".worktrees");
+        root.push(format!("consultation-{node_id}"));
         let root = root.to_str().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "the consultation registration directory is not valid UTF-8",
+                "the consultation worktree path is not valid UTF-8",
             )
         })?;
         WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
