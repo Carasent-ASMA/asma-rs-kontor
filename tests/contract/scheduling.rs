@@ -377,6 +377,7 @@ impl World {
                 required_capabilities: BTreeSet::new(),
             },
             external: ExternalWorkEvidence::default(),
+            blocked_by: None,
         }
     }
 

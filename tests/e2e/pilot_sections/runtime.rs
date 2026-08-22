@@ -1668,6 +1668,7 @@ fn dispatch_decision(open_replay_gap: bool) -> (usize, Option<String>) {
             required_capabilities: BTreeSet::new(),
         },
         external: ExternalWorkEvidence::default(),
+        blocked_by: None,
     };
     let window = AdaptiveWindowConfig {
         initial: 16,

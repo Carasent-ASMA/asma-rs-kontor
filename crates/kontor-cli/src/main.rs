@@ -49,7 +49,14 @@ async fn run() -> ExitClass {
 
     let arguments = match commands::arguments(tool, sub) {
         Ok(arguments) => arguments,
-        Err(rule) => return output::emit_local(tool.name, "invalid_request", &rule),
+        Err(rule) => {
+            return output::emit_local(
+                tool.name,
+                "invalid_request",
+                &rule,
+                "correct the arguments and send them again",
+            );
+        }
     };
 
     // Everything local resolves before a request exists: a missing credential file
@@ -59,12 +66,22 @@ async fn run() -> ExitClass {
         Ok(dispatcher) => dispatcher,
         Err(error) => {
             output::note(&error);
-            return output::emit_local(tool.name, "invalid_request", &error.to_string());
+            return output::emit_local(
+                tool.name,
+                "invalid_request",
+                &error.to_string(),
+                "fix the local credential or base URL, then retry",
+            );
         }
     };
 
     match dispatcher.call(tool.name, &arguments).await {
         Ok(envelope) => output::emit(&envelope),
-        Err(failure) => output::emit_local(tool.name, failure.code(), &failure.to_string()),
+        Err(failure) => output::emit_local(
+            tool.name,
+            failure.code(),
+            &failure.to_string(),
+            failure.action(),
+        ),
     }
 }

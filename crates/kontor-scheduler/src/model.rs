@@ -276,13 +276,11 @@ impl CalendarAdmission {
 // Authorization
 // ---------------------------------------------------------------------------
 
-/// The bounded authorization that armed a candidate.
+/// The bounded authorization that armed a candidate, when a grant is attached.
 ///
-/// Work that is merely ready is never admitted: something has to arm it, and
-/// that something is always a receipt-backed authorization with bounds. The
-/// scheduler consumes the already-loaded authorization rather than re-deriving
-/// it — but it does re-check the three things that make it *this* task's
-/// authorization: the window, the scope and the selection.
+/// Absence is default-allow. An attached grant only *narrows*: the scheduler
+/// re-checks the window, the scope and the selection rather than re-deriving
+/// the grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorizationEvidence {
     /// The authorization.
@@ -317,6 +315,48 @@ impl AuthorizationEvidence {
             && now >= self.allowed_start
             && now <= self.allowed_end
     }
+}
+
+/// The grant that should travel with a candidate, or the disarm that stops it.
+///
+/// Active grants that *scope-cover* the task are attached even when
+/// `selected_tasks` excludes it — that is how a whitelist surfaces
+/// [`RejectionCode::AuthorizationScopeMismatch`] instead of disappearing into
+/// default-allow. When no active grant covers the scope, a revoked covering
+/// grant is a stop, not a return to unarmed.
+#[must_use]
+pub fn covering_authority(
+    active: &[AuthorizationEvidence],
+    revoked: &[AuthorizationEvidence],
+    mini_project_id: Option<MiniProjectId>,
+    task_id: TaskId,
+) -> (
+    Option<AuthorizationEvidence>,
+    Option<ExecutionAuthorizationId>,
+) {
+    let in_scope = |authorization: &&AuthorizationEvidence| {
+        authorization.scope.covers(mini_project_id, Some(task_id))
+    };
+    let rank = |authorization: &AuthorizationEvidence| match authorization.scope {
+        WorkScope::Task { .. } => 0_u8,
+        WorkScope::MiniProject { .. } => 1,
+        WorkScope::Project => 2,
+    };
+    if let Some(grant) = active
+        .iter()
+        .filter(in_scope)
+        .min_by_key(|grant| rank(grant))
+    {
+        return (Some(grant.clone()), None);
+    }
+    (
+        None,
+        revoked
+            .iter()
+            .filter(in_scope)
+            .min_by_key(|grant| rank(grant))
+            .map(|authorization| authorization.id),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -915,7 +955,16 @@ pub struct Candidate {
     /// Where the task came from.
     pub origin: TaskOrigin,
     /// The authorization that armed it, if any.
+    ///
+    /// Absence is default-allow: registered project resources may run. A later
+    /// explicit grant only *narrows* (window, concurrency, selected tasks).
     pub authorization: Option<AuthorizationEvidence>,
+    /// An explicit disarm that still covers this task.
+    ///
+    /// Disarm is a stop, not a return to unarmed. Unarmed admits; a revoked
+    /// covering grant refuses until a new active grant replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<ExecutionAuthorizationId>,
     /// The already-resolved calendar answer.
     pub calendar: CalendarAdmission,
     /// The pinned runtime.
@@ -1106,7 +1155,12 @@ closed_enum! {
         /// Another selected candidate claims the same worktree.
         WorktreeDuplicate => "worktree_duplicate",
         /// Nothing armed it.
+        ///
+        /// Kept for stored refusals. New passes do not emit this for ordinary
+        /// unarmed work: absence of a grant is default-allow.
         AuthorizationMissing => "authorization_missing",
+        /// An operator explicitly disarmed a grant that still covers this task.
+        AuthorizationBlocked => "authorization_blocked",
         /// Its authorization does not cover this task.
         AuthorizationScopeMismatch => "authorization_scope_mismatch",
         /// Its authorization's window has passed or has not opened.
@@ -1153,6 +1207,99 @@ closed_enum! {
         IntakeReceiptMismatched => "intake_receipt_mismatched",
         /// Every ceiling that applies is spent.
         CapacityExhausted => "capacity_exhausted",
+    }
+}
+
+impl RejectionCode {
+    /// The next CLI/MCP move a caller holding only this code can try.
+    #[must_use]
+    pub const fn next_action(self) -> &'static str {
+        match self {
+            Self::TaskNotReady => {
+                "wait until the task is ready; kontor_execution_arm does not make it ready"
+            }
+            Self::TaskAlreadyInFlight => {
+                "this task already has a run; inspect that seat or wait for it to settle"
+            }
+            Self::DependencyIncomplete => "wait for the named dependency to finish, then re-plan",
+            Self::SerializationPeerInFlight => {
+                "wait for the named peer to settle; these tasks may not run together"
+            }
+            Self::ModuleInFlight => {
+                "wait for the module holder to settle, or isolate this task on its own worktree"
+            }
+            Self::WorktreeUnverified => "verify the worktree claim, then re-plan",
+            Self::WorktreeDuplicate => {
+                "wait for the other claim on this worktree to settle, then re-plan"
+            }
+            Self::AuthorizationMissing => {
+                "work now runs without kontor_execution_arm; re-plan, or ignore a stored copy of this code"
+            }
+            Self::AuthorizationBlocked => {
+                "the epic was disarmed; call kontor_execution_arm (omit budget, allowed_start, allowed_end, max_concurrency) to resume, or leave it stopped"
+            }
+            Self::AuthorizationScopeMismatch => {
+                "the active grant excludes this task; arm it with kontor_execution_arm, or disarm that whitelist with kontor_execution_disarm"
+            }
+            Self::AuthorizationExpired => {
+                "the grant's window does not cover now; re-arm with kontor_execution_arm omitting allowed_start and allowed_end"
+            }
+            Self::RuntimeCapabilityMissing => {
+                "bind a runtime that declares the missing capability, then re-plan"
+            }
+            Self::RuntimeTrustInsufficient => {
+                "bind a runtime whose trust grade may be driven autonomously"
+            }
+            Self::RuntimeUnhealthy => "wait until the runtime is healthy, then re-plan",
+            Self::RuntimeReconciliationIncomplete => {
+                "wait for startup reconciliation to finish, then re-plan"
+            }
+            Self::RuntimeEvidenceStale => "refresh the runtime confirmation, then re-plan",
+            Self::AccountPinStale => {
+                "re-read the account pin and retry with the revision it reports"
+            }
+            Self::AccountDisabled => "enable the pinned account, or pin a different one",
+            Self::AccountCoolingDown => {
+                "wait until the pinned account's cooldown ends, then re-plan"
+            }
+            Self::AccountRuntimeIncompatible => {
+                "pin an account that authenticates against this runtime family"
+            }
+            Self::AccountCapabilityMissing => {
+                "pin an account that declares the missing capability, then re-plan"
+            }
+            Self::AccountEnvironmentUnavailable => {
+                "bind a runtime that can prove the pinned account environment"
+            }
+            Self::FleetPreflightFailed => "fix the fleet/provider preflight, then re-plan",
+            Self::ExternalConflictUnresolved => {
+                "resolve the named external-status conflict, then re-plan"
+            }
+            Self::ExternalOwnershipConflict => {
+                "the external ticket is owned by another principal; do not start this task"
+            }
+            Self::OwnershipMilestoneUnconfirmed => {
+                "wait until the pinned ownership milestone is observed, then re-plan"
+            }
+            Self::CalendarClosed => {
+                "wait for the calendar to open, or set an override, then re-plan"
+            }
+            Self::CalendarDraining => {
+                "wait for the next calendar window; draining admits no new run"
+            }
+            Self::IntakeReceiptMissing => {
+                "event-origin work needs its intake receipt; restore the lineage or do not start it"
+            }
+            Self::IntakeReceiptNotApproved => {
+                "the intake receipt did not approve this work; approve it or do not start it"
+            }
+            Self::IntakeReceiptMismatched => {
+                "the intake receipt armed a different task; do not start this one under it"
+            }
+            Self::CapacityExhausted => {
+                "retry when in-flight work finishes; nothing was refused about the request itself"
+            }
+        }
     }
 }
 
@@ -1299,14 +1446,17 @@ pub struct AdmittedCandidate {
     pub changed_modules: BTreeSet<ModuleKey>,
     /// The verified worktree lease the admission must acquire, if any.
     pub worktree: Option<ExternalName>,
-    /// The authorization that armed it.
+    /// The authorization that armed it, when a grant narrowed the run.
+    ///
+    /// `None` is default-allow: the task was admitted because nothing blocked it,
+    /// not because a money ceiling was invented.
     ///
     /// The field is `authorization_id` and not `authorization` on purpose: a
     /// persisted document may not carry a key named `authorization`
     /// ([`kontor_core::id::reject_sensitive_material`] refuses it, since that is
     /// what an HTTP credential header is called), and this record *is* persisted
     /// as the admission's canonical evidence.
-    pub authorization_id: ExecutionAuthorizationId,
+    pub authorization_id: Option<ExecutionAuthorizationId>,
     /// The calendar answer it was admitted under.
     pub calendar: CalendarAdmission,
     /// The account it is pinned to, if any.

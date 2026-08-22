@@ -118,11 +118,12 @@ pub(crate) fn emit(envelope: &Envelope) -> ExitClass {
 
 /// Write one local refusal — nothing was dispatched — and report its class.
 #[must_use]
-pub(crate) fn emit_local(tool: &str, code: &str, rule: &str) -> ExitClass {
+pub(crate) fn emit_local(tool: &str, code: &str, rule: &str, action: &str) -> ExitClass {
     let document = serde_json::json!({
         "tool": tool,
         "code": code,
         "rule": rule,
+        "action": action,
         "dispatched": false,
     });
     let class = ExitClass::of(code);

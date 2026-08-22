@@ -46,7 +46,7 @@ use kontor_core::spec::IntakeResult;
 use kontor_core::state::{DesiredRunState, ObservedRunState, RunLifecycle};
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AuthorizationEvidence, CalendarAdmission, Candidate,
-    ExternalWorkEvidence, IntakeLineage, RuntimeAdmissionEvidence, TaskOrigin,
+    ExternalWorkEvidence, IntakeLineage, RuntimeAdmissionEvidence, TaskOrigin, covering_authority,
 };
 use rusqlite::{Row, params};
 
@@ -597,31 +597,36 @@ impl SqliteStore {
         Ok(map)
     }
 
-    /// Every execution authorization recorded in one project.
+    /// Every execution authorization recorded in one project, split by revocation.
     ///
     /// The window is *not* filtered here. An expired authorization is exactly what
     /// the scheduler's `authorization_expired` refusal is for, and filtering it out
-    /// would turn a precise refusal into the vaguer `authorization_missing`.
+    /// would turn a precise refusal into default-allow. Revoked grants stay in the
+    /// second list so a disarm can block rather than vanish.
     ///
     /// # Errors
     /// As [`SqliteStore::list_projects`].
     pub fn list_execution_authorizations(
         &self,
         project_id: ProjectId,
-    ) -> RepositoryResult<Vec<AuthorizationEvidence>> {
+    ) -> RepositoryResult<(Vec<AuthorizationEvidence>, Vec<AuthorizationEvidence>)> {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT id, scope_kind, scope_mini_project_id, scope_task_id, allowed_start,
-                        allowed_end, max_concurrency
-                 FROM execution_authorizations WHERE project_id = ?1
-                 ORDER BY allowed_start, id",
+                "SELECT a.id, a.scope_kind, a.scope_mini_project_id, a.scope_task_id,
+                        a.allowed_start, a.allowed_end, a.max_concurrency, r.revoked_at
+                 FROM execution_authorizations a
+                 LEFT JOIN execution_authorization_revocations r
+                   ON r.project_id = a.project_id AND r.authorization_id = a.id
+                 WHERE a.project_id = ?1
+                 ORDER BY a.allowed_start, a.id",
             )
             .map_err(backend)?;
         let mut rows = statement
             .query(params![project_id.to_string()])
             .map_err(backend)?;
-        let mut authorizations = Vec::new();
+        let mut active = Vec::new();
+        let mut revoked = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
             let id = ExecutionAuthorizationId::parse(&column_text(row, 0)?)?;
             let scope = match column_text(row, 1)?.as_str() {
@@ -631,9 +636,6 @@ impl SqliteStore {
                 "task" => WorkScope::Task {
                     task_id: TaskId::parse(&column_text(row, 3)?)?,
                 },
-                // The column is constrained to the three spellings, so anything
-                // else is a row this build did not write. Reading it as the widest
-                // scope would widen a grant, so it is refused instead.
                 "project" => WorkScope::Project,
                 other => {
                     return Err(kontor_core::DomainError::invalid(
@@ -646,7 +648,7 @@ impl SqliteStore {
                     .into());
                 }
             };
-            authorizations.push(AuthorizationEvidence {
+            let evidence = AuthorizationEvidence {
                 id,
                 project_id,
                 scope,
@@ -655,9 +657,14 @@ impl SqliteStore {
                 allowed_end: read_timestamp(&column_text(row, 5)?)?,
                 max_concurrency: u32::try_from(row.get::<_, i64>(6).map_err(backend)?)
                     .unwrap_or(u32::MAX),
-            });
+            };
+            if row.get::<_, Option<String>>(7).map_err(backend)?.is_some() {
+                revoked.push(evidence);
+            } else {
+                active.push(evidence);
+            }
         }
-        Ok(authorizations)
+        Ok((active, revoked))
     }
 
     /// The tasks one authorization was narrowed to. Empty means the whole scope.
@@ -730,8 +737,7 @@ impl SqliteStore {
     /// * **worktree** — none. A candidate claims one at admission, not before.
     ///
     /// Every one of those defaults either fails closed or is genuinely neutral. An
-    /// absent authorization, in particular, becomes `authorization_missing` — a real
-    /// refusal, and the right one.
+    /// absent authorization is default-allow. A revoked covering grant is a stop.
     ///
     /// `runtime` is a parameter because a runtime's capabilities and health are the
     /// adapter's to report, and this crate does not open a runtime.
@@ -761,7 +767,7 @@ impl SqliteStore {
 
         let tasks = self.list_tasks(project_id)?;
         let dependencies = self.task_dependency_map(project_id)?;
-        let authorizations = self.list_execution_authorizations(project_id)?;
+        let (active, revoked) = self.list_execution_authorizations(project_id)?;
         let calendar = self.calendar_inputs(project_id, now)?;
         let calendar_assigned = calendar.assignment.is_some();
         let intake = crate::intake::lineage_by_task(self, project_id)?;
@@ -778,6 +784,8 @@ impl SqliteStore {
                 without_workflow.push(task.id);
                 continue;
             };
+            let (authorization, blocked_by) =
+                covering_authority(&active, &revoked, task.mini_project_id, task.id);
             candidates.push(Candidate {
                 project_id,
                 task_id: task.id,
@@ -797,11 +805,8 @@ impl SqliteStore {
                         lineage: Some(intake_lineage(lineage)),
                     }
                 }),
-                // The narrowest authorization that covers this task, so a
-                // task-scoped grant is preferred over the project-wide one it sits
-                // inside. Which one is chosen changes only the evidence id in a
-                // refusal, never whether the task is admitted.
-                authorization: covering(&authorizations, task.mini_project_id, task.id),
+                authorization,
+                blocked_by,
                 // Resolved per candidate, because an override is scoped: the
                 // project's answer and one task's answer are the same question
                 // asked about different work.
@@ -1276,33 +1281,6 @@ impl SqliteStore {
         }
         Ok(attempts)
     }
-}
-
-/// The narrowest authorization covering one task, if any covers it.
-///
-/// Narrowest first — task, then goal, then project — so a refusal names the grant
-/// an operator most likely meant. The scheduler re-checks scope, window and
-/// selection whichever one is handed to it, so this choice cannot admit anything.
-fn covering(
-    authorizations: &[AuthorizationEvidence],
-    mini_project_id: Option<kontor_core::id::MiniProjectId>,
-    task_id: TaskId,
-) -> Option<AuthorizationEvidence> {
-    let covers = |authorization: &&AuthorizationEvidence| {
-        authorization.scope.covers(mini_project_id, Some(task_id))
-            && (authorization.selected_tasks.is_empty()
-                || authorization.selected_tasks.contains(&task_id))
-    };
-    let rank = |authorization: &AuthorizationEvidence| match authorization.scope {
-        WorkScope::Task { .. } => 0_u8,
-        WorkScope::MiniProject { .. } => 1,
-        WorkScope::Project => 2,
-    };
-    authorizations
-        .iter()
-        .filter(covers)
-        .min_by_key(|authorization| rank(authorization))
-        .cloned()
 }
 
 /// The stored lineage of one intake-created task, as the scheduler reads it.

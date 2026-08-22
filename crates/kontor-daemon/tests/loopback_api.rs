@@ -3849,8 +3849,11 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
             .as_array()
             .expect("blocked")
             .iter()
-            .any(|task| task["code"] == "authorization_missing"),
-        "an unarmed sibling blocks with a named reason: {}",
+            .any(|task| task["code"] == "authorization_scope_mismatch"
+                && task["action"]
+                    .as_str()
+                    .is_some_and(|action| action.contains("kontor_execution_arm"))),
+        "an unarmed sibling of a whitelist blocks with a named next move: {}",
         plan.body
     );
 
@@ -3882,6 +3885,154 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
         after.json()["ready"].as_array().expect("ready").is_empty(),
         "a revoked authorization arms nothing: {}",
         after.body
+    );
+    assert!(
+        after.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .any(|task| task["code"] == "authorization_blocked"
+                && task["action"]
+                    .as_str()
+                    .is_some_and(|action| action.contains("kontor_execution_arm"))),
+        "disarm is a stop, not a return to unarmed: {}",
+        after.body
+    );
+}
+
+/// Ready work runs without a grant. Arming is optional narrowing, not the
+/// on-switch.
+#[tokio::test]
+async fn an_unarmed_epic_is_ready_without_a_grant() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "arm-free", "Kontor", "/tmp/kontor-arm-free").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Unarmed epic",
+            &category,
+            serde_json::json!([{"title": "First"}, {"title": "Second"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-free-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let body = plan.json();
+    let ready = body["ready"].as_array().expect("a ready set");
+    assert_eq!(
+        ready.len(),
+        2,
+        "both unarmed tasks are ready: {}",
+        plan.body
+    );
+    assert!(
+        ready.iter().all(|task| task["authorization_id"].is_null()),
+        "default-allow records no grant: {}",
+        plan.body
+    );
+    assert!(
+        !body["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .any(|task| task["code"] == "authorization_missing"
+                || task["code"] == "authorization_blocked"),
+        "unarmed work is not an authorization refusal: {}",
+        plan.body
+    );
+}
+
+/// A narrowing grant may omit the window and concurrency; those default the
+/// same way budget already does.
+#[tokio::test]
+async fn arming_omits_the_window_and_concurrency_when_the_caller_states_none() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "arm-window-1", "Kontor", "/tmp/kontor-arm-window").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead architect",
+            "harness": "fake.runtime",
+            "credential_alias": "lead-architect",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-window-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Window-defaulted epic",
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-window-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "granted_by": account_id,
+            "reason": "Narrow nothing but record a grant"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("arm-window-default")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    assert_eq!(armed.json()["allowed_start"], "2020-01-01T00:00:00Z");
+    assert_eq!(armed.json()["allowed_end"], "2099-01-01T00:00:00Z");
+    assert_eq!(
+        armed.json()["max_concurrency"],
+        serde_json::json!(DEFAULT_CAPACITY.mission_max_in_flight),
+        "omitted concurrency takes the realm mission ceiling: {}",
+        armed.body
     );
 }
 

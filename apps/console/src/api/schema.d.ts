@@ -2853,14 +2853,14 @@ export interface components {
         ArmRequest: {
             /**
              * Format: date-time
-             * @description The last instant work may start.
+             * @description The last instant work may start. Omitted, with `allowed_start`, is unrestricted.
              */
-            allowed_end: string;
+            allowed_end?: string | null;
             /**
              * Format: date-time
-             * @description The first instant work may start.
+             * @description The first instant work may start. Omitted, with `allowed_end`, is unrestricted.
              */
-            allowed_start: string;
+            allowed_start?: string | null;
             budget?: null | components["schemas"]["BudgetBoundsRequest"];
             /**
              * Format: int64
@@ -2871,9 +2871,9 @@ export interface components {
             granted_by: string;
             /**
              * Format: int32
-             * @description Maximum concurrent runs.
+             * @description Maximum concurrent runs. Omitted takes the realm's mission ceiling.
              */
-            max_concurrency: number;
+            max_concurrency?: number | null;
             /** @description Why the scope is being armed. Recorded, never interpreted. */
             reason: string;
             /** @description The tasks to arm. Empty arms the whole epic. */
@@ -2998,6 +2998,8 @@ export interface components {
         };
         /** @description One task the planner refused, and why. */
         BlockedTaskDto: {
+            /** @description The next CLI/MCP move a caller holding only this code can try. */
+            action: string;
             /** @description The stable machine-readable reason. */
             code: string;
             /** @description The structural evidence behind it. Positions and ids, never values. */
@@ -5298,8 +5300,12 @@ export interface components {
         ReadyTaskDto: {
             /** @description The account profile it is pinned to, if any. */
             account_profile_id?: string | null;
-            /** @description The authorization that arms it. */
-            authorization_id: string;
+            /**
+             * @description The authorization that narrowed it, when a grant was attached.
+             *
+             *     `None` is default-allow: the task was admitted because nothing blocked it.
+             */
+            authorization_id?: string | null;
             /** @description The runtime family it would run on. */
             runtime_kind: string;
             /** @description The task. */

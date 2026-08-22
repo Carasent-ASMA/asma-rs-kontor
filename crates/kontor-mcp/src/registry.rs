@@ -1153,23 +1153,23 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::TextArray,
                 "The tasks the authorization covers. Empty means the whole epic.",
             ),
-            req(
+            opt(
                 "allowed_start",
                 Place::Body,
                 ArgType::Timestamp,
-                "When the authorization opens.",
+                "When the authorization opens. Omit with allowed_end for an unrestricted window.",
             ),
-            req(
+            opt(
                 "allowed_end",
                 Place::Body,
                 ArgType::Timestamp,
-                "When it expires.",
+                "When it expires. Omit with allowed_start for an unrestricted window.",
             ),
-            req(
+            opt(
                 "max_concurrency",
                 Place::Body,
                 ArgType::U32,
-                "How many runs may be in flight.",
+                "How many runs may be in flight. Omit to take the realm's mission ceiling.",
             ),
             opt(
                 "budget",
@@ -1191,7 +1191,9 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "Why it was granted.",
             ),
         ],
-        about: "Grant a bounded execution authorization over an epic.",
+        about: "Narrow an epic's execution (optional window, concurrency, budget, task list). \
+                Ready work already runs without this call. Omit budget, allowed_start, \
+                allowed_end and max_concurrency unless you are narrowing. Disarm to stop.",
     },
     ToolSpec {
         name: "kontor_execution_disarm",
@@ -1272,7 +1274,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
         ],
-        about: "What the scheduler would start now, and what blocks the rest. Commits nothing.",
+        about: "What the scheduler would start now, and what blocks the rest. Ready work needs no \
+                kontor_execution_arm. Each blocked row's action names the next tool. Commits nothing.",
     },
     ToolSpec {
         name: "kontor_scheduler_start",
@@ -1296,7 +1299,8 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The hash of the plan being started, so a stale plan is refused.",
             ),
         ],
-        about: "Start the ready batch a plan named.",
+        about: "Start the ready batch a plan named. Unarmed ready work is admitted; a disarmed epic \
+                stays blocked until kontor_execution_arm.",
     },
     ToolSpec {
         name: "kontor_scheduler_resume",

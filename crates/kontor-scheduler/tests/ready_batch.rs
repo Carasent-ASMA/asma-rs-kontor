@@ -39,8 +39,8 @@ use kontor_scheduler::{
     CapacityObservation, CapacityUsage, ExternalOwnership, ExternalWorkEvidence, FleetPreflight,
     IntakeLineage, MAX_PRIORITY, Plan, PreflightOutcome, ReconciliationEvidence,
     ReconciliationScope, RejectionCode, RejectionEvidence, RuntimeAdmissionEvidence, RuntimeHealth,
-    SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, explain,
-    minimum_launch_capabilities, plan,
+    SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, covering_authority,
+    explain, minimum_launch_capabilities, plan,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,6 +174,7 @@ fn candidate(project: ProjectId, task: TaskId) -> Candidate {
             required_capabilities: BTreeSet::new(),
         },
         external: ExternalWorkEvidence::default(),
+        blocked_by: None,
     }
 }
 
@@ -642,55 +643,92 @@ fn two_candidates_cannot_claim_one_tree_and_a_held_tree_is_not_reclaimed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_unrestricted_calendar_still_needs_an_authorization() {
+fn an_unrestricted_calendar_admits_without_an_authorization() {
     let project = ProjectId::generate();
     let mut unarmed = candidate(project, TaskId::generate());
     unarmed.calendar = CalendarAdmission::unrestricted();
     unarmed.authorization = None;
     let task = unarmed.task_id;
 
-    assert_refused(
+    assert_admitted(
         &plan(&snapshot(vec![unarmed])).expect("the pass runs"),
         task,
-        RejectionCode::AuthorizationMissing,
+    );
+}
+
+#[test]
+fn a_revoked_covering_grant_blocks_until_a_new_arm() {
+    let project = ProjectId::generate();
+    let task = TaskId::generate();
+    let revoked = AuthorizationEvidence {
+        id: ExecutionAuthorizationId::generate(),
+        project_id: project,
+        scope: WorkScope::Project,
+        selected_tasks: BTreeSet::new(),
+        allowed_start: at("2026-08-12T00:00:00Z"),
+        allowed_end: at("2026-08-13T00:00:00Z"),
+        max_concurrency: 8,
+    };
+    let (attached, blocked_by) = covering_authority(&[], &[revoked.clone()], None, task);
+    assert!(attached.is_none());
+    assert_eq!(blocked_by, Some(revoked.id));
+
+    let mut blocked = candidate(project, task);
+    blocked.calendar = CalendarAdmission::unrestricted();
+    blocked.authorization = None;
+    blocked.blocked_by = blocked_by;
+
+    assert_refused(
+        &plan(&snapshot(vec![blocked])).expect("the pass runs"),
+        task,
+        RejectionCode::AuthorizationBlocked,
+    );
+}
+
+#[test]
+fn a_whitelist_grant_attaches_so_the_excluded_sibling_is_a_scope_mismatch() {
+    let project = ProjectId::generate();
+    let included = TaskId::generate();
+    let excluded = TaskId::generate();
+    let grant = AuthorizationEvidence {
+        id: ExecutionAuthorizationId::generate(),
+        project_id: project,
+        scope: WorkScope::Project,
+        selected_tasks: [included].into_iter().collect(),
+        allowed_start: at("2026-08-12T00:00:00Z"),
+        allowed_end: at("2026-08-13T00:00:00Z"),
+        max_concurrency: 8,
+    };
+    let (attached, blocked_by) = covering_authority(&[grant.clone()], &[], None, excluded);
+    assert!(blocked_by.is_none());
+    assert_eq!(attached.as_ref().map(|grant| grant.id), Some(grant.id));
+
+    let mut sibling = candidate(project, excluded);
+    sibling.authorization = attached;
+    assert_refused(
+        &plan(&snapshot(vec![sibling])).expect("the pass runs"),
+        excluded,
+        RejectionCode::AuthorizationScopeMismatch,
     );
 }
 
 /// An unarmed candidate that *also* contends for a module already in flight is
-/// refused for the arming, never for the contention.
+/// refused for the contention, never for missing a grant.
 ///
-/// Authorization is fourth in [`BLOCKER_ORDER`] and contention is tenth, so the
-/// arming is the reported reason. The distinction is not cosmetic: `module_in_flight`
-/// reads as "come back later", so an operator who is told that clears the
-/// contention and lets the work run — and the work was never armed. The refusal
-/// that says *no human agreed to this* has to be the one that surfaces.
-///
-/// `an_unrestricted_calendar_still_needs_an_authorization` cannot see this,
-/// because its candidate has nothing else wrong with it: a pass that keeps the
-/// authorization refusal only as a fallback — reporting it when no later blocker
-/// refuses, and the later blocker's code when one does — answers that test
-/// correctly and this one wrongly.
-///
-/// Both shapes of contention are covered, because they are decided in different
-/// halves of the pass: a lease held by work already running is a snapshot-only
-/// blocker, while a claim made by a peer admitted earlier in this same pass is
-/// evaluated during the walk. An unarmed candidate must never reach the walk at
-/// all.
+/// Default-allow means the arming blocker does not refuse, so contention is the
+/// reported reason. An operator who is told `module_in_flight` waits and the
+/// work then runs — which is correct, because nothing disarmed it.
 #[test]
-fn an_unarmed_candidate_contending_for_a_held_module_is_refused_for_the_arming() {
+fn an_unarmed_candidate_contending_for_a_held_module_is_refused_for_the_contention() {
     let project = ProjectId::generate();
     let shared = module("directory.app");
 
     let mut unarmed = candidate(project, TaskId::generate());
-    // Unrestricted rather than absent: an admitting calendar is the state in
-    // which a suppressed arming check is invisible, and it is also the ordinary
-    // one for a realm with no calendar configured.
     unarmed.calendar = CalendarAdmission::unrestricted();
     unarmed.authorization = None;
     unarmed.module = Some(shared.clone());
     let task = unarmed.task_id;
 
-    // Shape one: the module is held by unrelated work that is already running.
     let mut leased = snapshot(vec![unarmed.clone()]);
     leased.module_leases.push(ModuleClaim {
         module: shared.clone(),
@@ -699,30 +737,21 @@ fn an_unarmed_candidate_contending_for_a_held_module_is_refused_for_the_arming()
         in_flight: true,
     });
 
-    // Both blockers genuinely refuse this candidate, in this order. Without this
-    // the assertion below would also hold for a candidate whose only problem is
-    // the arming, and would prove nothing about which of the two wins.
     assert_eq!(
         explain(&leased, &unarmed)
             .expect("the candidate explains")
             .iter()
             .map(|refused| (refused.blocker, refused.code))
             .collect::<Vec<_>>(),
-        vec![
-            (Blocker::Authorization, RejectionCode::AuthorizationMissing),
-            (Blocker::Contention, RejectionCode::ModuleInFlight),
-        ],
-        "the fixture must fail exactly these two blockers for the priority to be under test"
+        vec![(Blocker::Contention, RejectionCode::ModuleInFlight)],
+        "unarmed work is refused only for the contention, not for missing a grant"
     );
     assert_refused(
         &plan(&leased).expect("the pass runs"),
         task,
-        RejectionCode::AuthorizationMissing,
+        RejectionCode::ModuleInFlight,
     );
 
-    // Shape two: the module is claimed by a peer admitted earlier in this same
-    // pass. The peer outranks the unarmed candidate on priority, so it is walked
-    // first and holds the claim by the time the unarmed one would be considered.
     let mut peer = candidate(project, TaskId::generate());
     peer.priority = 900;
     peer.module = Some(shared);
@@ -732,7 +761,7 @@ fn an_unarmed_candidate_contending_for_a_held_module_is_refused_for_the_arming()
 
     let decided = plan(&snapshot(vec![peer, contested])).expect("the pass runs");
     assert_admitted(&decided, peer_task);
-    assert_refused(&decided, task, RejectionCode::AuthorizationMissing);
+    assert_refused(&decided, task, RejectionCode::ModuleInFlight);
 }
 
 #[test]
@@ -1575,7 +1604,7 @@ fn an_admission_records_the_inputs_it_was_ordered_and_sized_on() {
     assert_eq!(record.task_id, task);
     assert_eq!(record.ordering.priority, 750);
     assert_eq!(record.ordering.task_id, task);
-    assert_eq!(record.authorization_id, expected_authorization);
+    assert_eq!(record.authorization_id, Some(expected_authorization));
     assert_eq!(record.account_profile_id, Some(account));
     assert_eq!(record.module, Some(module("directory.app")));
     assert_eq!(record.worktree, Some(name("/trees/one")));
@@ -1660,6 +1689,7 @@ fn every_decision_shape_canonicalizes_for_storage() {
     };
     let mut refused_authorization = candidate(project, TaskId::generate());
     refused_authorization.authorization = None;
+    refused_authorization.blocked_by = Some(ExecutionAuthorizationId::generate());
     let mut refused_intake = candidate(project, TaskId::generate());
     refused_intake.origin = TaskOrigin::Event {
         lineage: Some(IntakeLineage {

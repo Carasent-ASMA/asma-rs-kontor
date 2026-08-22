@@ -76,6 +76,6 @@ pub use model::{
     ExternalWorkEvidence, FleetPreflight, IntakeLineage, MAX_PRIORITY, OrderingInputs, Plan,
     PreflightOutcome, ReconciliationEvidence, ReconciliationScope, RejectionCode,
     RejectionEvidence, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
-    WorktreeClaim, WorktreeVerification,
+    WorktreeClaim, WorktreeVerification, covering_authority,
 };
 pub use ready::{BLOCKER_ORDER, Blocker, Refused, explain, minimum_launch_capabilities, plan};

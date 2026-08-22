@@ -1621,7 +1621,7 @@ fn insert_admission_event(
                 request.team_run.id.to_string(),
                 request.agent_run.id.to_string(),
                 request.launch.receipt_id.to_string(),
-                admitted.authorization_id.to_string(),
+                admitted.authorization_id.map(|id| id.to_string()),
                 request.evidence.json(),
                 request.evidence.hash().as_str(),
                 text(request.decided_at)
