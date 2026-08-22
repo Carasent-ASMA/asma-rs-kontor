@@ -225,6 +225,10 @@ fn module_keys_round_trip_canonical_repository_paths() {
         "q7.delivery",
         "a/b/c/d",
         "0abc/1def",
+        // The whole-key limit is inclusive, and `tasks.module_key` is
+        // `CHECK (length(module_key) BETWEEN 1 AND 128)`: a path of exactly 128
+        // characters is the longest module the store can hold, so it must parse.
+        &format!("{}/{}", "a".repeat(63), "b".repeat(64)),
     ] {
         let key =
             ModuleKey::parse(accepted).unwrap_or_else(|_| panic!("`{accepted}` is a legal module"));
@@ -262,6 +266,9 @@ fn module_keys_refuse_every_non_canonical_path_spelling() {
         " leading/x",
         "trailing/x ",
         "Editor/asma-bunjs-editor",
+        // Uppercase is non-canonical wherever it falls, not only in the position
+        // the shared rule happens to check first.
+        "editor/asmaBunjsEditor",
         "editor/asma bunjs editor",
         "-dash/x",
         ".hidden/x",
