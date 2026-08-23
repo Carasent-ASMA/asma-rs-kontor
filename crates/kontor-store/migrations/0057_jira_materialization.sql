@@ -60,6 +60,9 @@ WHEN OLD.idempotency_key <> NEW.idempotency_key
      OR OLD.state IN ('confirmed', 'failed')
 BEGIN SELECT RAISE(ABORT, 'a command receipt identity is immutable'); END;
 
+CREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts
+BEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;
+
 CREATE TABLE jira_materialization_batches (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
     project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,

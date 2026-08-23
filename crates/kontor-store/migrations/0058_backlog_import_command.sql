@@ -59,4 +59,7 @@ WHEN OLD.idempotency_key <> NEW.idempotency_key
      OR OLD.state IN ('confirmed', 'failed')
 BEGIN SELECT RAISE(ABORT, 'a command receipt identity is immutable'); END;
 
+CREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts
+BEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;
+
 PRAGMA user_version = 58;
