@@ -9,8 +9,10 @@ acceptance evidence. That branch recorded red Clippy/test gates as passed, did
 not run the required audit gates, and accepted the missing native Jira cutover
 as a limitation. It must not be merged.
 
-The replacement branch fixes the observed defects and has passed the local
-format, Clippy, Rust, console, audit and deny gates. Three security/correctness
+The replacement branch fixes the observed defects. The committed archive at
+`17f4d3e` passed reproducible-lockfile verification, formatting, strict Clippy,
+the full locked Rust workspace, audit and deny, console typecheck, all 296
+frontend tests, and the production dependency audit. Three security/correctness
 mutants were killed and reverted:
 
 1. removing the cutover readback-hash guard;
