@@ -21493,7 +21493,8 @@ async fn integration_advances_only_on_a_well_formed_operator_receipt() {
         .send(world)
         .await;
     assert_eq!(
-        still_at_tickets.json()["phase"]["phase"], "ticket_gate",
+        still_at_tickets.json()["phase"]["phase"],
+        "ticket_gate",
         "a refused advance moved nothing: {}",
         still_at_tickets.body
     );
@@ -21610,7 +21611,8 @@ async fn integration_advances_only_on_a_well_formed_operator_receipt() {
     .await;
     assert_eq!(recorded.status, 200, "{}", recorded.body);
     assert_eq!(
-        recorded.json()["state"]["phase"]["phase"], "verdict",
+        recorded.json()["state"]["phase"]["phase"],
+        "verdict",
         "a recorded integration opens the verdict round: {}",
         recorded.body
     );
@@ -21805,7 +21807,8 @@ async fn the_closeout_receipts_carry_an_epic_to_done() {
     .await;
     assert_eq!(closed.status, 200, "{}", closed.body);
     assert_eq!(
-        closed.json()["state"]["phase"]["phase"], "done",
+        closed.json()["state"]["phase"]["phase"],
+        "done",
         "the recorded receipts finish the epic: {}",
         closed.body
     );
@@ -22761,4 +22764,658 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
     .send(&world)
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
+}
+
+// ---------------------------------------------------------------------------
+// Account routing over provider aliases (the quota walk reaches the launch)
+// ---------------------------------------------------------------------------
+
+/// The incident pack rerouted onto the two Codex account aliases: every slot
+/// walks `codex-work` before `codex-personal` on the same model, so the only
+/// thing that moves a launch between them is recorded quota state.
+fn codex_account_pack() -> serde_json::Value {
+    const TEMPLATE: &str = "01936f5a-0000-7000-8000-0000000000aa";
+    let mut pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+    pack["pack_id"] = serde_json::json!("kontor-test-codex-accounts");
+    pack["manifest"][0]["category"] = serde_json::json!("codex-accounts-v1");
+    pack["manifest"][0]["label"] = serde_json::json!("Codex account routing (test)");
+    pack["manifest"][0]["profile"] = serde_json::json!("codex-accounts-v1");
+    pack["profiles"][0]["id"] = serde_json::json!("codex-accounts-v1");
+    pack["profiles"][0]["name"] = serde_json::json!("Codex account routing");
+    pack["profiles"][0]["team_template"]["template_id"] = serde_json::json!(TEMPLATE);
+    pack["teams"][0]["template_id"] = serde_json::json!(TEMPLATE);
+    let chain = serde_json::json!({
+        "rungs": [
+            {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "high"},
+            {"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "high"}
+        ]
+    });
+    for slot in pack["teams"][0]["slots"].as_array_mut().expect("slots") {
+        slot["model_chain"] = chain.clone();
+    }
+    pack
+}
+
+/// What one alias-routed epic leaves behind for a test to assert on.
+struct CodexAliasEpic {
+    project: String,
+    epic: String,
+    seats: Vec<serde_json::Value>,
+    work: String,
+    personal: String,
+}
+
+/// One project with the alias-routed pack pinned, two declared Codex account
+/// profiles, and one started epic. Returns the started seats and both ids.
+async fn codex_alias_epic(
+    world: &World,
+    exhaust_work: bool,
+    declare_aliases: bool,
+) -> CodexAliasEpic {
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": codex_account_pack()}),
+    )
+    .signed_as(world, "admin")
+    .with_key("codex-alias-pack")
+    .send(world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(world, "codex-alias", "Kontor", "/tmp/kontor-codex-alias").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+
+    let mut ids = Vec::new();
+    for (label, alias) in [
+        ("Codex Work", "codex-work"),
+        ("Codex Personal", "codex-personal"),
+    ] {
+        let declared: Vec<&str> = if declare_aliases {
+            vec![alias]
+        } else {
+            Vec::new()
+        };
+        let account = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": label, "harness": "fake.runtime",
+                "credential_alias": alias,
+                "selectable_providers": declared,
+                "enabled": true
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("codex-alias-{alias}"))
+        .send(world)
+        .await;
+        assert_eq!(account.status, 200, "{}", account.body);
+        ids.push(
+            account.json()["account_profile_id"]
+                .as_str()
+                .expect("id")
+                .to_owned(),
+        );
+    }
+    let (work, personal) = (ids[0].clone(), ids[1].clone());
+
+    if exhaust_work {
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/provider-quota-states:record"),
+            &serde_json::json!({
+                "account_profile_id": work,
+                "provider": "codex-work",
+                "state": "exhausted",
+                "resets_at": "2099-01-01T00:00:00Z",
+                "expected_revision": 1
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key("codex-alias-exhaust-work")
+        .send(world)
+        .await;
+        assert_eq!(recorded.status, 200, "{}", recorded.body);
+    }
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Alias-routed epic",
+            "codex-accounts-v1",
+            serde_json::json!([{"title": "Route me by account"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key("codex-alias-epic")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": work,
+            "reason": "Prove account routing"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("codex-alias-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(world, "operator")
+    .with_key("codex-alias-start")
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"].as_array().expect("seats").clone();
+    assert!(!seats.is_empty(), "the task was seated: {}", started.body);
+    CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        work,
+        personal,
+    }
+}
+
+/// With clear headroom the walk admits the first alias rung, and the launch
+/// carries **both** halves of that answer: the alias as the rung's provider
+/// (which is what selects the credential home on the runtime) and the account
+/// id as the launch's pin. Discarding the account half is the defect that
+/// stranded every Codex seat on whatever the ambient login happened to be.
+#[tokio::test]
+async fn a_seat_launch_claims_the_account_the_headroom_walk_selected() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic { seats, work, .. } = codex_alias_epic(&world, false, true).await;
+    for seat in &seats {
+        let run = seat["agent_run_id"]
+            .as_str()
+            .and_then(|run| AgentRunId::parse(run).ok())
+            .expect("a started run");
+        let model = world
+            .fake
+            .launched_model(run)
+            .expect("the launched route is observable");
+        assert_eq!(model.provider.0, "codex-work", "{seat}");
+        assert_eq!(model.model.0, "gpt-5.6-sol");
+        assert_eq!(
+            world
+                .fake
+                .launched_account(run)
+                .map(|account| account.to_string()),
+            Some(work.clone()),
+            "the launch claims the account the walk selected"
+        );
+    }
+}
+
+/// The 2026-08-23 incident, replayed against the fix: the first account's
+/// allowance is exhausted with a far reset, so the walk moves to the second
+/// account on the *same* model — account before rung — and the launch lands on
+/// the other alias with the other account claimed.
+#[tokio::test]
+async fn an_exhausted_account_reroutes_the_launch_to_the_second_codex_alias() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        seats, personal, ..
+    } = codex_alias_epic(&world, true, true).await;
+    for seat in &seats {
+        let run = seat["agent_run_id"]
+            .as_str()
+            .and_then(|run| AgentRunId::parse(run).ok())
+            .expect("a started run");
+        let model = world
+            .fake
+            .launched_model(run)
+            .expect("the launched route is observable");
+        assert_eq!(
+            model.provider.0, "codex-personal",
+            "the exhausted account keeps no new seats: {seat}"
+        );
+        assert_eq!(model.model.0, "gpt-5.6-sol", "same model, other account");
+        assert_eq!(
+            world
+                .fake
+                .launched_account(run)
+                .map(|account| account.to_string()),
+            Some(personal.clone()),
+            "quota attribution follows the account that actually runs"
+        );
+    }
+}
+
+/// A consultation's chain was declared and ignored: only its first rung was
+/// ever frozen, which is how a committee reviewer died on an exhausted account
+/// while a clear one sat unconsulted. The freeze now walks the chain against
+/// recorded quota; the honoured account travels in the alias rung alone, so a
+/// consultation still claims no pin its runtime cannot attest.
+#[tokio::test]
+async fn a_consultation_freezes_the_alias_rung_with_headroom_not_the_first_rung() {
+    let composed = compose_realm("/tmp/kontor-advisor-alias").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+
+    let mut accounts = Vec::new();
+    for (label, alias) in [
+        ("Codex Work", "codex-work"),
+        ("Codex Personal", "codex-personal"),
+    ] {
+        let account = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": label, "harness": "fake.runtime",
+                "credential_alias": alias,
+                "selectable_providers": [alias],
+                "enabled": true
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("advisor-{alias}"))
+        .send(world)
+        .await;
+        assert_eq!(account.status, 200, "{}", account.body);
+        accounts.push(
+            account.json()["account_profile_id"]
+                .as_str()
+                .expect("id")
+                .to_owned(),
+        );
+    }
+    let recorded = Call::post(
+        format!("/v1/projects/{project}/provider-quota-states:record"),
+        &serde_json::json!({
+            "account_profile_id": accounts[0],
+            "provider": "codex-work",
+            "state": "exhausted",
+            "resets_at": "2099-01-01T00:00:00Z",
+            "expected_revision": 1
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("advisor-exhaust-work")
+    .send(world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+
+    // An epic freezes its roster at promotion, so the Advisor's caller seat
+    // comes from a promoted Quick session exactly as the Committee tests do.
+    let (quick, preview_hash) =
+        quick_session_ready_to_promote(world, project, "Advisor alias fixture", "advisor-quick")
+            .await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key("advisor-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("advisor-control-seats")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA SeatBinding")
+        .to_owned();
+
+    let mut advisor = advisor_definition("01991c00-0000-7000-8000-0000000000b7", 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    advisor["models"] = serde_json::json!({
+        "rungs": [
+            {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "high"},
+            {"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "high"}
+        ]
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let applied_profile = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": preview.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("advisor-alias-profile")
+    .send(world)
+    .await;
+    assert_eq!(applied_profile.status, 200, "{}", applied_profile.body);
+
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": "01991c00-0000-7000-8000-0000000000b7", "version": 1},
+            "question": "Which account should new work land on?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("advisor-alias-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let seat = invoked.json()["seats"][0]["seat_binding_id"]
+        .as_str()
+        .and_then(|seat| SeatBindingId::parse(seat).ok())
+        .expect("the Advisor seat");
+    let route = world
+        .fake
+        .consultation_route(seat)
+        .expect("the consultation launched on an observable route");
+    assert_eq!(
+        route.provider.0, "codex-personal",
+        "the chain was walked against quota, not truncated to its first rung"
+    );
+    assert_eq!(route.model.0, "gpt-5.6-sol");
+}
+
+/// Ensure freezes the declared aliases into the immutable routing document,
+/// replays byte-stably, and refuses a re-ensure that describes a different pin
+/// under a name that is already taken.
+#[tokio::test]
+async fn an_account_profile_freezes_its_declared_provider_aliases_at_ensure() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "alias-ensure", "Kontor", "/tmp/kontor-alias").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let uri = format!("/v1/projects/{project}/provider-account-profiles:ensure");
+    let body = serde_json::json!({
+        "label": "Codex Work", "harness": "fake.runtime",
+        "credential_alias": "codex-work",
+        "selectable_providers": [" codex-work "],
+        "enabled": true
+    });
+
+    let first = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("alias-ensure-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["applied"], "created");
+
+    // Same key, same declaration: the original receipt, nothing rewritten.
+    let replayed = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("alias-ensure-1")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+
+    // A normalized re-declaration is the same profile, not a mismatch: the
+    // frozen pin is the trimmed spelling.
+    let normalized = Call::post(
+        &uri,
+        &serde_json::json!({
+            "label": "Codex Work", "harness": "fake.runtime",
+            "credential_alias": "codex-work",
+            "selectable_providers": ["codex-work"],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alias-ensure-2")
+    .send(&world)
+    .await;
+    assert_eq!(normalized.status, 200, "{}", normalized.body);
+    assert_eq!(normalized.json()["applied"], "unchanged");
+
+    // A different pin under the same label is a different profile: the routing
+    // document is immutable for the life of the profile, so this is a refusal,
+    // never a quiet return of an account that routes somewhere else.
+    let drifted = Call::post(
+        &uri,
+        &serde_json::json!({
+            "label": "Codex Work", "harness": "fake.runtime",
+            "credential_alias": "codex-work",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alias-ensure-3")
+    .send(&world)
+    .await;
+    assert_eq!(drifted.status, 409, "{}", drifted.body);
+    assert_eq!(drifted.code(), "ensure_mismatch");
+
+    // A blank alias is a typo an operator needs to see, not an empty pin.
+    let blank = Call::post(
+        &uri,
+        &serde_json::json!({
+            "label": "Codex Broken", "harness": "fake.runtime",
+            "credential_alias": "codex-broken",
+            "selectable_providers": ["   "],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("alias-ensure-4")
+    .send(&world)
+    .await;
+    assert_eq!(blank.status, 400, "{}", blank.body);
+}
+
+/// A route can only be described and validated against an account if the alias
+/// is a provider the catalog advertises.
+#[tokio::test]
+async fn the_model_catalog_advertises_the_codex_account_aliases() {
+    let world = World::open().await;
+    let catalog = Call::get("/v1/catalog")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    let body = catalog.json();
+    let providers: Vec<&str> = body["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("an id"))
+        .collect();
+    for alias in ["codex-work", "codex-personal"] {
+        assert!(providers.contains(&alias), "{}", catalog.body);
+        assert!(
+            body["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["provider"] == alias && model["id"] == "gpt-5.6-sol"),
+            "the alias serves the same routes as its family: {}",
+            catalog.body
+        );
+    }
+}
+
+/// The incident's recovery path: a seat launched before any alias was declared
+/// dies on its provider, the deployment declares the two account aliases, and
+/// the replacement walks onto the clear account — claimed, on its own alias.
+/// This is what "seat replace after a quota hit" is for.
+#[tokio::test]
+async fn a_replacement_seat_walks_onto_the_other_account_once_aliases_are_declared() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        ..
+    } = codex_alias_epic(&world, false, false).await;
+    // Undeclared realm: the walk admitted nothing, the launch fell back to the
+    // frozen primary and claimed no account — the pre-declaration behaviour.
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    assert_eq!(
+        world
+            .fake
+            .launched_model(predecessor_id)
+            .expect("the frozen route")
+            .provider
+            .0,
+        "codex-work",
+        "an undeclared realm freezes the primary rung"
+    );
+    assert_eq!(
+        world.fake.launched_account(predecessor_id),
+        None,
+        "an undeclared realm claims no account"
+    );
+
+    let mut personal = String::new();
+    for (label, alias) in [
+        ("Codex Work (routed)", "codex-work"),
+        ("Codex Personal (routed)", "codex-personal"),
+    ] {
+        let account = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": label, "harness": "fake.runtime",
+                "credential_alias": format!("{alias}-routed"),
+                "selectable_providers": [alias],
+                "enabled": true
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("replace-routed-{alias}"))
+        .send(&world)
+        .await;
+        assert_eq!(account.status, 200, "{}", account.body);
+        personal = account.json()["account_profile_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+    }
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the seat is bound");
+    world.fake.provider_outage("codex-work", None);
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": {
+                "runtime_binding_id": binding.id,
+                "native_id": binding.identity.native_id,
+                "provider": "codex-work",
+            },
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-onto-other-account")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a successor id");
+    let model = world
+        .fake
+        .launched_model(successor_id)
+        .expect("the successor route");
+    assert_eq!(
+        model.provider.0, "codex-personal",
+        "the successor walked past the outage onto the clear account"
+    );
+    assert_eq!(
+        world
+            .fake
+            .launched_account(successor_id)
+            .map(|account| account.to_string()),
+        Some(personal),
+        "the successor claims the account the walk selected"
+    );
 }

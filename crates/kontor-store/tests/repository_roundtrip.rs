@@ -6364,7 +6364,11 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
         keys.contains(&name("architecture.md")),
         "a filename label does not break the read: {keys:?}"
     );
-    assert_eq!(keys.len(), 3, "every declared label is reported once: {keys:?}");
+    assert_eq!(
+        keys.len(),
+        3,
+        "every declared label is reported once: {keys:?}"
+    );
 }
 
 #[test]

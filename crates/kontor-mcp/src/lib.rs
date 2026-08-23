@@ -50,8 +50,8 @@ pub use client::{
 };
 pub use dispatch::{Dispatcher, Envelope, Failure};
 pub use registry::{
-    ArgSpec, ArgType, CLI_ONLY, FieldSpec, NON_AGENT_ROUTES, OpKind, Place, REGISTRY, SERVE_PROFILES,
-    ServeProfile, ToolSpec,
+    ArgSpec, ArgType, CLI_ONLY, FieldSpec, NON_AGENT_ROUTES, OpKind, Place, REGISTRY,
+    SERVE_PROFILES, ServeProfile, ToolSpec,
 };
 pub use server::{KontorMcp, serve, serve_stdio};
 

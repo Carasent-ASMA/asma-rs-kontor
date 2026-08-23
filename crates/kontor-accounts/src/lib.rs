@@ -68,16 +68,17 @@ pub use launch::{
     FailoverOutcome, FailoverReason, FailoverRefusal, FailoverRequest, LaunchAdmissionRequest,
     LaunchRefusal, MAX_OBSERVATION_AGE_SECONDS, admit_pinned_launch, fail_over_to_new_run,
 };
-pub use pin::{SELECTABLE_PROVIDERS_KEY, eligible_accounts, selectable_providers};
+pub use pin::{
+    SELECTABLE_PROVIDERS_KEY, declared_selectable_providers, eligible_accounts,
+    pinned_selectable_providers, selectable_providers,
+};
 pub use profile::{
     AccountEnvironmentMap, AccountError, AccountProfileDraft, AccountService, ENVIRONMENT_SCHEMA,
 };
 pub use quota::{ObservedQuota, QuotaBasis, QuotaSignal, classify};
-pub use usage::{
-    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage,
-};
 pub use resolver::{
     AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
     ResolverPolicyBuilder, SystemKeychain,
 };
+pub use usage::{UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage};

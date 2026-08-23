@@ -89,6 +89,55 @@ pub fn selectable_providers(profile: &AccountProfile) -> DomainResult<BTreeSet<S
         .collect()
 }
 
+/// Validate a caller-declared pin before it is frozen into a routing document.
+///
+/// The constraints are exactly the ones [`selectable_providers`] enforces on
+/// the stored document, applied at the door instead: an alias must be a
+/// non-empty string once trimmed. Returning the normalized set — trimmed,
+/// deduplicated, ordered — is what lets the caller freeze one canonical
+/// spelling of the pin rather than whichever whitespace the request carried.
+///
+/// # Errors
+/// Returns [`DomainError`] when any declared alias is empty after trimming.
+pub fn declared_selectable_providers(aliases: &[String]) -> DomainResult<BTreeSet<String>> {
+    aliases
+        .iter()
+        .map(|alias| {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                return Err(DomainError::invalid(
+                    "AccountProfile.routing",
+                    "every selectable provider alias must be a non-empty string",
+                ));
+            }
+            Ok(alias.to_owned())
+        })
+        .collect()
+}
+
+/// The providers a *pinned* run may still be walked under.
+///
+/// A pin used to be considered under every rung provider, because a pinned run
+/// is not moving between accounts and a family rung carries no account of its
+/// own. Alias rungs change what that latitude means: admitting a declared
+/// account onto another account's alias would launch one account while
+/// claiming the other, and the readback — which verifies the provider alone —
+/// could not tell. So a pin that declares aliases is walked only under them,
+/// while an undeclared pin keeps the full latitude it always had.
+#[must_use]
+pub fn pinned_selectable_providers(
+    pin: kontor_core::id::AccountProfileId,
+    accounts: &[EligibleAccount],
+    every_rung_provider: BTreeSet<String>,
+) -> BTreeSet<String> {
+    accounts
+        .iter()
+        .find(|account| account.account_profile_id == pin)
+        .filter(|account| !account.selectable_providers.is_empty())
+        .map(|account| account.selectable_providers.clone())
+        .unwrap_or(every_rung_provider)
+}
+
 /// The accounts a launch may be resolved across, in the shape the walk takes.
 ///
 /// Disabled profiles are dropped here rather than filtered later. `enabled:
@@ -97,15 +146,29 @@ pub fn selectable_providers(profile: &AccountProfile) -> DomainResult<BTreeSet<S
 ///
 /// # Errors
 /// Returns [`DomainError`] for any profile whose routing document declares a
-/// malformed pin.
+/// malformed pin, and when two enabled profiles declare the same alias. One
+/// alias naming two accounts is refused rather than resolved by ordering: the
+/// alias is the only thing that selects and attests the account at launch, so
+/// an ambiguous one would let a receipt claim an account the launch may not
+/// have used.
 pub fn eligible_accounts(profiles: &[AccountProfile]) -> DomainResult<Vec<EligibleAccount>> {
+    let mut claimed: BTreeSet<String> = BTreeSet::new();
     profiles
         .iter()
         .filter(|profile| profile.enabled)
         .map(|profile| {
+            let selectable = selectable_providers(profile)?;
+            for alias in &selectable {
+                if !claimed.insert(alias.clone()) {
+                    return Err(DomainError::invalid(
+                        "AccountProfile.routing",
+                        "two enabled account profiles declare the same provider alias",
+                    ));
+                }
+            }
             Ok(EligibleAccount {
                 account_profile_id: profile.id,
-                selectable_providers: selectable_providers(profile)?,
+                selectable_providers: selectable,
             })
         })
         .collect()
@@ -190,6 +253,82 @@ mod tests {
                 "{routing} must not be read as an empty pin"
             );
         }
+    }
+
+    #[test]
+    fn one_alias_naming_two_enabled_accounts_is_refused_not_ordered_away() {
+        let profiles = [
+            profile(
+                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                true,
+            ),
+            profile(
+                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                true,
+            ),
+        ];
+        assert!(
+            eligible_accounts(&profiles).is_err(),
+            "an alias that could mean either account must not resolve to one of them"
+        );
+    }
+
+    #[test]
+    fn a_disabled_profile_may_share_an_alias_because_it_is_never_walked() {
+        let profiles = [
+            profile(
+                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                false,
+            ),
+            profile(
+                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                true,
+            ),
+        ];
+        let eligible = eligible_accounts(&profiles).expect("only one enabled claimant");
+        assert_eq!(eligible.len(), 1);
+    }
+
+    #[test]
+    fn a_declared_pin_is_normalized_and_a_blank_alias_is_refused() {
+        let declared =
+            declared_selectable_providers(&[" codex-work ".to_owned(), "codex-work".to_owned()])
+                .expect("a well-formed declaration");
+        assert_eq!(
+            declared,
+            ["codex-work".to_owned()]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+        assert!(declared_selectable_providers(&["   ".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn a_declared_pin_is_walked_only_under_its_own_aliases() {
+        let declared = profile(
+            serde_json::json!({ "selectable_providers": ["codex-work"] }),
+            true,
+        );
+        let accounts = eligible_accounts(std::slice::from_ref(&declared)).expect("one candidate");
+        let every_rung: BTreeSet<String> = ["codex-work".to_owned(), "codex-personal".to_owned()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            pinned_selectable_providers(declared.id, &accounts, every_rung.clone()),
+            ["codex-work".to_owned()]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "a foreign alias rung would launch one account while claiming another"
+        );
+        // An undeclared pin keeps the latitude it always had: any rung.
+        assert_eq!(
+            pinned_selectable_providers(
+                AccountProfileId::generate(),
+                &accounts,
+                every_rung.clone()
+            ),
+            every_rung
+        );
     }
 
     #[test]
