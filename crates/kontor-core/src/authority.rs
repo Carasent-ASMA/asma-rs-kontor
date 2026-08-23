@@ -118,7 +118,7 @@ impl ProjectSubjectAuthority {
 
 #[cfg(test)]
 mod tests {
-    use super::{SubjectAuthority, SubjectOrigin};
+    use super::{AuthoritySubject, SubjectAuthority, SubjectOrigin};
 
     #[test]
     fn native_origins_start_writable_and_refuse_cutover() {
@@ -140,8 +140,17 @@ mod tests {
 
     #[test]
     fn spellings_round_trip() {
+        for subject in AuthoritySubject::ALL {
+            assert_eq!(&AuthoritySubject::parse(subject.as_str()).unwrap(), subject);
+        }
         for origin in SubjectOrigin::ALL {
             assert_eq!(&SubjectOrigin::parse(origin.as_str()).unwrap(), origin);
+        }
+        for authority in SubjectAuthority::ALL {
+            assert_eq!(
+                &SubjectAuthority::parse(authority.as_str()).unwrap(),
+                authority
+            );
         }
         assert!(SubjectOrigin::parse("kontor").is_err());
     }
