@@ -1400,7 +1400,7 @@ mod tests {
             ),
             Err(crate::authority::AuthorityError::Rule(_))
         ));
-        store
+        let switch_receipt = store
             .switch_project_memory_authority(
                 project,
                 "agentsroom",
@@ -1408,17 +1408,17 @@ mod tests {
                 attested.revision,
             )
             .unwrap();
-        assert!(
-            matches!(
-                store.switch_project_memory_authority(
-                    project,
-                    "agentsroom",
-                    &export.export_hash,
-                    attested.revision.next().unwrap()
-                ),
-                Err(MemoryError::Rule(_))
-            ),
-            "authority moves exactly once"
+        let replayed_switch = store
+            .switch_project_memory_authority(
+                project,
+                "agentsroom",
+                &export.export_hash,
+                attested.revision.next().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            replayed_switch.receipt_id, switch_receipt.receipt_id,
+            "an identical switch replays its receipt rather than moving authority twice"
         );
         assert!(
             matches!(

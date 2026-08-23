@@ -11173,7 +11173,7 @@ impl ApplicationOperations for Services {
             key,
             project_id,
             CommandKind::MaterializeJira,
-            target.clone(),
+            target,
             prepared.epic.revision,
             &intent,
         )?;

@@ -436,7 +436,6 @@ impl SqliteStore {
         transaction.commit().map_err(backend)
     }
 
-    #[must_use]
     pub fn asma_epic_is_active(
         &self,
         project_id: ProjectId,

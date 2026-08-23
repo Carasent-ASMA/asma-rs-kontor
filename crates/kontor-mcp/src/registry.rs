@@ -4907,8 +4907,6 @@ pub static PERMISSION_DECISIONS: &[&str] = &["allow", "deny"];
 /// Where a project's memory or backlog facts come from, in the daemon's spelling.
 pub static SUBJECT_ORIGINS: &[&str] = &["kontor_native", "legacy_pending"];
 
-/// The backlog origins a project may declare today.
-
 /// The two facts write authority is tracked for.
 pub static AUTHORITY_SUBJECTS: &[&str] = &["memory", "backlog"];
 
