@@ -534,6 +534,21 @@ impl ApiError {
                     "a configured concurrency ceiling is currently spent",
                 )
             }
+            // The same answer the native memory path gives, because it is the same
+            // fact: this project's subject is not Kontor's to write yet. A retry
+            // cannot change it, so it is never spelled as a conflict.
+            RepositoryError::AuthorityWithheld { subject } => {
+                warn!(
+                    realm_id = %realm_id,
+                    subject = %subject,
+                    "a write was refused because a legacy system still owns the subject"
+                );
+                Self::new(
+                    realm_id,
+                    ApiErrorCode::Forbidden,
+                    "the legacy system still owns this project's subject",
+                )
+            }
             RepositoryError::CrossProject { .. } => Self::new(
                 realm_id,
                 ApiErrorCode::NotFound,

@@ -2,10 +2,10 @@
 
 use assert_cmd::Command;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::id::{CanonicalDocument, ContentHash, ExternalName, ProjectId, Timestamp};
+use kontor_core::id::{CanonicalDocument, ExternalName, ProjectId, Timestamp};
 use kontor_core::repository::{NewProject, ProjectRepository, RepositoryError};
 use kontor_daemon::{Daemon, DaemonConfig};
-use kontor_store::memory::{AgentsRoomExport, MemoryProvenance};
+use kontor_store::memory::MemoryProvenance;
 
 fn credential(root: &std::path::Path, tier: &str) -> String {
     let value: serde_json::Value = serde_json::from_slice(
@@ -44,27 +44,16 @@ async fn native_memory_http_and_cli_share_realm_revision_and_cursor() {
     daemon
         .state()
         .with_store(|store| {
+            // A project created here is native on both subjects, so it is
+            // writable immediately. The empty export, freeze and switch this test
+            // used to perform were a ceremony to earn what a fresh project now
+            // has by construction.
             store.create_project(&NewProject {
                 id: project,
                 name: ExternalName::parse("Memory parity").expect("name"),
                 root_path: ExternalName::parse("/tmp/memory-parity").expect("path"),
                 created_at: Timestamp::now(),
             })?;
-            let mut export = AgentsRoomExport {
-                schema_version: 1,
-                source: "agentsroom".to_owned(),
-                project_id: project,
-                entries: Vec::new(),
-                export_hash: ContentHash::of(b"pending"),
-            };
-            export.export_hash = export.calculate_hash().expect("hash");
-            store.freeze_agentsroom_writes().expect("freeze");
-            store
-                .apply_agentsroom_import(&export)
-                .expect("empty import");
-            store
-                .switch_memory_authority(project, "agentsroom", &export.export_hash)
-                .expect("switch");
             Ok::<_, RepositoryError>(())
         })
         .expect("memory realm is seeded");

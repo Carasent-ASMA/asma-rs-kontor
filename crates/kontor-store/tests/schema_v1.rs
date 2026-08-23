@@ -16,6 +16,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
 use kontor_core::id::{AccountProfileId, CanonicalDocument, ProjectId};
 use kontor_core::repository::{ProjectRepository, RepositoryError};
 use kontor_store::{SCHEMA_VERSION, SqliteStore, StoreError};
@@ -110,6 +111,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "persona_scenarios",
     "policy_evaluations",
     "projects",
+    "project_subject_authority",
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
@@ -140,6 +142,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
+    "subject_authority_receipts",
+    "subject_import_manifests",
     "seat_bindings",
     "task_account_selections",
     "task_ai_short_names",
@@ -453,10 +457,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v52 adds `task_modules` and slash/dotted module identity
-    // matching. v53 dropped the CHECK that required every admission to name an
-    // authorization, so default-allow can persist a NULL grant id.
-    assert_eq!(SCHEMA_VERSION, 53);
+    // side effect. v54 replaces realm-global memory authority with immutable
+    // per-project memory/backlog origin and one-way authority evidence.
+    assert_eq!(SCHEMA_VERSION, 54);
 }
 
 #[test]
@@ -3884,6 +3887,55 @@ fn migrate_through_v48(connection: &Connection) {
             .execute_batch(migration)
             .expect("the canonical migrations through v48 run");
     }
+}
+
+fn migrate_through_v53(connection: &Connection) {
+    migrate_through_v48(connection);
+    for migration in [
+        include_str!("../migrations/0049_command_execution_mode.sql"),
+        include_str!("../migrations/0050_provider_report_quota_source.sql"),
+        include_str!("../migrations/0051_provider_quota_headroom.sql"),
+        include_str!("../migrations/0052_task_modules_and_module_identity.sql"),
+        include_str!("../migrations/0053_default_allow_admission.sql"),
+    ] {
+        connection
+            .execute_batch(migration)
+            .expect("the canonical migrations through v53 run");
+    }
+}
+
+#[test]
+fn v54_seeds_each_existing_project_without_claiming_pending_memory() {
+    const REALM: &str = "0193f000-0000-7000-8000-0000000000c1";
+    const PROJECT: &str = "0193f000-0000-7000-8000-0000000000c2";
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    {
+        let connection = Connection::open(&path).expect("the v53 database opens");
+        migrate_through_v53(&connection);
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO realm_metadata
+                 (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, '{REALM}', 1, '2026-08-23T09:00:00Z', NULL);
+             INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES ('{PROJECT}', 'P', '/tmp/v54-authority', 1, '2026-08-23T09:00:00Z');"
+            ))
+            .expect("the v53 realm is seeded");
+    }
+
+    let store = SqliteStore::open(&path).expect("the v53 realm upgrades");
+    let project = ProjectId::parse(PROJECT).expect("a canonical project id");
+    let memory = store
+        .subject_authority(project, AuthoritySubject::Memory)
+        .expect("memory authority is seeded");
+    let backlog = store
+        .subject_authority(project, AuthoritySubject::Backlog)
+        .expect("backlog authority is seeded");
+    assert_eq!(memory.origin, SubjectOrigin::LegacyPending);
+    assert!(!memory.writable_by_kontor());
+    assert_eq!(backlog.origin, SubjectOrigin::KontorNative);
+    assert!(backlog.writable_by_kontor());
 }
 
 fn seed_v48_confirmed_abandonment(connection: &Connection) {

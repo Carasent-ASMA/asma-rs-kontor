@@ -42,6 +42,7 @@ use crate::body::Json;
 use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
+use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
@@ -2278,6 +2279,12 @@ pub struct EnsureProjectRequest {
     /// Canonical absolute root path. The natural identity.
     #[schema(value_type = String)]
     pub root_path: ExternalName,
+    /// Where this project's memory comes from. Immutable once created.
+    #[schema(value_type = String)]
+    pub memory_origin: SubjectOrigin,
+    /// Where this project's backlog comes from. Immutable once created.
+    #[schema(value_type = String)]
+    pub backlog_origin: SubjectOrigin,
 }
 
 /// One project, as a bootstrap caller sees it.
@@ -2300,9 +2307,27 @@ pub struct ProjectDto {
     pub revision: AggregateRevision,
     /// Whether this call created it.
     pub applied: AppliedDto,
+    /// Where its memory came from, and who may write it now.
+    pub memory: SubjectAuthorityDto,
+    /// Where its backlog came from, and who may write it now.
+    pub backlog: SubjectAuthorityDto,
     /// When it was created.
     #[schema(value_type = String, format = DateTime)]
     pub created_at: Timestamp,
+}
+
+/// One subject's immutable origin and current writer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SubjectAuthorityDto {
+    /// How this subject's facts entered Kontor.
+    #[schema(value_type = String)]
+    pub origin: SubjectOrigin,
+    /// Who may write the subject now.
+    #[schema(value_type = String)]
+    pub authority: SubjectAuthority,
+    /// The revision an attestation or switch must present.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
 }
 
 /// One project, as an Observer read sees it.

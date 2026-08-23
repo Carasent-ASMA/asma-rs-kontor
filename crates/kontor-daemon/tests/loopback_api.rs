@@ -449,6 +449,8 @@ async fn the_authority_tiers_are_enforced_per_route() {
     let ensure = serde_json::json!({
         "name": "Tier probe",
         "root_path": "/tmp/kontor-tier-probe",
+        "memory_origin": "kontor_native",
+        "backlog_origin": "kontor_native",
     });
     let operator = Call::post("/v1/projects:ensure", &ensure)
         .signed_as(&world, "operator")
@@ -2206,7 +2208,12 @@ async fn shutdown_shuts_scheduling_and_releases_the_state_root() {
 async fn ensure_project(world: &World, key: &str, name: &str, root: &str) -> Answer {
     Call::post(
         "/v1/projects:ensure",
-        &serde_json::json!({"name": name, "root_path": root}),
+        &serde_json::json!({
+            "name": name,
+            "root_path": root,
+            "memory_origin": "kontor_native",
+            "backlog_origin": "kontor_native",
+        }),
     )
     .signed_as(world, "admin")
     .with_key(key)
@@ -2327,6 +2334,9 @@ async fn an_empty_realm_is_bootstrapped_through_public_operations_alone() {
     let created = ensure_project(&world, "bootstrap-1", "Kontor", "/tmp/kontor-empty").await;
     assert_eq!(created.status, 200, "{}", created.body);
     assert_eq!(created.json()["applied"], "created");
+    assert_eq!(created.json()["memory"]["origin"], "kontor_native");
+    assert_eq!(created.json()["memory"]["authority"], "kontor");
+    assert_eq!(created.json()["backlog"]["authority"], "kontor");
     let project = created.json()["project_id"]
         .as_str()
         .expect("a project id")
@@ -2342,6 +2352,13 @@ async fn an_empty_realm_is_bootstrapped_through_public_operations_alone() {
     // A different name at the same root is drift, not an update.
     let drift = ensure_project(&world, "bootstrap-3", "Something else", "/tmp/kontor-empty").await;
     assert_eq!(drift.status, 409, "{}", drift.body);
+
+    let global_freeze = Call::post("/v1/memory/cutover:freeze", &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("legacy-freeze-1")
+        .send(&world)
+        .await;
+    assert_eq!(global_freeze.status, 400, "{}", global_freeze.body);
 
     let category = first_category(&world).await;
     let applied = Call::post(
@@ -4333,7 +4350,12 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
     } else if uri.ends_with("lifecycle") {
         serde_json::json!({"action": "block", "expected_revision": 1, "reason": "x"})
     } else if uri.ends_with("projects:ensure") {
-        serde_json::json!({"name": "X", "root_path": "/tmp/kontor-authz-body"})
+        serde_json::json!({
+            "name": "X",
+            "root_path": "/tmp/kontor-authz-body",
+            "memory_origin": "kontor_native",
+            "backlog_origin": "kontor_native",
+        })
     } else {
         serde_json::json!({})
     }
@@ -4385,7 +4407,12 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
     // And a mutation with no idempotency key is refused before it does anything.
     let keyless = Call::post(
         "/v1/projects:ensure",
-        &serde_json::json!({"name": "X", "root_path": "/tmp/kontor-keyless"}),
+        &serde_json::json!({
+            "name": "X",
+            "root_path": "/tmp/kontor-keyless",
+            "memory_origin": "kontor_native",
+            "backlog_origin": "kontor_native",
+        }),
     )
     .signed_as(&world, "admin")
     .send(&world)
@@ -20326,7 +20353,10 @@ async fn a_legacy_epic_bootstraps_one_frozen_roster_and_one_leadership_pair() {
             rusqlite::params![project.to_string(), epic.to_string()],
         )
         .expect("the legacy gap is seeded");
-    assert_eq!(unpinned, 1, "the epic was born with a frozen roster to remove");
+    assert_eq!(
+        unpinned, 1,
+        "the epic was born with a frozen roster to remove"
+    );
     drop(connection);
 
     let previewed = Call::post(
@@ -22698,17 +22728,6 @@ async fn application_receipts_confirm_only_after_a_successful_response() {
             .expect("the receipt still exists")
     });
     assert_eq!(pending.state, CommandReceiptState::IntentPersisted);
-}
-
-/// The first runnable work-profile category the bundled pack advertises.
-fn receipt(world: &World, key: &str) -> kontor_core::receipt::CommandReceipt {
-    let key = IdempotencyKey::parse(key).expect("a valid idempotency key");
-    world.daemon.state().with_store(|store| {
-        store
-            .get_receipt_by_key(&key)
-            .expect("the receipt is readable")
-            .expect("the command recorded a receipt")
-    })
 }
 
 /// Retiring a provider-account profile: the gap that made two orphans on

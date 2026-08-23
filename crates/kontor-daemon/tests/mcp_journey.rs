@@ -324,6 +324,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "idempotency_key": "journey-project-1",
             "name": "Kontor",
             "root_path": "/tmp/kontor-mcp-journey",
+            "memory_origin": "kontor_native",
+            "backlog_origin": "kontor_native",
         }),
     )
     .await;
@@ -341,6 +343,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "idempotency_key": "journey-project-1",
             "name": "Kontor",
             "root_path": "/tmp/kontor-mcp-journey",
+            "memory_origin": "kontor_native",
+            "backlog_origin": "kontor_native",
         }),
     )
     .await;
@@ -735,6 +739,8 @@ async fn an_observer_seat_reads_the_realm_and_cannot_change_it() {
                 "idempotency_key": "nope",
                 "name": "Kontor",
                 "root_path": "/tmp/nope",
+                "memory_origin": "kontor_native",
+                "backlog_origin": "kontor_native",
             }),
         ),
         (

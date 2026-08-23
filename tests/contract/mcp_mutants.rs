@@ -447,7 +447,10 @@ async fn every_schema_bypass_is_refused_with_nothing_dispatched() {
         ),
         (
             "kontor_project_ensure",
-            serde_json::json!({ "name": "Pilot", "root_path": "/tmp/pilot" }),
+            serde_json::json!({
+                "name": "Pilot", "root_path": "/tmp/pilot",
+                "memory_origin": "kontor_native", "backlog_origin": "kontor_native",
+            }),
             "a write with no idempotency key",
         ),
         (
