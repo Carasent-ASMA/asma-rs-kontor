@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -24,6 +25,8 @@ const CONFIG_SCHEMA: u32 = 1;
 const CONFIG_FILE: &str = "jira.json";
 const KEYCHAIN_SERVICE: &str = "kontor-jira";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,6 +191,8 @@ impl JiraConnector {
         endpoint.set_path("/");
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_| configuration("the Jira HTTP client could not be built"))?;
         Ok(Self {
