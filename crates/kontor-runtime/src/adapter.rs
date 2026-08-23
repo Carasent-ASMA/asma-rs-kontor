@@ -519,6 +519,18 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Returns [`RuntimeError::Transport`] when the runtime cannot be reached.
     async fn discover_capabilities(&self) -> RuntimeResult<RuntimeCapabilities>;
 
+    /// What this runtime can prove for one selected provider/model route.
+    ///
+    /// Provider-neutral runtimes keep the ordinary capability snapshot. A
+    /// multi-provider runtime overrides this when one provider can enforce an
+    /// operation another provider cannot.
+    async fn discover_capabilities_for(
+        &self,
+        _model_rung: &kontor_core::spec::ModelRung,
+    ) -> RuntimeResult<RuntimeCapabilities> {
+        self.discover_capabilities().await
+    }
+
     /// Vouch for a binding this runtime issued, so it can be judged as
     /// evidence.
     ///

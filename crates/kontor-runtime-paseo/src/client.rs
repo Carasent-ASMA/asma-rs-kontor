@@ -57,7 +57,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
-use kontor_core::spec::{ModelRung, SeatAutonomy};
+use kontor_core::spec::{ContextTriggerScope, EffectiveContextPolicy, ModelRung, SeatAutonomy};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
@@ -169,7 +169,7 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// A Paseo provider id matches `^[a-z][a-z0-9-]*$`, so a colon cannot appear in
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
-fn built_in_provider(provider: &str) -> &str {
+pub(crate) fn built_in_provider(provider: &str) -> &str {
     const BUILT_INS: [&str; 6] = ["claude", "codex", "copilot", "opencode", "pi", "omp"];
     for built_in in BUILT_INS {
         if provider == built_in {
@@ -182,6 +182,32 @@ fn built_in_provider(provider: &str) -> &str {
         }
     }
     provider
+}
+
+/// Translate one effective Kontor policy into Paseo's validated provider
+/// options. Providers without an audited absolute-threshold mapping get none.
+#[must_use]
+pub(crate) fn context_provider_options(
+    provider: &str,
+    policy: &EffectiveContextPolicy,
+) -> Option<serde_json::Value> {
+    let trigger = policy.trigger_tokens?;
+    match built_in_provider(provider) {
+        "codex" => Some(serde_json::json!({
+            "model_auto_compact_token_limit": trigger,
+            "model_auto_compact_token_limit_scope": match policy.policy.trigger_scope {
+                ContextTriggerScope::Total => "total",
+                ContextTriggerScope::GrowthAfterPrefix => "body_after_prefix",
+            },
+        })),
+        "claude" => Some(serde_json::json!({
+            "settings": {
+                "autoCompactEnabled": true,
+                "autoCompactWindow": trigger,
+            },
+        })),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -688,7 +714,7 @@ impl PaseoOutput {
 /// by id alone accepts an `rpc_error` — or any other frame the daemon chose to
 /// stamp with that id — as the readback a placement rule is about to be decided
 /// from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PaseoRpc {
     /// The session message, ready to be wrapped in the `session` envelope.
     pub message: serde_json::Value,
@@ -702,6 +728,18 @@ pub struct PaseoRpc {
     pub mutates: bool,
 }
 
+impl fmt::Debug for PaseoRpc {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PaseoRpc")
+            .field("request_type", &self.request_type)
+            .field("response_type", &self.response_type)
+            .field("request_id", &self.request_id)
+            .field("mutates", &self.mutates)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PaseoRpc {
     /// `daemon.get_status.request` — the correlated version readback.
     #[must_use]
@@ -709,6 +747,17 @@ impl PaseoRpc {
         Self::read(
             "daemon.get_status.request",
             "daemon.get_status.response",
+            request_id,
+            serde_json::json!({}),
+        )
+    }
+
+    /// `get_providers_snapshot_request` — provider-specific capability evidence.
+    #[must_use]
+    pub fn provider_snapshot(request_id: String) -> Self {
+        Self::read(
+            "get_providers_snapshot_request",
+            "get_providers_snapshot_response",
             request_id,
             serde_json::json!({}),
         )
@@ -821,6 +870,60 @@ impl PaseoRpc {
         Self::read(
             "fetch_agent_request",
             "fetch_agent_response",
+            request_id,
+            serde_json::json!({ "agentId": agent_id }),
+        )
+    }
+
+    /// `create_agent_request` with optional validated provider context options.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        mode: Option<&str>,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        parent_agent_id: &str,
+        prompt: &str,
+        env: &BTreeMap<String, String>,
+        provider_options: serde_json::Value,
+    ) -> Self {
+        let mut config = serde_json::json!({
+            "provider": model_rung.provider.0,
+            "cwd": canonical_cwd,
+            "model": model_rung.model.0,
+            "title": title,
+            "providerOptions": provider_options,
+        });
+        if let Some(mode) = mode {
+            config["modeId"] = serde_json::json!(mode);
+        }
+        if let Some(effort) = model_rung.effort {
+            config["thinkingOptionId"] = serde_json::json!(effort.as_str());
+        }
+        let mut params = serde_json::json!({
+            "config": config,
+            "workspaceId": workspace_id,
+            "callerAgentId": parent_agent_id,
+            "initialPrompt": prompt,
+            "attachments": [],
+            "labels": labels,
+        });
+        if !env.is_empty() {
+            params["env"] = serde_json::json!(env);
+        }
+        Self::mutate("create_agent_request", "status", request_id, params)
+    }
+
+    /// `agent.compact.request` — compact one existing Paseo agent in place.
+    #[must_use]
+    pub fn agent_compact(request_id: String, agent_id: &str) -> Self {
+        Self::mutate(
+            "agent.compact.request",
+            "agent.compact.response",
             request_id,
             serde_json::json!({ "agentId": agent_id }),
         )
@@ -1556,7 +1659,11 @@ pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kontor_core::spec::{EffortLevel, ModelRef, ProviderRef};
+    use kontor_core::spec::{
+        ContextEnforcement, ContextPolicyInputs, ContextWindowBounds, ContextWindowClass,
+        ContextWindowPolicy, EffortLevel, ModelRef, ProviderRef, RequestedContextPolicy,
+        resolve_context_window,
+    };
 
     fn labels() -> BTreeMap<String, String> {
         [("kontor.role".to_owned(), "implement".to_owned())]
@@ -1570,6 +1677,74 @@ mod tests {
             model: ModelRef(model.to_owned()),
             effort,
         }
+    }
+
+    fn effective_context(
+        class: ContextWindowClass,
+        scope: ContextTriggerScope,
+    ) -> EffectiveContextPolicy {
+        let declared = ContextWindowPolicy {
+            class,
+            enforcement: ContextEnforcement::Required,
+            trigger_scope: scope,
+            ..ContextWindowPolicy::standard()
+        };
+        let resolved = resolve_context_window(&ContextPolicyInputs {
+            role_slot: Some(&declared),
+            ..ContextPolicyInputs::default()
+        })
+        .expect("the context class resolves");
+        let requested = RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
+        EffectiveContextPolicy::derive(&requested, &ContextWindowBounds::unknown(), true)
+            .expect("the provider supports this policy")
+    }
+
+    #[test]
+    fn provider_context_options_are_exact_and_only_for_audited_threshold_maps() {
+        let deep = effective_context(
+            ContextWindowClass::Deep,
+            ContextTriggerScope::GrowthAfterPrefix,
+        );
+        assert_eq!(
+            context_provider_options("codex-work", &deep),
+            Some(serde_json::json!({
+                "model_auto_compact_token_limit": 512_000,
+                "model_auto_compact_token_limit_scope": "body_after_prefix",
+            }))
+        );
+        assert_eq!(
+            context_provider_options("claude", &deep),
+            Some(serde_json::json!({
+                "settings": {
+                    "autoCompactEnabled": true,
+                    "autoCompactWindow": 512_000,
+                },
+            }))
+        );
+        assert_eq!(context_provider_options("opencode", &deep), None);
+        assert_eq!(context_provider_options("cursor", &deep), None);
+
+        let rpc = PaseoRpc::agent_create(
+            "req-1".to_owned(),
+            "wks-1",
+            "/w/task-1",
+            &route("claude", "claude-opus-5", Some(EffortLevel::High)),
+            Some("auto"),
+            "Implement",
+            &labels(),
+            "agt-orchestrator",
+            "begin",
+            &BTreeMap::new(),
+            context_provider_options("claude", &deep).expect("Claude options"),
+        );
+        assert_eq!(rpc.request_type, "create_agent_request");
+        assert_eq!(rpc.response_type, "status");
+        assert_eq!(
+            rpc.message["config"]["providerOptions"]["settings"]["autoCompactWindow"],
+            512_000
+        );
+        assert_eq!(rpc.message["config"]["thinkingOptionId"], "high");
+        assert_eq!(rpc.message["attachments"], serde_json::json!([]));
     }
 
     #[test]

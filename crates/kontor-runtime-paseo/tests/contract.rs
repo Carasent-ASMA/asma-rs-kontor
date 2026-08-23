@@ -562,6 +562,24 @@ impl Plane {
         workspace: &WorkspaceBindingSnapshot,
         model_rung: ModelRung,
     ) -> RuntimeResult<LaunchRequest> {
+        self.launch_request_with_policy(
+            agent_run_id,
+            slot_id,
+            workspace,
+            model_rung,
+            standard_context_policy(),
+        )
+        .await
+    }
+
+    async fn launch_request_with_policy(
+        &self,
+        agent_run_id: AgentRunId,
+        slot_id: &RoleSlotId,
+        workspace: &WorkspaceBindingSnapshot,
+        model_rung: ModelRung,
+        context_policy: kontor_core::spec::ContextPolicySnapshot,
+    ) -> RuntimeResult<LaunchRequest> {
         let binding_id = RuntimeBindingId::generate();
         let authority = self
             .adapter
@@ -587,7 +605,7 @@ impl Plane {
             account_profile_id: None,
             prompt: text("bootstrap the role"),
             model_rung,
-            context_policy: standard_context_policy(),
+            context_policy,
             autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
@@ -4382,10 +4400,13 @@ async fn permission_an_acknowledgement_for_another_agent_is_refused() {
 // Context policy and compaction
 // ---------------------------------------------------------------------------
 
-fn compaction_policy(
+fn frozen_context_policy(
+    class: kontor_core::spec::ContextWindowClass,
     enforcement: kontor_core::spec::ContextEnforcement,
+    supported: bool,
 ) -> kontor_core::spec::ContextPolicySnapshot {
     let declared = kontor_core::spec::ContextWindowPolicy {
+        class,
         enforcement,
         ..kontor_core::spec::ContextWindowPolicy::standard()
     };
@@ -4397,20 +4418,58 @@ fn compaction_policy(
         .expect("the slot declaration resolves");
     let requested =
         kontor_core::spec::RequestedContextPolicy::of(&resolved, kontor_core::id::SCHEMA_VERSION);
-    // Paseo declares no context configuration, so the effective half is derived
-    // against an unsupported runtime — which is what `not_enforced` means.
     let effective = kontor_core::spec::EffectiveContextPolicy::derive(
         &requested,
         &kontor_core::spec::ContextWindowBounds::unknown(),
-        false,
+        supported,
     )
-    .expect("best effort derives against an incapable runtime");
+    .expect("the declared policy derives against this fixture capability");
     kontor_core::spec::ContextPolicySnapshot::freeze(
         requested,
         effective,
         at("2026-08-10T09:00:00Z"),
     )
     .expect("both halves freeze")
+}
+
+fn compaction_policy(
+    enforcement: kontor_core::spec::ContextEnforcement,
+) -> kontor_core::spec::ContextPolicySnapshot {
+    frozen_context_policy(
+        kontor_core::spec::ContextWindowClass::Standard,
+        enforcement,
+        false,
+    )
+}
+
+fn context_server_info() -> serde_json::Value {
+    let mut info = v(SERVER_INFO);
+    info["features"]["contextManagement"] = serde_json::json!(true);
+    info
+}
+
+fn provider_snapshot(provider: &str, context_policy: bool, compaction: bool) -> serde_json::Value {
+    serde_json::json!({
+        "entries": [{
+            "provider": provider,
+            "status": "ready",
+            "enabled": true,
+            "capabilities": {
+                "supportsContextWindowPolicy": context_policy,
+                "supportsSameSessionCompaction": compaction,
+            },
+        }],
+    })
+}
+
+fn agent_for(provider: &str, model: &str, mode: &str, session_id: &str) -> serde_json::Value {
+    let mut agent = v(AGENT);
+    agent["agent"]["provider"] = serde_json::json!(provider);
+    agent["agent"]["model"] = serde_json::json!(model);
+    agent["agent"]["currentModeId"] = serde_json::json!(mode);
+    agent["agent"]["persistence"]["provider"] = serde_json::json!(provider);
+    agent["agent"]["persistence"]["sessionId"] = serde_json::json!(session_id);
+    agent
 }
 
 /// The current daemon surface exposes neither capability, and says so.
@@ -4434,6 +4493,283 @@ async fn the_current_daemon_advertises_no_context_or_compaction_capability() {
     // Unknown bounds stay unknown: no number is invented on the daemon's behalf.
     assert_eq!(declared.limits.context_window.safe_ceiling_tokens, None);
     assert_eq!(declared.limits.context_window.minimum_trigger_tokens, None);
+}
+
+#[tokio::test]
+async fn context_capabilities_are_selected_per_provider_and_never_globally() {
+    for (provider, context, compact, expected_context, expected_compact) in [
+        ("codex", true, true, true, true),
+        ("claude", true, false, true, false),
+        ("opencode", false, true, false, true),
+        // A future flag is not enough until Kontor has an audited spawn map.
+        ("cursor", true, false, false, false),
+    ] {
+        let recorded = daemon().announcing(&context_server_info()).answering_rpc(
+            "get_providers_snapshot_request",
+            provider_snapshot(provider, context, compact),
+        );
+        let plane = Plane::fresh(recorded);
+        let generic = plane
+            .adapter
+            .discover_capabilities()
+            .await
+            .expect("the daemon baseline is readable");
+        assert!(!generic.supports(RuntimeCapability::ContextPolicy));
+        assert!(!generic.supports(RuntimeCapability::Compact));
+
+        let selected = plane
+            .adapter
+            .discover_capabilities_for(&ModelRung {
+                provider: ProviderRef(provider.to_owned()),
+                model: ModelRef("fixture-model".to_owned()),
+                effort: None,
+            })
+            .await
+            .expect("the selected provider snapshot is readable");
+        assert_eq!(
+            selected.supports(RuntimeCapability::ContextPolicy),
+            expected_context,
+            "{provider} context policy"
+        );
+        assert_eq!(
+            selected.supports(RuntimeCapability::Compact),
+            expected_compact,
+            "{provider} same-session compaction"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_claude_required_deep_seat_uses_the_provider_options_spawn_path() {
+    let agent = agent_for("claude", "claude-opus-5", "auto", "claude-session-1");
+    let recorded = daemon()
+        .announcing(&context_server_info())
+        .answering_rpc(
+            "get_providers_snapshot_request",
+            provider_snapshot("claude", true, false),
+        )
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({
+                "status": "agent_created",
+                "agentId": AGENT_ID,
+                "agent": agent["agent"],
+            }),
+        )
+        .answering_rpc("fetch_agent_request", agent);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let policy = frozen_context_policy(
+        kontor_core::spec::ContextWindowClass::Deep,
+        kontor_core::spec::ContextEnforcement::Required,
+        true,
+    );
+    assert_eq!(policy.effective.trigger_tokens, Some(512_000));
+    let request = plane
+        .launch_request_with_policy(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            model_rung(),
+            policy,
+        )
+        .await
+        .expect("the seat is admitted");
+    let outcome = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("Claude accepts the required per-seat window");
+
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+    assert_eq!(plane.daemon.count("agent run"), 0);
+    assert!(
+        outcome
+            .snapshot
+            .capabilities
+            .supports(RuntimeCapability::ContextPolicy)
+    );
+    assert!(
+        !outcome
+            .snapshot
+            .capabilities
+            .supports(RuntimeCapability::Compact)
+    );
+}
+
+#[tokio::test]
+async fn cursor_required_is_refused_before_launch_even_if_it_claims_a_future_flag() {
+    let recorded = daemon().announcing(&context_server_info()).answering_rpc(
+        "get_providers_snapshot_request",
+        provider_snapshot("cursor", true, false),
+    );
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let request = plane
+        .launch_request_with_policy(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            ModelRung {
+                provider: ProviderRef("cursor".to_owned()),
+                model: ModelRef("cursor-model".to_owned()),
+                effort: None,
+            },
+            frozen_context_policy(
+                kontor_core::spec::ContextWindowClass::Standard,
+                kontor_core::spec::ContextEnforcement::Required,
+                true,
+            ),
+        )
+        .await
+        .expect("the Kontor seat reservation is valid");
+    plane.daemon.take_calls();
+    let refused = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("Cursor has no audited threshold map");
+
+    assert_eq!(
+        refused,
+        RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::ContextPolicy,
+        }
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn opencode_compacts_in_place_with_both_native_identities_unchanged() {
+    let agent = agent_for("opencode", "open-model", "build", "opencode-session-1");
+    let recorded = daemon()
+        .announcing(&context_server_info())
+        .answering_rpc(
+            "get_providers_snapshot_request",
+            provider_snapshot("opencode", false, true),
+        )
+        .answering_rpc("fetch_agent_request", agent)
+        .answering_rpc(
+            "agent.compact.request",
+            serde_json::json!({
+                "agentId": AGENT_ID,
+                "provider": "opencode",
+                "status": "confirmed",
+                "nativeSessionIdBefore": "opencode-session-1",
+                "nativeSessionIdAfter": "opencode-session-1",
+                "error": serde_json::Value::Null,
+            }),
+        );
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let route = ModelRung {
+        provider: ProviderRef("opencode".to_owned()),
+        model: ModelRef("open-model".to_owned()),
+        effort: None,
+    };
+    let request = plane
+        .launch_request_for(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace, route)
+        .await
+        .expect("the OpenCode seat is admitted");
+    let binding = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("OpenCode launches without a false threshold policy")
+        .snapshot;
+    assert!(
+        !binding
+            .capabilities
+            .supports(RuntimeCapability::ContextPolicy)
+    );
+    assert!(binding.capabilities.supports(RuntimeCapability::Compact));
+
+    let receipt = plane
+        .adapter
+        .compact(&kontor_runtime::request::CompactRequest {
+            binding: binding.clone(),
+            receipt_id: kontor_core::id::CompactionReceiptId::generate(),
+            trigger: kontor_core::compaction::CompactionTrigger::Threshold,
+            policy: compaction_policy(kontor_core::spec::ContextEnforcement::BestEffort),
+            context_pack_hash: ContentHash::of(b"context-pack"),
+            handoff_hash: None,
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("the stable OpenCode summarize path confirms");
+
+    assert_eq!(
+        receipt.status,
+        kontor_core::compaction::CompactionStatus::Confirmed
+    );
+    assert!(receipt.preserves_native_identity());
+    assert_eq!(receipt.native_before, binding.identity().clone());
+    assert_eq!(plane.daemon.count("rpc agent.compact.request"), 1);
+    assert_eq!(plane.daemon.count("agent run"), 1);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+}
+
+#[tokio::test]
+async fn opencode_compaction_fails_when_the_provider_session_changes() {
+    let before = agent_for("opencode", "open-model", "build", "opencode-session-1");
+    let after = agent_for("opencode", "open-model", "build", "opencode-session-2");
+    let recorded = daemon()
+        .announcing(&context_server_info())
+        .answering_rpc(
+            "get_providers_snapshot_request",
+            provider_snapshot("opencode", false, true),
+        )
+        .then_answering_rpc("fetch_agent_request", before.clone())
+        .then_answering_rpc("fetch_agent_request", before)
+        .answering_rpc("fetch_agent_request", after)
+        .answering_rpc(
+            "agent.compact.request",
+            serde_json::json!({
+                "agentId": AGENT_ID,
+                "provider": "opencode",
+                "status": "confirmed",
+                "nativeSessionIdBefore": "opencode-session-1",
+                "nativeSessionIdAfter": "opencode-session-1",
+                "error": serde_json::Value::Null,
+            }),
+        );
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let request = plane
+        .launch_request_for(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            ModelRung {
+                provider: ProviderRef("opencode".to_owned()),
+                model: ModelRef("open-model".to_owned()),
+                effort: None,
+            },
+        )
+        .await
+        .expect("the OpenCode seat is admitted");
+    let binding = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("OpenCode launches")
+        .snapshot;
+
+    let receipt = plane
+        .adapter
+        .compact(&kontor_runtime::request::CompactRequest {
+            binding,
+            receipt_id: kontor_core::id::CompactionReceiptId::generate(),
+            trigger: kontor_core::compaction::CompactionTrigger::Threshold,
+            policy: compaction_policy(kontor_core::spec::ContextEnforcement::BestEffort),
+            context_pack_hash: ContentHash::of(b"context-pack"),
+            handoff_hash: None,
+            requested_at: at("2026-08-10T09:30:00Z"),
+        })
+        .await
+        .expect("identity drift is a failed receipt, not a transport error");
+
+    assert_eq!(
+        receipt.status,
+        kontor_core::compaction::CompactionStatus::Failed
+    );
+    assert_eq!(receipt.evidence, None);
 }
 
 /// MUT-CTX-05. Reporting an unenforced Paseo compaction as `Confirmed` makes

@@ -45,13 +45,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use kontor_core::compaction::CompactionReceipt;
+use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::id::{
     AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::{ModelRung, SeatAutonomy};
+use kontor_core::spec::{ContextPolicySnapshot, ModelRung, SeatAutonomy};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
@@ -80,6 +80,7 @@ use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
     ReconcileSessionLabelsRequest, ReconciledSessionLabels, ResumeRequest, SendMessageRequest,
+    capability_document,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
@@ -92,19 +93,20 @@ use kontor_runtime::workspace::{
 };
 
 use crate::client::{
-    PaseoCommand, PaseoRpc, PaseoTransport, consultation_permission_mode, ensure_frame_bounded,
-    paseo_mode,
+    PaseoCommand, PaseoRpc, PaseoTransport, built_in_provider, consultation_permission_mode,
+    context_provider_options, ensure_frame_bounded, paseo_mode,
 };
 use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
-    PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
-    PaseoCliAgentReloaded, PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived,
-    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
-    PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
-    PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
-    PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
-    label, normalize_entry, stream_permission_external_id,
+    PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentCompactStatus, PaseoAgentCompacted,
+    PaseoAgentCreated, PaseoAgentPage, PaseoAgentStatus, PaseoCliAgentReloaded,
+    PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived, PaseoCliStopped,
+    PaseoCliWorkspaceCreated, PaseoDirection, PaseoFeature, PaseoPermissionResolved, PaseoProject,
+    PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
+    PaseoProviderCapabilities, PaseoProviderSnapshot, PaseoSendAccepted, PaseoServerInfo,
+    PaseoStreamFrame, PaseoSubscriptionAck, PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace,
+    PaseoWorkspaceKind, PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -1158,6 +1160,20 @@ impl PaseoAdapter {
     /// than returning a stale one.
     async fn fetch_server_info(&self) -> RuntimeResult<PaseoServerInfo> {
         self.transport.server_identity().await
+    }
+
+    async fn fetch_provider_capabilities(
+        &self,
+        provider: &str,
+    ) -> RuntimeResult<Option<PaseoProviderCapabilities>> {
+        let request = PaseoRpc::provider_snapshot(self.next_request_id());
+        let frame = self.transport.request(&request).await?;
+        let snapshot: PaseoProviderSnapshot = frame.resolve(&request, "PaseoProviderSnapshot")?;
+        Ok(snapshot
+            .entries
+            .into_iter()
+            .find(|entry| entry.provider == provider && entry.enabled && entry.status == "ready")
+            .and_then(|entry| entry.capabilities))
     }
 
     async fn fetch_projects(&self) -> RuntimeResult<Vec<PaseoProject>> {
@@ -3114,6 +3130,119 @@ impl PaseoAdapter {
         Ok(capabilities)
     }
 
+    /// Add only the operations both the general daemon surface and this exact
+    /// provider prove. A missing or unreadable provider snapshot is absence of
+    /// evidence, so the ordinary Paseo capabilities remain unchanged.
+    async fn declared_for(&self, provider: &str) -> RuntimeResult<RuntimeCapabilities> {
+        let mut capabilities = self.declared().await?;
+        let context_management = capabilities.trust_grade == TrustGrade::A
+            && self
+                .lock()
+                .server
+                .as_ref()
+                .is_some_and(|info| info.supports(PaseoFeature::ContextManagement));
+        if !context_management {
+            return Ok(capabilities);
+        }
+        let Ok(Some(provider_capabilities)) = self.fetch_provider_capabilities(provider).await
+        else {
+            return Ok(capabilities);
+        };
+        if provider_capabilities.supports_context_window_policy
+            && matches!(built_in_provider(provider), "codex" | "claude")
+        {
+            capabilities
+                .supported
+                .insert(RuntimeCapability::ContextPolicy);
+        }
+        if provider_capabilities.supports_same_session_compaction {
+            capabilities.supported.insert(RuntimeCapability::Compact);
+        }
+        Ok(capabilities)
+    }
+
+    /// Start one seat through the provider-options protocol when this policy
+    /// has an absolute trigger; otherwise keep the qualified 0.4 CLI path.
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_agent(
+        &self,
+        workspace_id: &str,
+        cwd: &str,
+        model_rung: &ModelRung,
+        autonomy: SeatAutonomy,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        policy: &ContextPolicySnapshot,
+        credential: Option<&str>,
+    ) -> RuntimeResult<String> {
+        if let Some(options) =
+            context_provider_options(model_rung.provider.0.as_str(), &policy.effective)
+        {
+            let mode = match credential {
+                Some(_) => consultation_permission_mode(model_rung.provider.0.as_str())?,
+                None => paseo_mode(model_rung.provider.0.as_str(), autonomy)?,
+            };
+            let env = credential
+                .map(|credential| [("KONTOR_AUTH".to_owned(), credential.to_owned())].into())
+                .unwrap_or_default();
+            let rpc = PaseoRpc::agent_create(
+                self.next_request_id(),
+                workspace_id,
+                cwd,
+                model_rung,
+                mode,
+                title,
+                labels,
+                self.config.scope.orchestrator_agent_id.as_str(),
+                prompt,
+                &env,
+                options,
+            );
+            return match self.transport.request(&rpc).await {
+                Ok(frame) => {
+                    let created: PaseoAgentCreated = frame.resolve(&rpc, "PaseoAgentCreated")?;
+                    if created.status != "agent_created" || created.agent_id.is_empty() {
+                        return Err(RuntimeError::CorrelationFailed);
+                    }
+                    Ok(created.agent_id)
+                }
+                Err(RuntimeError::Transport { .. }) => self.recover_launch(labels).await,
+                Err(other) => Err(other),
+            };
+        }
+
+        let command = match credential {
+            Some(credential) => PaseoCommand::consultation_run(
+                workspace_id,
+                cwd,
+                model_rung,
+                title,
+                labels,
+                self.config.scope.orchestrator_agent_id.as_str(),
+                prompt,
+                credential,
+            )?,
+            None => PaseoCommand::agent_run(
+                workspace_id,
+                cwd,
+                model_rung,
+                autonomy,
+                title,
+                labels,
+                self.config.scope.orchestrator_agent_id.as_str(),
+                prompt,
+            )?,
+        };
+        match self.transport.run(&command).await {
+            Ok(output) => Ok(output
+                .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
+                .agent_id),
+            Err(RuntimeError::Transport { .. }) => self.recover_launch(labels).await,
+            Err(other) => Err(other),
+        }
+    }
+
     /// Everything a launch does once its seat has agreed to it.
     ///
     /// Separate from [`RuntimeAdapter::launch`] so one place decides what a
@@ -3226,29 +3355,22 @@ impl PaseoAdapter {
             }
         })?;
 
-        let command = PaseoCommand::agent_run(
-            &workspace_id,
-            task_scope.worktree.as_str(),
-            request.model_rung(),
-            request.autonomy(),
-            request.display_name().as_str(),
-            &labels,
-            self.config.scope.orchestrator_agent_id.as_str(),
-            request.prompt().as_str(),
-        )?;
         let native_id = match recovered_id {
             Some(native_id) => native_id,
-            None => match self.transport.run(&command).await {
-                Ok(output) => {
-                    let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
-                    started.agent_id
-                }
-                // The command may have landed. An exact-label census before deciding
-                // anything is the whole of the recovery rule; running `agent run`
-                // again would be how one seat acquires two agents.
-                Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                Err(other) => return Err(other),
-            },
+            None => {
+                self.spawn_agent(
+                    &workspace_id,
+                    task_scope.worktree.as_str(),
+                    request.model_rung(),
+                    request.autonomy(),
+                    request.display_name().as_str(),
+                    &labels,
+                    request.prompt().as_str(),
+                    request.context_policy(),
+                    None,
+                )
+                .await?
+            }
         };
 
         // The CLI's answer is an id, a status, a provider and two display
@@ -3394,7 +3516,9 @@ impl PaseoAdapter {
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
-        let declared = self.declared().await?;
+        let declared = self
+            .declared_for(request.model_rung.provider.0.as_str())
+            .await?;
         let effective_scope = self.effective_scope(&request.scope)?;
         let project = self.require_project_for(&effective_scope)?;
         let generation = self.generation();
@@ -3461,25 +3585,19 @@ impl PaseoAdapter {
                 });
             }
             [] => {
-                let command = PaseoCommand::consultation_run(
-                    &workspace_id,
-                    request.cwd.as_str(),
-                    &request.model_rung,
-                    request.display_name.as_str(),
-                    &labels,
-                    self.config.scope.orchestrator_agent_id.as_str(),
-                    request.prompt.as_str(),
-                    request.credential.expose_secret(),
-                )?;
-                let native_id = match self.transport.run(&command).await {
-                    Ok(output) => {
-                        output
-                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
-                            .agent_id
-                    }
-                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                    Err(other) => return Err(other),
-                };
+                let native_id = self
+                    .spawn_agent(
+                        &workspace_id,
+                        request.cwd.as_str(),
+                        &request.model_rung,
+                        SeatAutonomy::Advisory,
+                        request.display_name.as_str(),
+                        &labels,
+                        request.prompt.as_str(),
+                        &request.context_policy,
+                        Some(request.credential.expose_secret()),
+                    )
+                    .await?;
                 (native_id, true)
             }
             _ => return Err(RuntimeError::CorrelationFailed),
@@ -3540,7 +3658,9 @@ impl PaseoAdapter {
         request: &HostedSeatLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
-        let declared = self.declared().await?;
+        let declared = self
+            .declared_for(request.model_rung.provider.0.as_str())
+            .await?;
         let effective_scope = self.effective_scope(&request.scope)?;
         let project = self.require_project_for(&effective_scope)?;
         let generation = self.generation();
@@ -3612,25 +3732,19 @@ impl PaseoAdapter {
         let (native_id, created) = match recovered_id {
             Some(native_id) => (native_id, false),
             None => {
-                let command = PaseoCommand::agent_run(
-                    &workspace_id,
-                    request.cwd.as_str(),
-                    &request.model_rung,
-                    SeatAutonomy::Supervised,
-                    request.display_name.as_str(),
-                    &labels,
-                    self.config.scope.orchestrator_agent_id.as_str(),
-                    request.prompt.as_str(),
-                )?;
-                let native_id = match self.transport.run(&command).await {
-                    Ok(output) => {
-                        output
-                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
-                            .agent_id
-                    }
-                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                    Err(other) => return Err(other),
-                };
+                let native_id = self
+                    .spawn_agent(
+                        &workspace_id,
+                        request.cwd.as_str(),
+                        &request.model_rung,
+                        SeatAutonomy::Supervised,
+                        request.display_name.as_str(),
+                        &labels,
+                        request.prompt.as_str(),
+                        &request.context_policy,
+                        None,
+                    )
+                    .await?;
                 (native_id, true)
             }
         };
@@ -3693,6 +3807,13 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn discover_capabilities(&self) -> RuntimeResult<RuntimeCapabilities> {
         self.declared().await
+    }
+
+    async fn discover_capabilities_for(
+        &self,
+        model_rung: &ModelRung,
+    ) -> RuntimeResult<RuntimeCapabilities> {
+        self.declared_for(model_rung.provider.0.as_str()).await
     }
 
     async fn issued_binding(
@@ -4423,7 +4544,9 @@ impl RuntimeAdapter for PaseoAdapter {
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
-        let declared = self.declared().await?;
+        let declared = self
+            .declared_for(request.model_rung().provider.0.as_str())
+            .await?;
 
         // The seat is taken here: before the readbacks, long before `agent run`,
         // and in one step with the check that it was there to take. Splitting
@@ -5519,27 +5642,14 @@ impl RuntimeAdapter for PaseoAdapter {
         }
     }
 
-    /// Report, honestly, that this daemon cannot compact a seat's context.
+    /// Compact only through Paseo's provider-aware same-session operation.
     ///
-    /// The Paseo 0.3.1 protocol exposes no per-seat context configuration and no
-    /// compaction operation, so [`PaseoAdapter::capabilities`] advertises
-    /// neither [`RuntimeCapability::ContextPolicy`] nor
-    /// [`RuntimeCapability::Compact`], and this method emits **no RPC at all**.
-    ///
-    /// What it deliberately does not do is the whole point. Paseo *can* reload,
-    /// archive, cancel and create agents, and any of those could be dressed up
-    /// as "compaction" — a fresh agent with a summarized prompt looks like a
-    /// compacted seat from the outside. It would be a different session, the
-    /// native id would change, and the receipt would be a lie. So the answer is
-    /// a receipt that says `pending` for a `required` policy — which blocks
-    /// reuse — or `unsupported` for `best_effort`, which is visible and lets the
-    /// work continue. Neither is ever `confirmed`, and no message is sent to the
-    /// model in the hope that it compacts itself.
+    /// Older daemons and providers without the capability keep the existing
+    /// no-effect receipt. A confirmation additionally requires Paseo's provider
+    /// session ids, a fresh agent readback, the Paseo agent id and the Kontor
+    /// generation all to remain unchanged.
     async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt> {
         request.validate()?;
-        // The binding is still attested, so a stale or forged one is refused
-        // rather than answered — reporting a limitation is not a reason to stop
-        // checking who is asking.
         let binding = self.attested(&request.binding)?;
         let declared = self.declared().await?;
         preflight(
@@ -5555,7 +5665,70 @@ impl RuntimeAdapter for PaseoAdapter {
                 context_policy: None,
             },
         )?;
-        Ok(request.unsupported_receipt(&declared, request.requested_at)?)
+        if !binding.capabilities.supports(RuntimeCapability::Compact) {
+            return Ok(request.unsupported_receipt(&binding.capabilities, request.requested_at)?);
+        }
+
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let generation_before = self.generation();
+        let before_agent = self.fetch_agent(&native_id).await?;
+        self.verify_seat_placement(&binding, &before_agent).await?;
+        let rpc = PaseoRpc::agent_compact(self.next_request_id(), &native_id);
+        let frame = self.transport.request(&rpc).await?;
+        let compacted: PaseoAgentCompacted = frame.resolve(&rpc, "PaseoAgentCompacted")?;
+
+        let generation_after = self.generation();
+        let after_agent = match self.fetch_agent(&native_id).await {
+            Ok(agent) if self.verify_seat_placement(&binding, &agent).await.is_ok() => Some(agent),
+            _ => None,
+        };
+        let native_after = after_agent.as_ref().and_then(|agent| {
+            ExternalId::parse(&agent.id)
+                .ok()
+                .map(|id| self.identity(id, generation_after))
+        });
+        let before_provider_session = before_agent.provider_session_id();
+        let after_provider_session = after_agent
+            .as_ref()
+            .and_then(PaseoAgent::provider_session_id);
+        let same_session = compacted.agent_id == native_id
+            && compacted.provider.as_deref() == Some(before_agent.provider.as_str())
+            && compacted.native_session_id_before.as_deref() == before_provider_session
+            && compacted.native_session_id_after.as_deref() == before_provider_session
+            && after_provider_session == before_provider_session
+            && before_provider_session.is_some()
+            && generation_before == generation_after
+            && native_after.as_ref() == Some(binding.identity());
+        let status = if compacted.status == PaseoAgentCompactStatus::Confirmed && same_session {
+            CompactionStatus::Confirmed
+        } else {
+            CompactionStatus::Failed
+        };
+
+        let receipt = CompactionReceipt {
+            schema_version: request.policy.schema_version,
+            id: request.receipt_id,
+            agent_run_id: binding.agent_run_id(),
+            binding_id: binding.binding_id(),
+            native_before: binding.identity().clone(),
+            native_after,
+            requested: request.policy.requested,
+            effective: request.policy.effective,
+            trigger: request.trigger,
+            capabilities: capability_document(&binding.capabilities)
+                .map_err(RuntimeError::Domain)?,
+            status,
+            telemetry: CompactionTelemetry::unknown(),
+            context_pack_hash: request.context_pack_hash.clone(),
+            handoff_hash: request.handoff_hash.clone(),
+            evidence: (status == CompactionStatus::Confirmed)
+                .then(|| ExternalId::parse("agent.compact.response"))
+                .transpose()
+                .map_err(RuntimeError::Domain)?,
+            recorded_at: request.requested_at,
+        };
+        receipt.validate().map_err(RuntimeError::Domain)?;
+        Ok(receipt)
     }
 }
 

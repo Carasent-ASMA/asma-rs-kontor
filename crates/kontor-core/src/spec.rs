@@ -1913,6 +1913,8 @@ impl ContextPolicySnapshot {
     /// policy, no profile default and no seed. It is resolved through the same
     /// resolver as every other seat, so the recorded source is
     /// [`ContextPolicySource::StandardFallback`] rather than an invented one.
+    /// A capable runtime makes that fallback `required`; an incapable runtime
+    /// keeps `best_effort` and records `not_enforced`.
     ///
     /// # Errors
     /// As [`EffectiveContextPolicy::derive`] and [`ContextPolicySnapshot::freeze`].
@@ -1922,7 +1924,10 @@ impl ContextPolicySnapshot {
         schema_version: SchemaVersion,
         resolved_at: Timestamp,
     ) -> DomainResult<Self> {
-        let resolved = resolve_context_window(&ContextPolicyInputs::default())?;
+        let mut resolved = resolve_context_window(&ContextPolicyInputs::default())?;
+        if supported {
+            resolved.policy.enforcement = ContextEnforcement::Required;
+        }
         let requested = RequestedContextPolicy::of(&resolved, schema_version);
         let effective = EffectiveContextPolicy::derive(&requested, bounds, supported)?;
         Self::freeze(requested, effective, resolved_at)

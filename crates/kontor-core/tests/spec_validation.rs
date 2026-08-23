@@ -1581,6 +1581,37 @@ fn the_five_classes_map_to_exactly_the_approved_trigger_targets() {
     assert_eq!(ContextWindowClass::Native.trigger_tokens(), None);
 }
 
+#[test]
+fn the_fallback_is_required_only_when_the_runtime_can_enforce_it() {
+    let supported = ContextPolicySnapshot::standard(
+        &ContextWindowBounds::unknown(),
+        true,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("a capable fallback freezes");
+    assert_eq!(
+        supported.requested.policy.enforcement,
+        ContextEnforcement::Required
+    );
+
+    let unsupported = ContextPolicySnapshot::standard(
+        &ContextWindowBounds::unknown(),
+        false,
+        kontor_core::id::SCHEMA_VERSION,
+        at("2026-08-10T09:00:00Z"),
+    )
+    .expect("an incapable fallback stays visible");
+    assert_eq!(
+        unsupported.requested.policy.enforcement,
+        ContextEnforcement::BestEffort
+    );
+    assert_eq!(
+        unsupported.effective.capability,
+        ContextCapabilityResult::NotEnforced
+    );
+}
+
 /// MUT-CTX-01. Swapping the role-slot and work-profile arms of the resolver
 /// makes this fail: the recorded source becomes `work_profile`, and the
 /// resolved class with it.

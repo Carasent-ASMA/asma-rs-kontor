@@ -6714,17 +6714,6 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
-        let capabilities = adapter
-            .discover_capabilities()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let context_policy = ContextPolicySnapshot::standard(
-            &capabilities.limits.context_window,
-            capabilities.supports(RuntimeCapability::ContextPolicy),
-            SCHEMA_VERSION,
-            kontor_api::now(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -6737,6 +6726,17 @@ impl Services {
         if seat.native_identity.is_some() {
             return Ok(());
         }
+        let capabilities = adapter
+            .discover_capabilities_for(&seat.model_rung)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy = ContextPolicySnapshot::standard(
+            &capabilities.limits.context_window,
+            capabilities.supports(RuntimeCapability::ContextPolicy),
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let seat_credential = state
             .credentials()
             .consultation_seat_credential(seat.seat_binding_id);
@@ -7036,17 +7036,6 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
-        let capabilities = adapter
-            .discover_capabilities()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let context_policy = ContextPolicySnapshot::standard(
-            &capabilities.limits.context_window,
-            capabilities.supports(RuntimeCapability::ContextPolicy),
-            SCHEMA_VERSION,
-            kontor_api::now(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
         let findings = if include_judge {
             state
                 .with_store(|store| {
@@ -7082,6 +7071,17 @@ impl Services {
             {
                 continue;
             }
+            let capabilities = adapter
+                .discover_capabilities_for(&seat.model_rung)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let context_policy = ContextPolicySnapshot::standard(
+                &capabilities.limits.context_window,
+                capabilities.supports(RuntimeCapability::ContextPolicy),
+                SCHEMA_VERSION,
+                kontor_api::now(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
             let evidence = if slot.role == CommitteeRole::Judge {
                 serde_json::to_string(
                     &findings
@@ -7652,6 +7652,7 @@ async fn freeze_seat_context_policy(
     adapter: &std::sync::Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
+    model_rung: &ModelRung,
     now: Timestamp,
 ) -> kontor_runtime::adapter::RuntimeResult<ContextPolicySnapshot> {
     let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
@@ -7661,8 +7662,13 @@ async fn freeze_seat_context_policy(
     // No authorized run override at this door: the scheduler starts a seat from
     // the frozen team definition, and an override is an operator act that
     // arrives through the explicit control-plane command instead.
-    let resolved = snapshot.resolve_context_window(slot.as_role_key(), declared, None)?;
-    let capabilities = adapter.discover_capabilities().await?;
+    let mut resolved = snapshot.resolve_context_window(slot.as_role_key(), declared, None)?;
+    let capabilities = adapter.discover_capabilities_for(model_rung).await?;
+    if resolved.source == kontor_core::spec::ContextPolicySource::StandardFallback
+        && capabilities.supports(RuntimeCapability::ContextPolicy)
+    {
+        resolved.policy.enforcement = ContextEnforcement::Required;
+    }
     let requested = RequestedContextPolicy::of(&resolved, SCHEMA_VERSION);
     let effective = EffectiveContextPolicy::derive(
         &requested,
@@ -12562,17 +12568,6 @@ impl ApplicationOperations for Services {
                 .ensure_container(project_id, &control, &cwd, adapter.as_ref())
                 .await?;
             let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
-            let capabilities = adapter
-                .discover_capabilities()
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let context_policy = ContextPolicySnapshot::standard(
-                &capabilities.limits.context_window,
-                capabilities.supports(RuntimeCapability::ContextPolicy),
-                SCHEMA_VERSION,
-                kontor_api::now(),
-            )
-            .map_err(|error| self.refuse_domain(&error))?;
             for (seat, seat_binding_id) in materialized {
                 let Some(model_rung) = routes.get(seat.role.role_code.as_str()) else {
                     continue;
@@ -12585,6 +12580,17 @@ impl ApplicationOperations for Services {
                         },
                     ));
                 }
+                let capabilities = adapter
+                    .discover_capabilities_for(model_rung)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                let context_policy = ContextPolicySnapshot::standard(
+                    &capabilities.limits.context_window,
+                    capabilities.supports(RuntimeCapability::ContextPolicy),
+                    SCHEMA_VERSION,
+                    kontor_api::now(),
+                )
+                .map_err(|error| self.refuse_domain(&error))?;
                 let display_name =
                     self.seat_name(project_id, &control, &scope, &seat.role.role_code)?;
                 let prompt = BoundedText::parse(&format!(
@@ -12754,7 +12760,7 @@ impl ApplicationOperations for Services {
                 .await?;
             let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
             let capabilities = adapter
-                .discover_capabilities()
+                .discover_capabilities_for(&plan.desired)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let context_policy = ContextPolicySnapshot::standard(
@@ -17859,9 +17865,10 @@ impl ApplicationOperations for Services {
             None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
                 .map_err(|error| self.refuse_domain(&error))?,
         };
-        let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy =
+            freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, &model_rung, now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let launch = SlotLaunch {
             display_name: self.delivery_seat_name(
                 project_id,
@@ -19925,9 +19932,10 @@ impl Services {
                 },
             )
             .map_err(|error| self.refuse_domain(&error))?;
-            let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let context_policy =
+                freeze_seat_context_policy(&adapter, &team_snapshot, &slot, &model_rung, now)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
                 .map_err(|error| self.refuse_domain(&error))?;
             let outcome = adapter
@@ -21375,9 +21383,10 @@ impl Services {
             },
         )
         .map_err(|error| self.refuse_domain(&error))?;
-        let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let context_policy =
+            freeze_seat_context_policy(adapter, &team_snapshot, slot, &model_rung, now)
+                .await
+                .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
             .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter

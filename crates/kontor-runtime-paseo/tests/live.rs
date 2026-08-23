@@ -108,8 +108,8 @@ async fn live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity() {
          server-info feature object omits projectRename"
     );
     assert!(
-        !identity.supports(PaseoFeature::Compaction),
-        "compaction is not supported and must not be simulated"
+        !identity.supports(PaseoFeature::ContextManagement),
+        "provider context management is absent and must not be simulated"
     );
     assert_eq!(
         PASEO_WS_PROTOCOL_VERSION, 1,

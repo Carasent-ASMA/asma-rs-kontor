@@ -212,11 +212,11 @@ pub enum PaseoFeature {
     /// justifies. Name drift is reported as
     /// [`crate::adapter::PaseoProjectOutcome::ReadyWithRenamePending`] instead.
     ProjectRename,
-    /// A session's context can be compacted through a supported operation.
+    /// Provider-aware context policy and same-session compaction APIs exist.
     ///
-    /// Also absent in 0.3.1, and also never simulated with a reload or a
-    /// replacement.
-    Compaction,
+    /// Provider capability readback still decides which operation is legal for
+    /// one selected provider. This general flag alone proves neither.
+    ContextManagement,
 }
 
 impl PaseoFeature {
@@ -230,7 +230,7 @@ impl PaseoFeature {
             Self::WorkspaceMultiplicity => "workspaceMultiplicity",
             Self::SelectiveAgentTimeline => "selectiveAgentTimeline",
             Self::ProjectRename => "projectRename",
-            Self::Compaction => "compaction",
+            Self::ContextManagement => "contextManagement",
         }
     }
 }
@@ -268,6 +268,44 @@ pub struct PaseoServerInfo {
     /// question, and reading mere presence as support would drive it anyway.
     #[serde(default)]
     pub features: BTreeMap<String, bool>,
+}
+
+/// The provider-specific context facts exposed by Paseo's provider snapshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoProviderCapabilities {
+    /// The provider accepts a per-agent context-window policy at spawn.
+    #[serde(default, rename = "supportsContextWindowPolicy")]
+    pub supports_context_window_policy: bool,
+    /// The provider can compact its existing native session out of band.
+    #[serde(default, rename = "supportsSameSessionCompaction")]
+    pub supports_same_session_compaction: bool,
+}
+
+/// One provider in a `get_providers_snapshot_response`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoProviderSnapshotEntry {
+    /// The exact provider id accepted by agent creation.
+    pub provider: String,
+    /// Only `ready` entries are usable launch evidence.
+    pub status: String,
+    /// Disabled entries cannot prove an operation is available.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Provider-specific operation flags, absent on older builds.
+    #[serde(default)]
+    pub capabilities: Option<PaseoProviderCapabilities>,
+}
+
+/// The correlated provider catalog readback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoProviderSnapshot {
+    /// Every provider visible to this daemon.
+    #[serde(default)]
+    pub entries: Vec<PaseoProviderSnapshotEntry>,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 impl PaseoServerInfo {
@@ -670,6 +708,50 @@ pub struct PaseoAgent {
     /// open, and one that has left is resolved.
     #[serde(default, rename = "pendingPermissions")]
     pub pending_permissions: Vec<PaseoPendingPermission>,
+}
+
+/// The correlated success payload for `create_agent_request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoAgentCreated {
+    /// Paseo's typed lifecycle outcome.
+    pub status: String,
+    /// The new agent identity.
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
+}
+
+/// Paseo's provider-neutral result for one same-session compaction request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoAgentCompacted {
+    /// The Paseo agent that was addressed.
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
+    /// The provider Paseo actually compacted.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Whether the native adapter confirmed, refused or failed the operation.
+    pub status: PaseoAgentCompactStatus,
+    /// Provider-native session id before the operation.
+    #[serde(default, rename = "nativeSessionIdBefore")]
+    pub native_session_id_before: Option<String>,
+    /// Provider-native session id after the operation.
+    #[serde(default, rename = "nativeSessionIdAfter")]
+    pub native_session_id_after: Option<String>,
+    /// Provider error text, carried only as transient runtime detail.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// The closed outcome vocabulary of `agent.compact.response`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaseoAgentCompactStatus {
+    /// The provider reports same-session completion.
+    Confirmed,
+    /// The selected provider does not implement compaction.
+    Unsupported,
+    /// The attempt did not complete or could not prove identity.
+    Failed,
 }
 
 impl PaseoAgent {
@@ -1521,7 +1603,7 @@ mod tests {
         assert!(info.is_supported_baseline());
         assert!(info.missing_required().is_empty());
         assert!(!info.supports(PaseoFeature::ProjectRename));
-        assert!(!info.supports(PaseoFeature::Compaction));
+        assert!(!info.supports(PaseoFeature::ContextManagement));
 
         // `false` is an answer, not an absence.
         let mut refused = info.clone();
