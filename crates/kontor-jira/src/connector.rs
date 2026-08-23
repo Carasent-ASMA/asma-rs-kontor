@@ -28,6 +28,21 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Install one strict Jira credential document into the OS keychain.
+///
+/// The caller owns how the secret enters memory. This boundary validates it
+/// before persistence and exposes no backend diagnostic containing the target.
+pub fn install_credentials(alias: &str, secret: SecretString) -> Result<(), JiraError> {
+    validate_credential_alias(alias)?;
+    parse_credentials(&secret)?;
+    SystemKeychain
+        .set_secret(
+            &KeychainTarget::new(KEYCHAIN_SERVICE, alias.to_owned()),
+            &secret,
+        )
+        .map_err(|_| credential_error("the keychain credential could not be installed"))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JiraConfig {
@@ -166,9 +181,7 @@ impl JiraConnector {
         config: JiraProjectConfig,
         keychain: Arc<dyn KeychainBackend>,
     ) -> Result<Self, JiraError> {
-        if config.credential_alias.trim().is_empty() || config.credential_alias.len() > 128 {
-            return Err(configuration("credential_alias is empty or oversized"));
-        }
+        validate_credential_alias(&config.credential_alias)?;
         let mut endpoint = Url::parse(&config.endpoint)
             .map_err(|_| configuration("endpoint is not an absolute URL"))?;
         let loopback = endpoint
@@ -213,13 +226,7 @@ impl JiraConnector {
                 "the configured keychain credential could not be resolved",
             )
         })?;
-        serde_json::from_str(secret.expose_secret()).map_err(|_| {
-            JiraError::unavailable(
-                "credential",
-                UnavailableReason::Credential,
-                "the keychain credential is not the supported document",
-            )
-        })
+        parse_credentials(&secret)
     }
 
     fn url(&self, path: &str) -> Result<Url, JiraError> {
@@ -783,6 +790,28 @@ struct JiraCredentials {
     api_token: String,
 }
 
+fn validate_credential_alias(alias: &str) -> Result<(), JiraError> {
+    if alias.trim().is_empty() || alias.len() > 128 {
+        return Err(configuration("credential_alias is empty or oversized"));
+    }
+    Ok(())
+}
+
+fn parse_credentials(secret: &SecretString) -> Result<JiraCredentials, JiraError> {
+    let credentials: JiraCredentials = serde_json::from_str(secret.expose_secret())
+        .map_err(|_| credential_error("the keychain credential is not the supported document"))?;
+    if credentials.email.trim().is_empty()
+        || credentials.email.len() > 320
+        || credentials.api_token.is_empty()
+        || credentials.api_token.len() > 4096
+    {
+        return Err(credential_error(
+            "the keychain credential is not the supported document",
+        ));
+    }
+    Ok(credentials)
+}
+
 struct LiveIssue {
     observation: WireObservation,
     live_transitions: Vec<WireTransition>,
@@ -973,6 +1002,10 @@ fn configuration(detail: &'static str) -> JiraError {
     JiraError::unavailable("configuration", UnavailableReason::Configuration, detail)
 }
 
+fn credential_error(detail: &'static str) -> JiraError {
+    JiraError::unavailable("credential", UnavailableReason::Credential, detail)
+}
+
 fn transport(detail: &'static str) -> JiraError {
     JiraError::unavailable("transport", UnavailableReason::Transport, detail)
 }
@@ -983,4 +1016,27 @@ fn oversized() -> JiraError {
         UnavailableReason::OversizedOutput,
         "Jira returned an oversized response",
     )
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use secrecy::SecretString;
+
+    use super::parse_credentials;
+
+    #[test]
+    fn credential_document_is_strict_and_non_empty() {
+        let valid = SecretString::from(
+            r#"{"email":"operator@example.test","api_token":"token"}"#.to_owned(),
+        );
+        assert!(parse_credentials(&valid).is_ok());
+
+        for document in [
+            r#"{"email":"","api_token":"token"}"#,
+            r#"{"email":"operator@example.test","api_token":""}"#,
+            r#"{"email":"operator@example.test","api_token":"token","extra":true}"#,
+        ] {
+            assert!(parse_credentials(&SecretString::from(document.to_owned())).is_err());
+        }
+    }
 }

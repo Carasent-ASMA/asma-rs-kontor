@@ -127,6 +127,25 @@ pub trait KeychainBackend: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemKeychain;
 
+impl SystemKeychain {
+    /// Store one secret without exposing backend diagnostics.
+    ///
+    /// # Errors
+    /// Returns a closed [`KeychainFailure`] code when the OS keychain refuses
+    /// or cannot persist the entry.
+    pub fn set_secret(
+        &self,
+        target: &KeychainTarget,
+        secret: &SecretString,
+    ) -> Result<(), KeychainFailure> {
+        let entry = keyring::Entry::new(target.service(), target.account())
+            .map_err(|_| KeychainFailure::Unavailable)?;
+        entry
+            .set_password(secret.expose_secret())
+            .map_err(|_| KeychainFailure::Unavailable)
+    }
+}
+
 impl KeychainBackend for SystemKeychain {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
         // Both `?`-free branches below drop the `keyring` error deliberately:

@@ -15,6 +15,7 @@
 //! own subject, and none of them can be expressed as a request to a daemon that
 //! may not be running.
 
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +25,10 @@ use kontor_core::id::{ProjectId, Timestamp};
 use kontor_daemon::{
     DEFAULT_PORT, Daemon, DaemonConfig, endpoint, logging, recovery, runtimes, usage,
 };
+use secrecy::SecretString;
 use tracing::{error, info, warn};
+
+const MAX_JIRA_CREDENTIAL_BYTES: u64 = 8 * 1024;
 
 /// Serve one Kontor realm on loopback, or act on its state root.
 #[derive(Debug, Parser)]
@@ -91,6 +95,37 @@ enum Command {
     /// A running daemon rotates its own credentials on `SIGHUP`, which swaps the
     /// in-memory set in the same operation.
     RotateCredentials,
+    /// Install a Jira credential from standard input for a stopped realm.
+    InstallJiraCredential {
+        /// The non-secret alias referenced by `jira.json`.
+        #[arg(long)]
+        alias: String,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OperatorError {
+    #[error(transparent)]
+    Recovery(#[from] recovery::RecoveryError),
+    #[error(transparent)]
+    Lock(#[from] kontor_daemon::lock::LockError),
+    #[error(transparent)]
+    Jira(#[from] kontor_jira::JiraError),
+    #[error("the Jira credential document could not be read from standard input")]
+    CredentialInput,
+    #[error("the Jira credential document exceeds 8192 bytes")]
+    CredentialOversized,
+}
+
+impl OperatorError {
+    const fn category(&self) -> &'static str {
+        match self {
+            Self::Recovery(error) => error.category(),
+            Self::Lock(_) => "state_root_locked",
+            Self::Jira(_) => "jira_credential",
+            Self::CredentialInput | Self::CredentialOversized => "credential_input",
+        }
+    }
 }
 
 #[tokio::main]
@@ -116,7 +151,7 @@ async fn main() -> std::process::ExitCode {
 }
 
 /// Run one operator command against a state root.
-fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryError> {
+fn run(state_root: &Path, command: Command) -> Result<(), OperatorError> {
     let now = Timestamp::now();
     match command {
         Command::Snapshot { into } => {
@@ -131,7 +166,9 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
             // directory, so a shared backup directory lists only this realm's.
             let store = kontor_store::SqliteStore::open(&recovery::database_in(state_root))
                 .map_err(|source| recovery::RecoveryError::Store { source })?;
-            for snapshot in kontor_store::backup::list_snapshots(&directory, store.realm_id())? {
+            for snapshot in kontor_store::backup::list_snapshots(&directory, store.realm_id())
+                .map_err(recovery::RecoveryError::from)?
+            {
                 println!(
                     "{}\t{}\t{} bytes",
                     snapshot.manifest.created_at,
@@ -148,7 +185,9 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
         }
         Command::Export { out } => {
             let export = recovery::export(state_root, now)?;
-            let bytes = export.canonical_bytes()?;
+            let bytes = export
+                .canonical_bytes()
+                .map_err(recovery::RecoveryError::from)?;
             match out {
                 Some(path) => {
                     std::fs::write(&path, bytes).map_err(|source| recovery::RecoveryError::Io {
@@ -177,8 +216,29 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
             println!("{}", report.import_id);
             Ok(())
         }
-        Command::RotateCredentials => recovery::rotate_credentials(state_root),
+        Command::RotateCredentials => {
+            recovery::rotate_credentials(state_root)?;
+            Ok(())
+        }
+        Command::InstallJiraCredential { alias } => {
+            let _lock = kontor_daemon::lock::StateRootLock::acquire(state_root)?;
+            let secret = read_jira_credential(std::io::stdin().lock())?;
+            kontor_jira::install_credentials(&alias, secret)?;
+            Ok(())
+        }
     }
+}
+
+fn read_jira_credential(reader: impl Read) -> Result<SecretString, OperatorError> {
+    let mut document = String::new();
+    reader
+        .take(MAX_JIRA_CREDENTIAL_BYTES + 1)
+        .read_to_string(&mut document)
+        .map_err(|_| OperatorError::CredentialInput)?;
+    if document.len() as u64 > MAX_JIRA_CREDENTIAL_BYTES {
+        return Err(OperatorError::CredentialOversized);
+    }
+    Ok(SecretString::from(document))
 }
 
 /// Keep the API live while the startup barrier is being settled.
@@ -368,10 +428,21 @@ async fn rotation_requested() {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn jira_credential_input_is_bounded() {
+        assert!(read_jira_credential(Cursor::new(b"{}".as_slice())).is_ok());
+        let oversized = vec![b'x'; MAX_JIRA_CREDENTIAL_BYTES as usize + 1];
+        assert!(matches!(
+            read_jira_credential(Cursor::new(oversized)),
+            Err(OperatorError::CredentialOversized)
+        ));
+    }
 
     #[tokio::test]
     async fn the_server_is_polled_while_startup_reconciliation_is_pending() {
