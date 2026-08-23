@@ -44,9 +44,9 @@ pub const SCHEMA_VERSION: i64 = 58;
 /// with every schema generation and each table rebuild in it costs real
 /// milliseconds, so a budget sized against a shorter chain turns an ordinary
 /// concurrent first open into a spurious "database is locked" on a loaded
-/// machine. Fifteen seconds is still a bound: a genuinely stuck peer still
+/// machine. Thirty seconds is still a bound: a genuinely stuck peer still
 /// fails, it just is not confused with a busy one.
-const BUSY_TIMEOUT: Duration = Duration::from_millis(15_000);
+const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait between attempts at the one statement the busy handler does
 /// not cover. Short enough to be invisible, long enough not to spin a core.
