@@ -9,7 +9,8 @@
 use kontor_core::consultation::{
     AdviceDisposition, AdvisorProfileSpec, AggregationProtocol, CommitteeRole, CommitteeSlotSpec,
     CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationScope,
-    DiversityRule, MAX_COMMITTEE_ROUNDS, MemoryAccess, RecordedFinding, conjunctive_outcome,
+    DiversityRule, MAX_COMMITTEE_ROUNDS, MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding,
+    conjunctive_outcome,
 };
 use kontor_core::id::{
     AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money, RoleKey,
@@ -234,6 +235,22 @@ fn cardinality_is_data_not_three() {
         .collect();
     five.validate().expect("five reviewers");
     assert_eq!(five.reviewer_slots().len(), 5);
+}
+
+#[test]
+fn a_committee_past_the_seat_bound_is_refused() {
+    // Cardinality being data is not the same as cardinality being unbounded:
+    // the seat ceiling is the other half of that rule, and dropping it would
+    // leave `cardinality_is_data_not_three` perfectly green.
+    let mut past = independent_review();
+    past.diversity = DiversityRule::None;
+    past.slots = (0..=MAX_COMMITTEE_SLOTS)
+        .map(|index| reviewer(&format!("reviewer-{index}"), &["anthropic"]))
+        .collect();
+    assert!(
+        past.validate().is_err(),
+        "a Committee may seat at most MAX_COMMITTEE_SLOTS"
+    );
 }
 
 #[test]
