@@ -165,7 +165,9 @@ const MINI_PROJECT: &str = "01890000-0000-7000-8000-0000000000c1";
 const PROJECT_ID: &str = "prj_epic";
 const WORKSPACE_ID: &str = "wks_task11";
 const AGENT_ID: &str = "agt_implement";
-const ORCHESTRATOR: &str = "agt_orchestrator";
+// The exact stale, cross-epic caller from ASMA-7681. It remains in the legacy
+// runtime setting to prove that an explicit-workspace launch never sends it.
+const ORCHESTRATOR: &str = "619d6f8a-0bbc-4b8d-a3ad-8e38a0cd8234";
 const CWD: &str = "/w/epic/task-11";
 const EPOCH_RAW: &str = "8f2b1c34-0000-4000-8000-000000000001";
 
@@ -174,8 +176,36 @@ fn v(raw: &str) -> serde_json::Value {
     // and used a human placeholder in labels. Keep the recordings immutable
     // while upgrading that one synthetic value to the canonical id this
     // contract now exercises.
+    let preserve_foreign_parent = raw == AGENT_WRONG_PARENT_LABEL;
     let raw = raw.replace("kon-mini-1", MINI_PROJECT);
-    serde_json::from_str(&raw).expect("a fixture is valid JSON")
+    let mut value: serde_json::Value = serde_json::from_str(&raw).expect("a fixture is valid JSON");
+    // The recordings were captured while Kontor planted a host-global caller
+    // label. New launches are top-level in their explicit workspace. Normalize
+    // that retired synthetic label out of ordinary fixtures while retaining the
+    // dedicated foreign-parent fixture that proves such drift is refused.
+    if !preserve_foreign_parent {
+        remove_legacy_parent_labels(&mut value);
+    }
+    value
+}
+
+fn remove_legacy_parent_labels(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if let Some(serde_json::Value::Object(labels)) = fields.get_mut("labels") {
+                labels.remove("paseo.parent-agent-id");
+            }
+            for nested in fields.values_mut() {
+                remove_legacy_parent_labels(nested);
+            }
+        }
+        serde_json::Value::Array(entries) => {
+            for entry in entries {
+                remove_legacy_parent_labels(entry);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn external(text: &str) -> ExternalId {
@@ -446,7 +476,7 @@ fn any_agent_run() -> PaseoCommand {
         kontor_core::spec::SeatAutonomy::standard(),
         "t",
         &BTreeMap::new(),
-        ORCHESTRATOR,
+        None,
         "p",
     )
     .expect("the fixture provider has a pinned permission mode")
@@ -673,7 +703,7 @@ async fn hierarchy_is_one_project_one_workspace_one_agent_per_slot() {
     assert_eq!(record.project_id.as_str(), PROJECT_ID);
     assert_eq!(record.workspace_id.as_str(), WORKSPACE_ID);
     assert_eq!(record.agent_id.as_str(), AGENT_ID);
-    assert_eq!(record.parent_agent_id.as_str(), ORCHESTRATOR);
+    assert_eq!(record.parent_agent_id, None);
     assert_eq!(record.canonical_worktree_cwd, root());
     assert_eq!(record.host_key.as_str(), HOST_KEY);
     assert_eq!(record.jira_epic_key.as_str(), "ASMA-7744");
@@ -2201,7 +2231,7 @@ async fn continuity_a_wrong_parent_refuses_the_launch() {
 }
 
 #[tokio::test]
-async fn continuity_parent_and_predecessor_survive_a_restart() {
+async fn continuity_top_level_ownership_and_predecessor_survive_a_restart() {
     let (plane, binding) = launched().await;
     plane
         .adapter
@@ -2216,7 +2246,7 @@ async fn continuity_parent_and_predecessor_survive_a_restart() {
         .adapter
         .seat_record(binding.binding_id())
         .expect("the chain survives a restart");
-    assert_eq!(record.parent_agent_id.as_str(), ORCHESTRATOR);
+    assert_eq!(record.parent_agent_id, None);
     assert_eq!(
         record.previous_agent_id.as_ref().map(ExternalId::as_str),
         Some("agt_predecessor")
@@ -3957,6 +3987,10 @@ async fn security_the_full_label_set_is_planted_and_verified() {
             "{key} must be planted on the agent"
         );
     }
+    assert!(
+        answer["agent"]["labels"].get(label::PARENT_AGENT).is_none(),
+        "Kontor-owned seats must remain top-level in the attested workspace"
+    );
 }
 
 /// A legacy internal-id leak is repaired on the same AgentRun/native session,
@@ -4862,7 +4896,6 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         "kontor.role_slot_id": "lsa",
         "kontor.workspace_id": WORKSPACE_ID,
         "kontor.worktree": CWD,
-        "paseo.parent-agent-id": ORCHESTRATOR,
     });
 
     let recorded = RecordedPaseo::new()

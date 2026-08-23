@@ -7461,14 +7461,19 @@ fn blocked_task(
 
 /// A seat that could not be created, carrying the API refusal's own action.
 fn seat_block(task_id: TaskId, refusal: &ApiError) -> BlockedTaskDto {
+    let mut evidence = serde_json::json!({
+        "kind": "seat",
+        "rule": refusal.rule,
+    });
+    if let Some(native) = refusal.native_runtime_refusal.as_deref() {
+        evidence["native_runtime_refusal"] =
+            serde_json::to_value(native).unwrap_or(serde_json::Value::Null);
+    }
     BlockedTaskDto {
         task_id,
         code: refusal.code.as_str().to_owned(),
         action: refusal.action.to_owned(),
-        evidence: vec![serde_json::json!({
-            "kind": "seat",
-            "rule": refusal.rule,
-        })],
+        evidence: vec![evidence],
     }
 }
 
@@ -7745,6 +7750,104 @@ impl QuotaOutlook<'_> {
             None => self.accounts.to_vec(),
         }
     }
+
+    /// Freeze the model routes that can truthfully execute under this pin.
+    ///
+    /// A Paseo account profile is selected by its provider alias. Returning a
+    /// base-provider rung and later reattaching the account id creates a false
+    /// attestation: the receipt names one account while `--provider` selects
+    /// another. Exact alias rungs win; a family rung is qualified with the
+    /// alias; and a single cross-family pin selects that provider's catalog
+    /// default. The last case is the intentional meaning of a task-level
+    /// account correction: the selected account outranks a role's unqualified
+    /// default route while keeping its declared effort.
+    fn effective_rungs(&self, rungs: &[ModelRung]) -> kontor_core::DomainResult<Vec<ModelRung>> {
+        let Some(pin) = self.account else {
+            return Ok(rungs.to_vec());
+        };
+        let Some(account) = self
+            .accounts
+            .iter()
+            .find(|account| account.account_profile_id == pin)
+        else {
+            return Err(kontor_core::DomainError::invalid(
+                "AccountProfile",
+                "the pinned account is not an enabled routing candidate",
+            ));
+        };
+        if account.selectable_providers.is_empty() {
+            // Compatibility for runtimes whose account environment is selected
+            // independently of the model provider.
+            return Ok(rungs.to_vec());
+        }
+
+        let exact: Vec<ModelRung> = rungs
+            .iter()
+            .filter(|rung| account.selectable_providers.contains(&rung.provider.0))
+            .cloned()
+            .collect();
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
+        let mut family_routes = Vec::new();
+        for rung in rungs {
+            for alias in &account.selectable_providers {
+                if provider_family(alias) == provider_family(&rung.provider.0) {
+                    let mut qualified = rung.clone();
+                    qualified.provider = ProviderRef(alias.clone());
+                    family_routes.push(qualified);
+                }
+            }
+        }
+        if !family_routes.is_empty() {
+            return Ok(family_routes);
+        }
+
+        let aliases: Vec<&String> = account.selectable_providers.iter().collect();
+        let [alias] = aliases.as_slice() else {
+            return Err(kontor_core::DomainError::invalid(
+                "AccountProfile.routing",
+                "a cross-provider pin must name exactly one selectable provider",
+            ));
+        };
+        let model = default_model_for_provider(alias).ok_or_else(|| {
+            kontor_core::DomainError::invalid(
+                "AccountProfile.routing",
+                "the selected provider has no governed default model",
+            )
+        })?;
+        Ok(vec![ModelRung {
+            provider: ProviderRef((*alias).clone()),
+            model: ModelRef(model.to_owned()),
+            effort: rungs.first().and_then(|rung| rung.effort),
+        }])
+    }
+}
+
+/// The built-in family behind a selectable Paseo account alias.
+fn provider_family(provider: &str) -> &str {
+    for family in ["claude", "codex", "copilot", "opencode", "pi", "omp"] {
+        if provider == family
+            || provider
+                .strip_prefix(family)
+                .is_some_and(|suffix| suffix.starts_with('-'))
+        {
+            return family;
+        }
+    }
+    provider
+}
+
+/// The catalog default used when an explicit task account changes provider
+/// family and the frozen role chain contains no route on that family.
+fn default_model_for_provider(provider: &str) -> Option<&'static str> {
+    match provider_family(provider) {
+        "claude" => Some("claude-opus-5"),
+        "codex" => Some("gpt-5.6-sol"),
+        "opencode" => Some("deepseek/deepseek-v4-flash"),
+        _ => None,
+    }
 }
 
 /// Resolve one chain against quota headroom, in the walk's own vocabulary.
@@ -7790,9 +7893,10 @@ fn freeze_seat_model_rung(
         .ok_or_else(|| {
             kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
         })?;
+    let effective_rungs = quota.effective_rungs(&chain.rungs)?;
     let placement = resolve_chain_placement(
         adapter,
-        &chain.rungs,
+        &effective_rungs,
         // These are delivery seats by construction: each of this function's
         // callers launches task work under a TeamRun. An epic's control seats
         // live on its ECP and are created without a task or a TeamRun, so they
@@ -7822,11 +7926,10 @@ fn freeze_seat_model_rung(
         // hold a seat instead of routing it — see the handoff's open risks.
         kontor_scheduler::headroom::Placement::Wait { .. }
         | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => (
-            chain
-                .rungs
+            effective_rungs
                 .iter()
                 .find_map(|rung| adapter.fallback_model_rung(rung))
-                .or_else(|| chain.rungs.first().cloned())
+                .or_else(|| effective_rungs.first().cloned())
                 .expect("a validated model chain is non-empty"),
             None,
         ),
@@ -9851,6 +9954,16 @@ impl ApplicationOperations for Services {
                 "reachedVia": null, "pooledUsage": true
             }),
             serde_json::json!({
+                "id": "claude-work", "label": "Claude · Work",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
+            serde_json::json!({
+                "id": "claude-personal", "label": "Claude · Personal",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
+            serde_json::json!({
                 "id": "opencode", "label": "OpenCode",
                 "basis": { "value": "provider_account", "provenance": provenance },
                 "reachedVia": null, "pooledUsage": false
@@ -9908,6 +10021,24 @@ impl ApplicationOperations for Services {
                     "pricing": [], "degradedLane": false
                 }));
             }
+        }
+        // Claude account aliases select credential homes in exactly the same
+        // way and expose the family catalog unchanged.
+        for alias in ["claude-work", "claude-personal"] {
+            models.push(serde_json::json!({
+                "id": "claude-opus-5", "label": "Claude Opus 5", "provider": alias,
+                "isDefault": true,
+                "contextWindow": { "value": 1000000, "provenance": provenance },
+                "efforts": { "value": ["off", "low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }));
+            models.push(serde_json::json!({
+                "id": "claude-fable-5", "label": "Claude Fable 5", "provider": alias,
+                "isDefault": false,
+                "contextWindow": { "value": 1000000, "provenance": provenance },
+                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }));
         }
         let cursor = state
             .with_store(SqliteStore::teams_projection)
@@ -21906,11 +22037,70 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        counts_towards_completion, eligible_roots, render_legacy_container_name, slot_prompt,
+        QuotaOutlook, counts_towards_completion, eligible_roots, render_legacy_container_name,
+        seat_block, slot_prompt,
     };
-    use kontor_core::id::{ExternalId, ExternalName, MiniProjectId};
+    use kontor_api::error::ApiError;
+    use kontor_core::id::{
+        AccountProfileId, ExternalId, ExternalName, MiniProjectId, RealmId, TaskId, Timestamp,
+    };
+    use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
     use kontor_core::state::TaskState;
+    use kontor_runtime::adapter::RuntimeError;
     use kontor_runtime::scope::{EpicScope, ExecutionScope};
+    use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig};
+    use std::collections::BTreeSet;
+
+    /// Regression for ASMA-7681: an explicit Claude Work task pin must freeze
+    /// both halves of the route before dispatch. Keeping the Codex rung while
+    /// merely reattaching the account id is a false account attestation.
+    #[test]
+    fn a_cross_provider_account_pin_freezes_the_claude_work_route() {
+        let selected = AccountProfileId::generate();
+        let accounts = [EligibleAccount {
+            account_profile_id: selected,
+            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+        }];
+        let outlook = QuotaOutlook {
+            states: &[],
+            account: Some(selected),
+            accounts: &accounts,
+            headroom: HeadroomConfig::state_only(),
+            now: Timestamp::from_second(1).expect("a timestamp"),
+        };
+        let frozen = outlook
+            .effective_rungs(&[ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            }])
+            .expect("the selected account has a governed default route");
+
+        assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0].provider.0, "claude-work");
+        assert_eq!(frozen[0].model.0, "claude-opus-5");
+        assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
+    }
+
+    #[test]
+    fn a_native_launch_refusal_keeps_its_exact_actionable_reason_in_scheduler_evidence() {
+        let caller =
+            ExternalId::parse("619d6f8a-0bbc-4b8d-a3ad-8e38a0cd8234").expect("a native caller id");
+        let refusal = ApiError::from_runtime(
+            RealmId::generate(),
+            &RuntimeError::CallerAgentNotFound {
+                caller_agent_id: caller.clone(),
+            },
+        );
+        let blocked = seat_block(TaskId::generate(), &refusal);
+
+        assert_eq!(blocked.code, "placement_blocked");
+        assert!(blocked.action.contains("resume the exact queued run"));
+        assert_eq!(
+            blocked.evidence[0]["native_runtime_refusal"]["caller_agent_id"],
+            caller.as_str()
+        );
+    }
 
     #[test]
     fn a_pre_v47_placeholder_template_renders_from_the_exact_epic_scope() {

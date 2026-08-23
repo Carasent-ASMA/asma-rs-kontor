@@ -40,9 +40,9 @@ use crate::workspace::{WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot}
 
 /// Everything an adapter operation can refuse.
 ///
-/// The payload is structural: static rules, capability names and positions. No
-/// variant carries a message body, a prompt or a runtime payload, so a refusal
-/// is safe to log.
+/// The payload is structural: static rules, capability names, positions and
+/// validated foreign correlation ids. No variant carries a message body, a
+/// prompt or arbitrary runtime output, so a refusal is safe to log.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RuntimeError {
@@ -105,6 +105,18 @@ pub enum RuntimeError {
     /// The runtime did not prove that the native session belongs to the run.
     #[error("native session is not correlated with the requested run")]
     CorrelationFailed,
+    /// The native runtime refused a create because the supplied caller no
+    /// longer exists in that runtime's own registry.
+    ///
+    /// The identifier is foreign correlation evidence, not runtime text. A
+    /// closed variant keeps the actionable refusal while preventing an
+    /// arbitrary stderr line (which may contain a prompt, path or credential)
+    /// from crossing the adapter boundary.
+    #[error("caller agent {caller_agent_id} was not found by the runtime")]
+    CallerAgentNotFound {
+        /// The exact native caller Paseo refused.
+        caller_agent_id: ExternalId,
+    },
     /// The selected provider has no permission mode Kontor knows how to pin.
     #[error("provider {provider} has no pinned runtime permission mode")]
     PermissionModeUnsupported {
