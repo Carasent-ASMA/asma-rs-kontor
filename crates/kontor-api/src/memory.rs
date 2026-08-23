@@ -2,6 +2,7 @@
 #![allow(missing_docs)]
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 
 use crate::body::Json;
 use kontor_core::authority::AuthoritySubject;
@@ -54,6 +55,14 @@ pub struct Switch {
     pub source: String,
     #[schema(value_type = String)]
     pub snapshot_hash: ContentHash,
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+#[derive(Deserialize, ToSchema)]
+pub struct BacklogSwitch {
+    pub source: String,
+    #[schema(value_type = String)]
+    pub final_import_hash: ContentHash,
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
 }
@@ -438,6 +447,48 @@ pub async fn switch(
     Ok(Json(serde_json::json!({
         "realm_id": state.realm_id(), "project_id": project, "subject": "memory",
         "memory_authority": "kontor", "receipt": receipt,
+    })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/backlog/cutover:switch",
+    tag = "memory",
+    params(
+        ("project_id" = String, Path),
+        ("Idempotency-Key" = String, Header)
+    ),
+    request_body = BacklogSwitch,
+    responses((status = 200), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn switch_backlog(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<BacklogSwitch>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let _key = crate::control::idempotency_key(&state, &headers)?;
+    let project = parse_project(&state, &project)?;
+    let readback = state
+        .with_store(|store| store.backlog_readback_hash(project))
+        .map_err(|error| map_authority(&state, error))?;
+    let (row, receipt) = state
+        .with_store(|store| {
+            store.switch_subject_authority(
+                project,
+                AuthoritySubject::Backlog,
+                &body.source,
+                &body.final_import_hash,
+                &readback,
+                body.expected_revision,
+            )
+        })
+        .map_err(|error| map_authority(&state, error))?;
+    Ok(Json(serde_json::json!({
+        "realm_id": state.realm_id(), "project_id": project, "subject": row.subject,
+        "authority": row.authority, "revision": row.revision.get(), "receipt": receipt,
     })))
 }
 

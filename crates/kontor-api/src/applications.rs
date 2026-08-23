@@ -1986,6 +1986,160 @@ pub struct TopologyUpgradePreviewRequest {
     pub target_spec: RevisionRefDto,
 }
 
+/// What moving a project's default topology revision is previewed against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTopologySelectionPreviewRequest {
+    /// The published revision future epic scopes should inherit.
+    pub target_spec: RevisionRefDto,
+}
+
+/// What selecting a project topology preview is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTopologySelectionApplyRequest {
+    /// The hash returned by the preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What changing the default topology revision would do, without writing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectTopologySelectionPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project whose default would move.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The selected revision as it stands.
+    pub current_spec: PinnedSpecDto,
+    /// The published revision it would move to.
+    pub target_spec: PinnedSpecDto,
+    /// The hash the apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// The newly selected project topology revision and its durable receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedProjectTopologySelectionDto {
+    /// The selected default for future epic scopes.
+    pub selected_spec: PinnedSpecDto,
+    /// The receipt for the selection or replay.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Whether one Jira object is created or an existing key is verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JiraMaterializationModeDto {
+    /// Find the stable connector marker or create exactly once.
+    Create,
+    /// Verify and adopt the supplied key without writing it.
+    Link,
+}
+
+/// One server-derived Jira object's requested mode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JiraMaterializationIntentDto {
+    /// Create or link.
+    pub mode: JiraMaterializationModeDto,
+    /// Required only for link mode; create has no caller-authored key.
+    #[schema(value_type = Option<String>)]
+    pub issue_key: Option<ExternalId>,
+}
+
+/// What the Jira materialization preview is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JiraMaterializationPreviewRequest {
+    /// The epic Jira object.
+    pub epic: JiraMaterializationIntentDto,
+    /// One exact intent per task id.
+    #[schema(value_type = Object)]
+    pub tasks: BTreeMap<String, JiraMaterializationIntentDto>,
+}
+
+/// What applying a Jira materialization preview is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JiraMaterializationApplyRequest {
+    /// The exact create/link intent that produced the preview.
+    pub materialization: JiraMaterializationPreviewRequest,
+    /// The exact preview hash.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The epic revision observed by the caller.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One ordered Jira object in a materialization preview or receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct JiraMaterializationItemDto {
+    /// Epic or task.
+    pub item_kind: String,
+    /// The task for a task item.
+    #[schema(value_type = Option<String>)]
+    pub task_id: Option<TaskId>,
+    /// Create or link.
+    pub mode: JiraMaterializationModeDto,
+    /// The requested linked key, when linking.
+    #[schema(value_type = Option<String>)]
+    pub requested_key: Option<ExternalId>,
+    /// The confirmed Jira key after apply.
+    #[schema(value_type = Option<String>)]
+    pub confirmed_key: Option<ExternalId>,
+}
+
+/// A complete no-write Jira materialization preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct JiraMaterializationPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Ordered epic-first effects.
+    pub items: Vec<JiraMaterializationItemDto>,
+    /// The hash apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// A confirmed Jira materialization and ASMA activation receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct JiraMaterializationAppliedDto {
+    /// The Realm that owns the receipt.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The epic whose whole Jira graph is confirmed.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Stable batch identity.
+    pub batch_id: String,
+    /// Confirmed ordered items.
+    pub items: Vec<JiraMaterializationItemDto>,
+    /// The materialization command receipt.
+    pub receipt_id: String,
+    /// The separate ASMA activation command receipt.
+    pub activation_receipt_id: String,
+    /// Whether the whole required binding set is activated.
+    pub activated: bool,
+}
+
 /// One node-, seat- or native-level effect an upgrade would have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TopologyUpgradeEffectDto {
@@ -2709,7 +2863,7 @@ pub struct RuntimeCapabilityDto {
 // ---------------------------------------------------------------------------
 
 /// One external ticket an applied task is linked to.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TicketLinkRequest {
     /// The connector implementation. Never its vendor semantics.
     pub connector: String,
@@ -2736,7 +2890,7 @@ pub enum EpicImportStateDto {
 ///
 /// `title` is the stable caller key: dependencies name it, a reapply matches on
 /// it, and it is immutable for the life of the task.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct EpicTaskRequest {
     /// The title, which is this task's identity inside the epic.
     #[schema(value_type = String)]
@@ -2812,7 +2966,7 @@ pub struct EpicExecutionScopeDto {
 /// onto every task in the same transaction the tasks are created in, so there is
 /// no window in which a task exists without the workflow it will be judged
 /// against.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEpicRequest {
     /// The revision the caller read the project at.
     #[schema(value_type = u64)]
@@ -2838,6 +2992,73 @@ pub struct ApplyEpicRequest {
     pub account_profile_id: Option<AccountProfileId>,
     /// The tasks, in the order they should be created.
     pub tasks: Vec<EpicTaskRequest>,
+}
+
+/// One complete, project-scoped legacy backlog export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BacklogImportRequest {
+    /// Bounded source-system identity recorded in the authority manifest.
+    #[schema(value_type = String)]
+    pub source: ExternalName,
+    /// The backlog authority revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_authority_revision: AggregateRevision,
+    /// Every epic in the final export.
+    pub epics: Vec<ApplyEpicRequest>,
+}
+
+/// Apply the exact backlog export preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BacklogImportApplyRequest {
+    /// The exact export that was previewed.
+    pub export: BacklogImportRequest,
+    /// The preview hash returned for that export.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// No-write validation of a complete legacy backlog export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct BacklogImportPreviewDto {
+    /// The Realm that validated it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The receiving project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Hash of the exact canonical export.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Proposed hash recomputed from the transaction-local graph.
+    #[schema(value_type = String)]
+    pub proposed_readback_hash: ContentHash,
+    /// Number of epics plus tasks validated.
+    pub item_count: u64,
+}
+
+/// Durable result of applying a complete legacy backlog export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct BacklogImportAppliedDto {
+    /// The Realm that owns the receipt.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The receiving project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Hash of the exact imported export.
+    #[schema(value_type = String)]
+    pub import_hash: ContentHash,
+    /// Hash recomputed from committed native graph state.
+    #[schema(value_type = String)]
+    pub readback_hash: ContentHash,
+    /// Epics plus tasks committed or verified.
+    pub imported_count: u64,
+    /// Authority-ledger import receipt id.
+    pub receipt_id: String,
+    /// Idempotent command receipt id.
+    pub command_receipt_id: String,
 }
 
 /// One external ticket link after an epic was applied.
@@ -4696,6 +4917,38 @@ pub trait ApplicationOperations: Send + Sync {
         request: &TopologyUpgradePreviewRequest,
     ) -> Result<TopologyUpgradePreviewDto, ApiError>;
 
+    /// What moving the project's selected topology revision would do.
+    fn preview_project_topology_selection(
+        &self,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionPreviewRequest,
+    ) -> Result<ProjectTopologySelectionPreviewDto, ApiError>;
+
+    /// Move the project default to the exact previewed revision.
+    async fn apply_project_topology_selection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionApplyRequest,
+    ) -> Result<AppliedProjectTopologySelectionDto, ApiError>;
+
+    /// Derive one complete epic-first Jira materialization without writing.
+    fn preview_jira_materialization(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &JiraMaterializationPreviewRequest,
+    ) -> Result<JiraMaterializationPreviewDto, ApiError>;
+
+    /// Execute the exact preview and activate ASMA only after every readback.
+    async fn apply_jira_materialization(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &JiraMaterializationApplyRequest,
+    ) -> Result<JiraMaterializationAppliedDto, ApiError>;
+
     /// What repairing one bound container's title would do. Commits nothing.
     async fn preview_container_retitle(
         &self,
@@ -5028,6 +5281,21 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         request: &ApplyEpicRequest,
     ) -> Result<PreviewEpicDto, ApiError>;
+
+    /// Validate a final legacy backlog export without committing its graph.
+    async fn preview_backlog_import(
+        &self,
+        project_id: ProjectId,
+        request: &BacklogImportRequest,
+    ) -> Result<BacklogImportPreviewDto, ApiError>;
+
+    /// Atomically import the exact previewed legacy backlog export.
+    async fn apply_backlog_import(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &BacklogImportApplyRequest,
+    ) -> Result<BacklogImportAppliedDto, ApiError>;
 
     /// The whole of one epic, read at one control-plane position.
     fn read_epic(
@@ -6010,6 +6278,110 @@ pub async fn preview_topology_upgrade(
         state
             .applications()
             .preview_topology_upgrade(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Preview selecting a published topology revision as the project default.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-selection:preview", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ProjectTopologySelectionPreviewRequest,
+    responses((status = 200, body = ProjectTopologySelectionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn preview_project_topology_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProjectTopologySelectionPreviewRequest>,
+) -> Result<Json<ProjectTopologySelectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_project_topology_selection(project_id, &request)?,
+    ))
+}
+
+/// Apply the exact previewed project topology selection.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-selection:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProjectTopologySelectionApplyRequest,
+    responses((status = 200, body = AppliedProjectTopologySelectionDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_project_topology_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProjectTopologySelectionApplyRequest>,
+) -> Result<Json<AppliedProjectTopologySelectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_project_topology_selection(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview the complete Jira graph for one epic without writing Jira or SQLite.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/jira:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic to materialize")
+    ),
+    request_body = JiraMaterializationPreviewRequest,
+    responses((status = 200, body = JiraMaterializationPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn preview_jira_materialization(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<JiraMaterializationPreviewRequest>,
+) -> Result<Json<JiraMaterializationPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().preview_jira_materialization(
+        project_id, epic_id, &request,
+    )?))
+}
+
+/// Apply one exact Jira materialization preview and confirm every item.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/jira:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic to materialize"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = JiraMaterializationApplyRequest,
+    responses((status = 200, body = JiraMaterializationAppliedDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn apply_jira_materialization(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<JiraMaterializationApplyRequest>,
+) -> Result<Json<JiraMaterializationAppliedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_jira_materialization(&key, project_id, epic_id, &request)
+            .await?,
     ))
 }
 
@@ -7474,6 +7846,57 @@ pub async fn preview_epic(
         state
             .applications()
             .preview_epic(project_id, &request)
+            .await?,
+    ))
+}
+
+/// Validate one final legacy backlog export without committing it.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/backlog/import:preview", tag = "applications",
+    params(("project_id" = String, Path, description = "The receiving project")),
+    request_body = BacklogImportRequest,
+    responses((status = 200, body = BacklogImportPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn preview_backlog_import(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<BacklogImportRequest>,
+) -> Result<Json<BacklogImportPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_backlog_import(project_id, &request)
+            .await?,
+    ))
+}
+
+/// Atomically import the exact previewed legacy backlog export.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/backlog/import:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The receiving project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = BacklogImportApplyRequest,
+    responses((status = 200, body = BacklogImportAppliedDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_backlog_import(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<BacklogImportApplyRequest>,
+) -> Result<Json<BacklogImportAppliedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_backlog_import(&key, project_id, &request)
             .await?,
     ))
 }

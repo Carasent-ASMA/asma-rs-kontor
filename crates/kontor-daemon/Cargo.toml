@@ -46,7 +46,7 @@ kontor-context = { path = "../kontor-context", version = "=0.2.0" }
 # The connector specification catalogue KON-MVP-14 compiled and validated. The
 # daemon reads it and never re-derives one: a second mapping of the same ticket
 # fields is a second answer to the same question.
-kontor-integrations-asma = { path = "../kontor-integrations-asma", version = "=0.2.0" }
+kontor-jira = { path = "../kontor-jira", version = "=0.2.0" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 # The usage poller is the one thing in this crate that talks to a host

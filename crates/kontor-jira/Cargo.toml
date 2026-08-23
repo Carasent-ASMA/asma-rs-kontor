@@ -1,0 +1,29 @@
+[package]
+name = "kontor-jira"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Native Jira policy and transport for Kontor."
+
+[lints]
+workspace = true
+
+[dependencies]
+kontor-accounts = { path = "../kontor-accounts", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+wiremock = { workspace = true }

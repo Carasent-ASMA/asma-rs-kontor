@@ -26,9 +26,8 @@ const PROJECT_FIXTURE: &str = include_str!("../fixtures/pilot/project.json");
 const INCIDENT_PACK: &str = include_str!("../fixtures/pilot/incident-response-pack.json");
 /// The second external workflow, reused from the connector's own fixtures so
 /// the two can never drift apart.
-const ALTERNATE_WORKFLOW: &str = include_str!(
-    "../../crates/kontor-integrations-asma/tests/fixtures/external-workflow-alternate.json"
-);
+const ALTERNATE_WORKFLOW: &str =
+    include_str!("../../crates/kontor-jira/tests/fixtures/external-workflow-alternate.json");
 
 /// A canonical UTC instant.
 ///
@@ -57,8 +56,7 @@ async fn pilot() {
             digest(INCIDENT_PACK.as_bytes()),
         ),
         (
-            "crates/kontor-integrations-asma/tests/fixtures/external-workflow-alternate.json"
-                .to_owned(),
+            "crates/kontor-jira/tests/fixtures/external-workflow-alternate.json".to_owned(),
             digest(ALTERNATE_WORKFLOW.as_bytes()),
         ),
     ]);

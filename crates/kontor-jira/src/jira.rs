@@ -33,6 +33,7 @@
 
 use std::fmt;
 
+use async_trait::async_trait;
 use kontor_core::id::{
     AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
     ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
@@ -51,7 +52,7 @@ use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AsmaError, AsmaExecutable, SelectionConflict, WIRE_SCHEMA_VERSION, WireTimestamp,
+    JiraError as AsmaError, SelectionConflict, WIRE_SCHEMA_VERSION, WireTimestamp,
     ensure_wire_schema,
 };
 
@@ -807,10 +808,10 @@ pub enum AmbiguityVerdict {
 ///
 /// It borrows rather than owns: this adapter hands receipts back to its caller
 /// and is deliberately not a repository.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct TicketDelegation<'a> {
-    /// The one writer.
-    pub asma: &'a AsmaExecutable,
+    /// The one connector transport.
+    pub exchange: &'a dyn JiraExchange,
     /// The pinned field specification.
     pub field_spec: &'a CompiledFieldSpec,
     /// The pinned workflow specification.
@@ -823,6 +824,17 @@ pub struct TicketDelegation<'a> {
     pub link_id: TicketLinkId,
     /// The caller's durable idempotency key.
     pub idempotency_key: &'a IdempotencyKey,
+}
+
+/// The transport seam below the pure Jira policy.
+#[async_trait]
+pub trait JiraExchange: Send + Sync {
+    /// Execute one already-validated Jira request.
+    async fn execute(
+        &self,
+        operation: &'static str,
+        request: &JiraRequest,
+    ) -> Result<JiraResponse, AsmaError>;
 }
 
 impl TicketDelegation<'_> {
@@ -1209,14 +1221,7 @@ impl TicketDelegation<'_> {
         operation: &'static str,
         request: &JiraRequest,
     ) -> Result<JiraResponse, AsmaError> {
-        let response: JiraResponse = self
-            .asma
-            .run_json(
-                operation,
-                &["jira", "sync", "--request-json", "-"],
-                Some(request),
-            )
-            .await?;
+        let response = self.exchange.execute(operation, request).await?;
         ensure_wire_schema(operation, response.schema_version)?;
         if response.issue_key != request.issue_key
             || response.idempotency_key != request.idempotency_key

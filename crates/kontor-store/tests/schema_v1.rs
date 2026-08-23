@@ -85,7 +85,12 @@ const EXPECTED_TABLES: &[&str] = &[
     "intake_created_work",
     "intake_decisions",
     "intake_receipts",
+    "asma_epic_activations",
+    "jira_epic_bindings",
     "jira_links",
+    "jira_materialization_batches",
+    "jira_materialization_items",
+    "jira_task_binding_confirmations",
     "lease_events",
     "memory_approvals",
     "memory_authority",
@@ -457,9 +462,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v55 adds evidence for verdicts transcribed from closed
-    // evaluator sessions without weakening the ordinary gate path.
-    assert_eq!(SCHEMA_VERSION, 55);
+    // side effect. v58 adds the project-scoped legacy backlog import command.
+    assert_eq!(SCHEMA_VERSION, 58);
 }
 
 #[test]
@@ -1255,7 +1259,7 @@ fn every_connection_reports_wal_foreign_keys_and_a_bounded_busy_timeout() {
         "wal"
     );
     assert!(store.foreign_keys_enabled().expect("readable"));
-    assert_eq!(store.busy_timeout_ms().expect("readable"), 15_000);
+    assert_eq!(store.busy_timeout_ms().expect("readable"), 30_000);
 
     // Reopening must re-apply the per-connection pragmas, not inherit them.
     drop(store);
@@ -1264,7 +1268,7 @@ fn every_connection_reports_wal_foreign_keys_and_a_bounded_busy_timeout() {
         reopened.foreign_keys_enabled().expect("readable"),
         "foreign keys must be re-enabled on every connection"
     );
-    assert_eq!(reopened.busy_timeout_ms().expect("readable"), 15_000);
+    assert_eq!(reopened.busy_timeout_ms().expect("readable"), 30_000);
     assert_eq!(
         reopened.journal_mode().expect("readable").to_lowercase(),
         "wal"

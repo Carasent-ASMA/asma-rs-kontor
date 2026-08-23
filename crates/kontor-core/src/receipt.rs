@@ -78,6 +78,8 @@ closed_enum! {
         EnsureProject => "ensure_project",
         /// Apply a declarative epic's whole work graph.
         ApplyEpicGraph => "apply_epic_graph",
+        /// Import a final legacy backlog export into the native project graph.
+        ImportBacklog => "import_backlog",
         /// Move an epic through a lifecycle transition. The action it carries is
         /// in the intent; the kind says only that epic lifecycle authority was
         /// exercised, which is what must not be confused with applying one.
@@ -101,6 +103,10 @@ closed_enum! {
         SelectTaskAccount => "select_task_account",
         /// Converge a task's external tickets towards its own milestone.
         ReconcileTicket => "reconcile_ticket",
+        /// Materialize or verify one epic's complete Jira binding set.
+        MaterializeJira => "materialize_jira",
+        /// Activate ASMA policy after every Jira binding is confirmed.
+        ActivateAsmaEpic => "activate_asma_epic",
         /// Settle a run against what its runtime currently reports.
         ///
         /// It carries no desired state and no outcome: settling is the act of
@@ -131,6 +137,11 @@ closed_enum! {
         /// exist is authority over the project and not over any node in it —
         /// and the revision it publishes is not an aggregate a command may name.
         PublishTopologySpec => "publish_topology_spec",
+        /// Select the topology revision future epic scopes inherit.
+        ///
+        /// Existing epic pins are immutable under this command; moving one is
+        /// the separate [`CommandKind::UpgradeTopology`] authority.
+        SelectProjectTopology => "select_project_topology",
         /// Move one epic's pinned topology revision to another published one.
         ///
         /// The epic is the aggregate: the pin is the epic's, and the revision it
@@ -450,10 +461,15 @@ impl CommandKind {
             // with a revision of its own.
             Self::EnsureProject
             | Self::EnsureAccountProfile
+            | Self::ImportBacklog
             | Self::SubmitIntake
             | Self::PublishTrigger
             | Self::InstallWorkflowSpec => witness(matches!(target, A::Project)),
-            Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
+            Self::ApplyEpicGraph
+            | Self::TransitionEpic
+            | Self::StartScheduledWork
+            | Self::MaterializeJira
+            | Self::ActivateAsmaEpic => {
                 witness(matches!(target, A::MiniProject))
             }
             Self::TransitionTask
@@ -485,7 +501,9 @@ impl CommandKind {
             // precisely what makes it persistent. The project is what the
             // authority is over, and it is the one aggregate every seat has.
             Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
-            Self::PublishTopologySpec => witness(matches!(target, A::Project)),
+            Self::PublishTopologySpec | Self::SelectProjectTopology => {
+                witness(matches!(target, A::Project))
+            }
             Self::UpgradeTopology | Self::ReconcileNativeNames => {
                 witness(matches!(target, A::MiniProject))
             }

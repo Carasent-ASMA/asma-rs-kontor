@@ -1653,9 +1653,12 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("revoke_execution_authorization", "task", "witness", None),
     ("ensure_project", "project", "witness", None),
     ("ensure_account_profile", "project", "witness", None),
+    ("import_backlog", "project", "witness", None),
     ("apply_epic_graph", "mini_project", "witness", None),
     ("transition_epic", "mini_project", "witness", None),
     ("start_scheduled_work", "mini_project", "witness", None),
+    ("materialize_jira", "mini_project", "witness", None),
+    ("activate_asma_epic", "mini_project", "witness", None),
     ("transition_task", "task", "witness", None),
     ("withdraw_task", "task", "witness", None),
     ("resolve_context", "task", "witness", None),
@@ -1682,6 +1685,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // one epic's pin, so the epic is what it names. Whole-estate native-name
     // reconciliation is likewise authorized against exactly that epic.
     ("publish_topology_spec", "project", "witness", None),
+    ("select_project_topology", "project", "witness", None),
     ("upgrade_topology", "mini_project", "witness", None),
     ("reconcile_native_names", "mini_project", "witness", None),
     // A native container is not an aggregate a command may name, and the node it

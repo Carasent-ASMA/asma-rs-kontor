@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 55;
+pub const SCHEMA_VERSION: i64 = 58;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -44,9 +44,9 @@ pub const SCHEMA_VERSION: i64 = 55;
 /// with every schema generation and each table rebuild in it costs real
 /// milliseconds, so a budget sized against a shorter chain turns an ordinary
 /// concurrent first open into a spurious "database is locked" on a loaded
-/// machine. Fifteen seconds is still a bound: a genuinely stuck peer still
+/// machine. Thirty seconds is still a bound: a genuinely stuck peer still
 /// fails, it just is not confused with a busy one.
-const BUSY_TIMEOUT: Duration = Duration::from_millis(15_000);
+const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait between attempts at the one statement the busy handler does
 /// not cover. Short enough to be invisible, long enough not to spin a core.
@@ -236,6 +236,14 @@ const MIGRATIONS: &[&str] = &[
     // verdict recorded on behalf of a closed evaluator seat is transcribed
     // from.
     include_str!("../migrations/0055_gate_recovery_evidence.sql"),
+    // Schema v56. Project topology selection is separately authorized from
+    // moving one immutable epic pin.
+    include_str!("../migrations/0056_project_topology_selection.sql"),
+    // Schema v57. Durable native Jira materialization, exact readback bindings,
+    // and ASMA activation after the whole epic is confirmed.
+    include_str!("../migrations/0057_jira_materialization.sql"),
+    // Schema v58. Idempotent project-scoped legacy backlog import receipt.
+    include_str!("../migrations/0058_backlog_import_command.sql"),
 ];
 
 const _: () = assert!(

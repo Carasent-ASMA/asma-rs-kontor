@@ -121,7 +121,7 @@ fn committed_work_survives_an_abrupt_exit_and_an_interrupted_transaction_does_no
     // The budget a reopened store carries, spelled out here rather than read
     // from the constant: a test that read it would agree with any edit to it,
     // including one that quietly removed the bound altogether.
-    assert_eq!(store.busy_timeout_ms().expect("readable"), 15_000);
+    assert_eq!(store.busy_timeout_ms().expect("readable"), 30_000);
     assert_eq!(
         store.journal_mode().expect("readable").to_lowercase(),
         "wal"

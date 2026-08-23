@@ -33,12 +33,13 @@ use kontor_accounts::{AccountAvailability, AdaptivePosition, CapacityReading, Pr
 use kontor_api::applications::{
     AbandonRunRequest, AbandonedRunDto, AccountProfileDto, AmendAccountProfileRequest,
     ApplicationOperations, AppliedDto, AppliedEpicDto, AppliedLinkDto, AppliedTaskDto,
-    ApplyEpicRequest, ArmRequest, AuthorizationProjectionDto, BlockedTaskDto, BudgetBoundsDto,
-    BudgetBoundsRequest, CreditBalanceDto, DisarmRequest, EnsureAccountProfileRequest,
-    EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto, EpicProjectionDto,
-    EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction, LifecycleOutcomeDto,
-    LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto, ProjectDto,
-    ProviderQuotaStateDto, PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto,
+    ApplyEpicRequest, ArmRequest, AuthorizationProjectionDto, BacklogImportAppliedDto,
+    BacklogImportApplyRequest, BacklogImportPreviewDto, BacklogImportRequest, BlockedTaskDto,
+    BudgetBoundsDto, BudgetBoundsRequest, CreditBalanceDto, DisarmRequest,
+    EnsureAccountProfileRequest, EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto,
+    EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction,
+    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
+    ProjectDto, ProviderQuotaStateDto, PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto,
     ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
     SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
     SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
@@ -70,14 +71,18 @@ use kontor_api::applications::{
     RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
-    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
-    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
+    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedProjectTopologySelectionDto,
+    AppliedTopologyUpgradeDto, CodeHelpEntryDto, ContainerRetitlePreviewDto,
+    ContainerRetitleRequest, DesiredBindingDto, JiraMaterializationAppliedDto,
+    JiraMaterializationApplyRequest, JiraMaterializationIntentDto, JiraMaterializationItemDto,
+    JiraMaterializationModeDto, JiraMaterializationPreviewDto, JiraMaterializationPreviewRequest,
     NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
-    NativeNamesPreviewRequest, PinnedSpecDto, SemanticTopologyRequest, SemanticTopologyTargetDto,
-    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
-    TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest, TopologyProjectionDto,
-    TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto, TopologyUpgradePreviewDto,
-    TopologyUpgradePreviewRequest,
+    NativeNamesPreviewRequest, PinnedSpecDto, ProjectTopologySelectionApplyRequest,
+    ProjectTopologySelectionPreviewDto, ProjectTopologySelectionPreviewRequest,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
+    SessionLabelsReconciledDto, ShareabilityDto, TopologyMutationDto, TopologyNodeDto,
+    TopologyNodeRequest, TopologyProjectionDto, TopologyUpgradeApplyRequest,
+    TopologyUpgradeEffectDto, TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
 };
 use kontor_api::applications::{
     AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
@@ -100,7 +105,7 @@ use kontor_api::applications::{
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
-use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
+use kontor_core::authority::AuthoritySubject;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
@@ -149,14 +154,14 @@ use kontor_core::state::{
     TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::ticket::{
-    CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflictKind,
-    TicketSyncProjection, TransitionPlan,
+    CommentPolicy, ExternalCommentRevision, InternalTaskFacts, OwnershipAction,
+    ReconciliationOutcome, StatusConflictKind, TicketSyncProjection, TransitionPlan,
 };
-use kontor_integrations_asma::AsmaExecutable;
-use kontor_integrations_asma::jira::{
+use kontor_jira::jira::{
     ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey, JiraOutcome, Observed,
     PinnedProfile, SpecCatalog, TicketDelegation, WorkflowSpecKey,
 };
+use kontor_jira::{JiraConnector, JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan};
 use kontor_policy::{
     CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload,
     OpenQuestionBlocker, TicketEvidence, TicketGateBlocker, TicketRequirement,
@@ -196,10 +201,11 @@ use kontor_scheduler::{
     CompletionTransition, IntegrationRecord, RemediationApproval, RemediationAuthorization,
     RepositoryOutcome, SignalDelivery,
 };
-use kontor_store::authority::SubjectOrigins;
+use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication,
-    EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, NewRoleTurn,
+    AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport, EpicApplication,
+    EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
+    JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem, NewRoleTurn,
     ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore, StoredConflict, StoredTeamDraft,
     StoredTeamsProjection, TurnDispatch,
 };
@@ -254,6 +260,12 @@ struct PreparedTicketPlan {
     diff: Vec<TicketFieldDiffDto>,
     hash: String,
     tickets: Vec<PreparedTicket>,
+}
+
+struct PreparedJiraMaterialization {
+    epic: MiniProject,
+    preview: JiraMaterializationPreviewDto,
+    plans: Vec<JiraIssuePlan>,
 }
 
 /// One validated epic request, ready for preview or apply under the same rules.
@@ -351,8 +363,8 @@ pub struct Services {
     domain: OperationalDomainPack,
     /// The connector specifications this build ships, parsed on first use.
     connectors: OnceLock<SpecCatalog>,
-    /// The one configured Jira wire boundary, when this Realm has one.
-    asma: Option<AsmaExecutable>,
+    /// Native Jira connectors from strict operator configuration.
+    jira: JiraConnectors,
     /// How many simultaneous runs this Realm admits, from its configuration.
     ///
     /// Held here and read at both the planning and the admission call site, so a
@@ -395,7 +407,7 @@ impl Services {
     pub fn new(
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
-        asma: Option<AsmaExecutable>,
+        jira: JiraConnectors,
         runtime_roots: PathBuf,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
@@ -404,7 +416,7 @@ impl Services {
             pack: kontor_profiles::seeds::bundled_pack()?,
             domain: kontor_profiles::bundled_operational_domain()?,
             connectors: OnceLock::new(),
-            asma,
+            jira,
             capacity,
             runtime_roots,
         }))
@@ -591,6 +603,31 @@ impl Services {
     /// Turn a repository refusal into the one the caller is owed.
     fn refuse(&self, error: &RepositoryError) -> ApiError {
         ApiError::from_repository(self.realm_id, error)
+    }
+
+    fn refuse_authority(&self, error: &AuthorityError) -> ApiError {
+        match error {
+            AuthorityError::RevisionConflict { current, .. } => self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the backlog authority moved since the caller read it",
+                )
+                .with_revision(AggregateRevision::parse(*current).ok()),
+            AuthorityError::NotFound => self.deny(
+                ApiErrorCode::NotFound,
+                "this project has no declared backlog authority",
+            ),
+            AuthorityError::Denied { .. } => self.deny(
+                ApiErrorCode::Forbidden,
+                "the legacy system still owns this project's backlog",
+            ),
+            AuthorityError::Domain(error) => self.refuse_domain(error),
+            AuthorityError::Repository(error) => self.refuse(error),
+            _ => self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the backlog authority operation was refused",
+            ),
+        }
     }
 
     /// Read one project's origin and current authority for both subjects.
@@ -902,6 +939,36 @@ impl Services {
             execution_scope,
             tasks,
         })
+    }
+
+    fn prepare_backlog_import(
+        &self,
+        project_id: ProjectId,
+        request: &BacklogImportRequest,
+        now: Timestamp,
+    ) -> Result<(Vec<PreparedEpic>, CanonicalDocument), ApiError> {
+        if request.epics.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a final backlog export must contain at least one epic",
+            ));
+        }
+        let prepared = request
+            .epics
+            .iter()
+            .map(|epic| self.prepare_epic(project_id, epic, now))
+            .collect::<Result<Vec<_>, _>>()?;
+        let export = serde_json::to_value(request).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the backlog export could not be canonicalized",
+            )
+        })?;
+        let document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "export": export,
+        }))?;
+        Ok((prepared, document))
     }
 
     /// The profile carrying `label` in this project, if there is one.
@@ -1626,38 +1693,163 @@ impl Services {
         ConnectorKey::parse(canonical).map_err(|error| self.refuse_domain(&error))
     }
 
-    /// The configured Jira boundary, or the honest answer for a Realm without it.
-    fn asma(&self) -> Result<&AsmaExecutable, ApiError> {
-        self.asma.as_ref().ok_or_else(|| {
+    /// The configured native Jira connector for one project.
+    fn jira(&self, project_id: ProjectId) -> Result<&JiraConnector, ApiError> {
+        self.jira.for_project(project_id).ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
-                "this realm is not configured with the ASMA Jira connector boundary",
+                "this project is not configured with the native Jira connector",
             )
         })
     }
 
     /// Turn the connector crate's typed refusal into the closed API vocabulary.
-    fn refuse_asma(&self, error: &kontor_integrations_asma::AsmaError) -> ApiError {
+    fn refuse_jira(&self, error: &JiraError) -> ApiError {
         tracing::warn!(detail = %error, "the configured Jira connector refused reconciliation");
         match error {
-            kontor_integrations_asma::AsmaError::Conflict { kind, .. } => {
+            JiraError::Conflict { kind, .. } => {
                 self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind))
             }
-            kontor_integrations_asma::AsmaError::Domain(_)
-            | kontor_integrations_asma::AsmaError::Selection { .. }
-            | kontor_integrations_asma::AsmaError::Refused { .. } => self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "the pinned Jira specification cannot represent this reconciliation",
-            ),
-            kontor_integrations_asma::AsmaError::Unavailable { .. } => self.deny(
+            JiraError::Domain(_) | JiraError::Selection { .. } | JiraError::Refused { .. } => self
+                .deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the pinned Jira specification cannot represent this reconciliation",
+                ),
+            JiraError::Unavailable { .. } => self.deny(
                 ApiErrorCode::Unavailable,
-                "the configured ASMA Jira connector boundary could not answer",
+                "the configured native Jira connector could not answer",
             ),
             _ => self.deny(
                 ApiErrorCode::Unavailable,
                 "the configured ASMA Jira connector boundary refused reconciliation",
             ),
         }
+    }
+
+    /// Re-derive the complete Jira plan from stored epic/task facts and the
+    /// caller's bounded create/link choices. Preview and apply share this path.
+    fn prepare_jira_materialization(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &JiraMaterializationPreviewRequest,
+    ) -> Result<PreparedJiraMaterialization, ApiError> {
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let tasks = state
+            .with_store(|store| store.list_epic_tasks(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        if request.tasks.len() != tasks.len() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "Jira materialization requires one exact intent per epic task",
+            ));
+        }
+
+        let validate = |intent: &JiraMaterializationIntentDto| match intent.mode {
+            JiraMaterializationModeDto::Create if intent.issue_key.is_none() => Ok(()),
+            JiraMaterializationModeDto::Link if intent.issue_key.is_some() => Ok(()),
+            _ => Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "create forbids issue_key and link requires issue_key",
+            )),
+        };
+        validate(&request.epic)?;
+
+        let epic_marker = ExternalId::parse(&format!("kontor-epic-{epic_id}"))
+            .map_err(|error| self.refuse_domain(&error))?;
+        let mut plans = vec![JiraIssuePlan {
+            kind: JiraIssueKind::Epic,
+            requested_key: request.epic.issue_key.clone(),
+            marker: epic_marker,
+            summary: epic.name.as_str().to_owned(),
+            description: format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+            parent_key: None,
+        }];
+        let mut items = vec![JiraMaterializationItemDto {
+            item_kind: "epic".to_owned(),
+            task_id: None,
+            mode: request.epic.mode,
+            requested_key: request.epic.issue_key.clone(),
+            confirmed_key: None,
+        }];
+
+        for task in &tasks {
+            let intent = request.tasks.get(&task.id.to_string()).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "Jira materialization requires one exact intent per epic task",
+                )
+            })?;
+            validate(intent)?;
+            let jira_links = state
+                .with_store(|store| store.list_task_ticket_links(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .filter(|link| link.connector.as_str() == "connector.jira")
+                .collect::<Vec<_>>();
+            let existing_matches = intent.issue_key.as_ref().is_some_and(|key| {
+                jira_links
+                    .iter()
+                    .any(|link| &link.external_issue_key == key)
+            });
+            if (intent.mode == JiraMaterializationModeDto::Create && !jira_links.is_empty())
+                || (intent.mode == JiraMaterializationModeDto::Link
+                    && !jira_links.is_empty()
+                    && !existing_matches)
+                || jira_links.len() > 1
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task already carries a different or ambiguous Jira binding",
+                ));
+            }
+            let marker = ExternalId::parse(&format!("kontor-task-{}", task.id))
+                .map_err(|error| self.refuse_domain(&error))?;
+            plans.push(JiraIssuePlan {
+                kind: JiraIssueKind::Task,
+                requested_key: intent.issue_key.clone(),
+                marker,
+                summary: task.title.as_str().to_owned(),
+                description: format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                parent_key: None,
+            });
+            items.push(JiraMaterializationItemDto {
+                item_kind: "task".to_owned(),
+                task_id: Some(task.id),
+                mode: intent.mode,
+                requested_key: intent.issue_key.clone(),
+                confirmed_key: None,
+            });
+        }
+
+        let preview_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "project_id": project_id.to_string(),
+                "epic_id": epic_id.to_string(),
+                "epic_revision": epic.revision.get(),
+                "items": plans.iter().map(|plan| serde_json::json!({
+                    "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
+                    "requested_key": plan.requested_key.as_ref().map(ExternalId::as_str),
+                    "marker": plan.marker.as_str(),
+                    "summary": plan.summary,
+                    "description": plan.description,
+                })).collect::<Vec<_>>(),
+            }))?
+            .hash()
+            .clone();
+        Ok(PreparedJiraMaterialization {
+            epic,
+            preview: JiraMaterializationPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                epic_id,
+                items,
+                preview_hash,
+            },
+            plans,
+        })
     }
 
     /// Select the exact bundled mapping pinned by one task's frozen profile.
@@ -1679,7 +1871,7 @@ impl Services {
                 issue_type: seed_field.spec().issue_type.clone(),
                 version: seed_field.spec().version,
             })
-            .map_err(|error| self.refuse_asma(&error))?
+            .map_err(|error| self.refuse_jira(&error))?
             .clone();
         let seed_workflow = catalog.workflow_specs().first().ok_or_else(|| {
             self.deny(
@@ -1713,7 +1905,7 @@ impl Services {
         let mut installed_catalog = SpecCatalog::empty();
         installed_catalog
             .load_workflow_spec(&installed_json)
-            .map_err(|error| self.refuse_asma(&error))?;
+            .map_err(|error| self.refuse_jira(&error))?;
         let external = installed_catalog
             .select_workflow_spec(&WorkflowSpecKey {
                 connector: selector.connector,
@@ -1725,7 +1917,7 @@ impl Services {
                     version: workflow.snapshot.definition.version,
                 }),
             })
-            .map_err(|error| self.refuse_asma(&error))?
+            .map_err(|error| self.refuse_jira(&error))?
             .clone();
         Ok((field, external))
     }
@@ -1833,7 +2025,7 @@ impl Services {
             )
         })?;
         let (field_spec, workflow_spec) = self.jira_specs(&workflow)?;
-        let asma = self.asma()?;
+        let jira = self.jira(project_id)?;
         let mut diff = Vec::new();
         let mut tickets = Vec::new();
         for link in links {
@@ -1863,7 +2055,7 @@ impl Services {
                 computed_at: kontor_api::now(),
             };
             let delegation = TicketDelegation {
-                asma,
+                exchange: jira,
                 field_spec: &field_spec,
                 workflow_spec: &workflow_spec,
                 projection: &projection,
@@ -1874,14 +2066,14 @@ impl Services {
             let observed = delegation
                 .observe()
                 .await
-                .map_err(|error| self.refuse_asma(&error))?;
+                .map_err(|error| self.refuse_jira(&error))?;
             let transition = match delegation.plan(&observed) {
                 ReconciliationOutcome::NoOp => None,
                 ReconciliationOutcome::Transition(plan) => {
                     let dry_run = delegation
                         .dry_run(&observed, &plan)
                         .await
-                        .map_err(|error| self.refuse_asma(&error))?;
+                        .map_err(|error| self.refuse_jira(&error))?;
                     if !matches!(dry_run.outcome, JiraOutcome::Planned | JiraOutcome::NoOp) {
                         return Err(self.deny(
                             ApiErrorCode::Unavailable,
@@ -4313,6 +4505,92 @@ impl Services {
         Err(self.deny(
             ApiErrorCode::RevisionConflict,
             "no published revision still produces the preview this apply names",
+        ))
+    }
+
+    /// The current and requested project defaults, with a digest suitable for
+    /// an explicit apply. Existing epic pins are intentionally absent: this
+    /// operation changes inheritance for future scopes and never rewrites an
+    /// already-frozen epic.
+    fn project_topology_selection(
+        &self,
+        project_id: ProjectId,
+        target: &RevisionRefDto,
+    ) -> Result<(TopologySnapshot, TopologySnapshot, ContentHash), ApiError> {
+        let state = self.state()?;
+        self.project_row(project_id)?;
+        let current = self.project_topology(project_id)?;
+        let target_id =
+            TopologySpecId::parse(&target.id).map_err(|error| self.refuse_domain(&error))?;
+        let target_spec = state
+            .with_store(|store| store.get_topology_spec(project_id, target_id, target.version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the target revision is not published in this project",
+                )
+            })?;
+        let selected = TopologySnapshot {
+            spec_id: target_spec.spec_id,
+            version: target_spec.version,
+            canonical_hash: target_spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?
+                .hash()
+                .clone(),
+        };
+        if selected == current {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the project already selects that topology revision",
+            ));
+        }
+        let hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "project_topology_selection_preview",
+            "project": project_id.to_string(),
+            "current": {
+                "id": current.spec_id.to_string(),
+                "version": current.version.get(),
+                "hash": current.canonical_hash.as_str(),
+            },
+            "target": {
+                "id": selected.spec_id.to_string(),
+                "version": selected.version.get(),
+                "hash": selected.canonical_hash.as_str(),
+            },
+        }))?;
+        Ok((current, selected, hash))
+    }
+
+    /// Find the published revision that still produces the named project
+    /// selection preview.
+    fn target_of_project_topology_preview(
+        &self,
+        project_id: ProjectId,
+        preview_hash: &ContentHash,
+    ) -> Result<TopologySnapshot, ApiError> {
+        let state = self.state()?;
+        for candidate in state
+            .with_store(|store| store.list_topology_specs(project_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            let reference = RevisionRefDto {
+                id: candidate.spec_id.to_string(),
+                version: candidate.version,
+            };
+            let Ok((_, target, hash)) = self.project_topology_selection(project_id, &reference)
+            else {
+                continue;
+            };
+            if &hash == preview_hash {
+                return Ok(target);
+            }
+        }
+        Err(self.deny(
+            ApiErrorCode::RevisionConflict,
+            "no published revision still produces the project selection preview",
         ))
     }
 
@@ -9394,12 +9672,6 @@ impl ApplicationOperations for Services {
         request: &EnsureProjectRequest,
     ) -> Result<ProjectDto, ApiError> {
         let state = self.state()?;
-        if request.backlog_origin == SubjectOrigin::LegacyPending {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "a legacy backlog cannot be imported yet, so a project may not declare backlog_origin legacy_pending",
-            ));
-        }
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "projects_ensure",
@@ -9578,6 +9850,11 @@ impl ApplicationOperations for Services {
                 "basis": { "value": "plan_allowance", "provenance": unverified },
                 "reachedVia": null, "pooledUsage": true
             }),
+            serde_json::json!({
+                "id": "opencode", "label": "OpenCode",
+                "basis": { "value": "provider_account", "provenance": provenance },
+                "reachedVia": null, "pooledUsage": false
+            }),
         ];
         let mut models = vec![
             serde_json::json!({
@@ -9606,6 +9883,13 @@ impl ApplicationOperations for Services {
                 "isDefault": false,
                 "contextWindow": { "value": 1000000, "provenance": provenance },
                 "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }),
+            serde_json::json!({
+                "id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "provider": "opencode",
+                "isDefault": true,
+                "contextWindow": { "value": null, "provenance": provenance },
+                "efforts": { "value": ["low", "high", "max"], "provenance": provenance },
                 "pricing": [], "degradedLane": false
             }),
         ];
@@ -10819,6 +11103,313 @@ impl ApplicationOperations for Services {
             preview_hash: self.upgrade_hash(project_id, epic_id, &current, &target, &effects)?,
             effects,
             snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn preview_project_topology_selection(
+        &self,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionPreviewRequest,
+    ) -> Result<ProjectTopologySelectionPreviewDto, ApiError> {
+        let state = self.state()?;
+        let (current, target, preview_hash) =
+            self.project_topology_selection(project_id, &request.target_spec)?;
+        Ok(ProjectTopologySelectionPreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            current_spec: pinned_spec_dto(&current),
+            target_spec: pinned_spec_dto(&target),
+            preview_hash,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn preview_jira_materialization(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &JiraMaterializationPreviewRequest,
+    ) -> Result<JiraMaterializationPreviewDto, ApiError> {
+        self.prepare_jira_materialization(project_id, epic_id, request)
+            .map(|prepared| prepared.preview)
+    }
+
+    async fn apply_jira_materialization(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &JiraMaterializationApplyRequest,
+    ) -> Result<JiraMaterializationAppliedDto, ApiError> {
+        let state = self.state()?;
+        let prepared =
+            self.prepare_jira_materialization(project_id, epic_id, &request.materialization)?;
+        if prepared.epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the Jira materialization preview",
+                )
+                .with_revision(Some(prepared.epic.revision)));
+        }
+        if prepared.preview.preview_hash != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the Jira materialization does not match the named preview",
+            ));
+        }
+
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "jira_materialization_apply",
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::MaterializeJira,
+            target,
+            prepared.epic.revision,
+            &intent,
+        )?;
+        let batch_id = ExternalId::parse(&receipt_id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let now = kontor_api::now();
+
+        let mut planned = Vec::with_capacity(prepared.plans.len());
+        for (ordinal, (plan, item)) in prepared
+            .plans
+            .iter()
+            .zip(prepared.preview.items.iter())
+            .enumerate()
+        {
+            let link_id = if let Some(task_id) = item.task_id {
+                let existing = state
+                    .with_store(|store| store.list_task_ticket_links(project_id, task_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .into_iter()
+                    .find(|link| {
+                        link.connector.as_str() == "connector.jira"
+                            && plan.requested_key.as_ref() == Some(&link.external_issue_key)
+                    })
+                    .map(|link| link.id);
+                Some(existing.unwrap_or_else(kontor_core::id::TicketLinkId::generate))
+            } else {
+                None
+            };
+            planned.push(NewJiraMaterializationItem {
+                id: ExternalId::parse(&uuid::Uuid::now_v7().to_string())
+                    .map_err(|error| self.refuse_domain(&error))?,
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: item.task_id,
+                link_id,
+                ordinal: u32::try_from(ordinal).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "too many Jira materialization items",
+                    )
+                })?,
+                item_kind: if item.task_id.is_some() {
+                    JiraItemKind::Task
+                } else {
+                    JiraItemKind::Epic
+                },
+                intent_kind: match item.mode {
+                    JiraMaterializationModeDto::Create => JiraIntentKind::Create,
+                    JiraMaterializationModeDto::Link => JiraIntentKind::Link,
+                },
+                requested_key: plan.requested_key.clone(),
+                marker: plan.marker.clone(),
+            });
+        }
+        state
+            .with_store(|store| {
+                store.plan_jira_materialization(
+                    &NewJiraMaterializationBatch {
+                        id: batch_id.clone(),
+                        project_id,
+                        epic_id,
+                        idempotency_key: key.as_str().to_owned(),
+                        preview_hash: request.preview_hash.clone(),
+                        expected_revision: request.expected_revision,
+                        created_at: now,
+                    },
+                    &planned,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        let connector = self.jira(project_id)?;
+        let stored = state
+            .with_store(|store| store.jira_materialization_items(project_id, &batch_id))
+            .map_err(|error| self.refuse(&error))?;
+        let mut epic_key = stored.first().and_then(|item| item.confirmed_key.clone());
+        for (item, base_plan) in stored.iter().zip(prepared.plans.iter()) {
+            if item.confirmed_key.is_some() {
+                continue;
+            }
+            let mut plan = base_plan.clone();
+            if item.item_kind == JiraItemKind::Task {
+                plan.parent_key = Some(epic_key.clone().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Jira epic was not confirmed before its tasks",
+                    )
+                })?);
+            }
+            let readback = connector
+                .materialize(&plan)
+                .await
+                .map_err(|error| self.refuse_jira(&error))?;
+            state
+                .with_store(|store| {
+                    store.confirm_jira_materialization_item(
+                        item,
+                        &readback.issue_key,
+                        &readback.readback_hash,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if item.item_kind == JiraItemKind::Epic {
+                epic_key = Some(readback.issue_key);
+            }
+        }
+        state
+            .with_store(|store| {
+                store.confirm_jira_materialization_batch(project_id, &batch_id, kontor_api::now())
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        let activation_key = IdempotencyKey::parse(&format!(
+            "activate:{}",
+            ContentHash::of(key.as_str().as_bytes()).as_str()
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let activation_intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "activate_asma_epic",
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "materialization_receipt_id": receipt_id.to_string(),
+        }))?;
+        let activation_receipt_id = self.record(
+            &activation_key,
+            project_id,
+            CommandKind::ActivateAsmaEpic,
+            target,
+            prepared.epic.revision,
+            &activation_intent,
+        )?;
+        state
+            .with_store(|store| {
+                store.activate_asma_epic(
+                    project_id,
+                    epic_id,
+                    activation_receipt_id,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let confirmed = state
+            .with_store(|store| store.jira_materialization_items(project_id, &batch_id))
+            .map_err(|error| self.refuse(&error))?;
+        let items = confirmed
+            .into_iter()
+            .map(|item| JiraMaterializationItemDto {
+                item_kind: match item.item_kind {
+                    JiraItemKind::Epic => "epic",
+                    JiraItemKind::Task => "task",
+                }
+                .to_owned(),
+                task_id: item.task_id,
+                mode: match item.intent_kind {
+                    JiraIntentKind::Create => JiraMaterializationModeDto::Create,
+                    JiraIntentKind::Link => JiraMaterializationModeDto::Link,
+                },
+                requested_key: item.requested_key,
+                confirmed_key: item.confirmed_key,
+            })
+            .collect();
+        Ok(JiraMaterializationAppliedDto {
+            realm_id: state.realm_id(),
+            epic_id,
+            batch_id: batch_id.as_str().to_owned(),
+            items,
+            receipt_id: receipt_id.to_string(),
+            activation_receipt_id: activation_receipt_id.to_string(),
+            activated: state
+                .with_store(|store| store.asma_epic_is_active(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?,
+        })
+    }
+
+    async fn apply_project_topology_selection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionApplyRequest,
+    ) -> Result<AppliedProjectTopologySelectionDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "project_topology_selection_apply",
+            "project": project_id.to_string(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let target = AggregateRef::Project { project_id };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        if !replayed {
+            let selected =
+                self.target_of_project_topology_preview(project_id, &request.preview_hash)?;
+            state
+                .with_store(|store| {
+                    store.set_project_topology_default(&ProjectTopologyDefault {
+                        project_id,
+                        topology: selected,
+                        selected_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::SelectProjectTopology,
+            target,
+            project.revision,
+            &intent,
+        )?;
+        let selected = state
+            .with_store(|store| store.get_project_topology_default(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the selected project topology could not be read back",
+                )
+            })?;
+        Ok(AppliedProjectTopologySelectionDto {
+            selected_spec: pinned_spec_dto(&selected.topology),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Updated
+                },
+                revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
         })
     }
 
@@ -14438,6 +15029,182 @@ impl ApplicationOperations for Services {
         }
     }
 
+    async fn preview_backlog_import(
+        &self,
+        project_id: ProjectId,
+        request: &BacklogImportRequest,
+    ) -> Result<BacklogImportPreviewDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let (prepared, document) = self.prepare_backlog_import(project_id, request, now)?;
+        let applications = prepared
+            .iter()
+            .zip(request.epics.iter())
+            .map(|(prepared, request)| EpicApplication {
+                project_id,
+                name: request.name.clone(),
+                execution_scope: prepared.execution_scope.as_ref(),
+                tasks: &prepared.tasks,
+                profile: &prepared.bundle.profile,
+                definition: &prepared.bundle.profile.definition,
+                team: prepared.bundle.team.as_ref(),
+                applied_at: now,
+            })
+            .collect::<Vec<_>>();
+        let (epics, proposed_readback_hash) = state
+            .with_store(|store| {
+                store.preview_backlog(&BacklogImport {
+                    project_id,
+                    expected_authority_revision: request.expected_authority_revision,
+                    source: request.source.as_str(),
+                    import_hash: document.hash(),
+                    canonical_manifest: document.json(),
+                    epics: &applications,
+                })
+            })
+            .map_err(|error| self.refuse_authority(&error))?;
+        let item_count = epics.iter().try_fold(0_u64, |count, epic| {
+            count
+                .checked_add(1 + u64::try_from(epic.tasks.len()).unwrap_or(u64::MAX))
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the backlog export contains too many items",
+                    )
+                })
+        })?;
+        Ok(BacklogImportPreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            preview_hash: document.hash().clone(),
+            proposed_readback_hash,
+            item_count,
+        })
+    }
+
+    async fn apply_backlog_import(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &BacklogImportApplyRequest,
+    ) -> Result<BacklogImportAppliedDto, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let (prepared, document) = self.prepare_backlog_import(project_id, &request.export, now)?;
+        if request.preview_hash != *document.hash() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the backlog export does not match the named preview",
+            ));
+        }
+        let target = AggregateRef::Project { project_id };
+        let command_intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "backlog_import_apply",
+            "project_id": project_id.to_string(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &command_intent, Some(&target))?;
+        let project_revision = request
+            .export
+            .epics
+            .first()
+            .expect("a prepared backlog export is non-empty")
+            .expected_revision;
+        let command_receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::ImportBacklog,
+            target,
+            project_revision,
+            &command_intent,
+        )?;
+        if replayed.is_some() {
+            let manifest = state
+                .with_store(|store| {
+                    store.subject_import_manifest(
+                        project_id,
+                        AuthoritySubject::Backlog,
+                        request.export.source.as_str(),
+                        &request.preview_hash,
+                    )
+                })
+                .map_err(|error| self.refuse_authority(&error))?;
+            if let Some(manifest) = manifest {
+                let readback = state
+                    .with_store(|store| store.backlog_readback_hash(project_id))
+                    .map_err(|error| self.refuse_authority(&error))?;
+                if readback != manifest.readback_hash {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the imported backlog no longer matches its stored readback",
+                    ));
+                }
+                let receipt_id = state
+                    .with_store(|store| {
+                        store.subject_authority_receipts(project_id, AuthoritySubject::Backlog)
+                    })
+                    .map_err(|error| self.refuse_authority(&error))?
+                    .into_iter()
+                    .find(|receipt| {
+                        receipt.operation == "import" && receipt.input_hash == request.preview_hash
+                    })
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the imported backlog has no authority receipt",
+                        )
+                    })?
+                    .receipt_id;
+                return Ok(BacklogImportAppliedDto {
+                    realm_id: state.realm_id(),
+                    project_id,
+                    import_hash: manifest.import_hash,
+                    readback_hash: manifest.readback_hash,
+                    imported_count: manifest.imported_count,
+                    receipt_id,
+                    command_receipt_id: command_receipt_id.to_string(),
+                });
+            }
+        }
+
+        let applications = prepared
+            .iter()
+            .zip(request.export.epics.iter())
+            .map(|(prepared, request)| EpicApplication {
+                project_id,
+                name: request.name.clone(),
+                execution_scope: prepared.execution_scope.as_ref(),
+                tasks: &prepared.tasks,
+                profile: &prepared.bundle.profile,
+                definition: &prepared.bundle.profile.definition,
+                team: prepared.bundle.team.as_ref(),
+                applied_at: now,
+            })
+            .collect::<Vec<_>>();
+        let applied = state
+            .with_store(|store| {
+                store.import_backlog(&BacklogImport {
+                    project_id,
+                    expected_authority_revision: request.export.expected_authority_revision,
+                    source: request.export.source.as_str(),
+                    import_hash: document.hash(),
+                    canonical_manifest: document.json(),
+                    epics: &applications,
+                })
+            })
+            .map_err(|error| self.refuse_authority(&error))?;
+        Ok(BacklogImportAppliedDto {
+            realm_id: state.realm_id(),
+            project_id,
+            import_hash: applied.manifest.import_hash,
+            readback_hash: applied.manifest.readback_hash,
+            imported_count: applied.manifest.imported_count,
+            receipt_id: applied.receipt.receipt_id,
+            command_receipt_id: command_receipt_id.to_string(),
+        })
+    }
+
     async fn apply_epic(
         &self,
         key: &IdempotencyKey,
@@ -16268,13 +17035,13 @@ impl ApplicationOperations for Services {
                     )
                 })?,
         )?;
-        let asma = self.asma()?;
+        let jira = self.jira(project_id)?;
         for ticket in &plan.tickets {
             let Some(transition) = &ticket.transition else {
                 continue;
             };
             let delegation = TicketDelegation {
-                asma,
+                exchange: jira,
                 field_spec: &field_spec,
                 workflow_spec: &workflow_spec,
                 projection: &ticket.projection,
@@ -16291,10 +17058,10 @@ impl ApplicationOperations for Services {
                     },
                 )
                 .await
-                .map_err(|error| self.refuse_asma(&error))?;
+                .map_err(|error| self.refuse_jira(&error))?;
             let transition_receipt = delegation
                 .receipt(&ticket.observed, transition, &response)
-                .map_err(|error| self.refuse_asma(&error))?;
+                .map_err(|error| self.refuse_jira(&error))?;
             state
                 .with_store(|store| {
                     store.append_observation(project_id, &ticket.observed.observation)
@@ -18391,10 +19158,67 @@ impl ApplicationOperations for Services {
             "schema_version": 1,
             "operation": "pull_ticket_comments",
             "task_id": task_id.to_string(),
-            "links": links.iter().map(|link| link.id.to_string()).collect::<Vec<_>>(),
+            "links": links.iter().map(|link| serde_json::json!({
+                "id": link.id.to_string(),
+                "revision": link.revision.get(),
+                "issue_key": link.external_issue_key.as_str(),
+            })).collect::<Vec<_>>(),
         }))?;
         let target = AggregateRef::Task { task_id };
-        let receipt = if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        let mut mirrored = 0_u32;
+        if !links.is_empty() {
+            let jira = self.jira(project_id)?;
+            for link in &links {
+                if !matches!(link.connector.as_str(), "jira" | "connector.jira") {
+                    return Err(self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "this build cannot mirror the linked ticket's connector",
+                    ));
+                }
+                let existing = state
+                    .with_store(|store| store.list_inbound_comments(project_id, link.id, u32::MAX))
+                    .map_err(|error| self.refuse(&error))?;
+                for comment in jira
+                    .comments(&link.external_issue_key)
+                    .await
+                    .map_err(|error| self.refuse_jira(&error))?
+                {
+                    if existing.iter().any(|stored| {
+                        stored.external_comment_id == comment.external_comment_id
+                            && stored.body_hash == comment.body_hash.as_str()
+                    }) {
+                        continue;
+                    }
+                    let supersedes = existing
+                        .iter()
+                        .find(|stored| stored.external_comment_id == comment.external_comment_id)
+                        .map(|stored| ContentHash::parse(&stored.body_hash))
+                        .transpose()
+                        .map_err(|error| self.refuse_domain(&error))?;
+                    let revision = ExternalCommentRevision {
+                        link_id: link.id,
+                        external_comment_id: comment.external_comment_id,
+                        author_account_id: comment.author_account_id,
+                        author_display: comment.author_display,
+                        external_created_at: comment.created_at,
+                        external_updated_at: comment.updated_at,
+                        body: BoundedText::parse(&comment.body)
+                            .map_err(|error| self.refuse_domain(&error))?,
+                        body_hash: comment.body_hash,
+                        observed_at: kontor_api::now(),
+                        supersedes,
+                    };
+                    if state
+                        .with_store(|store| store.append_comment(project_id, &revision))
+                        .map_err(|error| self.refuse(&error))?
+                    {
+                        mirrored = mirrored.saturating_add(1);
+                    }
+                }
+            }
+        }
+        let receipt = if let Some(existing) = replayed {
             existing.id
         } else {
             self.record(
@@ -18406,25 +19230,14 @@ impl ApplicationOperations for Services {
                 &intent,
             )?
         };
-        if !links.is_empty() {
-            // Mirroring a revision means reading it out of the external system,
-            // and that needs the connector this Realm is configured with.
-            // Answering `mirrored: 0` without one would be a claim about a
-            // system nothing contacted, which is indistinguishable from "there
-            // were no new comments".
-            return Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "this realm is not configured with a connector that can read those tickets",
-            ));
-        }
         let held = state
             .with_store(|store| store.list_task_inbound_comments(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
         Ok(TicketCommentPullDto {
             realm_id: state.realm_id(),
             task_id,
-            links: Vec::new(),
-            mirrored: 0,
+            links: links.iter().map(|link| link.id.to_string()).collect(),
+            mirrored,
             held: u32::try_from(held.len()).unwrap_or(u32::MAX),
             receipt_id: receipt.to_string(),
         })

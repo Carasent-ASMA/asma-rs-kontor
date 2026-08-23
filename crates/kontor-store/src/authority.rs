@@ -57,6 +57,9 @@ pub enum AuthorityError {
     /// Stored JSON is not valid.
     #[error("stored authority JSON is invalid")]
     Json(#[from] serde_json::Error),
+    /// The existing backlog graph rejected an imported shape.
+    #[error(transparent)]
+    Repository(#[from] kontor_core::repository::RepositoryError),
 }
 
 /// One recorded authority operation.
@@ -318,6 +321,47 @@ fn record_receipt(
     })
 }
 
+fn matching_receipt(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    subject: AuthoritySubject,
+    operation: &str,
+    input_hash: &ContentHash,
+) -> Result<Option<SubjectAuthorityReceipt>, AuthorityError> {
+    let row = tx
+        .query_row(
+            "SELECT id, result_hash, recorded_at
+             FROM subject_authority_receipts
+             WHERE project_id=?1 AND subject=?2 AND operation=?3 AND input_hash=?4",
+            params![
+                project_id.to_string(),
+                subject.as_str(),
+                operation,
+                input_hash.as_str(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|(receipt_id, result_hash, recorded_at)| {
+        Ok(SubjectAuthorityReceipt {
+            receipt_id,
+            project_id,
+            subject,
+            operation: operation.to_owned(),
+            input_hash: input_hash.clone(),
+            result_hash: ContentHash::parse(&result_hash)?,
+            recorded_at: parse_utc_timestamp(&recorded_at)?,
+        })
+    })
+    .transpose()
+}
+
 impl SqliteStore {
     /// Read one project/subject authority row.
     ///
@@ -383,6 +427,19 @@ impl SqliteStore {
         kontor_core::id::reject_sensitive_text("authority.source_cursor", source_cursor)?;
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let row = read_row(&tx, project_id, subject)?;
+        let input_hash = ContentHash::of(
+            serde_json::to_string(&serde_json::json!({
+                "source_cursor": source_cursor,
+                "source_hash": source_hash.as_str(),
+            }))?
+            .as_bytes(),
+        );
+        if row.source_frozen_at.is_some()
+            && let Some(receipt) =
+                matching_receipt(&tx, project_id, subject, "attest", &input_hash)?
+        {
+            return Ok((row, receipt));
+        }
         if !row.origin.permits_cutover() {
             return Err(AuthorityError::Rule(
                 "this subject was created in Kontor and has no legacy source to freeze",
@@ -406,13 +463,6 @@ impl SqliteStore {
         }
 
         let frozen_at = Timestamp::now();
-        let input_hash = ContentHash::of(
-            serde_json::to_string(&serde_json::json!({
-                "source_cursor": source_cursor,
-                "source_hash": source_hash.as_str(),
-            }))?
-            .as_bytes(),
-        );
         tx.execute(
             "UPDATE project_subject_authority
              SET source_frozen_at=?3, revision=revision+1
@@ -487,6 +537,20 @@ impl SqliteStore {
     ) -> Result<(ProjectSubjectAuthority, SubjectAuthorityReceipt), AuthorityError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let row = read_row(&tx, project_id, subject)?;
+        let input_hash = ContentHash::of(
+            serde_json::to_string(&serde_json::json!({
+                "source": source,
+                "final_import_hash": final_import_hash.as_str(),
+                "readback_hash": recomputed_readback.as_str(),
+            }))?
+            .as_bytes(),
+        );
+        if row.authority == SubjectAuthority::Kontor
+            && let Some(receipt) =
+                matching_receipt(&tx, project_id, subject, "switch", &input_hash)?
+        {
+            return Ok((row, receipt));
+        }
         if !row.origin.permits_cutover() {
             return Err(AuthorityError::Rule(
                 "this subject was created in Kontor and is already its own authority",
@@ -518,14 +582,6 @@ impl SqliteStore {
         }
 
         let switched_at = Timestamp::now();
-        let input_hash = ContentHash::of(
-            serde_json::to_string(&serde_json::json!({
-                "source": source,
-                "final_import_hash": final_import_hash.as_str(),
-                "readback_hash": recomputed_readback.as_str(),
-            }))?
-            .as_bytes(),
-        );
         let changed = tx.execute(
             "UPDATE project_subject_authority
              SET authority='kontor', final_import_hash=?3, readback_hash=?4,

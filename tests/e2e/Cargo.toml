@@ -42,7 +42,7 @@ kontor-accounts = { path = "../../crates/kontor-accounts", version = "=0.2.0" }
 kontor-api = { path = "../../crates/kontor-api", version = "=0.2.0" }
 kontor-context = { path = "../../crates/kontor-context", version = "=0.2.0" }
 kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.2.0" }
-kontor-integrations-asma = { path = "../../crates/kontor-integrations-asma", version = "=0.2.0" }
+kontor-jira = { path = "../../crates/kontor-jira", version = "=0.2.0" }
 kontor-intake = { path = "../../crates/kontor-intake", version = "=0.2.0" }
 kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.2.0" }
 kontor-policy = { path = "../../crates/kontor-policy", version = "=0.2.0" }

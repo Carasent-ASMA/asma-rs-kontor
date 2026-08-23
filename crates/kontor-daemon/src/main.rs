@@ -39,9 +39,6 @@ struct Arguments {
     /// A browser origin to answer, repeatable. Defaults to the desktop shell's.
     #[arg(long = "origin")]
     origins: Vec<String>,
-    /// The supported ASMA executable that owns Jira wire transport.
-    #[arg(long)]
-    asma_executable: Option<PathBuf>,
     /// An operator command. Serving is what happens when none is given, so the
     /// existing invocation keeps working unchanged.
     #[command(subcommand)]
@@ -115,13 +112,7 @@ async fn main() -> std::process::ExitCode {
         };
     }
 
-    serve(
-        state_root,
-        arguments.port,
-        arguments.origins,
-        arguments.asma_executable,
-    )
-    .await
+    serve(state_root, arguments.port, arguments.origins).await
 }
 
 /// Run one operator command against a state root.
@@ -222,20 +213,11 @@ where
 }
 
 /// Serve one Realm until the process is asked to stop.
-async fn serve(
-    state_root: PathBuf,
-    port: u16,
-    origins: Vec<String>,
-    asma_executable: Option<PathBuf>,
-) -> std::process::ExitCode {
+async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::process::ExitCode {
     let mut config = DaemonConfig::at(state_root).with_port(port);
     if !origins.is_empty() {
         config.allowed_origins = origins;
     }
-    if let Some(executable) = asma_executable {
-        config = config.with_asma_executable(executable);
-    }
-
     // The fleet comes from the state root, so the shipped daemon's session routes
     // are backed by the adapters this Realm is configured with. A Realm with no
     // `runtimes.json` composes an empty fleet and says so below rather than
