@@ -2887,6 +2887,15 @@ pub struct SeatProjectionDto {
     pub native_id: Option<String>,
     /// Whether this process still holds the frozen capability snapshot for it.
     pub attached: bool,
+    /// What the runtime last reported about the seat's run.
+    pub observed: String,
+    /// What Kontor concludes *now*, overlaying current freshness on the last reduction.
+    pub derived: String,
+    /// How old the newest trusted confirmation is.
+    pub freshness: String,
+    /// When the newest trusted confirmation arrived.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub last_confirmed_at: Option<Timestamp>,
 }
 
 /// One arming decision, as the projection reports it.

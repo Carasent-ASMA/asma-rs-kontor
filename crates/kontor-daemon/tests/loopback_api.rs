@@ -39,22 +39,24 @@ use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, 
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, MiniProjectId, ProjectId,
-    QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId, TeamRunId, TicketLinkId,
-    TopologyNodeId,
+    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey,
+    ContentHash, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
+    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId,
+    TeamRunId, TicketLinkId, TopologyNodeId,
 };
+use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    CommandRepository, ConnectorSpecSelector, NewMiniProject, NewObservation, NewProject,
-    NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    CommandRepository, ConnectorSpecSelector, NewCommandIntent, NewMiniProject,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink,
     ProjectRepository, RealmRepository, RunClosure, RunRepository, SourceDisposition,
     SpecRepository, StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
     TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{
-    Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
-    TerminalOutcome,
+    DesiredRunState, Freshness, ObservedRunState, RuntimeContact, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome,
 };
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
@@ -166,6 +168,45 @@ fn observe(world: &World, run: AgentRunId, sequence: u64, revision: u64) {
             .expect("the observation is recorded");
     });
     world.daemon.state().signals().appended();
+}
+
+fn request_run(world: &World, run: AgentRunId) {
+    let revision = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .snapshot_run_inspection(run)
+                .expect("the run reads back")
+                .open(world.realm_id())
+                .expect("our own realm")
+                .expect("the run exists")
+                .run
+                .revision
+        });
+    let document = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "marker": "launch"
+    }))
+    .expect("control metadata");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_intent(&NewCommandIntent {
+                project_id: world.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: IdempotencyKey::parse(&format!("launch-{run}"))
+                    .expect("a valid key"),
+                kind: CommandKind::LaunchRun,
+                target: AggregateRef::AgentRun { agent_run_id: run },
+                target_revision: revision,
+                intent: document.clone(),
+                payload: document,
+                desired: Some(DesiredRunState::RunRequested),
+                not_before: at("2026-08-10T09:00:00Z"),
+                created_at: at("2026-08-10T09:00:00Z"),
+            })
+            .expect("the launch intent is recorded");
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2118,6 +2159,75 @@ async fn a_snapshot_carries_the_position_it_is_consistent_with() {
     assert!(
         feed.frames().is_empty(),
         "a subscriber resumes strictly after the snapshot cursor without a duplicate"
+    );
+}
+
+#[tokio::test]
+async fn a_stored_confirmation_reads_as_stale_once_its_evidence_ages() {
+    let world = World::open().await;
+    let (run, _) = world.launch().await;
+    request_run(&world, run);
+    observe(&world, run, 1, 2);
+
+    let after = Call::get(format!("/v1/runs/{run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert!(
+        after.json()["value"]["projection"]["last_confirmed_at"]
+            .as_str()
+            .is_some(),
+        "matching intent confirms the observation: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["value"]["projection"]["freshness"],
+        serde_json::json!("stale"),
+        "an August 10 confirmation is older than the evidence window: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["value"]["projection"]["derived"],
+        serde_json::json!("stale"),
+        "a stored confirmation must not be served as current once it has aged: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["value"]["projection"]["lifecycle"],
+        serde_json::json!("running"),
+        "lifecycle stays last-known and is not closed by aged evidence: {}",
+        after.body
+    );
+}
+
+#[tokio::test]
+async fn startup_census_persists_an_inspect_without_closing_the_run() {
+    let world = World::open().await;
+    let (run, _) = world.launch().await;
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let after = Call::get(format!("/v1/runs/{run}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(
+        after.json()["value"]["projection"]["observed"],
+        serde_json::json!("launching"),
+        "startup census must persist a live inspect: {}",
+        after.body
+    );
+    assert!(
+        after.json()["value"]["closed_at"].is_null(),
+        "census never closes a run: {}",
+        after.body
+    );
+    assert_ne!(
+        after.json()["value"]["projection"]["derived"],
+        serde_json::json!("terminal"),
+        "census never invents a terminal outcome: {}",
+        after.body
     );
 }
 
@@ -5467,7 +5577,7 @@ async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
 }
 
 #[tokio::test]
-async fn resolving_a_task_context_is_deterministic_and_returns_no_content() {
+async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let seed = bootstrap(&world, "ctx").await;
@@ -5500,14 +5610,62 @@ async fn resolving_a_task_context_is_deterministic_and_returns_no_content() {
         first.body
     );
 
-    // Same task, same pins, same bytes: a preview is a pure function of what the
-    // task is, so a caller can compare two of them.
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            let document = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "text": "Read the approved project conventions before changing code"
+            }))?;
+            let mut export = kontor_store::memory::AgentsRoomExport {
+                schema_version: 1,
+                source: "agentsroom".to_owned(),
+                project_id,
+                entries: vec![kontor_store::memory::LegacyMemoryEntry {
+                    item_id: "project-conventions".to_owned(),
+                    document,
+                    source_id: Some("legacy-project-conventions".to_owned()),
+                }],
+                export_hash: ContentHash::of(b"pending"),
+            };
+            export.export_hash = export.calculate_hash()?;
+            store.freeze_agentsroom_writes()?;
+            store.apply_agentsroom_import(&export)?;
+            store.switch_memory_authority(project_id, "agentsroom", &export.export_hash)?;
+            Ok::<_, kontor_store::memory::MemoryError>(())
+        })
+        .expect("approved project memory is seeded");
+
+    // Moving approved memory moves the pack and attributes the new paths to the
+    // immutable memory revision. The document still never leaves the process.
     let again = Call::post(&uri, &serde_json::json!({"snapshot": false}))
         .signed_as(&world, "operator")
         .with_key("ctx-preview-2")
         .send(&world)
         .await;
-    assert_eq!(again.json()["context_hash"], hash);
+    assert_ne!(again.json()["context_hash"], hash);
+    assert!(
+        again.json()["provenance"]
+            .as_array()
+            .expect("provenance")
+            .iter()
+            .any(|entry| entry["path"] == "/memory/project-conventions/text"
+                && entry["source_id"]
+                    .as_str()
+                    .is_some_and(|source| source.starts_with("memory."))),
+        "approved memory is attributable in the Context Pack: {}",
+        again.body
+    );
+
+    // Same task, pins and approved revisions, same bytes.
+    let stable = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-preview-3")
+        .send(&world)
+        .await;
+    assert_eq!(stable.json()["context_hash"], again.json()["context_hash"]);
 
     // The merged content itself never leaves the process.
     assert!(

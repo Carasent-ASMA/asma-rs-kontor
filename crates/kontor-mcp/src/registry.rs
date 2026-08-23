@@ -540,7 +540,7 @@ impl ServeProfile {
 ///
 /// `worker` is the everyday working seat's surface: read the work, claim it,
 /// settle a turn, record a gate verdict, talk on the session, submit intake,
-/// propose memory and resolve context — 16 tools, all at or below operator
+/// read/propose memory and resolve context — 18 tools, all at or below operator
 /// tier, which the drift test below pins against the registry.
 pub static SERVE_PROFILES: &[ServeProfile] = &[ServeProfile {
     name: "worker",
@@ -559,6 +559,8 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[ServeProfile {
         "kontor_session_message_send",
         "kontor_ticket_comments_pull",
         "kontor_intake_submit",
+        "kontor_memory_search",
+        "kontor_memory_history",
         "kontor_memory_propose",
         "kontor_context_resolve",
     ],
@@ -2248,7 +2250,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             opt("limit", Place::Query, ArgType::U32, "Maximum results."),
         ],
-        about: "Search or list current approved project memory.",
+        about: "Search or list current approved project memory. At the start of non-trivial work, list it once, then search or open history only for relevant items.",
     },
     ToolSpec {
         name: "kontor_memory_history",
@@ -4671,9 +4673,11 @@ mod tests {
     }
 
     #[test]
-    fn the_worker_profile_is_the_sixteen_tools_the_plan_pinned() {
+    fn the_worker_profile_includes_approved_memory_reads() {
         let worker = ServeProfile::find("worker").expect("the worker profile is declared");
-        assert_eq!(worker.tools.len(), 16, "worker v1 is exactly 16 tools");
+        assert_eq!(worker.tools.len(), 18, "worker v2 is exactly 18 tools");
+        assert!(worker.allows("kontor_memory_search"));
+        assert!(worker.allows("kontor_memory_history"));
     }
 
     #[test]

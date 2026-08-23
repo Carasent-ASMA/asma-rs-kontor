@@ -58,10 +58,13 @@ use kontor_api::state::{
     ApiParts, ApiState, BarrierState, RuntimeRegistry, SchedulingBarrier, SessionRegistry,
     StreamSignals,
 };
-use kontor_core::id::{RealmId, RuntimeBindingId};
+use kontor_core::id::{CanonicalDocument, ExternalId, ProjectId, RealmId, RuntimeBindingId};
+use kontor_core::state::Freshness;
+use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::capability::RuntimeBindingSnapshot;
+use kontor_runtime::request::InspectRequest;
 use kontor_scheduler::model::{AdaptiveWindowConfig, CapacityConfig};
-use kontor_store::{CommandRecovery, SqliteStore};
+use kontor_store::{CensusItem, CommandRecovery, EpochKey, SqliteStore};
 use tracing::{info, warn};
 
 use crate::credentials::CredentialError;
@@ -562,6 +565,7 @@ impl Daemon {
     /// Ask each configured runtime about the bindings this Realm holds for it.
     async fn reconcile_bindings(&self, bindings: &[kontor_store::OpenBinding]) -> BarrierState {
         let mut settled = BarrierState::Open;
+        let now = kontor_api::now();
         // Read once, for every family. A document that no longer matches its
         // digest fails the read outright rather than being skipped: a claim
         // edited underneath the daemon is not the claim this Realm made.
@@ -686,6 +690,12 @@ impl Daemon {
                     "this realm holds binding claims the runtime would not attest"
                 );
             }
+            if !self
+                .census_open_bindings(&family, adapter.as_ref(), bindings, now)
+                .await
+            {
+                settled = BarrierState::Failed;
+            }
             match adapter.reconcile(&claimed).await {
                 Ok(report) => {
                     info!(
@@ -710,6 +720,191 @@ impl Daemon {
             }
         }
         settled
+    }
+
+    /// Persist a fresh inspect of every restored open binding, then finish the
+    /// census. Absence from a completed sweep is lost contact, never closure.
+    pub async fn refresh_runtime_census(&self) {
+        let Ok(bindings) = self.state.with_store(SqliteStore::open_bindings) else {
+            warn!(
+                realm_id = %self.realm_id(),
+                "open bindings could not be read for a runtime census"
+            );
+            return;
+        };
+        let now = kontor_api::now();
+        for family in self
+            .state
+            .runtimes()
+            .families()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let Some(adapter) = self.state.runtimes().get(&family) else {
+                continue;
+            };
+            let _ = self
+                .census_open_bindings(&family, adapter.as_ref(), &bindings, now)
+                .await;
+        }
+    }
+
+    async fn census_open_bindings(
+        &self,
+        family: &kontor_core::id::RuntimeKindKey,
+        adapter: &dyn RuntimeAdapter,
+        bindings: &[kontor_store::OpenBinding],
+        now: kontor_core::id::Timestamp,
+    ) -> bool {
+        let scoped: Vec<&kontor_store::OpenBinding> = bindings
+            .iter()
+            .filter(|binding| binding.binding.identity.runtime_kind == *family)
+            .collect();
+        if scoped.is_empty() {
+            return true;
+        }
+
+        let mut groups: BTreeMap<(ProjectId, String, u64), Vec<&kontor_store::OpenBinding>> =
+            BTreeMap::new();
+        for binding in &scoped {
+            let identity = &binding.binding.identity;
+            groups
+                .entry((
+                    binding.project_id,
+                    identity.host.as_str().to_owned(),
+                    identity.generation,
+                ))
+                .or_default()
+                .push(*binding);
+        }
+
+        let mut complete = true;
+        let window = jiff::SignedDuration::from_secs(self.state.evidence_window_seconds());
+        for ((project_id, host, generation), members) in groups {
+            let Ok(host_name) = kontor_core::id::ExternalName::parse(&host) else {
+                complete = false;
+                continue;
+            };
+            let Ok(reconciliation_key) =
+                ExternalId::parse(&format!("census-{family}-{generation}-{now}"))
+            else {
+                complete = false;
+                continue;
+            };
+            let key = EpochKey {
+                project_id,
+                runtime_kind: family.clone(),
+                host: host_name,
+                generation,
+                reconciliation_key,
+            };
+            let epoch = match self
+                .state
+                .with_store(|store| store.begin_reconciliation_epoch(&key, now))
+            {
+                Ok(epoch) => epoch,
+                Err(detail) => {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        runtime = %family,
+                        detail = %detail,
+                        "a runtime census could not begin"
+                    );
+                    complete = false;
+                    continue;
+                }
+            };
+
+            let mut authoritative = true;
+            for member in members {
+                let Some(held) = self.state.sessions().get(member.binding.id) else {
+                    continue;
+                };
+                match self.inspect_census_item(adapter, &held, now, window).await {
+                    Ok(item) => {
+                        if let Err(detail) = self.state.with_store(|store| {
+                            store.observe_census_item(epoch.epoch_id, project_id, &item)
+                        }) {
+                            warn!(
+                                realm_id = %self.realm_id(),
+                                runtime = %family,
+                                detail = %detail,
+                                "a runtime census item could not be recorded"
+                            );
+                            authoritative = false;
+                            complete = false;
+                        }
+                    }
+                    Err(detail) => {
+                        warn!(
+                            realm_id = %self.realm_id(),
+                            runtime = %family,
+                            detail,
+                            "a restored binding could not be inspected for census"
+                        );
+                        authoritative = false;
+                        complete = false;
+                    }
+                }
+            }
+
+            if let Err(detail) = self.state.with_store(|store| {
+                store.finish_reconciliation_epoch(epoch.epoch_id, project_id, authoritative, now)
+            }) {
+                warn!(
+                    realm_id = %self.realm_id(),
+                    runtime = %family,
+                    detail = %detail,
+                    "a runtime census could not finish"
+                );
+                complete = false;
+            }
+        }
+        complete
+    }
+
+    async fn inspect_census_item(
+        &self,
+        adapter: &dyn RuntimeAdapter,
+        held: &RuntimeBindingSnapshot,
+        now: kontor_core::id::Timestamp,
+        window: jiff::SignedDuration,
+    ) -> Result<CensusItem, String> {
+        let issued = adapter
+            .issued_binding(held)
+            .await
+            .map_err(|error| error.to_string())?;
+        let observation = adapter
+            .inspect(&InspectRequest {
+                binding: issued.snapshot().clone(),
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let raw = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "observed_state": observation.state.as_str(),
+            "contact": observation.contact.as_str(),
+            "native_sequence": observation.native_sequence,
+            "observed_at": observation.observed_at.to_string(),
+        }))
+        .map_err(|error| error.to_string())?;
+        let audit_ref = observation
+            .native_event_id
+            .clone()
+            .or_else(|| ExternalId::parse(&format!("census-{}", observation.native_sequence)).ok())
+            .ok_or_else(|| "census audit ref is unusable".to_owned())?;
+        Ok(CensusItem {
+            identity: observation.identity.clone(),
+            native_event_id: observation.native_event_id.clone(),
+            native_sequence: observation.native_sequence,
+            observed: observation.state,
+            contact: observation.contact,
+            freshness: Freshness::evaluate(Some(observation.observed_at), now, window),
+            raw,
+            audit_ref,
+            observed_at: observation.observed_at,
+        })
     }
 
     /// Mint a new credential set, publish it and swap it in, in that order.

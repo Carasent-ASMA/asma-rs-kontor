@@ -1321,6 +1321,39 @@ fn freshness_is_measured_not_assumed() {
     );
 }
 
+#[test]
+fn a_stored_confirmation_is_not_current_once_its_evidence_ages() {
+    assert_eq!(
+        DerivedRunState::Confirmed.at_read_time(Freshness::Fresh),
+        DerivedRunState::Confirmed
+    );
+    assert_eq!(
+        DerivedRunState::Confirmed.at_read_time(Freshness::Stale),
+        DerivedRunState::Stale
+    );
+    assert_eq!(
+        DerivedRunState::Confirmed.at_read_time(Freshness::Unknown),
+        DerivedRunState::Stale
+    );
+    assert_eq!(
+        DerivedRunState::LostContact.at_read_time(Freshness::Stale),
+        DerivedRunState::LostContact
+    );
+    assert_eq!(
+        DerivedRunState::Diverged.at_read_time(Freshness::Unknown),
+        DerivedRunState::Diverged
+    );
+    assert_eq!(
+        DerivedRunState::Terminal {
+            outcome: TerminalOutcome::Succeeded
+        }
+        .at_read_time(Freshness::Stale),
+        DerivedRunState::Terminal {
+            outcome: TerminalOutcome::Succeeded
+        }
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Revisions
 // ---------------------------------------------------------------------------

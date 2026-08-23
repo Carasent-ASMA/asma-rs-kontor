@@ -17,6 +17,8 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Parser, Subcommand};
 use kontor_api::state::BarrierState;
@@ -303,8 +305,14 @@ async fn serve(
         })
         .into_future();
     let realm_id = daemon.realm_id();
+    let census_ready = Arc::new(AtomicBool::new(false));
+    let census_flag = Arc::clone(&census_ready);
+    let census_secs = u64::try_from(daemon.config().evidence_window_seconds.max(30)).unwrap_or(60);
+    let mut census = tokio::time::interval(std::time::Duration::from_secs(census_secs));
+    let mut skip_first_census_tick = true;
     let outcome = {
         let running = serve_while_reconciling(served, daemon.reconcile(), move |outcome| {
+            census_flag.store(outcome == BarrierState::Open, Ordering::SeqCst);
             if outcome != BarrierState::Open {
                 // Serving with the barrier shut is deliberate: health, identity,
                 // snapshots and the event feed still answer, and they are exactly
@@ -333,6 +341,15 @@ async fn serve(
                         "credentials could not be rotated; the previous set stays in force"
                     ),
                 },
+                _ = census.tick() => {
+                    if skip_first_census_tick {
+                        skip_first_census_tick = false;
+                        continue;
+                    }
+                    if census_ready.load(Ordering::SeqCst) {
+                        daemon.refresh_runtime_census().await;
+                    }
+                }
             }
         }
     };

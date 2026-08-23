@@ -317,7 +317,7 @@ mod tests {
     }
 
     /// TEST-001: the worker profile at operator authority serves exactly the
-    /// profile's sixteen tools — no more, no fewer.
+    /// profile's eighteen tools — no more, no fewer.
     #[test]
     fn the_worker_profile_at_operator_serves_exactly_the_profile() {
         let served: BTreeSet<&str> = profiled(CallerTier::Operator, "worker")
@@ -335,7 +335,7 @@ mod tests {
             served, declared,
             "the served list is exactly the profile ∩ operator, which is the whole profile"
         );
-        assert_eq!(served.len(), 16, "worker v1 is sixteen tools");
+        assert_eq!(served.len(), 18, "worker v2 is eighteen tools");
     }
 
     /// TEST-002: a tool the tier reaches but the profile excludes is refused at
@@ -382,7 +382,7 @@ mod tests {
             served, observer_reads,
             "an observer server under the worker profile serves profile ∩ observer only"
         );
-        assert_eq!(served.len(), 8, "the worker profile holds eight reads");
+        assert_eq!(served.len(), 10, "the worker profile holds ten reads");
         assert!(
             !served.contains("kontor_ticket_claim"),
             "a profile entry above the tier is not served"

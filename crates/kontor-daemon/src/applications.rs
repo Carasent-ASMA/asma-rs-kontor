@@ -140,7 +140,7 @@ use kontor_core::spec::{
     TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SeatBinding,
+    Freshness, GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SeatBinding,
     SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome,
     TopologyLifecycle,
 };
@@ -7078,17 +7078,18 @@ const fn layer_name(layer: kontor_context::model::ContextLayer) -> &'static str 
 
 /// The context layers one task resolves through.
 ///
-/// They are derived from the task and its pinned profile and from nothing a
-/// caller supplied, which is what makes the resolution deterministic: the same
-/// task resolves to the same hash until the task or its pin changes.
+/// They are derived from the task, its pinned profile and approved project
+/// memory, and from nothing a caller supplied. The same inputs therefore resolve
+/// to the same hash until the task, its pin or an approved memory revision moves.
 fn context_sources(
     realm_id: kontor_core::id::RealmId,
     task: &kontor_core::repository::Task,
     workflow: &kontor_core::repository::TaskWorkflow,
+    memory: &[kontor_store::memory::MemoryRevision],
 ) -> Result<Vec<kontor_context::model::ContextSource>, ApiError> {
     use kontor_context::model::{ContextLayer, ContextSource};
     let refuse = |error: &kontor_core::DomainError| ApiError::from_domain(realm_id, error);
-    vec![
+    let mut sources = vec![
         ContextSource {
             schema_version: SCHEMA_VERSION,
             realm_id,
@@ -7127,15 +7128,46 @@ fn context_sources(
                 "module": task.module.as_ref().map(kontor_core::id::ModuleKey::as_str),
             }),
         },
-    ]
-    .into_iter()
-    .map(|source| {
-        source
-            .validate(realm_id)
-            .map(|()| source)
-            .map_err(|error| refuse(&error))
-    })
-    .collect::<Result<Vec<_>, _>>()
+    ];
+
+    // ponytail: resolve every approved item until the canonical 1 MiB pack
+    // ceiling is reachable; add a versioned selector only when that happens.
+    for revision in memory {
+        let revision_number = u32::try_from(revision.revision).map_err(|_| {
+            refuse(&kontor_core::DomainError::invalid(
+                "MemoryRevision",
+                "is too large to represent in Context Pack provenance",
+            ))
+        })?;
+        let revision_number =
+            SpecVersion::parse(revision_number).map_err(|error| refuse(&error))?;
+        let document = revision
+            .document
+            .deserialize::<serde_json::Value>()
+            .map_err(|error| refuse(&error))?;
+        let mut items = serde_json::Map::new();
+        items.insert(revision.item_id.clone(), document);
+        sources.push(ContextSource {
+            schema_version: SCHEMA_VERSION,
+            realm_id,
+            layer: ContextLayer::ProjectProfile,
+            source_id: format!("memory.{}", revision.revision_id),
+            revision: revision_number,
+            restricted_references: Vec::new(),
+            redactions: Vec::new(),
+            content: serde_json::json!({ "memory": items }),
+        });
+    }
+
+    sources
+        .into_iter()
+        .map(|source| {
+            source
+                .validate(realm_id)
+                .map(|()| source)
+                .map_err(|error| refuse(&error))
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// The wire view of one account profile.
@@ -13885,21 +13917,47 @@ impl ApplicationOperations for Services {
                 let seats = state
                     .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
                     .map_err(|error| self.refuse(&error))?;
+                let now = kontor_api::now();
+                let window = jiff::SignedDuration::from_secs(state.evidence_window_seconds());
+                let mut projected_seats = Vec::with_capacity(seats.len());
+                for seat in seats {
+                    let run = state
+                        .with_store(|store| store.get_agent_run(project_id, seat.agent_run_id))
+                        .map_err(|error| self.refuse(&error))?
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::StaleBinding,
+                                "a delivery role census row names a missing AgentRun",
+                            )
+                        })?;
+                    let freshness = Freshness::evaluate(
+                        run.projection.last_confirmed_at,
+                        now,
+                        window,
+                    );
+                    projected_seats.push(SeatProjectionDto {
+                        role_slot: seat.role.as_str().to_owned(),
+                        agent_run_id: seat.agent_run_id.to_string(),
+                        runtime_kind: seat.runtime_kind.map(|kind| kind.as_str().to_owned()),
+                        native_id: seat.native_id.map(|id| id.as_str().to_owned()),
+                        attached: seat
+                            .binding_id
+                            .is_some_and(|id| state.sessions().get(id).is_some()),
+                        observed: run.projection.observed.as_str().to_owned(),
+                        derived: run
+                            .projection
+                            .derived
+                            .at_read_time(freshness)
+                            .as_str()
+                            .to_owned(),
+                        freshness: freshness.as_str().to_owned(),
+                        last_confirmed_at: run.projection.last_confirmed_at,
+                    });
+                }
                 runs.push(TeamRunProjectionDto {
                     team_run_id: team_run_id.to_string(),
                     lifecycle: lifecycle.as_str().to_owned(),
-                    seats: seats
-                        .into_iter()
-                        .map(|seat| SeatProjectionDto {
-                            role_slot: seat.role.as_str().to_owned(),
-                            agent_run_id: seat.agent_run_id.to_string(),
-                            runtime_kind: seat.runtime_kind.map(|kind| kind.as_str().to_owned()),
-                            native_id: seat.native_id.map(|id| id.as_str().to_owned()),
-                            attached: seat
-                                .binding_id
-                                .is_some_and(|id| state.sessions().get(id).is_some()),
-                        })
-                        .collect(),
+                    seats: projected_seats,
                 });
             }
             let worktree = state
@@ -14647,10 +14705,19 @@ impl ApplicationOperations for Services {
                 )
             })?;
 
-        // The layers are built from what the task *is*, not from caller-supplied
-        // content: a route that accepted arbitrary context would be a route
-        // through which anything could be handed to a run.
-        let sources = context_sources(realm_id, &task, &workflow)?;
+        // The layers are built from what the task *is* and from approved memory,
+        // never from caller-supplied content: a route that accepted arbitrary
+        // context would be a route through which anything could reach a run.
+        let memory = state
+            .with_store(|store| store.list_memory(project_id))
+            .map_err(|error| match error {
+                kontor_store::memory::MemoryError::Domain(error) => self.refuse_domain(&error),
+                _ => self.deny(
+                    ApiErrorCode::Unavailable,
+                    "approved project memory could not be read",
+                ),
+            })?;
+        let sources = context_sources(realm_id, &task, &workflow, &memory)?;
         let references = kontor_context::model::ReferenceInputs::new();
         let resolution = kontor_context::resolve::ResolutionRequest {
             realm_id,

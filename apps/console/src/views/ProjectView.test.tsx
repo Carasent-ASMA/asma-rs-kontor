@@ -23,7 +23,22 @@ const PROFILE = { id: 'independent-review', version: 1, name: 'Independent Revie
 
 function operationalClient(overrides: Record<string, unknown> = {}) {
   return {
-    epic: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP', revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [] })),
+    epic: vi.fn(async () => ({
+      realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+      revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [],
+      tasks: [{
+        task_id: 'task-1', title: 'OP-19', state: 'in_progress', revision: 3,
+        depends_on: [], gates: [], links: [], required_artifacts: [],
+        team_runs: [{
+          team_run_id: 'team-1', lifecycle: 'running',
+          seats: [{
+            role_slot: 'implement', agent_run_id: 'run-1', runtime_kind: 'paseo',
+            native_id: 'agent-1', attached: false, observed: 'unknown',
+            derived: 'stale', freshness: 'unknown', last_confirmed_at: null,
+          }],
+        }],
+      }],
+    })),
     topology: vi.fn(async () => ({
       realm_id: 'realm-1', project_id: 'project-1', snapshot_cursor: 20,
       pinned_spec: { id: 'operational-topology', version: 1, canonical_hash: 'topology-hash' },
@@ -74,6 +89,8 @@ describe('<ProjectView>', () => {
   it('renders server capacity, logical/native topology and code help without local derivation', async () => {
     await open()
     expect(screen.getByText('4')).toBeInTheDocument()
+    expect(screen.getByText('non-terminal TeamRuns')).toBeInTheDocument()
+    expect(screen.getByText('stale')).toBeInTheDocument()
     expect(screen.getByText('5')).toBeInTheDocument()
     expect(screen.getByText('7')).toBeInTheDocument()
     expect(screen.getByText(/separate native project/)).toBeInTheDocument()

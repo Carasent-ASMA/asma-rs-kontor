@@ -462,7 +462,13 @@ pub async fn context_policy_preview(
 /// Build the wire view of one run inspection.
 fn run_dto(state: &ApiState, inspection: &RunInspection) -> RunDto {
     let projection = &inspection.run.projection;
-    let outcome = match projection.derived {
+    let freshness = Freshness::evaluate(
+        projection.last_confirmed_at,
+        now(),
+        jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+    );
+    let derived = projection.derived.at_read_time(freshness);
+    let outcome = match derived {
         DerivedRunState::Terminal { outcome } => Some(outcome),
         _ => None,
     };
@@ -490,16 +496,12 @@ fn run_dto(state: &ApiState, inspection: &RunInspection) -> RunDto {
             lifecycle: projection.lifecycle,
             desired: projection.desired,
             observed: projection.observed,
-            derived: projection.derived.as_str().to_owned(),
+            derived: derived.as_str().to_owned(),
             outcome,
             last_confirmed_at: projection.last_confirmed_at,
             // Freshness is a judgement about *now*, so it is computed here rather
             // than stored: the same row read a minute later is a staler answer.
-            freshness: Freshness::evaluate(
-                projection.last_confirmed_at,
-                now(),
-                jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-            ),
+            freshness,
             last_cursor: projection.last_cursor,
         },
         revision: inspection.run.revision,

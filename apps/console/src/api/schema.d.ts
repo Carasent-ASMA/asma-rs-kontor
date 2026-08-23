@@ -5794,8 +5794,19 @@ export interface components {
             agent_run_id: string;
             /** @description Whether this process still holds the frozen capability snapshot for it. */
             attached: boolean;
+            /** @description What Kontor concludes *now*, overlaying current freshness on the last reduction. */
+            derived: string;
+            /** @description How old the newest trusted confirmation is. */
+            freshness: string;
+            /**
+             * Format: date-time
+             * @description When the newest trusted confirmation arrived.
+             */
+            last_confirmed_at?: string | null;
             /** @description The runtime's own session id. Correlation evidence, never identity. */
             native_id?: string | null;
+            /** @description What the runtime last reported about the seat's run. */
+            observed: string;
             /** @description The role slot. */
             role_slot: string;
             /** @description The runtime family that owns the session, if the run is bound. */

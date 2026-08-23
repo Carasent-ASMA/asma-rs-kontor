@@ -915,6 +915,20 @@ impl DerivedRunState {
         )
     }
 
+    /// The conclusion a reader should treat as current, given how old the last
+    /// confirmation is.
+    ///
+    /// The stored value is the last reduction. A confirmation that has aged — or
+    /// that never arrived — is no longer live work. Stronger uncertainty
+    /// (lost contact, divergence, an unreachable runtime) is left alone.
+    #[must_use]
+    pub const fn at_read_time(self, freshness: Freshness) -> Self {
+        match self {
+            Self::Confirmed if !matches!(freshness, Freshness::Fresh) => Self::Stale,
+            other => other,
+        }
+    }
+
     /// The stable spelling used in JSON and SQLite.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

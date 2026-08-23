@@ -195,6 +195,11 @@ export function ProjectView({ client }: { client: OperationalClient }) {
             {data.capacity.value ? <CapacityPanel capacity={data.capacity.value} /> : <Unavailable read={data.capacity} />}
           </section>
 
+          <section aria-labelledby="delivery-seats">
+            <h3 id="delivery-seats">Delivery seats</h3>
+            {data.epic.value ? <DeliverySeats epic={data.epic.value} /> : <Unavailable read={data.epic} />}
+          </section>
+
           <section aria-labelledby="project-topology">
             <h3 id="project-topology">Project Session Topology</h3>
             {data.topology.value ? (
@@ -268,11 +273,56 @@ export function ProjectView({ client }: { client: OperationalClient }) {
   )
 }
 
+function DeliverySeats({ epic }: { epic: EpicProjection }) {
+  const seats = epic.tasks.flatMap((task) =>
+    task.team_runs.flatMap((run) =>
+      run.seats.map((seat) => ({ task, run, seat })),
+    ),
+  )
+  if (seats.length === 0) {
+    return <p className="empty">No delivery seats are projected for this epic.</p>
+  }
+  return (
+    <>
+      <p className="caveat">
+        Runtime activity is derived plus freshness. A workflow can stay in progress
+        while every seat is idle, stale, or lost contact.
+      </p>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Workflow</th>
+              <th>Seat</th>
+              <th>Observed</th>
+              <th>Derived now</th>
+              <th>Freshness</th>
+            </tr>
+          </thead>
+          <tbody>
+            {seats.map(({ task, seat }) => (
+              <tr key={seat.agent_run_id}>
+                <th scope="row">{task.title}</th>
+                <td><StateBadge state={task.state} label="workflow state" /></td>
+                <td><code>{seat.role_slot}</code></td>
+                <td><StateBadge state={seat.observed} label="observed" /></td>
+                <td><StateBadge state={seat.derived} label="derived state" /></td>
+                <td><StateBadge state={seat.freshness} label="freshness" /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
 function CapacityPanel({ capacity }: { capacity: ProjectCapacity }) {
   return (
     <>
       <Facts>
-        <Fact label="active TeamRuns" value={capacity.active_team_runs} />
+        <Fact label="non-terminal TeamRuns" value={capacity.active_team_runs} hint="admitted envelopes, not idle seats" />
         <Fact label="MiniProject concurrency ceiling" value={capacity.mission_ceiling} />
         <Fact label="adaptive admission window" value={capacity.adaptive_width} />
         <Fact label="clean-observation streak" value={capacity.adaptive_streak} />

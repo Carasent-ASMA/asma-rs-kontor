@@ -114,7 +114,7 @@ export function TaskDetail({
       <Facts>
         <Fact label="task" value={<code>{task.task_id}</code>} />
         <Fact label="project" value={<code>{task.project_id}</code>} />
-        <Fact label="state" value={<StateBadge state={task.state} label="task state" />} />
+        <Fact label="workflow state" value={<StateBadge state={task.state} label="workflow state" />} />
         <Fact label="revision" value={task.revision} />
         <Fact
           label="current phase"

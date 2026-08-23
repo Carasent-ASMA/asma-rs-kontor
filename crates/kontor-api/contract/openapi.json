@@ -14648,7 +14648,10 @@
         "required": [
           "role_slot",
           "agent_run_id",
-          "attached"
+          "attached",
+          "observed",
+          "derived",
+          "freshness"
         ],
         "properties": {
           "agent_run_id": {
@@ -14659,12 +14662,32 @@
             "type": "boolean",
             "description": "Whether this process still holds the frozen capability snapshot for it."
           },
+          "derived": {
+            "type": "string",
+            "description": "What Kontor concludes *now*, overlaying current freshness on the last reduction."
+          },
+          "freshness": {
+            "type": "string",
+            "description": "How old the newest trusted confirmation is."
+          },
+          "last_confirmed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the newest trusted confirmation arrived."
+          },
           "native_id": {
             "type": [
               "string",
               "null"
             ],
             "description": "The runtime's own session id. Correlation evidence, never identity."
+          },
+          "observed": {
+            "type": "string",
+            "description": "What the runtime last reported about the seat's run."
           },
           "role_slot": {
             "type": "string",
