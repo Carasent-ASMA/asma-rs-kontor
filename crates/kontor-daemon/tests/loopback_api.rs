@@ -4786,14 +4786,19 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
     world.fake.verifying_placement_at(
         kontor_runtime::workspace::WorkspaceRoot::parse("/w/started-epic/0").expect("a valid root"),
     );
-    world.fake.provider_outage(
-        "claude",
-        Some(ModelRung {
-            provider: ProviderRef("codex".to_owned()),
-            model: ModelRef("gpt-5.6-sol".to_owned()),
-            effort: Some(EffortLevel::Xhigh),
-        }),
-    );
+    // A vendor outage is observed once per account, so it lands on every alias
+    // that selects one — the family spelling alone would leave the bundled
+    // chain's alias rungs launchable and prove nothing about the fallback.
+    for provider in ["claude", "claude-work", "claude-personal"] {
+        world.fake.provider_outage(
+            provider,
+            Some(ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            }),
+        );
+    }
     let builder = kontor_core::id::RoleSlotId::parse("builder").expect("builder slot");
     world.fake.refusing_launch_of(&builder);
     let partial = Call::post(
@@ -23758,7 +23763,7 @@ async fn an_account_profile_freezes_its_declared_provider_aliases_at_ensure() {
 /// A route can only be described and validated against an account if the alias
 /// is a provider the catalog advertises.
 #[tokio::test]
-async fn the_model_catalog_advertises_the_codex_account_aliases() {
+async fn the_model_catalog_advertises_the_account_aliases() {
     let world = World::open().await;
     let catalog = Call::get("/v1/catalog")
         .signed_as(&world, "observer")
@@ -23780,6 +23785,18 @@ async fn the_model_catalog_advertises_the_codex_account_aliases() {
                 .expect("models")
                 .iter()
                 .any(|model| model["provider"] == alias && model["id"] == "gpt-5.6-sol"),
+            "the alias serves the same routes as its family: {}",
+            catalog.body
+        );
+    }
+    for alias in ["claude-work", "claude-personal"] {
+        assert!(providers.contains(&alias), "{}", catalog.body);
+        assert!(
+            body["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["provider"] == alias && model["id"] == "claude-opus-5"),
             "the alias serves the same routes as its family: {}",
             catalog.body
         );

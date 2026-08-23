@@ -31,16 +31,15 @@
 //! directory listing is the source of truth, so a profile naming
 //! `../../.ssh` matches nothing rather than escaping anywhere.
 //!
-//! This is the same lookup a future account-pinned launch needs: the runtime
-//! contract refuses a pin unless the adapter can prove which account a run
-//! executes as, and proving it means handing the harness this directory as its
-//! configuration home. When that lands it builds a
-//! [`kontor_accounts::ResolverPolicy`] from this same map rather than growing a
-//! second one.
+//! The approved path is also the input to Claude Code's scoped macOS Keychain
+//! service name. Kontor derives that name and reads only that exact entry; the
+//! token is never cached, logged or persisted.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::time::Duration;
 
 use kontor_accounts::{UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage};
@@ -62,12 +61,18 @@ const CHATGPT_AUTH_FILE: &str = "auth.json";
 
 /// The credential file a Claude-authenticated home keeps its tokens in.
 ///
-/// Present in a home the operator created; **absent** in the default `~/.claude`,
-/// where the token lives in the OS keychain instead. That asymmetry is the whole
-/// reason a per-account home is the supported way to register a Claude account
-/// here: it puts the credential in a file inside a directory the operator
-/// approved, so nothing in this daemon needs to read a secret store.
+/// Older Claude Code builds wrote this inside a custom home. Current macOS
+/// builds use a config-home-scoped keychain service instead, so the reader tries
+/// this file first and the scoped keychain entry second.
 const CLAUDE_AUTH_FILE: &str = ".credentials.json";
+
+/// The service prefix Claude Code 2.1 uses for config-home-scoped credentials.
+///
+/// The eight-character suffix is the first eight hex characters of the
+/// SHA-256 digest of `CLAUDE_CONFIG_DIR`. The unsuffixed service belongs to the
+/// default home; custom homes use the suffix, which is what lets two logins
+/// coexist in one macOS keychain.
+const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 /// The beta the Claude OAuth usage endpoint requires. Omitting it is a 4xx.
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -225,11 +230,15 @@ impl ProviderHomes {
 /// [`UsageFailure::NoCredential`] for a home with no readable token of this
 /// vendor's shape. The underlying I/O and parse errors are dropped rather than
 /// wrapped: their `Display` carries the path, and the path is a credential home.
-fn access_token(home: &Path, api: ProviderApi) -> Result<SecretString, UsageFailure> {
+fn file_access_token(home: &Path, api: ProviderApi) -> Result<SecretString, UsageFailure> {
     let (file, path) = api.credential();
     let bytes = std::fs::read(home.join(file)).map_err(|_| UsageFailure::NoCredential)?;
+    token_from_document(&bytes, path)
+}
+
+fn token_from_document(bytes: &[u8], path: &[&str]) -> Result<SecretString, UsageFailure> {
     let document: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| UsageFailure::NoCredential)?;
+        serde_json::from_slice(bytes).map_err(|_| UsageFailure::NoCredential)?;
     path.iter()
         .try_fold(&document, |node, key| node.get(key))
         .and_then(serde_json::Value::as_str)
@@ -238,9 +247,44 @@ fn access_token(home: &Path, api: ProviderApi) -> Result<SecretString, UsageFail
         .ok_or(UsageFailure::NoCredential)
 }
 
+/// The keychain service Claude Code derives for one custom config home.
+fn claude_keychain_service(home: &Path) -> Result<String, UsageFailure> {
+    let path = home.to_str().ok_or(UsageFailure::NoCredential)?;
+    let digest = ContentHash::of(path.as_bytes());
+    Ok(format!(
+        "{CLAUDE_KEYCHAIN_SERVICE}-{}",
+        &digest.as_str()[..8]
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn claude_keychain_access_token(home: &Path) -> Result<SecretString, UsageFailure> {
+    let service = claude_keychain_service(home)?;
+    let output = Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", &service, "-w"])
+        .output()
+        .map_err(|_| UsageFailure::NoCredential)?;
+    if !output.status.success() {
+        return Err(UsageFailure::NoCredential);
+    }
+    token_from_document(&output.stdout, &["claudeAiOauth", "accessToken"])
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_keychain_access_token(_home: &Path) -> Result<SecretString, UsageFailure> {
+    Err(UsageFailure::NoCredential)
+}
+
+fn access_token(home: &Path, api: ProviderApi) -> Result<SecretString, UsageFailure> {
+    file_access_token(home, api).or_else(|_| match api {
+        ProviderApi::Claude => claude_keychain_access_token(home),
+        ProviderApi::Codex => Err(UsageFailure::NoCredential),
+    })
+}
+
 /// Which vendor a credential home belongs to, and its token.
 ///
-/// Duck-typed on the credential file rather than on a naming convention: the
+/// Duck-typed on the credential document rather than on a naming convention: the
 /// poller can only poll what it can authenticate, so "does this home hold a
 /// token of shape X" *is* the question "is this an X account". A home called
 /// `codex-anything` with no token is correctly skipped, and one called something
@@ -283,8 +327,8 @@ impl UsagePoller {
     /// Ask one account's provider for its current usage.
     ///
     /// Returns `Ok(None)` when the profile is simply not one this build knows
-    /// how to poll — a keychain-backed reference, an alias with no approved
-    /// home, or a home holding no ChatGPT credential. That is a different answer
+    /// how to poll — a non-config-home reference, an alias with no approved
+    /// home, or a home holding no recognised credential. That is a different answer
     /// from a failure, and it must not be recorded as one: writing `unknown`
     /// for every account the poller does not understand would block routes that
     /// were never in trouble.
@@ -366,9 +410,7 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
             match poller.poll(profile).await {
                 Ok(None) => {}
                 Ok(Some(reading)) => {
-                    if record(state, profile, &reading) {
-                        written += 1;
-                    }
+                    written += record_for_profile(state, profile, &reading);
                 }
                 // A pollable account that would not answer is left exactly as it
                 // was. It is tempting to write `unknown` here, and wrong: the
@@ -384,6 +426,32 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
         }
     }
     written
+}
+
+/// Record one account reading under the provider aliases that can select it.
+///
+/// The vendor endpoint names the family (`claude`), while the scheduler routes
+/// a concrete account through its alias (`claude-work`). A profile with no
+/// declared aliases keeps the family spelling for backwards compatibility.
+fn record_for_profile(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) -> usize {
+    let aliases = match kontor_accounts::selectable_providers(profile) {
+        Ok(aliases) => aliases,
+        Err(error) => {
+            warn!(account = %profile.id, detail = %error, "the account routing document is invalid; its usage reading is skipped");
+            return 0;
+        }
+    };
+    if aliases.is_empty() {
+        return usize::from(record(state, profile, reading));
+    }
+    aliases
+        .into_iter()
+        .filter(|provider| {
+            let mut routed = reading.clone();
+            routed.provider.clone_from(provider);
+            record(state, profile, &routed)
+        })
+        .count()
 }
 
 /// Write one reading into `provider_quota_states`, if it says something new.
@@ -634,6 +702,20 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_custom_home_selects_its_scoped_keychain_service() {
+        assert_eq!(
+            claude_keychain_service(Path::new("/tmp/kontor/provider-homes/claude-work"))
+                .expect("a UTF-8 path"),
+            "Claude Code-credentials-20ebd982"
+        );
+        assert_eq!(
+            claude_keychain_service(Path::new("/tmp/kontor/provider-homes/claude-personal"))
+                .expect("a UTF-8 path"),
+            "Claude Code-credentials-2c102035"
+        );
+    }
+
+    #[test]
     fn every_vendor_endpoint_is_https_and_distinct() {
         // A downgraded scheme would put a bearer token on the wire in clear.
         for api in ProviderApi::ALL {
@@ -789,6 +871,11 @@ mod tests {
         }];
         let empty = CanonicalDocument::from_value(&serde_json::json!({ "schema_version": 1 }))
             .expect("a document");
+        let routing = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "selectable_providers": ["claude-work"]
+        }))
+        .expect("a routing document");
         let profile = state.with_store(|store| {
             store
                 .create_project(&NewProject {
@@ -810,7 +897,7 @@ mod tests {
                         alias: CredentialAlias::parse("claude-work").expect("an alias"),
                     },
                     environment: empty.clone(),
-                    routing: empty.clone(),
+                    routing,
                     capability: empty,
                     provider_identity: None,
                     enabled: true,
@@ -821,7 +908,7 @@ mod tests {
                 .set_provider_quota_state(&NewProviderQuotaState {
                     project_id,
                     account_profile_id,
-                    provider: "claude".into(),
+                    provider: "claude-work".into(),
                     state: ProviderQuotaKind::Available,
                     resets_at: None,
                     windows: stale.clone(),
@@ -848,7 +935,7 @@ mod tests {
                 used_percent: 100,
             },
         ];
-        let written = record(
+        let written = record_for_profile(
             &state,
             &profile,
             &UsageReading {
@@ -858,13 +945,15 @@ mod tests {
                 credits_exhausted: false,
             },
         );
-        assert!(written, "a changed reading is recorded");
+        assert_eq!(written, 1, "a changed reading is recorded once");
 
         let restored = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .expect("the read succeeds")
             .into_iter()
-            .find(|row| row.account_profile_id == account_profile_id && row.provider == "claude")
+            .find(|row| {
+                row.account_profile_id == account_profile_id && row.provider == "claude-work"
+            })
             .expect("the row is still there");
         assert_eq!(restored.windows, observed, "the live reading wins");
         assert_eq!(restored.source, ProviderQuotaSource::ProviderReport);

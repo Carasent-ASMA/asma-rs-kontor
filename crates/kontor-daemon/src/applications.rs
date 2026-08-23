@@ -9546,6 +9546,16 @@ impl ApplicationOperations for Services {
                 "basis": { "value": "plan_allowance", "provenance": unverified },
                 "reachedVia": null, "pooledUsage": true
             }),
+            serde_json::json!({
+                "id": "claude-work", "label": "Claude · Work (Carasent)",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
+            serde_json::json!({
+                "id": "claude-personal", "label": "Claude · Personal",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
         ];
         let mut models = vec![
             serde_json::json!({
@@ -9589,6 +9599,33 @@ impl ApplicationOperations for Services {
                     "isDefault": default,
                     "contextWindow": { "value": null, "provenance": provenance },
                     "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
+                    "pricing": [], "degradedLane": false
+                }));
+            }
+        }
+        // Claude uses the same alias-per-login contract as Codex. The aliases
+        // select different config homes; the model routes themselves are the
+        // same as the family provider.
+        for alias in ["claude-work", "claude-personal"] {
+            for (id, label, default, efforts) in [
+                (
+                    "claude-opus-5",
+                    "Claude Opus 5",
+                    true,
+                    vec!["off", "low", "medium", "high", "xhigh", "max", "ultracode"],
+                ),
+                (
+                    "claude-fable-5",
+                    "Claude Fable 5",
+                    false,
+                    vec!["low", "medium", "high", "xhigh", "max", "ultracode"],
+                ),
+            ] {
+                models.push(serde_json::json!({
+                    "id": id, "label": label, "provider": alias,
+                    "isDefault": default,
+                    "contextWindow": { "value": 1000000, "provenance": provenance },
+                    "efforts": { "value": efforts, "provenance": provenance },
                     "pricing": [], "degradedLane": false
                 }));
             }

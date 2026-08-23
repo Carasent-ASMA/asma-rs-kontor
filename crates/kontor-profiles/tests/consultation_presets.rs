@@ -61,6 +61,30 @@ fn the_presets_reviewers_reach_contrasting_providers() {
 }
 
 #[test]
+fn every_claude_consultation_slot_tries_work_then_personal() {
+    let pack = bundled_consultation_presets().expect("the presets load");
+    let mut checked = 0;
+    for slot in &pack.committee_templates[0].slots {
+        if slot
+            .models
+            .rungs
+            .first()
+            .is_some_and(|rung| rung.model.0 == "claude-opus-5")
+        {
+            let providers: Vec<&str> = slot
+                .models
+                .rungs
+                .iter()
+                .map(|rung| rung.provider.0.as_str())
+                .collect();
+            assert_eq!(providers, ["claude-work", "claude-personal"]);
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the preset exercises Claude routing");
+}
+
+#[test]
 fn the_preset_allows_one_remediation_round_at_most() {
     let pack = bundled_consultation_presets().expect("the presets load");
     assert_eq!(pack.committee_templates[0].round_limit, 2);
