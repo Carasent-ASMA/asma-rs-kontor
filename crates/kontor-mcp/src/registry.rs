@@ -3095,6 +3095,57 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Archive one already-retired node after exact readback.",
     },
     ToolSpec {
+        name: "kontor_project_topology_selection_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-selection:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "target_spec",
+                Place::Body,
+                ArgType::Json,
+                "The `{id, version}` revision future epic scopes should inherit.",
+            ),
+        ],
+        about: "Preview moving the project's selected topology revision.",
+    },
+    ToolSpec {
+        name: "kontor_project_topology_selection_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology-selection:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash returned by the preview.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Select the exact previewed default topology revision.",
+    },
+    ToolSpec {
         name: "kontor_topology_upgrade_preview",
         tier: CallerTier::Admin,
         method: Method::Post,

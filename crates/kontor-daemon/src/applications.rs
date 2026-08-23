@@ -70,10 +70,12 @@ use kontor_api::applications::{
     RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
-    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
-    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
-    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
-    NativeNamesPreviewRequest, PinnedSpecDto, SemanticTopologyRequest, SemanticTopologyTargetDto,
+    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedProjectTopologySelectionDto,
+    AppliedTopologyUpgradeDto, CodeHelpEntryDto, ContainerRetitlePreviewDto,
+    ContainerRetitleRequest, DesiredBindingDto, NativeNameSubjectKindDto, NativeNameTargetDto,
+    NativeNamesApplyRequest, NativeNamesPreviewDto, NativeNamesPreviewRequest, PinnedSpecDto,
+    ProjectTopologySelectionApplyRequest, ProjectTopologySelectionPreviewDto,
+    ProjectTopologySelectionPreviewRequest, SemanticTopologyRequest, SemanticTopologyTargetDto,
     SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
     TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest, TopologyProjectionDto,
     TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto, TopologyUpgradePreviewDto,
@@ -4313,6 +4315,92 @@ impl Services {
         Err(self.deny(
             ApiErrorCode::RevisionConflict,
             "no published revision still produces the preview this apply names",
+        ))
+    }
+
+    /// The current and requested project defaults, with a digest suitable for
+    /// an explicit apply. Existing epic pins are intentionally absent: this
+    /// operation changes inheritance for future scopes and never rewrites an
+    /// already-frozen epic.
+    fn project_topology_selection(
+        &self,
+        project_id: ProjectId,
+        target: &RevisionRefDto,
+    ) -> Result<(TopologySnapshot, TopologySnapshot, ContentHash), ApiError> {
+        let state = self.state()?;
+        self.project_row(project_id)?;
+        let current = self.project_topology(project_id)?;
+        let target_id =
+            TopologySpecId::parse(&target.id).map_err(|error| self.refuse_domain(&error))?;
+        let target_spec = state
+            .with_store(|store| store.get_topology_spec(project_id, target_id, target.version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the target revision is not published in this project",
+                )
+            })?;
+        let selected = TopologySnapshot {
+            spec_id: target_spec.spec_id,
+            version: target_spec.version,
+            canonical_hash: target_spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?
+                .hash()
+                .clone(),
+        };
+        if selected == current {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the project already selects that topology revision",
+            ));
+        }
+        let hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "project_topology_selection_preview",
+            "project": project_id.to_string(),
+            "current": {
+                "id": current.spec_id.to_string(),
+                "version": current.version.get(),
+                "hash": current.canonical_hash.as_str(),
+            },
+            "target": {
+                "id": selected.spec_id.to_string(),
+                "version": selected.version.get(),
+                "hash": selected.canonical_hash.as_str(),
+            },
+        }))?;
+        Ok((current, selected, hash))
+    }
+
+    /// Find the published revision that still produces the named project
+    /// selection preview.
+    fn target_of_project_topology_preview(
+        &self,
+        project_id: ProjectId,
+        preview_hash: &ContentHash,
+    ) -> Result<TopologySnapshot, ApiError> {
+        let state = self.state()?;
+        for candidate in state
+            .with_store(|store| store.list_topology_specs(project_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            let reference = RevisionRefDto {
+                id: candidate.spec_id.to_string(),
+                version: candidate.version,
+            };
+            let Ok((_, target, hash)) = self.project_topology_selection(project_id, &reference)
+            else {
+                continue;
+            };
+            if &hash == preview_hash {
+                return Ok(target);
+            }
+        }
+        Err(self.deny(
+            ApiErrorCode::RevisionConflict,
+            "no published revision still produces the project selection preview",
         ))
     }
 
@@ -9578,6 +9666,11 @@ impl ApplicationOperations for Services {
                 "basis": { "value": "plan_allowance", "provenance": unverified },
                 "reachedVia": null, "pooledUsage": true
             }),
+            serde_json::json!({
+                "id": "opencode", "label": "OpenCode",
+                "basis": { "value": "provider_account", "provenance": provenance },
+                "reachedVia": null, "pooledUsage": false
+            }),
         ];
         let mut models = vec![
             serde_json::json!({
@@ -9606,6 +9699,13 @@ impl ApplicationOperations for Services {
                 "isDefault": false,
                 "contextWindow": { "value": 1000000, "provenance": provenance },
                 "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
+                "pricing": [], "degradedLane": false
+            }),
+            serde_json::json!({
+                "id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "provider": "opencode",
+                "isDefault": true,
+                "contextWindow": { "value": null, "provenance": provenance },
+                "efforts": { "value": ["low", "high", "max"], "provenance": provenance },
                 "pricing": [], "degradedLane": false
             }),
         ];
@@ -10819,6 +10919,86 @@ impl ApplicationOperations for Services {
             preview_hash: self.upgrade_hash(project_id, epic_id, &current, &target, &effects)?,
             effects,
             snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn preview_project_topology_selection(
+        &self,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionPreviewRequest,
+    ) -> Result<ProjectTopologySelectionPreviewDto, ApiError> {
+        let state = self.state()?;
+        let (current, target, preview_hash) =
+            self.project_topology_selection(project_id, &request.target_spec)?;
+        Ok(ProjectTopologySelectionPreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            current_spec: pinned_spec_dto(&current),
+            target_spec: pinned_spec_dto(&target),
+            preview_hash,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    async fn apply_project_topology_selection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionApplyRequest,
+    ) -> Result<AppliedProjectTopologySelectionDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "project_topology_selection_apply",
+            "project": project_id.to_string(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let target = AggregateRef::Project { project_id };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        if !replayed {
+            let selected =
+                self.target_of_project_topology_preview(project_id, &request.preview_hash)?;
+            state
+                .with_store(|store| {
+                    store.set_project_topology_default(&ProjectTopologyDefault {
+                        project_id,
+                        topology: selected,
+                        selected_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::SelectProjectTopology,
+            target,
+            project.revision,
+            &intent,
+        )?;
+        let selected = state
+            .with_store(|store| store.get_project_topology_default(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the selected project topology could not be read back",
+                )
+            })?;
+        Ok(AppliedProjectTopologySelectionDto {
+            selected_spec: pinned_spec_dto(&selected.topology),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed {
+                    AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Updated
+                },
+                revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
         })
     }
 

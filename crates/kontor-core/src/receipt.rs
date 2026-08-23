@@ -131,6 +131,11 @@ closed_enum! {
         /// exist is authority over the project and not over any node in it —
         /// and the revision it publishes is not an aggregate a command may name.
         PublishTopologySpec => "publish_topology_spec",
+        /// Select the topology revision future epic scopes inherit.
+        ///
+        /// Existing epic pins are immutable under this command; moving one is
+        /// the separate [`CommandKind::UpgradeTopology`] authority.
+        SelectProjectTopology => "select_project_topology",
         /// Move one epic's pinned topology revision to another published one.
         ///
         /// The epic is the aggregate: the pin is the epic's, and the revision it
@@ -485,7 +490,9 @@ impl CommandKind {
             // precisely what makes it persistent. The project is what the
             // authority is over, and it is the one aggregate every seat has.
             Self::ObserveSeat | Self::RetireSeat => witness(matches!(target, A::Project)),
-            Self::PublishTopologySpec => witness(matches!(target, A::Project)),
+            Self::PublishTopologySpec | Self::SelectProjectTopology => {
+                witness(matches!(target, A::Project))
+            }
             Self::UpgradeTopology | Self::ReconcileNativeNames => {
                 witness(matches!(target, A::MiniProject))
             }

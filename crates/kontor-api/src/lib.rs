@@ -416,6 +416,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::reconcile_session_labels),
             )
             .route(
+                "/v1/projects/{project_id}/topology-selection:preview",
+                post(applications::preview_project_topology_selection),
+            )
+            .route(
+                "/v1/projects/{project_id}/topology-selection:apply",
+                post(applications::apply_project_topology_selection),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
                 post(applications::preview_topology_upgrade),
             )

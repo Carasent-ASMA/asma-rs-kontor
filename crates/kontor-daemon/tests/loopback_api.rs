@@ -19575,6 +19575,65 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(published.status, 200, "{}", published.body);
 
+    // The project default moves through its own preview/apply seam. It changes
+    // what future epics inherit and deliberately leaves this epic's immutable
+    // v1 pin alone.
+    let project_preview = Call::post(
+        format!(
+            "/v1/projects/{}/topology-selection:preview",
+            composed.project
+        ),
+        &serde_json::json!({"target_spec": {"id": bundled, "version": 2}}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(project_preview.status, 200, "{}", project_preview.body);
+    assert_eq!(project_preview.json()["current_spec"]["version"], 1);
+    assert_eq!(project_preview.json()["target_spec"]["version"], 2);
+    let project_preview_hash = project_preview.json()["preview_hash"]
+        .as_str()
+        .expect("a project selection hash")
+        .to_owned();
+
+    let selected = Call::post(
+        format!("/v1/projects/{}/topology-selection:apply", composed.project),
+        &serde_json::json!({
+            "preview_hash": project_preview_hash,
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("project-topology-select")
+    .send(world)
+    .await;
+    assert_eq!(selected.status, 200, "{}", selected.body);
+    assert_eq!(selected.json()["selected_spec"]["version"], 2);
+    assert_eq!(selected.json()["receipt"]["applied"], "updated");
+
+    let selected_replay = Call::post(
+        format!("/v1/projects/{}/topology-selection:apply", composed.project),
+        &serde_json::json!({
+            "preview_hash": project_preview_hash,
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("project-topology-select")
+    .send(world)
+    .await;
+    assert_eq!(selected_replay.status, 200, "{}", selected_replay.body);
+    assert_eq!(selected_replay.json()["receipt"]["applied"], "unchanged");
+
+    let still_pinned = Call::get(format!(
+        "/v1/projects/{}/topology:inspect?epic_id={}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(still_pinned.json()["pinned_spec"]["version"], 1);
+
     // The preview says what the move would cost, and commits nothing.
     let preview = Call::post(
         format!(
@@ -23812,7 +23871,7 @@ async fn an_account_profile_freezes_its_declared_provider_aliases_at_ensure() {
 /// A route can only be described and validated against an account if the alias
 /// is a provider the catalog advertises.
 #[tokio::test]
-async fn the_model_catalog_advertises_the_codex_account_aliases() {
+async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
     let world = World::open().await;
     let catalog = Call::get("/v1/catalog")
         .signed_as(&world, "observer")
@@ -23838,6 +23897,17 @@ async fn the_model_catalog_advertises_the_codex_account_aliases() {
             catalog.body
         );
     }
+    assert!(providers.contains(&"opencode"), "{}", catalog.body);
+    assert!(
+        body["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["provider"] == "opencode"
+                && model["id"] == "deepseek/deepseek-v4-flash"),
+        "the catalog describes the route used by OpenCode seats: {}",
+        catalog.body
+    );
 }
 
 /// The incident's recovery path: a seat launched before any alias was declared

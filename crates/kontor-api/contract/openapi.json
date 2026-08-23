@@ -6358,6 +6358,123 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology-selection:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the exact previewed project topology selection.",
+        "operationId": "apply_project_topology_selection",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTopologySelectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProjectTopologySelectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology-selection:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview selecting a published topology revision as the project default.",
+        "operationId": "preview_project_topology_selection",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTopologySelectionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTopologySelectionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}": {
       "get": {
         "tags": [
@@ -8385,6 +8502,24 @@
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "The receipt it was committed under."
+          }
+        }
+      },
+      "AppliedProjectTopologySelectionDto": {
+        "type": "object",
+        "description": "The newly selected project topology revision and its durable receipt.",
+        "required": [
+          "selected_spec",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt for the selection or replay."
+          },
+          "selected_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The selected default for future epic scopes."
           }
         }
       },
@@ -13394,6 +13529,80 @@
             "description": "Its canonical root path."
           }
         }
+      },
+      "ProjectTopologySelectionApplyRequest": {
+        "type": "object",
+        "description": "What selecting a project topology preview is asked for.",
+        "required": [
+          "preview_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash returned by the preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectTopologySelectionPreviewDto": {
+        "type": "object",
+        "description": "What changing the default topology revision would do, without writing it.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "current_spec",
+          "target_spec",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "current_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The selected revision as it stands."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the apply must name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project whose default would move."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this preview was computed at."
+          },
+          "target_spec": {
+            "$ref": "#/components/schemas/PinnedSpecDto",
+            "description": "The published revision it would move to."
+          }
+        }
+      },
+      "ProjectTopologySelectionPreviewRequest": {
+        "type": "object",
+        "description": "What moving a project's default topology revision is previewed against.",
+        "required": [
+          "target_spec"
+        ],
+        "properties": {
+          "target_spec": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The published revision future epic scopes should inherit."
+          }
+        },
+        "additionalProperties": false
       },
       "ProjectionDto": {
         "type": "object",

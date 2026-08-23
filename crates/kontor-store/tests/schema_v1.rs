@@ -457,9 +457,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v55 adds evidence for verdicts transcribed from closed
-    // evaluator sessions without weakening the ordinary gate path.
-    assert_eq!(SCHEMA_VERSION, 55);
+    // side effect. v56 authorizes selecting the topology inherited by future
+    // epics without moving any existing immutable epic pin.
+    assert_eq!(SCHEMA_VERSION, 56);
 }
 
 #[test]

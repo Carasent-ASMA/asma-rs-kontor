@@ -94,6 +94,8 @@ impl Modify for RealmBearer {
         crate::applications::archive_topology_node,
         crate::applications::preview_topology_upgrade,
         crate::applications::apply_topology_upgrade,
+        crate::applications::preview_project_topology_selection,
+        crate::applications::apply_project_topology_selection,
         crate::applications::preview_container_retitle,
         crate::applications::apply_container_retitle,
         crate::applications::preview_native_names,

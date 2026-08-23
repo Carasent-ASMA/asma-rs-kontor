@@ -1986,6 +1986,56 @@ pub struct TopologyUpgradePreviewRequest {
     pub target_spec: RevisionRefDto,
 }
 
+/// What moving a project's default topology revision is previewed against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTopologySelectionPreviewRequest {
+    /// The published revision future epic scopes should inherit.
+    pub target_spec: RevisionRefDto,
+}
+
+/// What selecting a project topology preview is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTopologySelectionApplyRequest {
+    /// The hash returned by the preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The project revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// What changing the default topology revision would do, without writing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectTopologySelectionPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project whose default would move.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The selected revision as it stands.
+    pub current_spec: PinnedSpecDto,
+    /// The published revision it would move to.
+    pub target_spec: PinnedSpecDto,
+    /// The hash the apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// The position this preview was computed at.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// The newly selected project topology revision and its durable receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedProjectTopologySelectionDto {
+    /// The selected default for future epic scopes.
+    pub selected_spec: PinnedSpecDto,
+    /// The receipt for the selection or replay.
+    pub receipt: MutationReceiptDto,
+}
+
 /// One node-, seat- or native-level effect an upgrade would have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TopologyUpgradeEffectDto {
@@ -4696,6 +4746,21 @@ pub trait ApplicationOperations: Send + Sync {
         request: &TopologyUpgradePreviewRequest,
     ) -> Result<TopologyUpgradePreviewDto, ApiError>;
 
+    /// What moving the project's selected topology revision would do.
+    fn preview_project_topology_selection(
+        &self,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionPreviewRequest,
+    ) -> Result<ProjectTopologySelectionPreviewDto, ApiError>;
+
+    /// Move the project default to the exact previewed revision.
+    async fn apply_project_topology_selection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProjectTopologySelectionApplyRequest,
+    ) -> Result<AppliedProjectTopologySelectionDto, ApiError>;
+
     /// What repairing one bound container's title would do. Commits nothing.
     async fn preview_container_retitle(
         &self,
@@ -6010,6 +6075,56 @@ pub async fn preview_topology_upgrade(
         state
             .applications()
             .preview_topology_upgrade(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Preview selecting a published topology revision as the project default.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-selection:preview", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ProjectTopologySelectionPreviewRequest,
+    responses((status = 200, body = ProjectTopologySelectionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn preview_project_topology_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProjectTopologySelectionPreviewRequest>,
+) -> Result<Json<ProjectTopologySelectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_project_topology_selection(project_id, &request)?,
+    ))
+}
+
+/// Apply the exact previewed project topology selection.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/topology-selection:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProjectTopologySelectionApplyRequest,
+    responses((status = 200, body = AppliedProjectTopologySelectionDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_project_topology_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProjectTopologySelectionApplyRequest>,
+) -> Result<Json<AppliedProjectTopologySelectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_project_topology_selection(&key, project_id, &request)
+            .await?,
     ))
 }
 

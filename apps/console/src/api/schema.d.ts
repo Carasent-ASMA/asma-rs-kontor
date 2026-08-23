@@ -1975,6 +1975,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/topology-selection:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the exact previewed project topology selection. */
+        post: operations["apply_project_topology_selection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology-selection:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview selecting a published topology revision as the project default. */
+        post: operations["preview_project_topology_selection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}": {
         parameters: {
             query?: never;
@@ -2781,6 +2815,13 @@ export interface components {
             published: components["schemas"]["ProfileRevisionDto"];
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+        };
+        /** @description The newly selected project topology revision and its durable receipt. */
+        AppliedProjectTopologySelectionDto: {
+            /** @description The receipt for the selection or replay. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The selected default for future epic scopes. */
+            selected_spec: components["schemas"]["PinnedSpecDto"];
         };
         /**
          * @description Which pinned specification revisions an aggregate is running under.
@@ -5163,6 +5204,39 @@ export interface components {
             revision: number;
             /** @description Its canonical root path. */
             root_path: string;
+        };
+        /** @description What selecting a project topology preview is asked for. */
+        ProjectTopologySelectionApplyRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The hash returned by the preview. */
+            preview_hash: string;
+        };
+        /** @description What changing the default topology revision would do, without writing it. */
+        ProjectTopologySelectionPreviewDto: {
+            /** @description The selected revision as it stands. */
+            current_spec: components["schemas"]["PinnedSpecDto"];
+            /** @description The hash the apply must name. */
+            preview_hash: string;
+            /** @description The project whose default would move. */
+            project_id: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position this preview was computed at.
+             */
+            snapshot_cursor: number;
+            /** @description The published revision it would move to. */
+            target_spec: components["schemas"]["PinnedSpecDto"];
+        };
+        /** @description What moving a project's default topology revision is previewed against. */
+        ProjectTopologySelectionPreviewRequest: {
+            /** @description The published revision future epic scopes should inherit. */
+            target_spec: components["schemas"]["RevisionRefDto"];
         };
         /** @description The orthogonal state of one run, plus how old its newest confirmation is. */
         ProjectionDto: {
@@ -12533,6 +12607,109 @@ export interface operations {
             };
             /** @description The slot cannot be waived on this template's terms */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_project_topology_selection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectTopologySelectionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProjectTopologySelectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_project_topology_selection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectTopologySelectionPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectTopologySelectionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
