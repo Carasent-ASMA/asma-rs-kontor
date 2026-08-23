@@ -4410,6 +4410,7 @@ export interface components {
              * @description Its position in the gate's append-only history, starting at 1.
              */
             sequence: number;
+            session_evidence?: null | components["schemas"]["SessionVerdictCitationDto"];
             /** @description The gate's state once this verdict is reduced in. */
             state: string;
             /** @description The task. */
@@ -5479,6 +5480,23 @@ export interface components {
              */
             expected_revision: number;
             /**
+             * @description The evaluator's own agent run whose session record the verdict is
+             *     transcribed from, on the recovery path.
+             *
+             *     Supplied together with `recovery_session_digest`, it records the verdict
+             *     *on behalf of* a closed evaluator seat — the only supported way to
+             *     record a verdict the evaluator cannot record itself — and is refused
+             *     while that seat is still able to act. Omitting both records the verdict
+             *     exactly as before: the evaluator's own recording, attributed to
+             *     whatever seat is live.
+             */
+            recovery_agent_run_id?: string | null;
+            /**
+             * @description A digest of the verdict content as the cited session record rendered it,
+             *     on the recovery path.
+             */
+            recovery_session_digest?: string | null;
+            /**
              * @description The stable authenticated principal recording it.
              *
              *     Omitting it records the verdict and attributes it to nobody; it never
@@ -6207,6 +6225,20 @@ export interface components {
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Canonical native seat title read back after repair. */
             title: string;
+        };
+        /**
+         * @description The session record one recovery verdict is transcribed from.
+         *
+         *     A recovery verdict is recorded on behalf of an evaluator seat whose runtime
+         *     is closed or unreachable: the citation names the evaluator's own session
+         *     record (the agent run) and the digest of the verdict content that session
+         *     rendered. Both halves are recorded as durable evidence on the evaluation.
+         */
+        SessionVerdictCitationDto: {
+            /** @description The evaluator's own agent run whose session record holds the verdict. */
+            agent_run_id: string;
+            /** @description A digest of the verdict content as that session record rendered it. */
+            digest: string;
         };
         /** @description Settle one consultation. */
         SettleConsultationRequest: {

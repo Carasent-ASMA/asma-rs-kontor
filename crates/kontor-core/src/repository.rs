@@ -1032,6 +1032,9 @@ pub struct GateEvaluation {
     /// counter keyed on a run id resets itself every time the same reviewer is
     /// relaunched, which is exactly the reset a rejection counter must not have.
     pub agent_run_id: Option<AgentRunId>,
+    /// The session record a recovery verdict was transcribed from, when the
+    /// evaluation was recorded on behalf of a closed evaluator seat.
+    pub session_evidence: Option<SessionVerdictEvidence>,
     /// The stable authenticated principal that recorded this verdict.
     ///
     /// `None` for a row written before the principal was recorded. Such a row is
@@ -1042,6 +1045,23 @@ pub struct GateEvaluation {
     pub policy_evaluation_id: Option<GuardrailEvaluationId>,
     /// When it was recorded.
     pub recorded_at: Timestamp,
+}
+
+/// The session record a gate verdict was transcribed from on the recovery path.
+///
+/// The recovery path records a verdict on behalf of an evaluator seat whose
+/// runtime is closed or unreachable. The control plane does not hold session
+/// transcripts, so `digest` is the operator's binding attestation of the verdict
+/// content the named session record rendered; what is mechanically validated is
+/// that the citation names the evaluator seat's own session record and that the
+/// seat cannot act any more. Both halves are persisted on the evaluation row so
+/// the citation is durable evidence, never a free-text aside.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionVerdictEvidence {
+    /// The evaluator's own agent run whose session record holds the verdict.
+    pub agent_run_id: AgentRunId,
+    /// A digest of the verdict content as that session record rendered it.
+    pub digest: ContentHash,
 }
 
 /// A request to record a gate evaluation.
@@ -1063,6 +1083,10 @@ pub struct NewGateEvaluation {
     pub evidence: Vec<ArtifactKey>,
     /// The agent run the reviewer was acting inside, when there was one.
     pub agent_run_id: Option<AgentRunId>,
+    /// The session record this verdict was transcribed from, on the recovery
+    /// path. `Some` only for a verdict recorded on behalf of a closed evaluator
+    /// seat, and then `agent_run_id` names the same run.
+    pub session_evidence: Option<SessionVerdictEvidence>,
     /// The stable authenticated principal recording it.
     ///
     /// Required for the verdict to count towards — or reset — a reviewer's

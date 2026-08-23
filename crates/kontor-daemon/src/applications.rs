@@ -95,8 +95,8 @@ use kontor_api::applications::{
 use kontor_api::applications::{
     GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
     ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
-    SelectionRequest, TicketFieldDiffDto, TicketReconcileAppliedDto, TicketReconcileApplyRequest,
-    TicketReconcilePlanDto,
+    SelectionRequest, SessionVerdictCitationDto, TicketFieldDiffDto, TicketReconcileAppliedDto,
+    TicketReconcileApplyRequest, TicketReconcilePlanDto,
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
@@ -144,9 +144,9 @@ use kontor_core::spec::{
     TriggerSpec,
 };
 use kontor_core::state::{
-    GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact, SeatBinding,
-    SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome,
-    TopologyLifecycle,
+    DerivedRunState, GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact,
+    SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource,
+    TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::ticket::{
     CommentPolicy, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflictKind,
@@ -2364,6 +2364,93 @@ impl Services {
         Ok(())
     }
 
+    /// Validate a recovery citation and return the evaluator seat it names.
+    ///
+    /// The recovery path records a verdict on behalf of an evaluator seat whose
+    /// runtime is closed or unreachable, transcribing the verdict the
+    /// evaluator already rendered in its session. Every refusal below is the
+    /// boundary that keeps the recovery path from becoming a second, looser
+    /// gate-recording path:
+    ///
+    /// * the citation must name a run that exists in this project and is a
+    ///   member of this task's team run — the evaluator's own seat, not any run;
+    /// * that seat must hold the role the verdict is recorded under — a builder
+    ///   run cannot be cited for an inspector verdict;
+    /// * the account the verdict is recorded under must match the seat's pinned
+    ///   account, when it has one — the citation is about that session, not a
+    ///   plausible-looking one;
+    /// * the seat must be closed or unreachable — while it can act, it records
+    ///   its own verdict, and recovery is refused;
+    /// * the verdict is attributed to the cited run, so the append-only record
+    ///   says which session it came from.
+    ///
+    /// The control plane does not hold session transcripts, so the citation's
+    /// digest is the operator's binding attestation of the verdict content the
+    /// session rendered; what is mechanically validated here is that the
+    /// citation names the evaluator seat's own session record and that the seat
+    /// cannot act any more.
+    fn recovery_evaluator(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        evaluator_role: &RoleKey,
+        request: &RecordGateRequest,
+        citation: &kontor_core::repository::SessionVerdictEvidence,
+    ) -> Result<AgentRunId, ApiError> {
+        let state = self.state()?;
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, citation.agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the cited session record names no agent run in this project",
+                )
+            })?;
+        let serves_this_task = state
+            .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|(team_run_id, _)| *team_run_id == run.team_run_id);
+        if !serves_this_task {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the cited session record is not this task's evaluator seat",
+            ));
+        }
+        if run.role != *evaluator_role {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the cited session record does not hold the role recording the verdict",
+            ));
+        }
+        if let Some(pinned) = run.account_profile_id
+            && pinned != request.evaluator_account
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the evaluating account does not match the cited seat's pinned account",
+            ));
+        }
+        let cannot_act = run.projection.lifecycle.is_terminal()
+            || matches!(
+                run.projection.derived,
+                DerivedRunState::LostContact
+                    | DerivedRunState::RuntimeUnavailable
+                    | DerivedRunState::Diverged
+                    | DerivedRunState::Orphaned
+            );
+        if !cannot_act {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the evaluator seat is alive and records its own verdict",
+                )
+                .with_revision(Some(run.revision)));
+        }
+        Ok(run.id)
+    }
+
     /// The verdict a replayed gate recording already appended.
     fn gate_verdict_replay(
         &self,
@@ -2399,6 +2486,12 @@ impl Services {
                 .get(gate)
                 .map_or("not_ready", |state| state.as_str())
                 .to_owned(),
+            session_evidence: last.session_evidence.as_ref().map(|citation| {
+                SessionVerdictCitationDto {
+                    agent_run_id: citation.agent_run_id,
+                    digest: citation.digest.clone(),
+                }
+            }),
             receipt_id: String::new(),
         })
     }
@@ -15615,6 +15708,32 @@ impl ApplicationOperations for Services {
             .map(ExternalId::parse)
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
+        let recovery = match (
+            request.recovery_agent_run_id,
+            request.recovery_session_digest.as_deref(),
+        ) {
+            // The recovery path cites the evaluator's own session record and
+            // the digest of the verdict content it rendered, together.
+            (Some(agent_run_id), Some(digest)) => {
+                let digest =
+                    ContentHash::parse(digest).map_err(|error| self.refuse_domain(&error))?;
+                Some(kontor_core::repository::SessionVerdictEvidence {
+                    agent_run_id,
+                    digest,
+                })
+            }
+            // Both absent: the ordinary path, unchanged.
+            (None, None) => None,
+            // One half without the other is a citation with no verdict content
+            // pinned to it, which is exactly the fabrication this pair exists
+            // to exclude.
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the recovery path cites the evaluator's session record and its digest together",
+                ));
+            }
+        };
         state
             .with_store(|store| store.get_account_profile(project_id, request.evaluator_account))
             .map_err(|error| self.refuse(&error))?
@@ -15634,6 +15753,12 @@ impl ApplicationOperations for Services {
             "evaluator_role": evaluator_role.as_str(),
             "evaluator_account": request.evaluator_account.to_string(),
             "evidence": request.evidence,
+            "recovery": recovery.as_ref().map(|citation| {
+                serde_json::json!({
+                    "agent_run_id": citation.agent_run_id.to_string(),
+                    "digest": citation.digest.as_str(),
+                })
+            }),
         }))?;
         let target = AggregateRef::Task { task_id };
         // A replay answers from the append-only history rather than appending a
@@ -15654,7 +15779,21 @@ impl ApplicationOperations for Services {
         // Read *before* the write opens the store: `with_store` takes one
         // process-wide lock, and asking for the seat from inside the closure
         // would be this thread waiting for a lock it is already holding.
-        let seat = self.live_seat(project_id, task_id)?;
+        // A recovery citation replaces the live seat: the verdict is attributed
+        // to the evaluator's own closed run, never to a different seat that
+        // happens to be live. Without a citation the run is the live seat when
+        // there is one, exactly as before.
+        let seat = match &recovery {
+            Some(citation) => Some(self.recovery_evaluator(
+                project_id,
+                task_id,
+                &evaluator_role,
+                request,
+                citation,
+            )?),
+            None => self.live_seat(project_id, task_id)?,
+        };
+        let session_evidence = recovery.clone();
         let sequence = state
             .with_store(|store| {
                 store.append_gate_evaluation(&NewGateEvaluation {
@@ -15666,6 +15805,7 @@ impl ApplicationOperations for Services {
                     evaluator_account: request.evaluator_account,
                     evidence,
                     agent_run_id: seat,
+                    session_evidence,
                     reviewer_principal,
                     policy_evaluation_id: None,
                     recorded_at: kontor_api::now(),
@@ -15686,6 +15826,10 @@ impl ApplicationOperations for Services {
                 .get(&gate_key)
                 .map_or("not_ready", |state| state.as_str())
                 .to_owned(),
+            session_evidence: recovery.map(|citation| SessionVerdictCitationDto {
+                agent_run_id: citation.agent_run_id,
+                digest: citation.digest,
+            }),
             receipt_id: receipt.to_string(),
         })
     }

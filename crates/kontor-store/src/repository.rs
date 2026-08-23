@@ -57,14 +57,15 @@ use kontor_core::repository::{
     NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository,
     ProjectTopologyDefault, ProviderQuotaState, RealmEventPage, RealmRepository, ReceiptAdvance,
     ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
-    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SourceDisposition,
-    SourceEventIngest, SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration,
-    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -7574,13 +7575,21 @@ impl WorkflowRepository for SqliteStore {
             .flatten();
         let sequence = previous.unwrap_or(0) + 1;
         let evidence = to_json(&request.evidence)?;
+        let session_run = request
+            .session_evidence
+            .as_ref()
+            .map(|citation| citation.agent_run_id.to_string());
+        let session_digest = request
+            .session_evidence
+            .as_ref()
+            .map(|citation| citation.digest.as_str().to_owned());
         transaction
             .execute(
                 "INSERT INTO task_gate_evaluations
                      (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
                       evaluator_account, evidence, recorded_at, agent_run_id, reviewer_principal,
-                      policy_evaluation_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                      policy_evaluation_id, session_evidence_agent_run, session_evidence_digest)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     request.project_id.to_string(),
                     request.workflow_id.to_string(),
@@ -7595,7 +7604,9 @@ impl WorkflowRepository for SqliteStore {
                     request.reviewer_principal.as_ref().map(ExternalId::as_str),
                     request
                         .policy_evaluation_id
-                        .map(|evaluation| evaluation.to_string())
+                        .map(|evaluation| evaluation.to_string()),
+                    session_run,
+                    session_digest,
                 ],
             )
             .map_err(backend)?;
@@ -7624,7 +7635,7 @@ impl WorkflowRepository for SqliteStore {
             .prepare(
                 "SELECT gate_key, sequence, verdict, evaluator_role, evaluator_account,
                         evidence, recorded_at, agent_run_id, reviewer_principal,
-                        policy_evaluation_id
+                        policy_evaluation_id, session_evidence_agent_run, session_evidence_digest
                  FROM task_gate_evaluations
                  WHERE project_id = ?1 AND workflow_id = ?2
                  ORDER BY recorded_at, gate_key, sequence",
@@ -7639,6 +7650,19 @@ impl WorkflowRepository for SqliteStore {
             let agent_run: Option<String> = row.get(7).map_err(backend)?;
             let principal: Option<String> = row.get(8).map_err(backend)?;
             let evaluation: Option<String> = row.get(9).map_err(backend)?;
+            let session_run: Option<String> = row.get(10).map_err(backend)?;
+            let session_digest: Option<String> = row.get(11).map_err(backend)?;
+            let session_evidence = match (session_run, session_digest) {
+                (Some(run), Some(digest)) => Some(SessionVerdictEvidence {
+                    agent_run_id: AgentRunId::parse(&run)?,
+                    digest: ContentHash::parse(&digest)?,
+                }),
+                // A row written before session evidence existed, or a row whose
+                // pair the store never wrote, carries no citation. A half pair
+                // cannot occur through this store, which writes the two columns
+                // in one statement.
+                _ => None,
+            };
             evaluations.push(GateEvaluation {
                 project_id,
                 workflow_id,
@@ -7651,6 +7675,7 @@ impl WorkflowRepository for SqliteStore {
                 )?,
                 evidence: from_json(&row.get::<_, String>(5).map_err(backend)?)?,
                 agent_run_id: agent_run.as_deref().map(AgentRunId::parse).transpose()?,
+                session_evidence,
                 reviewer_principal: principal.as_deref().map(ExternalId::parse).transpose()?,
                 policy_evaluation_id: evaluation
                     .as_deref()

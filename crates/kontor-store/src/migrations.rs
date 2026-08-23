@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 54;
+pub const SCHEMA_VERSION: i64 = 55;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -231,6 +231,11 @@ const MIGRATIONS: &[&str] = &[
     // Schema v54. Per-project, per-subject authority and the evidence-backed
     // one-way replacement for the realm-global memory switch.
     include_str!("../migrations/0054_project_subject_authority.sql"),
+    // Schema v55. Gate recovery session
+    // evidence: the citation of the evaluator's own session record that a
+    // verdict recorded on behalf of a closed evaluator seat is transcribed
+    // from.
+    include_str!("../migrations/0055_gate_recovery_evidence.sql"),
 ];
 
 const _: () = assert!(
