@@ -24,7 +24,16 @@ Status: implementation and local verification complete; merge and live verificat
 - `cargo check --workspace --all-targets`
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace --all-targets` (final run pending at document creation)
+- `scripts/verify-tree.py --mode archive` against commit `17f4d3e`
+  - regenerated `Cargo.lock` was byte-identical;
+  - formatting and strict workspace Clippy passed;
+  - the full locked Rust workspace, doc tests, and archive pilots passed;
+  - the 47 schema tests passed, including concurrent first-open and bounded
+    busy-writer coverage;
+  - `cargo audit` reported only the 19 explicitly allowed warnings and
+    `cargo deny check` passed;
+  - console typecheck and all 296 frontend tests passed; and
+  - the production dependency audit found no known vulnerabilities.
 - `cargo test -p kontor-jira`
 - `cargo test -p kontor-store --lib`
 - `pnpm -r typecheck`
