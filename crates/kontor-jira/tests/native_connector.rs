@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget};
 use kontor_core::id::{ExternalId, IdempotencyKey, ProjectId, SCHEMA_VERSION};
@@ -220,6 +221,66 @@ async fn native_observe_reads_issue_transitions_and_principal() {
             .map(ExternalId::as_str),
         Some("acct-1")
     );
+}
+
+#[tokio::test]
+async fn native_requests_time_out_without_holding_the_daemon_open() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-9"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(31))
+                .set_body_json(serde_json::json!({"fields": {}})),
+        )
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connector =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    let request = JiraRequest {
+        schema_version: SCHEMA_VERSION,
+        operation: JiraOperation::Observe,
+        issue_key: ExternalId::parse("ASMA-9").expect("issue key"),
+        idempotency_key: IdempotencyKey::parse("timeout-observe").expect("key"),
+        intent_hash: None,
+        field_spec_hash: None,
+        workflow_spec_hash: None,
+        expected: None,
+        field_writes: Vec::new(),
+        destination: None,
+        ownership_action: OwnershipAction::Preserve,
+        transition: None,
+        authorized_apply: false,
+    };
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(31),
+        connector
+            .for_project(project_id)
+            .expect("project is configured")
+            .execute("observe", &request),
+    )
+    .await
+    .expect("the connector owns the request timeout");
+    assert!(result.is_err());
 }
 
 #[test]
