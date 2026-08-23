@@ -427,6 +427,35 @@ fn every_seed_template_round_trips_byte_and_hash_identically() {
 }
 
 #[test]
+fn bundled_claude_routes_try_both_accounts_before_the_next_model() {
+    let pack = bundled_teams().expect("the bundled team pack loads");
+    let expected = [
+        ("claude-work", "claude-opus-5"),
+        ("claude-personal", "claude-opus-5"),
+        ("codex-work", "gpt-5.6-sol"),
+        ("codex-personal", "gpt-5.6-sol"),
+    ];
+    let mut checked = 0;
+    for slot in pack.teams.iter().flat_map(|team| &team.slots) {
+        let chain = slot.model_chain.as_ref().expect("a bundled route");
+        if chain
+            .rungs
+            .first()
+            .is_some_and(|rung| rung.model.0 == "claude-opus-5")
+        {
+            let actual: Vec<(&str, &str)> = chain
+                .rungs
+                .iter()
+                .map(|rung| (rung.provider.0.as_str(), rung.model.0.as_str()))
+                .collect();
+            assert_eq!(actual, expected, "{}", slot.id);
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the bundled pack exercises Claude routing");
+}
+
+#[test]
 fn a_logical_role_may_be_declared_twice_only_through_distinct_slots() {
     let template = parallel_seed();
     let repeated = template

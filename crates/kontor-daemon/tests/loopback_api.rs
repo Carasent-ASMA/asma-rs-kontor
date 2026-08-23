@@ -4994,14 +4994,19 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
     world.fake.verifying_placement_at(
         kontor_runtime::workspace::WorkspaceRoot::parse("/w/started-epic/0").expect("a valid root"),
     );
-    world.fake.provider_outage(
-        "claude",
-        Some(ModelRung {
-            provider: ProviderRef("codex".to_owned()),
-            model: ModelRef("gpt-5.6-sol".to_owned()),
-            effort: Some(EffortLevel::Xhigh),
-        }),
-    );
+    // A vendor outage is observed once per account, so it lands on every alias
+    // that selects one — the family spelling alone would leave the bundled
+    // chain's alias rungs launchable and prove nothing about the fallback.
+    for provider in ["claude", "claude-work", "claude-personal"] {
+        world.fake.provider_outage(
+            provider,
+            Some(ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            }),
+        );
+    }
     let builder = kontor_core::id::RoleSlotId::parse("builder").expect("builder slot");
     world.fake.refusing_launch_of(&builder);
     let partial = Call::post(
