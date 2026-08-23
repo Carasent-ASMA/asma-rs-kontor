@@ -22730,17 +22730,6 @@ async fn application_receipts_confirm_only_after_a_successful_response() {
     assert_eq!(pending.state, CommandReceiptState::IntentPersisted);
 }
 
-/// The first runnable work-profile category the bundled pack advertises.
-fn receipt(world: &World, key: &str) -> kontor_core::receipt::CommandReceipt {
-    let key = IdempotencyKey::parse(key).expect("a valid idempotency key");
-    world.daemon.state().with_store(|store| {
-        store
-            .get_receipt_by_key(&key)
-            .expect("the receipt is readable")
-            .expect("the command recorded a receipt")
-    })
-}
-
 /// Retiring a provider-account profile: the gap that made two orphans on
 /// 2026-08-21 and could only be cleared by opening the database.
 #[tokio::test]

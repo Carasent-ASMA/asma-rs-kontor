@@ -713,7 +713,8 @@ fn a_revoked_covering_grant_blocks_until_a_new_arm() {
         allowed_end: at("2026-08-13T00:00:00Z"),
         max_concurrency: 8,
     };
-    let (attached, blocked_by) = covering_authority(&[], &[revoked.clone()], None, task);
+    let (attached, blocked_by) =
+        covering_authority(&[], std::slice::from_ref(&revoked), None, task);
     assert!(attached.is_none());
     assert_eq!(blocked_by, Some(revoked.id));
 
@@ -743,7 +744,8 @@ fn a_whitelist_grant_attaches_so_the_excluded_sibling_is_a_scope_mismatch() {
         allowed_end: at("2026-08-13T00:00:00Z"),
         max_concurrency: 8,
     };
-    let (attached, blocked_by) = covering_authority(&[grant.clone()], &[], None, excluded);
+    let (attached, blocked_by) =
+        covering_authority(std::slice::from_ref(&grant), &[], None, excluded);
     assert!(blocked_by.is_none());
     assert_eq!(attached.as_ref().map(|grant| grant.id), Some(grant.id));
 

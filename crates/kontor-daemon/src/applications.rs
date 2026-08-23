@@ -6179,6 +6179,7 @@ impl Services {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn freeze_advisor_run(
         &self,
         key: &IdempotencyKey,

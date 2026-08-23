@@ -345,9 +345,7 @@ fn authorization(snapshot: &SchedulingSnapshot, candidate: &Candidate) -> Refusa
             vec![RejectionEvidence::Authorization { id }],
         );
     }
-    let Some(authorization) = candidate.authorization.as_ref() else {
-        return None;
-    };
+    let authorization = candidate.authorization.as_ref()?;
     let evidence = vec![RejectionEvidence::Authorization {
         id: authorization.id,
     }];
