@@ -3727,7 +3727,14 @@ impl RuntimeAdapter for PaseoAdapter {
             else {
                 continue;
             };
-            if self.recover_project_for_agent(&agent).await.is_err() {
+            // A live seat must still prove its project and workspace before we
+            // restore anything that can drive it. An explicitly archived seat
+            // is different: its exact native identity is useful only for a
+            // terminal readback, and an already-retired task workspace may no
+            // longer be present in Paseo's active workspace census. Refusing
+            // that readback strands the open Kontor run after restart even
+            // though Paseo still attests the archive stamp by exact agent id.
+            if self.recover_project_for_agent(&agent).await.is_err() && !agent.is_archived() {
                 continue;
             }
             let (state, _) = Self::normalize_agent(&agent);
@@ -3755,22 +3762,31 @@ impl RuntimeAdapter for PaseoAdapter {
         for snapshot in snapshots {
             match attest_restored(snapshot, &live, &declared) {
                 Ok(()) => {
-                    // A binding whose placement could not be re-proved is not
-                    // restored at all. Recording the session without it would
-                    // leave a seat that reads and cannot be driven, which is the
-                    // split this round exists to close.
-                    let Some(workspace_id) = placements.get(&snapshot.binding_id()) else {
+                    // A live binding whose placement could not be re-proved is
+                    // not restored at all. Recording it without placement would
+                    // leave a seat that reads and cannot be driven. An archived
+                    // binding is deliberately terminal-only: exact inspection
+                    // can settle its run, while every driving operation already
+                    // refuses the archive stamp.
+                    let workspace_id = placements.get(&snapshot.binding_id());
+                    let archived = live.iter().any(|session| {
+                        &session.identity == snapshot.identity()
+                            && session.state == ObservedRunState::Cancelled
+                    });
+                    if workspace_id.is_none() && !archived {
                         tracing::warn!(
                             binding = %snapshot.binding_id(),
                             agent_run = %snapshot.agent_run_id(),
                             "refused to restore a binding whose placement could not be re-proved"
                         );
                         continue;
-                    };
+                    }
                     state.bindings.record(snapshot.clone());
-                    state
-                        .placements
-                        .insert(snapshot.binding_id(), workspace_id.clone());
+                    if let Some(workspace_id) = workspace_id {
+                        state
+                            .placements
+                            .insert(snapshot.binding_id(), workspace_id.clone());
+                    }
                     restored.push(snapshot.clone());
                 }
                 // Refused, and said so. A claim this runtime cannot attest is
