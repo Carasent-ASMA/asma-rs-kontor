@@ -4056,6 +4056,16 @@ export interface components {
             harness: string;
             /** @description Human label. The natural identity inside the project. */
             label: string;
+            /**
+             * @description The runtime provider aliases this account is addressable under, when the
+             *     deployment has registered one alias per login — `codex-work` for one
+             *     Codex account, `codex-personal` for the other. Frozen into the profile's
+             *     immutable routing document at creation, because a pin that could move
+             *     under a running seat would not be a pin. Empty means the account is not
+             *     addressable per provider and no quota walk will select it, which is
+             *     exactly the pre-declaration behaviour.
+             */
+            selectable_providers?: string[];
         };
         /**
          * @description What `projects:ensure` is asked for.

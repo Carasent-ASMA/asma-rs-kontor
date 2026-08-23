@@ -19,9 +19,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::id::{
-    AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId, ExternalName,
-    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
-    parse_utc_timestamp,
+    AccountProfileId, AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId,
+    ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp,
+    TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::ModelRung;
@@ -463,6 +463,8 @@ struct FakeState {
     steps: VecDeque<QueuedStep>,
     calls: Vec<AdapterCall>,
     launched_models: BTreeMap<AgentRunId, ModelRung>,
+    launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
+    consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
     unavailable_providers: BTreeSet<String>,
     provider_fallbacks: BTreeMap<String, ModelRung>,
     minted: u64,
@@ -828,6 +830,10 @@ impl FakeState {
         self.calls.push(AdapterCall::Launch(request.agent_run_id()));
         self.launched_models
             .insert(request.agent_run_id(), request.model_rung().clone());
+        if let Some(account) = request.account_profile_id() {
+            self.launched_accounts
+                .insert(request.agent_run_id(), account);
+        }
         let container_native_id = request
             .container()
             .map(|container| container.binding.identity.native_id.clone())
@@ -938,6 +944,8 @@ impl ScriptedFakeRuntime {
                 steps: VecDeque::new(),
                 calls: Vec::new(),
                 launched_models: BTreeMap::new(),
+                launched_accounts: BTreeMap::new(),
+                consultation_routes: BTreeMap::new(),
                 unavailable_providers: BTreeSet::new(),
                 provider_fallbacks: BTreeMap::new(),
                 minted: 0,
@@ -1297,6 +1305,18 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn launched_model(&self, run: AgentRunId) -> Option<ModelRung> {
         self.lock().launched_models.get(&run).cloned()
+    }
+
+    /// The account the launch of `run` was pinned to, when it claimed one.
+    #[must_use]
+    pub fn launched_account(&self, run: AgentRunId) -> Option<AccountProfileId> {
+        self.lock().launched_accounts.get(&run).copied()
+    }
+
+    /// The route a consultation seat was launched on.
+    #[must_use]
+    pub fn consultation_route(&self, seat: SeatBindingId) -> Option<ModelRung> {
+        self.lock().consultation_routes.get(&seat).cloned()
     }
 
     /// Take the recorded calls and start a fresh log.
@@ -1904,6 +1924,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::LaunchConsultation(request.seat_binding_id));
+        state
+            .consultation_routes
+            .insert(request.seat_binding_id, request.model_rung.clone());
         if let Some(existing) = state.consultations.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }

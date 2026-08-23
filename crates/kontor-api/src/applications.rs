@@ -2614,6 +2614,15 @@ pub struct EnsureAccountProfileRequest {
     /// An alias is not a capability: one the resolver policy does not already
     /// approve resolves to nothing.
     pub credential_alias: String,
+    /// The runtime provider aliases this account is addressable under, when the
+    /// deployment has registered one alias per login — `codex-work` for one
+    /// Codex account, `codex-personal` for the other. Frozen into the profile's
+    /// immutable routing document at creation, because a pin that could move
+    /// under a running seat would not be a pin. Empty means the account is not
+    /// addressable per provider and no quota walk will select it, which is
+    /// exactly the pre-declaration behaviour.
+    #[serde(default)]
+    pub selectable_providers: Vec<String>,
     /// Whether launches may select it.
     pub enabled: bool,
 }

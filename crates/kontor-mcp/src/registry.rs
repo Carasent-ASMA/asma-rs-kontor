@@ -988,6 +988,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Text,
                 "An approved credential reference. Never a secret value.",
             ),
+            opt(
+                "selectable_providers",
+                Place::Body,
+                ArgType::TextArray,
+                "Runtime provider aliases that select this account at launch, one alias per login. Frozen at creation; empty means the quota walk never selects this account.",
+            ),
             req(
                 "enabled",
                 Place::Body,

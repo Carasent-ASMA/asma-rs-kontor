@@ -43,9 +43,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use kontor_accounts::{
-    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage,
-};
+use kontor_accounts::{UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage};
 use kontor_api::state::ApiState;
 use kontor_core::id::{ContentHash, CredentialAlias};
 use kontor_core::repository::{
@@ -355,7 +353,9 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
 
     let mut written = 0;
     for project in projects {
-        let profiles = match state.with_store(|store| store.list_account_profiles(project.project_id)) {
+        let profiles = match state
+            .with_store(|store| store.list_account_profiles(project.project_id))
+        {
             Ok(profiles) => profiles,
             Err(error) => {
                 warn!(project = %project.project_id, detail = %error, "account profiles could not be listed");
@@ -470,10 +470,7 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
 }
 
 /// Whether a stored row already says exactly what a new reading says.
-fn unchanged(
-    row: &kontor_core::repository::ProviderQuotaState,
-    evidence: &ContentHash,
-) -> bool {
+fn unchanged(row: &kontor_core::repository::ProviderQuotaState, evidence: &ContentHash) -> bool {
     &row.evidence_hash == evidence && row.source == ProviderQuotaSource::ProviderReport
 }
 
@@ -519,12 +516,13 @@ mod tests {
     use crate::{Daemon, DaemonConfig};
     use kontor_api::state::RuntimeRegistry;
     use kontor_core::id::{
-        AccountProfileId, CanonicalDocument, CredentialAlias, CurrencyCode, ExternalName,
-        Money, ProjectId, RuntimeKindKey, parse_utc_timestamp,
+        AccountProfileId, CanonicalDocument, CredentialAlias, CurrencyCode, ExternalName, Money,
+        ProjectId, RuntimeKindKey, parse_utc_timestamp,
     };
     use kontor_core::quota::{CreditBalance, QuotaWindow, QuotaWindowKind};
     use kontor_core::repository::{
-        CredentialReference, NewAccountProfile, NewProject, NewProviderQuotaState, ProjectRepository,
+        CredentialReference, NewAccountProfile, NewProject, NewProviderQuotaState,
+        ProjectRepository,
     };
     use kontor_core::spec::ProviderQuotaKind;
 
@@ -571,7 +569,10 @@ mod tests {
         let homes = ProviderHomes::discover(directory.path());
 
         let rendered = format!("{homes:?}");
-        assert!(rendered.contains("codex-work"), "the alias is safe to print");
+        assert!(
+            rendered.contains("codex-work"),
+            "the alias is safe to print"
+        );
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains(PROVIDER_HOMES_DIR));
     }
@@ -590,8 +591,11 @@ mod tests {
         // A credential file that exists but carries no token is still no token.
         std::fs::write(directory.path().join(CHATGPT_AUTH_FILE), b"{\"tokens\":{}}")
             .expect("an empty credential");
-        std::fs::write(directory.path().join(CLAUDE_AUTH_FILE), b"{\"claudeAiOauth\":{}}")
-            .expect("an empty credential");
+        std::fs::write(
+            directory.path().join(CLAUDE_AUTH_FILE),
+            b"{\"claudeAiOauth\":{}}",
+        )
+        .expect("an empty credential");
         assert!(detect(directory.path()).is_none());
     }
 
@@ -604,8 +608,7 @@ mod tests {
         )
         .expect("a credential");
 
-        let token =
-            access_token(directory.path(), ProviderApi::Codex).expect("the token reads");
+        let token = access_token(directory.path(), ProviderApi::Codex).expect("the token reads");
         assert_eq!(token.expose_secret(), "sk-not-a-real-token");
         assert!(!format!("{token:?}").contains("sk-not-a-real-token"));
     }

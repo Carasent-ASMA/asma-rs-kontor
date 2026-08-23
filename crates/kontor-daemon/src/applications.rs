@@ -56,19 +56,18 @@ use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeRunDto, CommitteeVerdictDto,
     CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto, CompletionPhaseDto,
-    CompletionRoundDto,
-    CompletionStateDto, CompletionWakeDto, ConsultationSeatDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
-    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
-    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest, CoreTeamSeatDto,
-    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
-    IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest,
-    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
-    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
-    RecordFindingsRequest, RemediateCompletionRequest, RemediationActionDto, RepositoryOutcomeDto,
-    RepositoryOutcomeInputDto,
-    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
+    CompletionRoundDto, CompletionStateDto, CompletionWakeDto, ConsultationSeatDto,
+    ConsultationVerdictDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
+    CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
+    CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
+    CoreTeamRoutePreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
+    CoreTeamSeatSelectionDto, DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
+    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
+    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
+    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
+    RemediationActionDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto, RosterUpgradePreviewDto,
+    RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
     AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
@@ -128,13 +127,12 @@ use kontor_core::repository::{
     NewCommandIntent, NewGateEvaluation, NewLocalCommand, NewMiniProject,
     NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTeamRun, OpenQuestionRepository, ProjectRepository, ProjectTopologyDefault,
-    RealmRepository,
-    RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition,
-    SpecRepository, StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredConsultationProfileRevision, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, TaskTransitionRequest,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    TaskTransitionRequest, TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -6094,6 +6092,64 @@ impl Services {
 
     /// Freeze one Advisor and its sole logical seat before the native effect.
     #[allow(clippy::too_many_arguments)]
+    /// The rung one consultation seat freezes, resolved against quota headroom.
+    ///
+    /// Consultation profiles have always declared a chain, and until now only
+    /// its first rung was ever read — which is how a committee reviewer died on
+    /// an exhausted account while the chain's other rungs sat unconsulted. The
+    /// walk here is the same account-before-rung resolution delivery seats use.
+    ///
+    /// Two deliberate asymmetries against the delivery path. When nothing is
+    /// admissible, the frozen primary is taken — exactly the previous behaviour
+    /// — rather than the adapter fallback, so a realm that has declared no
+    /// aliases freezes precisely what it froze before this walk existed. And
+    /// the admitted account is honoured through the rung's provider alias
+    /// alone, never claimed: a consultation launch carries no account pin, so
+    /// there is nothing for preflight to attest and nothing unverified in the
+    /// receipt.
+    fn freeze_consultation_model_rung(
+        &self,
+        project_id: ProjectId,
+        rungs: &[ModelRung],
+        now: Timestamp,
+        missing: &'static str,
+    ) -> Result<ModelRung, ApiError> {
+        let state = self.state()?;
+        let Some(primary) = rungs.first().cloned() else {
+            return Err(self.deny(ApiErrorCode::PlacementBlocked, missing));
+        };
+        let runtime_kind = self.node_runtime_kind()?;
+        let Some(adapter) = state.runtimes().get(&runtime_kind) else {
+            // No adapter means no availability answer; the primary is the same
+            // honest freeze the pre-walk code performed.
+            return Ok(primary);
+        };
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let placement = resolve_chain_placement(
+            adapter.as_ref(),
+            rungs,
+            // Consultations are raised by control seats but do delivery-shaped
+            // thinking work; they must not spend the reserve that exists so the
+            // epic can keep rerouting when delivery has eaten everything else.
+            kontor_scheduler::headroom::SeatClass::Delivery,
+            &QuotaOutlook {
+                states: &quota_states,
+                account: None,
+                accounts: &self.eligible_accounts(project_id)?,
+                headroom: self.headroom_policy(),
+                now,
+            },
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        Ok(match placement {
+            kontor_scheduler::headroom::Placement::Admit { rung, .. } => rung,
+            kontor_scheduler::headroom::Placement::Wait { .. }
+            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => primary,
+        })
+    }
+
     fn freeze_advisor_run(
         &self,
         key: &IdempotencyKey,
@@ -6195,12 +6251,12 @@ impl Services {
             committee_role: None,
             logical_role,
             seat_binding_id,
-            model_rung: profile.models.rungs.first().cloned().ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the Advisor profile has no model route",
-                )
-            })?,
+            model_rung: self.freeze_consultation_model_rung(
+                project_id,
+                &profile.models.rungs,
+                now,
+                "the Advisor profile has no model route",
+            )?,
             native_identity: None,
             provider_session_id: None,
             observed_at: None,
@@ -6512,12 +6568,12 @@ impl Services {
                 committee_role: Some(slot.role),
                 logical_role: slot.logical_role.clone(),
                 seat_binding_id,
-                model_rung: slot.models.rungs.first().cloned().ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "a Committee slot has no model route",
-                    )
-                })?,
+                model_rung: self.freeze_consultation_model_rung(
+                    project_id,
+                    &slot.models.rungs,
+                    now,
+                    "a Committee slot has no model route",
+                )?,
                 native_identity: None,
                 provider_session_id: None,
                 observed_at: None,
@@ -7257,7 +7313,8 @@ struct QuotaOutlook<'a> {
     /// only produce a placement dispatch then throws away.
     account: Option<AccountProfileId>,
     /// Every account a launch may still be resolved across, with the provider
-    /// aliases each one is addressable under. Empty for a pinned run.
+    /// aliases each one is addressable under. A pinned run reads its own entry
+    /// here to learn which aliases the pin may be walked under.
     accounts: &'a [kontor_scheduler::headroom::EligibleAccount],
     /// The declared headroom policy, or the state-only fallback when a realm has
     /// declared none.
@@ -7268,19 +7325,55 @@ struct QuotaOutlook<'a> {
 impl QuotaOutlook<'_> {
     /// The accounts this launch may be placed on.
     ///
-    /// A pinned run yields exactly its pin. The pin carries no provider aliases
-    /// of its own here, so every rung's provider is considered for it: the
-    /// governed alias set narrows *which account* a launch may move to, and a
-    /// run that is already pinned is not moving.
+    /// A pinned run yields exactly its pin. Which rungs the pin may take is
+    /// [`kontor_accounts::pinned_selectable_providers`]'s answer: its own
+    /// declared aliases when it has them — an alias rung selects an account,
+    /// so a foreign alias would launch one account while claiming another —
+    /// and otherwise every rung's provider, the full latitude an undeclared
+    /// pin always had.
     fn candidates(&self, rungs: &[ModelRung]) -> Vec<kontor_scheduler::headroom::EligibleAccount> {
         match self.account {
             Some(account_profile_id) => vec![kontor_scheduler::headroom::EligibleAccount {
                 account_profile_id,
-                selectable_providers: rungs.iter().map(|rung| rung.provider.0.clone()).collect(),
+                selectable_providers: kontor_accounts::pinned_selectable_providers(
+                    account_profile_id,
+                    self.accounts,
+                    rungs.iter().map(|rung| rung.provider.0.clone()).collect(),
+                ),
             }],
             None => self.accounts.to_vec(),
         }
     }
+}
+
+/// Resolve one chain against quota headroom, in the walk's own vocabulary.
+///
+/// The shared half of delivery-seat and consultation-seat route freezing: the
+/// account-before-rung walk itself. What a caller does when nothing is
+/// admissible stays the caller's, because the two launch paths have different
+/// current behaviour to preserve on that arm.
+fn resolve_chain_placement(
+    adapter: &dyn RuntimeAdapter,
+    rungs: &[ModelRung],
+    seat: kontor_scheduler::headroom::SeatClass,
+    quota: &QuotaOutlook<'_>,
+) -> kontor_core::DomainResult<kontor_scheduler::headroom::Placement> {
+    // Account before rung. The walk exhausts every account eligible for the
+    // current rung before taking the next one, because a second account on the
+    // same rung costs nothing while descending costs quality on every turn that
+    // follows. This is also what makes rungs three and four reachable: the
+    // previous selection took the first clear rung and otherwise fell back to
+    // the frozen primary, so a four-rung chain had two useful entries.
+    let candidates = quota.candidates(rungs);
+    kontor_scheduler::headroom::resolve(
+        rungs,
+        &candidates,
+        quota.states,
+        &quota.headroom,
+        seat,
+        quota.now,
+        |provider| adapter.provider_available(provider),
+    )
 }
 
 fn freeze_seat_model_rung(
@@ -7288,7 +7381,7 @@ fn freeze_seat_model_rung(
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
     quota: &QuotaOutlook<'_>,
-) -> kontor_core::DomainResult<ModelRung> {
+) -> kontor_core::DomainResult<(ModelRung, Option<AccountProfileId>)> {
     let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
     let chain = template
         .slot(slot)
@@ -7296,47 +7389,46 @@ fn freeze_seat_model_rung(
         .ok_or_else(|| {
             kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
         })?;
-    // Account before rung. The walk exhausts every account eligible for the
-    // current rung before taking the next one, because a second account on the
-    // same rung costs nothing while descending costs quality on every turn that
-    // follows. This is also what makes rungs three and four reachable: the
-    // previous selection took the first clear rung and otherwise fell back to
-    // the frozen primary, so a four-rung chain had two useful entries.
-    let candidates = quota.candidates(&chain.rungs);
-    let placement = kontor_scheduler::headroom::resolve(
+    let placement = resolve_chain_placement(
+        adapter,
         &chain.rungs,
-        &candidates,
-        quota.states,
-        &quota.headroom,
         // These are delivery seats by construction: each of this function's
         // callers launches task work under a TeamRun. An epic's control seats
         // live on its ECP and are created without a task or a TeamRun, so they
         // do not pass through here. The reserve is what holds headroom open for
         // them, and subtracting it from delivery is how that is done.
         kontor_scheduler::headroom::SeatClass::Delivery,
-        quota.now,
-        |provider| adapter.provider_available(provider),
+        quota,
     )?;
     Ok(match placement {
-        kontor_scheduler::headroom::Placement::Admit { rung, .. } => rung,
+        // The walk answered with a pair, and the launch honours both halves.
+        // Returning the rung alone is what stranded every Codex seat on the
+        // ambient login: the rung's provider alias selects the account, and the
+        // account id is what the launch claims and quota attribution reads.
+        kontor_scheduler::headroom::Placement::Admit { rung, account } => (rung, Some(account)),
         // Nothing is admissible. Preserve master's refusal shape rather than
         // inventing a route: an adapter-declared fallback if one is clear, and
         // otherwise the frozen primary, so the adapter emits its own typed
         // provider-outage refusal. Deciding here to descend anyway is exactly
         // what a near reset must not cause, and substituting a model the
-        // template never declared would weaken the template.
+        // template never declared would weaken the template. No account is
+        // claimed on this arm: the walk selected none, and a claim invented
+        // here would be exactly the unverified attestation preflight refuses.
         //
         // ponytail: the wait instant and the escalation payload are computed and
         // then dropped on this path, because this function's contract is to
         // return a rung. Parking the work on them needs a launch path that can
         // hold a seat instead of routing it — see the handoff's open risks.
         kontor_scheduler::headroom::Placement::Wait { .. }
-        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => chain
-            .rungs
-            .iter()
-            .find_map(|rung| adapter.fallback_model_rung(rung))
-            .or_else(|| chain.rungs.first().cloned())
-            .expect("a validated model chain is non-empty"),
+        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => (
+            chain
+                .rungs
+                .iter()
+                .find_map(|rung| adapter.fallback_model_rung(rung))
+                .or_else(|| chain.rungs.first().cloned())
+                .expect("a validated model chain is non-empty"),
+            None,
+        ),
     })
 }
 
@@ -8806,10 +8898,8 @@ impl Services {
                 let open_questions = self
                     .state()?
                     .with_store(|store| {
-                        store.summarize_questions_for_epic(
-                            stored.project_id,
-                            stored.mini_project_id,
-                        )
+                        store
+                            .summarize_questions_for_epic(stored.project_id, stored.mini_project_id)
                     })
                     .map_err(|error| self.refuse(&error))?;
                 Ok(CompletionObservation::CloseoutRecorded {
@@ -9292,13 +9382,31 @@ impl ApplicationOperations for Services {
                 "basis": { "value": "plan_allowance", "provenance": unverified },
                 "reachedVia": null, "pooledUsage": false
             }),
+            // One provider alias per Codex login. The alias is the account
+            // selector on this runtime — `--provider codex-work` launches in
+            // that account's own credential home — so a route can only be
+            // described and validated against an account if the alias is a
+            // provider row here. `reachedVia` stays null: unlike a vendor
+            // served through another provider, each alias is itself enabled in
+            // the runtime. Pooling is definitional for an alias: it is one
+            // account, and every route on it draws one allowance.
+            serde_json::json!({
+                "id": "codex-work", "label": "Codex · Work (Carasent)",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
+            serde_json::json!({
+                "id": "codex-personal", "label": "Codex · Personal",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
             serde_json::json!({
                 "id": "claude", "label": "Claude",
                 "basis": { "value": "plan_allowance", "provenance": unverified },
                 "reachedVia": null, "pooledUsage": true
             }),
         ];
-        let models = vec![
+        let mut models = vec![
             serde_json::json!({
                 "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "provider": "codex",
                 "isDefault": true,
@@ -9328,6 +9436,22 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }),
         ];
+        // Each Codex account alias serves the same two routes as the family
+        // provider: the alias changes the credential home, never the model.
+        for alias in ["codex-work", "codex-personal"] {
+            for (id, label, default) in [
+                ("gpt-5.6-sol", "GPT-5.6 Sol", true),
+                ("gpt-5.6-terra", "GPT-5.6 Terra", false),
+            ] {
+                models.push(serde_json::json!({
+                    "id": id, "label": label, "provider": alias,
+                    "isDefault": default,
+                    "contextWindow": { "value": null, "provenance": provenance },
+                    "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
+                    "pricing": [], "degradedLane": false
+                }));
+            }
+        }
         let cursor = state
             .with_store(SqliteStore::teams_projection)
             .map_err(|error| self.refuse(&error))?
@@ -9559,20 +9683,30 @@ impl ApplicationOperations for Services {
         let state = self.state()?;
         let alias = kontor_core::id::CredentialAlias::parse(&request.credential_alias)
             .map_err(|error| self.refuse_domain(&error))?;
+        let declared =
+            kontor_accounts::declared_selectable_providers(&request.selectable_providers)
+                .map_err(|error| self.refuse_domain(&error))?;
         // The alias is a *request* field and never an answer: it is not credential
         // material, but it is the name a resolver policy is keyed on, and a
         // control plane that echoes it into receipts, logs and error bodies has
         // published its own lookup table. The intent therefore carries a digest of
         // it, which distinguishes two different aliases under one key — which is
         // the whole job of the intent — without storing the value anywhere.
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_body = serde_json::json!({
             "schema_version": 1,
             "operation": "provider_account_profiles_ensure",
             "label": request.label.as_str(),
             "harness": request.harness.as_str(),
             "credential_alias_digest": ContentHash::of(alias.as_str().as_bytes()).as_str(),
             "enabled": request.enabled,
-        }))?;
+        });
+        // Only a declared pin enters the intent. An absent one must hash to the
+        // byte-identical intent this operation recorded before the field
+        // existed, or every replayed pre-declaration receipt would conflict.
+        if !declared.is_empty() {
+            intent_body["selectable_providers"] = serde_json::json!(declared);
+        }
+        let intent = self.intent(&intent_body)?;
         let target = AggregateRef::Project { project_id };
         if let Some(_receipt) = self.replayed(key, &intent, Some(&target))? {
             let profile = self
@@ -9597,7 +9731,10 @@ impl ApplicationOperations for Services {
             let same = profile.harness == request.harness
                 && profile.credential_ref.alias == alias
                 && profile.credential_ref.kind == CredentialReferenceKind::ConfigHome
-                && profile.enabled == request.enabled;
+                && profile.enabled == request.enabled
+                && kontor_accounts::selectable_providers(&profile)
+                    .map_err(|error| self.refuse_domain(&error))?
+                    == declared;
             if !same {
                 // The refusal names the rule and not the field, because naming
                 // which field disagreed would confirm a guessed alias.
@@ -9618,6 +9755,17 @@ impl ApplicationOperations for Services {
         }
 
         let empty = self.intent(&serde_json::json!({"schema_version": 1}))?;
+        // The routing document is immutable for the life of the profile, so the
+        // declared pin is frozen here or never. A profile declaring nothing
+        // stores the same empty document it always has.
+        let routing = if declared.is_empty() {
+            empty.clone()
+        } else {
+            self.intent(&serde_json::json!({
+                "schema_version": 1,
+                (kontor_accounts::SELECTABLE_PROVIDERS_KEY): declared,
+            }))?
+        };
         let profile = state
             .with_store(|store| {
                 store.create_account_profile(&NewAccountProfile {
@@ -9633,7 +9781,7 @@ impl ApplicationOperations for Services {
                         alias: alias.clone(),
                     },
                     environment: empty.clone(),
-                    routing: empty.clone(),
+                    routing,
                     capability: empty.clone(),
                     provider_identity: None,
                     enabled: request.enabled,
@@ -16700,14 +16848,17 @@ impl ApplicationOperations for Services {
             headroom: self.headroom_policy(),
             now,
         };
-        let model_rung = request
-            .model_route
-            .as_ref()
-            .map_or_else(
-                || freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook),
-                parse_runtime_model_route,
-            )
-            .map_err(|error| self.refuse_domain(&error))?;
+        // An explicit route override is an operator decision the walk must not
+        // second-guess, so no account is resolved for it; the successor keeps
+        // only the predecessor's own pin.
+        let (model_rung, routed_account) = match request.model_route.as_ref() {
+            Some(route) => (
+                parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
+                None,
+            ),
+            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
+                .map_err(|error| self.refuse_domain(&error))?,
+        };
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -16724,7 +16875,7 @@ impl ApplicationOperations for Services {
             binding_id,
             placement: Some(LaunchPlacement::Container(workspace.clone())),
             cwd: task_root.clone(),
-            account_profile_id: predecessor.account_profile_id,
+            account_profile_id: predecessor.account_profile_id.or(routed_account),
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
                 .map_err(|error| self.refuse_domain(&error))?,
             model_rung,
@@ -18715,7 +18866,7 @@ impl Services {
             let quota_states = state
                 .with_store(|store| store.list_provider_quota_states(project_id))
                 .map_err(|error| self.refuse(&error))?;
-            let model_rung = freeze_seat_model_rung(
+            let (model_rung, routed_account) = freeze_seat_model_rung(
                 adapter.as_ref(),
                 &team_snapshot,
                 &slot,
@@ -18750,7 +18901,10 @@ impl Services {
                     binding_id,
                     placement: Some(LaunchPlacement::Container(workspace.clone())),
                     cwd: task_root.clone(),
-                    account_profile_id: admitted.account_profile_id,
+                    // The task's own pin outranks the walk: a pinned run's walk
+                    // can only ever answer with that pin, so `.or` is the
+                    // no-pin case — the account the walk actually selected.
+                    account_profile_id: admitted.account_profile_id.or(routed_account),
                     prompt:
                         slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
                     model_rung,
@@ -20162,7 +20316,7 @@ impl Services {
         let quota_states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
-        let model_rung = freeze_seat_model_rung(
+        let (model_rung, routed_account) = freeze_seat_model_rung(
             adapter.as_ref(),
             &team_snapshot,
             slot,
@@ -20197,7 +20351,7 @@ impl Services {
                 binding_id,
                 placement: Some(LaunchPlacement::Container(container.clone())),
                 cwd: cwd.clone(),
-                account_profile_id: admitted.account_profile_id,
+                account_profile_id: admitted.account_profile_id.or(routed_account),
                 prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
                 model_rung,
                 context_policy: context_policy.clone(),
