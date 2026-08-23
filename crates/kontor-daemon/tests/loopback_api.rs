@@ -15638,6 +15638,94 @@ async fn settling_a_never_bound_run_is_refused_as_an_unbound_role_slot() {
     );
 }
 
+/// An unbound launch may be abandoned before its already-seated siblings end.
+/// Replaying that same operator decision after the siblings settle is the only
+/// immutable-row-safe opportunity to abandon the now-fully-terminal TeamRun.
+#[tokio::test]
+async fn replaying_an_abandonment_closes_the_team_after_live_siblings_end() {
+    let seeded = alpha_with_one_unbound_slot("abandon-after-siblings").await;
+    let UnboundWorld {
+        world,
+        project,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = kontor_core::id::ProjectId::parse(project).expect("a project id");
+    let team_run_id = kontor_core::id::TeamRunId::parse(team_run).expect("a team run id");
+    let unbound = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .into_iter()
+        .find(|seat| seat.native_id.is_none())
+        .expect("the refused launch left its durable unbound run");
+    let run = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_agent_run(project_id, unbound.agent_run_id))
+        .expect("the run is readable")
+        .expect("the run exists");
+    let body = serde_json::json!({
+        "expected_revision": run.revision.get(),
+        "reason": "The launch was refused and no session was ever created"
+    });
+
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            unbound.agent_run_id
+        ),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key("abandon-after-siblings-run")
+    .send(world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert!(
+        abandoned.json()["team_run_closed"].is_null(),
+        "the live siblings keep the team open: {}",
+        abandoned.body
+    );
+
+    for seat in seats {
+        let agent_run = seat["agent_run_id"].as_str().expect("a run id");
+        finish_natively(world, agent_run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("abandon-after-siblings-settle-{agent_run}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+    }
+
+    let replay = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            unbound.agent_run_id
+        ),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key("abandon-after-siblings-run")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged", "{}", replay.body);
+    assert_eq!(
+        replay.json()["team_run_closed"],
+        serde_json::json!(team_run),
+        "the replay closes the now-fully-terminal team: {}",
+        replay.body
+    );
+    assert!(replay.json()["team_pending"].is_null(), "{}", replay.body);
+}
+
 /// Journey 8. A waiver taken *before* the other slots settle suppresses the
 /// dispatch the frozen handoff DAG would otherwise derive to it.
 ///
