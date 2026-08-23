@@ -3,7 +3,8 @@
 
 use kontor_core::authority::AuthoritySubject;
 use kontor_core::id::{
-    AggregateRevision, CanonicalDocument, ContentHash, ProjectId, Timestamp, parse_utc_timestamp,
+    AggregateRevision, CanonicalDocument, ContentHash, ContextPackId, ProjectId, TaskId, Timestamp,
+    parse_utc_timestamp,
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,21 @@ pub struct ContextMemoryBinding {
     pub ordered_revisions: Vec<FrozenRevision>,
     pub result_hash: ContentHash,
     pub bound_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredContextPack {
+    pub id: ContextPackId,
+    pub project_id: ProjectId,
+    pub task_id: TaskId,
+    pub content: CanonicalDocument,
+    pub created_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrozenRunContext {
+    pub context_pack: StoredContextPack,
+    pub memory_binding: ContextMemoryBinding,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,38 +417,10 @@ impl SqliteStore {
         revision_ids: &[String],
     ) -> Result<ContextMemoryBinding, MemoryError> {
         let tx = self.connection.unchecked_transaction()?;
-        if let Some(existing) = read_binding(&tx, project_id, run_id)? {
-            return Ok(existing);
-        }
-        let cursor: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(rowid),0) FROM memory_approvals",
-            [],
-            |row| row.get(0),
-        )?;
-        let mut ordered = Vec::with_capacity(revision_ids.len());
-        for id in revision_ids {
-            let hash: String = tx.query_row("SELECT r.content_hash FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE r.project_id=?1 AND r.id=?2 AND t.item_id IS NULL", params![project_id.to_string(), id], |row| row.get(0)).optional()?.ok_or(MemoryError::NotFound)?;
-            ordered.push(FrozenRevision {
-                revision_id: id.clone(),
-                content_hash: ContentHash::parse(&hash)?,
-            });
-        }
-        let ordered_json = serde_json::to_string(&ordered)?;
-        let result_hash = ContentHash::of(
-            serde_json::to_string(&(cursor, selection_spec.hash(), &ordered))?.as_bytes(),
-        );
-        let bound_at = Timestamp::now();
-        tx.execute("INSERT INTO memory_context_bindings(project_id,run_id,selection_cursor,selection_spec,ordered_revisions,result_hash,bound_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![project_id.to_string(),run_id,cursor,selection_spec.json(),ordered_json,result_hash.as_str(),bound_at.to_string()])?;
+        let binding =
+            freeze_memory_binding_in(&tx, project_id, run_id, selection_spec, revision_ids)?;
         tx.commit()?;
-        Ok(ContextMemoryBinding {
-            project_id,
-            run_id: run_id.into(),
-            selection_cursor: cursor,
-            selection_spec: selection_spec.clone(),
-            ordered_revisions: ordered,
-            result_hash,
-            bound_at,
-        })
+        Ok(binding)
     }
 
     pub fn memory_binding(
@@ -441,6 +429,64 @@ impl SqliteStore {
         run_id: &str,
     ) -> Result<Option<ContextMemoryBinding>, MemoryError> {
         read_binding(&self.connection, project_id, run_id)
+    }
+
+    /// Freeze the canonical pack and the approved memory revisions behind it in
+    /// one transaction. A retry returns the first freeze unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn freeze_run_context(
+        &self,
+        project_id: ProjectId,
+        run_id: &str,
+        context_pack_id: ContextPackId,
+        task_id: TaskId,
+        content: &CanonicalDocument,
+        selection_spec: &CanonicalDocument,
+        revision_ids: &[String],
+    ) -> Result<FrozenRunContext, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        if let Some(existing) = read_frozen_run_context(&tx, project_id, run_id, context_pack_id)? {
+            return Ok(existing);
+        }
+
+        let created_at = Timestamp::now();
+        tx.execute(
+            "INSERT INTO context_packs(id,project_id,task_id,content,content_hash,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                context_pack_id.to_string(),
+                project_id.to_string(),
+                task_id.to_string(),
+                content.json(),
+                content.hash().as_str(),
+                created_at.to_string()
+            ],
+        )?;
+        let memory_binding =
+            freeze_memory_binding_in(&tx, project_id, run_id, selection_spec, revision_ids)?;
+        let context_pack = StoredContextPack {
+            id: context_pack_id,
+            project_id,
+            task_id,
+            content: content.clone(),
+            created_at,
+        };
+        tx.commit()?;
+        Ok(FrozenRunContext {
+            context_pack,
+            memory_binding,
+        })
+    }
+
+    /// Read a complete run freeze. A half-written pair is refused as corrupt
+    /// evidence instead of being silently repaired from newer memory.
+    pub fn frozen_run_context(
+        &self,
+        project_id: ProjectId,
+        run_id: &str,
+        context_pack_id: ContextPackId,
+    ) -> Result<Option<FrozenRunContext>, MemoryError> {
+        read_frozen_run_context(&self.connection, project_id, run_id, context_pack_id)
     }
 
     pub fn tombstone_memory(
@@ -778,6 +824,126 @@ fn read_binding(
     })
     .transpose()
 }
+
+fn read_context_pack(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    context_pack_id: ContextPackId,
+) -> Result<Option<StoredContextPack>, MemoryError> {
+    let row = connection
+        .query_row(
+            "SELECT task_id,content,content_hash,created_at
+             FROM context_packs WHERE project_id=?1 AND id=?2",
+            params![project_id.to_string(), context_pack_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|(task_id, content, hash, created_at)| {
+        let hash = ContentHash::parse(&hash)?;
+        Ok(StoredContextPack {
+            id: context_pack_id,
+            project_id,
+            task_id: TaskId::parse(&task_id)?,
+            content: CanonicalDocument::from_stored(&content, &hash)?,
+            created_at: parse_utc_timestamp(&created_at)?,
+        })
+    })
+    .transpose()
+}
+
+fn read_frozen_run_context(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    run_id: &str,
+    context_pack_id: ContextPackId,
+) -> Result<Option<FrozenRunContext>, MemoryError> {
+    let pack = read_context_pack(connection, project_id, context_pack_id)?;
+    let binding = read_binding(connection, project_id, run_id)?;
+    match (pack, binding) {
+        (None, None) => Ok(None),
+        (Some(context_pack), Some(memory_binding)) => Ok(Some(FrozenRunContext {
+            context_pack,
+            memory_binding,
+        })),
+        _ => Err(MemoryError::Rule("run context freeze is incomplete")),
+    }
+}
+
+fn freeze_memory_binding_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    run_id: &str,
+    selection_spec: &CanonicalDocument,
+    revision_ids: &[String],
+) -> Result<ContextMemoryBinding, MemoryError> {
+    if let Some(existing) = read_binding(tx, project_id, run_id)? {
+        return Ok(existing);
+    }
+    let cursor: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(rowid),0) FROM memory_approvals",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut ordered = Vec::with_capacity(revision_ids.len());
+    for id in revision_ids {
+        let hash: String = tx
+            .query_row(
+                "SELECT r.content_hash
+                 FROM memory_revisions r
+                 JOIN memory_items i
+                   ON i.project_id=r.project_id AND i.current_revision_id=r.id
+                 JOIN memory_approvals a
+                   ON a.project_id=r.project_id AND a.revision_id=r.id
+                 LEFT JOIN memory_tombstones t
+                   ON t.project_id=r.project_id AND t.item_id=r.item_id
+                 WHERE r.project_id=?1 AND r.id=?2 AND t.item_id IS NULL",
+                params![project_id.to_string(), id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(MemoryError::NotFound)?;
+        ordered.push(FrozenRevision {
+            revision_id: id.clone(),
+            content_hash: ContentHash::parse(&hash)?,
+        });
+    }
+    let ordered_json = serde_json::to_string(&ordered)?;
+    let result_hash = ContentHash::of(
+        serde_json::to_string(&(cursor, selection_spec.hash(), &ordered))?.as_bytes(),
+    );
+    let bound_at = Timestamp::now();
+    tx.execute(
+        "INSERT INTO memory_context_bindings
+         (project_id,run_id,selection_cursor,selection_spec,ordered_revisions,result_hash,bound_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            project_id.to_string(),
+            run_id,
+            cursor,
+            selection_spec.json(),
+            ordered_json,
+            result_hash.as_str(),
+            bound_at.to_string()
+        ],
+    )?;
+    Ok(ContextMemoryBinding {
+        project_id,
+        run_id: run_id.into(),
+        selection_cursor: cursor,
+        selection_spec: selection_spec.clone(),
+        ordered_revisions: ordered,
+        result_hash,
+        bound_at,
+    })
+}
+
 fn verify_export(export: &AgentsRoomExport) -> Result<(), MemoryError> {
     if export.schema_version != 1 {
         return Err(MemoryError::Rule("unsupported AgentsRoom export schema"));
@@ -925,6 +1091,93 @@ mod tests {
             store.search_memory(a, "alpha", 10).unwrap().is_empty(),
             "a tombstone remains excluded even if its derived index is stale"
         );
+    }
+
+    #[test]
+    fn run_context_freezes_pack_and_memory_atomically_and_reuses_them() {
+        let (_dir, store, project, _) = fixture();
+        let task_id = TaskId::generate();
+        let now = Timestamp::now();
+        store
+            .connection
+            .execute(
+                "INSERT INTO tasks(id,project_id,title,state,revision,created_at,updated_at)
+                 VALUES (?1,?2,'Memory task','ready',1,?3,?3)",
+                params![task_id.to_string(), project.to_string(), now.to_string()],
+            )
+            .unwrap();
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project,
+                "launch-policy",
+                0,
+                &document("use the approved launch policy"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(
+                project,
+                "launch-policy",
+                &proposal.revision_id,
+                1,
+                "reviewer",
+            )
+            .unwrap();
+
+        let pack_id = ContextPackId::generate();
+        let pack = document("first canonical pack");
+        let selection = document("all approved project memory");
+        let first = store
+            .freeze_run_context(
+                project,
+                "run-context-1",
+                pack_id,
+                task_id,
+                &pack,
+                &selection,
+                std::slice::from_ref(&proposal.revision_id),
+            )
+            .unwrap();
+        let retry = store
+            .freeze_run_context(
+                project,
+                "run-context-1",
+                pack_id,
+                task_id,
+                &document("newer bytes must not replace the freeze"),
+                &document("newer selection must not replace the freeze"),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(first.context_pack.content, retry.context_pack.content);
+        assert_eq!(
+            first.memory_binding.result_hash,
+            retry.memory_binding.result_hash
+        );
+        assert_eq!(retry.memory_binding.ordered_revisions.len(), 1);
+
+        let failed_pack_id = ContextPackId::generate();
+        let failed = store.freeze_run_context(
+            project,
+            "run-context-bad",
+            failed_pack_id,
+            task_id,
+            &pack,
+            &selection,
+            &["missing-revision".to_owned()],
+        );
+        assert!(matches!(failed, Err(MemoryError::NotFound)));
+        let persisted: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM context_packs WHERE project_id=?1 AND id=?2",
+                params![project.to_string(), failed_pack_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, 0, "the pack rolls back with a refused binding");
     }
 
     #[test]

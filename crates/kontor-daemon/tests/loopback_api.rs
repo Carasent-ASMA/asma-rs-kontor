@@ -6235,6 +6235,92 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
     assert_eq!(premature.status, 422, "{}", premature.body);
     assert_eq!(premature.code(), "unsupported_capability");
 
+    let frozen_hash = stable.json()["context_hash"]
+        .as_str()
+        .expect("a stable hash")
+        .to_owned();
+    let runs = seat_existing(&world, &seed, "ctx").await;
+    for run in &runs {
+        let run_id = AgentRunId::parse(run).expect("an agent run id");
+        let prompt = world
+            .fake
+            .launched_prompt(run_id)
+            .expect("the fake captures the launch prompt");
+        assert!(
+            prompt
+                .as_str()
+                .contains("BEGIN KONTOR APPROVED CONTEXT PACK")
+        );
+        assert!(prompt.as_str().contains(&frozen_hash));
+        assert!(
+            prompt
+                .as_str()
+                .contains("Read the approved project conventions before changing code"),
+            "approved schema-v1 memory reaches every launched seat"
+        );
+    }
+
+    // Memory may move after launch, but the run's snapshot and launch prompt do
+    // not. This is the replay guarantee: read back the first freeze, never
+    // silently recompose it from the newer current revision.
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            let changed = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "text": "A newer convention that this already-started run must not receive"
+            }))?;
+            let provenance = kontor_store::memory::MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: None,
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            };
+            let (proposal, _) = store.propose_memory_revision(
+                project_id,
+                "project-conventions",
+                2,
+                &changed,
+                &provenance,
+                "test-author",
+            )?;
+            store.approve_memory_revision(
+                project_id,
+                "project-conventions",
+                &proposal.revision_id,
+                3,
+                "test-reviewer",
+            )?;
+            Ok::<_, kontor_store::memory::MemoryError>(())
+        })
+        .expect("approved project memory is updated");
+    let moved = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-preview-moved")
+        .send(&world)
+        .await;
+    assert_ne!(moved.json()["context_hash"], frozen_hash);
+
+    let snapshot = Call::post(&uri, &serde_json::json!({"snapshot": true}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-frozen")
+        .send(&world)
+        .await;
+    assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+    assert_eq!(snapshot.json()["context_hash"], frozen_hash);
+    let frozen_run = snapshot.json()["agent_run_id"]
+        .as_str()
+        .expect("the snapshot names its run")
+        .to_owned();
+    assert!(runs.iter().any(|run| run == &frozen_run));
+    assert_eq!(snapshot.json()["context_pack_id"], frozen_run);
+    let prompt = world
+        .fake
+        .launched_prompt(AgentRunId::parse(&frozen_run).expect("an agent run id"))
+        .expect("the frozen run was launched");
+    assert!(!prompt.as_str().contains("newer convention"));
+
     // Observers may not resolve; the operation reads pins and freezes evidence.
     let observer = Call::post(&uri, &serde_json::json!({"snapshot": false}))
         .signed_as(&world, "observer")
@@ -12042,6 +12128,15 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
     assert_eq!(selected.provider.0, "codex");
     assert_eq!(selected.model.0, "gpt-5.6-sol");
     assert_eq!(selected.effort, Some(kontor_core::spec::EffortLevel::Xhigh));
+    assert!(
+        world
+            .fake
+            .launched_prompt(successor_id)
+            .expect("the successor's prompt is observable")
+            .as_str()
+            .contains("BEGIN KONTOR APPROVED CONTEXT PACK"),
+        "replacement seats receive the same frozen-context launch contract"
+    );
     assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
     assert_eq!(successor.team_run_id.to_string(), team_run);
     let successor_binding = successor.binding.expect("the successor is bound");

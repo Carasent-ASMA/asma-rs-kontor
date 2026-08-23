@@ -19,9 +19,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId,
-    ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp,
-    TopologyNodeId, parse_utc_timestamp,
+    AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
+    ExternalId, ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
+    Timestamp, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::ModelRung;
@@ -464,6 +464,7 @@ struct FakeState {
     calls: Vec<AdapterCall>,
     launched_models: BTreeMap<AgentRunId, ModelRung>,
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
+    launched_prompts: BTreeMap<AgentRunId, BoundedText>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
     unavailable_providers: BTreeSet<String>,
     provider_fallbacks: BTreeMap<String, ModelRung>,
@@ -830,6 +831,8 @@ impl FakeState {
         self.calls.push(AdapterCall::Launch(request.agent_run_id()));
         self.launched_models
             .insert(request.agent_run_id(), request.model_rung().clone());
+        self.launched_prompts
+            .insert(request.agent_run_id(), request.prompt().clone());
         if let Some(account) = request.account_profile_id() {
             self.launched_accounts
                 .insert(request.agent_run_id(), account);
@@ -945,6 +948,7 @@ impl ScriptedFakeRuntime {
                 calls: Vec::new(),
                 launched_models: BTreeMap::new(),
                 launched_accounts: BTreeMap::new(),
+                launched_prompts: BTreeMap::new(),
                 consultation_routes: BTreeMap::new(),
                 unavailable_providers: BTreeSet::new(),
                 provider_fallbacks: BTreeMap::new(),
@@ -1311,6 +1315,12 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn launched_account(&self, run: AgentRunId) -> Option<AccountProfileId> {
         self.lock().launched_accounts.get(&run).copied()
+    }
+
+    /// Exact bounded prompt supplied for one launched delivery run.
+    #[must_use]
+    pub fn launched_prompt(&self, run: AgentRunId) -> Option<BoundedText> {
+        self.lock().launched_prompts.get(&run).cloned()
     }
 
     /// The route a consultation seat was launched on.
