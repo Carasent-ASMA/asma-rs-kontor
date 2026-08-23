@@ -531,7 +531,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        134,
+        136,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -539,7 +539,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        133,
+        135,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -549,7 +549,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        135,
+        137,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -661,6 +661,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_memory_ingest_preview", CallerTier::Admin),
         ("kontor_memory_ingest_apply", CallerTier::Admin),
         ("kontor_memory_cutover_freeze", CallerTier::Admin),
+        ("kontor_subject_authority_get", CallerTier::Observer),
+        ("kontor_subject_authority_attest", CallerTier::Admin),
         ("kontor_memory_cutover_switch", CallerTier::Admin),
         // KON-25: the Realm catalogue and Teams projection are reads; saving a
         // draft and publishing its next immutable revision are operator acts.

@@ -41,8 +41,8 @@ use kontor_api::applications::{
     ProviderQuotaStateDto, PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto,
     ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
     SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
-    TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
+    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -100,6 +100,7 @@ use kontor_api::applications::{
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
+use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
@@ -195,6 +196,7 @@ use kontor_scheduler::{
     CompletionTransition, IntegrationRecord, RemediationApproval, RemediationAuthorization,
     RepositoryOutcome, SignalDelivery,
 };
+use kontor_store::authority::SubjectOrigins;
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, EpicApplication,
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, NewRoleTurn,
@@ -589,6 +591,33 @@ impl Services {
     /// Turn a repository refusal into the one the caller is owed.
     fn refuse(&self, error: &RepositoryError) -> ApiError {
         ApiError::from_repository(self.realm_id, error)
+    }
+
+    /// Read one project's origin and current authority for both subjects.
+    fn subject_authority_dtos(
+        &self,
+        state: &ApiState,
+        project_id: ProjectId,
+    ) -> Result<(SubjectAuthorityDto, SubjectAuthorityDto), ApiError> {
+        let dto = |subject| {
+            state
+                .with_store(|store| store.subject_authority(project_id, subject))
+                .map(|row| SubjectAuthorityDto {
+                    origin: row.origin,
+                    authority: row.authority,
+                    revision: row.revision,
+                })
+                .map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the project has no declared subject authority",
+                    )
+                })
+        };
+        Ok((
+            dto(AuthoritySubject::Memory)?,
+            dto(AuthoritySubject::Backlog)?,
+        ))
     }
 
     /// Turn a domain refusal into the one the caller is owed.
@@ -9239,11 +9268,19 @@ impl ApplicationOperations for Services {
         request: &EnsureProjectRequest,
     ) -> Result<ProjectDto, ApiError> {
         let state = self.state()?;
+        if request.backlog_origin == SubjectOrigin::LegacyPending {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a legacy backlog cannot be imported yet, so a project may not declare backlog_origin legacy_pending",
+            ));
+        }
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "projects_ensure",
             "name": request.name.as_str(),
             "root_path": request.root_path.as_str(),
+            "memory_origin": request.memory_origin.as_str(),
+            "backlog_origin": request.backlog_origin.as_str(),
         }))?;
         // The key is judged before the project is touched. It is the one mutation
         // whose target may not exist yet, so the lookup is by key alone and the
@@ -9264,6 +9301,7 @@ impl ApplicationOperations for Services {
                         "the replayed receipt names a project this realm no longer has",
                     )
                 })?;
+            let (memory, backlog) = self.subject_authority_dtos(state, project.id)?;
             return Ok(ProjectDto {
                 realm_id: state.realm_id(),
                 project_id: project.id,
@@ -9271,6 +9309,8 @@ impl ApplicationOperations for Services {
                 root_path: project.root_path,
                 revision: project.revision,
                 applied: AppliedDto::Unchanged,
+                memory,
+                backlog,
                 created_at: project.created_at,
             });
         }
@@ -9281,6 +9321,10 @@ impl ApplicationOperations for Services {
                     id: ProjectId::generate(),
                     name: request.name.clone(),
                     root_path: request.root_path.clone(),
+                    origins: SubjectOrigins {
+                        memory: request.memory_origin,
+                        backlog: request.backlog_origin,
+                    },
                     created_at: kontor_api::now(),
                 })
             })
@@ -9298,6 +9342,7 @@ impl ApplicationOperations for Services {
             project.revision,
             &intent,
         )?;
+        let (memory, backlog) = self.subject_authority_dtos(state, project.id)?;
         Ok(ProjectDto {
             realm_id: state.realm_id(),
             project_id: project.id,
@@ -9305,6 +9350,8 @@ impl ApplicationOperations for Services {
             root_path: project.root_path,
             revision: project.revision,
             applied: applied_dto(applied),
+            memory,
+            backlog,
             created_at: project.created_at,
         })
     }

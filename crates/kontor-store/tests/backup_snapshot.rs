@@ -19,14 +19,18 @@
 
 use std::path::{Path, PathBuf};
 
-use kontor_core::id::{ExternalName, ProjectId, RealmId, Timestamp, parse_utc_timestamp};
+use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
+use kontor_core::id::{
+    AggregateRevision, ExternalName, ProjectId, RealmId, Timestamp, parse_utc_timestamp,
+};
 use kontor_core::repository::{NewProject, ProjectRepository};
+use kontor_store::authority::SubjectOrigins;
 use kontor_store::backup::{
     BackupError, RETAINED_SNAPSHOTS, SnapshotManifest, create_snapshot, list_snapshots,
     prune_snapshots, restore_snapshot,
 };
 use kontor_store::memory::{AgentsRoomExport, LegacyMemoryEntry, MemoryProvenance};
-use kontor_store::{SCHEMA_VERSION, SqliteStore};
+use kontor_store::{ProjectEnsure, SCHEMA_VERSION, SqliteStore};
 use tempfile::TempDir;
 
 fn at(text: &str) -> Timestamp {
@@ -644,11 +648,17 @@ fn memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt() {
     let source = home.path().join("source.db");
     let store = seeded(&source, 0);
     let project = ProjectId::generate();
+    // Declared legacy on the memory side, because this test is about import
+    // evidence surviving a snapshot: a project created native has none.
     store
-        .create_project(&NewProject {
+        .ensure_project(&ProjectEnsure {
             id: project,
             name: name("Memory project"),
             root_path: name("/tmp/memory-project"),
+            origins: SubjectOrigins {
+                memory: SubjectOrigin::LegacyPending,
+                backlog: SubjectOrigin::KontorNative,
+            },
             created_at: at("2026-08-10T09:00:00Z"),
         })
         .expect("the project is created");
@@ -665,13 +675,24 @@ fn memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt() {
     };
     export.export_hash = export.calculate_hash().expect("the export hashes");
     store
-        .freeze_agentsroom_writes()
-        .expect("legacy writes freeze");
-    store
         .apply_agentsroom_import(&export)
         .expect("the export imports");
+    let (attested, _) = store
+        .attest_subject_source_frozen(
+            project,
+            AuthoritySubject::Memory,
+            AggregateRevision::INITIAL,
+            "agentsroom-cursor-1",
+            &kontor_core::id::ContentHash::of(b"frozen source"),
+        )
+        .expect("the legacy source is attested frozen");
     store
-        .switch_memory_authority(project, "agentsroom", &export.export_hash)
+        .switch_project_memory_authority(
+            project,
+            "agentsroom",
+            &export.export_hash,
+            attested.revision,
+        )
         .expect("authority switches");
     let (proposal, propose_receipt) = store
         .propose_memory_revision(

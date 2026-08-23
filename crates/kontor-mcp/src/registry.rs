@@ -910,6 +910,21 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ExternalName,
                 "The checkout root the project owns.",
             ),
+            req(
+                "memory_origin",
+                Place::Body,
+                ArgType::Enum(SUBJECT_ORIGINS),
+                "Where this project's memory comes from. `kontor_native` is \
+                 writable immediately; `legacy_pending` stays \
+                 read-only until it is imported and switched.",
+            ),
+            req(
+                "backlog_origin",
+                Place::Body,
+                ArgType::Enum(BACKLOG_ORIGINS),
+                "Where this project's backlog comes from. Only `kontor_native` \
+                 until a legacy backlog can be imported.",
+            ),
         ],
         about: "Create a project, or return the existing one unchanged.",
     },
@@ -2562,7 +2577,67 @@ pub static REGISTRY: &[ToolSpec] = &[
         path: "/v1/memory/cutover:freeze",
         kind: OpKind::Write,
         args: &[IDEMPOTENCY],
-        about: "Freeze AgentsRoom memory writes before importing the final export.",
+        // Kept so an existing caller is answered rather than 404'd, and declared
+        // as what it now is: a refusal that names its per-project replacement.
+        about: "Refused: freezing is per project and subject. Use \
+                kontor_subject_authority_attest.",
+    },
+    ToolSpec {
+        name: "kontor_subject_authority_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/subjects/authority",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The project to read.",
+        )],
+        about: "Who may write this project's memory and backlog, and the evidence \
+                that decided it.",
+    },
+    ToolSpec {
+        name: "kontor_subject_authority_attest",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/subjects/authority:attest",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The project whose legacy source was frozen.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "subject",
+                Place::Body,
+                ArgType::Enum(AUTHORITY_SUBJECTS),
+                "Which subject's source was frozen.",
+            ),
+            req(
+                "source_cursor",
+                Place::Body,
+                ArgType::Text,
+                "The source position the operator froze at.",
+            ),
+            req(
+                "source_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash of the source at that position.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The authority revision the caller read.",
+            ),
+        ],
+        about: "Record that this project's legacy source for one subject is frozen. \
+                The switch refuses without it.",
     },
     ToolSpec {
         name: "kontor_memory_cutover_switch",
@@ -2590,8 +2665,15 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Text,
                 "The verified final export hash.",
             ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The authority revision the caller read.",
+            ),
         ],
-        about: "Irreversibly switch memory authority to Kontor after verification.",
+        about: "Irreversibly switch this project's memory authority to Kontor after \
+                verification.",
     },
     // ---- The topology vocabulary: kinds, roles and what every code means ----
     //
@@ -4567,6 +4649,19 @@ pub static LIFECYCLE_ACTIONS: &[&str] = &[
 
 /// The two ways a permission request can be answered.
 pub static PERMISSION_DECISIONS: &[&str] = &["allow", "deny"];
+
+/// Where a project's memory or backlog facts come from, in the daemon's spelling.
+pub static SUBJECT_ORIGINS: &[&str] = &["kontor_native", "legacy_pending"];
+
+/// The backlog origins a project may declare today.
+///
+/// Deliberately narrower than [`SUBJECT_ORIGINS`]: the backlog import, readback
+/// and switch do not exist yet, so `legacy_pending` names a state no operation
+/// could clear. The daemon refuses it; this keeps a model from naming it at all.
+pub static BACKLOG_ORIGINS: &[&str] = &["kontor_native"];
+
+/// The two facts write authority is tracked for.
+pub static AUTHORITY_SUBJECTS: &[&str] = &["memory", "backlog"];
 
 /// One public `/v1` route that deliberately has no tool, and why.
 #[derive(Debug, Clone, Copy)]

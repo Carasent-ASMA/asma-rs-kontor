@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 53;
+pub const SCHEMA_VERSION: i64 = 54;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -228,6 +228,9 @@ const MIGRATIONS: &[&str] = &[
     // NULL when nothing narrowed the run. Disarm is a stop, not a return to
     // unarmed, so a revoked covering grant is carried as a blocker instead.
     include_str!("../migrations/0053_default_allow_admission.sql"),
+    // Schema v54. Per-project, per-subject authority and the evidence-backed
+    // one-way replacement for the realm-global memory switch.
+    include_str!("../migrations/0054_project_subject_authority.sql"),
 ];
 
 const _: () = assert!(

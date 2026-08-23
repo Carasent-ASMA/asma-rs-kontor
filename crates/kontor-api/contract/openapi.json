@@ -4221,8 +4221,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": ""
+          "400": {
+            "description": "always: replaced by per-project attestation"
           }
         }
       }
@@ -5362,6 +5362,70 @@
             "description": ""
           },
           "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/subjects/authority": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "authority",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/subjects/authority:attest": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "attest_authority",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Attest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
             "description": ""
           }
         }
@@ -8634,6 +8698,31 @@
           }
         }
       },
+      "Attest": {
+        "type": "object",
+        "required": [
+          "subject",
+          "source_cursor",
+          "source_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "source_cursor": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
       "AttestLateHandoffRequest": {
         "type": "object",
         "description": "What the Admin-only late-handoff reconciliation is asked for.",
@@ -11157,9 +11246,19 @@
         "description": "What `projects:ensure` is asked for.\n\n`root_path` is the stable caller key: it is unique across the database and\nimmutable once the project exists, so the same request always resolves to the\nsame project without a second identity that could disagree with it.",
         "required": [
           "name",
-          "root_path"
+          "root_path",
+          "memory_origin",
+          "backlog_origin"
         ],
         "properties": {
+          "backlog_origin": {
+            "type": "string",
+            "description": "Where this project's backlog comes from. Immutable once created."
+          },
+          "memory_origin": {
+            "type": "string",
+            "description": "Where this project's memory comes from. Immutable once created."
+          },
           "name": {
             "type": "string",
             "description": "Human name. Immutable once the project exists."
@@ -13198,6 +13297,8 @@
           "root_path",
           "revision",
           "applied",
+          "memory",
+          "backlog",
           "created_at"
         ],
         "properties": {
@@ -13205,10 +13306,18 @@
             "$ref": "#/components/schemas/AppliedDto",
             "description": "Whether this call created it."
           },
+          "backlog": {
+            "$ref": "#/components/schemas/SubjectAuthorityDto",
+            "description": "Where its backlog came from, and who may write it now."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
             "description": "When it was created."
+          },
+          "memory": {
+            "$ref": "#/components/schemas/SubjectAuthorityDto",
+            "description": "Where its memory came from, and who may write it now."
           },
           "name": {
             "type": "string",
@@ -16004,6 +16113,31 @@
           }
         }
       },
+      "SubjectAuthorityDto": {
+        "type": "object",
+        "description": "One subject's immutable origin and current writer.",
+        "required": [
+          "origin",
+          "authority",
+          "revision"
+        ],
+        "properties": {
+          "authority": {
+            "type": "string",
+            "description": "Who may write the subject now."
+          },
+          "origin": {
+            "type": "string",
+            "description": "How this subject's facts entered Kontor."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision an attestation or switch must present.",
+            "minimum": 0
+          }
+        }
+      },
       "SubmitIntakeRequest": {
         "type": "object",
         "description": "What `intake:submit` is asked for.\n\nThe envelope is the *canonical* event, already redacted by whoever holds the\nconnection: this operation evaluates it and records the decision, and there is\nno field here for a verdict, an approval or a work graph. What a matched event\nbecomes is the trigger's decision, not the submitter's.",
@@ -16043,9 +16177,15 @@
         "type": "object",
         "required": [
           "source",
-          "snapshot_hash"
+          "snapshot_hash",
+          "expected_revision"
         ],
         "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
           "snapshot_hash": {
             "type": "string"
           },

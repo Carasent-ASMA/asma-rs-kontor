@@ -1687,6 +1687,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/subjects/authority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["authority"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/subjects/authority:attest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["attest_authority"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}": {
         parameters: {
             query?: never;
@@ -2879,6 +2911,13 @@ export interface components {
             reason: string;
             /** @description The tasks to arm. Empty arms the whole epic. */
             tasks?: string[];
+        };
+        Attest: {
+            /** Format: int64 */
+            expected_revision: number;
+            source_cursor: string;
+            source_hash: string;
+            subject: string;
         };
         /** @description What the Admin-only late-handoff reconciliation is asked for. */
         AttestLateHandoffRequest: {
@@ -4075,6 +4114,10 @@ export interface components {
          *     same project without a second identity that could disagree with it.
          */
         EnsureProjectRequest: {
+            /** @description Where this project's backlog comes from. Immutable once created. */
+            backlog_origin: string;
+            /** @description Where this project's memory comes from. Immutable once created. */
+            memory_origin: string;
             /** @description Human name. Immutable once the project exists. */
             name: string;
             /** @description Canonical absolute root path. The natural identity. */
@@ -5070,11 +5113,15 @@ export interface components {
         ProjectDto: {
             /** @description Whether this call created it. */
             applied: components["schemas"]["AppliedDto"];
+            /** @description Where its backlog came from, and who may write it now. */
+            backlog: components["schemas"]["SubjectAuthorityDto"];
             /**
              * Format: date-time
              * @description When it was created.
              */
             created_at: string;
+            /** @description Where its memory came from, and who may write it now. */
+            memory: components["schemas"]["SubjectAuthorityDto"];
             /** @description Its name. */
             name: string;
             /** @description The project. */
@@ -6422,6 +6469,18 @@ export interface components {
             /** @description A static description of what broke. */
             rule: string;
         };
+        /** @description One subject's immutable origin and current writer. */
+        SubjectAuthorityDto: {
+            /** @description Who may write the subject now. */
+            authority: string;
+            /** @description How this subject's facts entered Kontor. */
+            origin: string;
+            /**
+             * Format: int64
+             * @description The revision an attestation or switch must present.
+             */
+            revision: number;
+        };
         /**
          * @description What `intake:submit` is asked for.
          *
@@ -6446,6 +6505,8 @@ export interface components {
             trigger_version: number;
         };
         Switch: {
+            /** Format: int64 */
+            expected_revision: number;
             snapshot_hash: string;
             source: string;
         };
@@ -10801,7 +10862,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            /** @description always: replaced by per-project attestation */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11667,6 +11729,50 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    authority: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attest_authority: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Attest"];
+            };
+        };
+        responses: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

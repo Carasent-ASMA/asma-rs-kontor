@@ -718,6 +718,12 @@ impl ProjectRepository for SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        crate::authority::create_subject_authorities(
+            &transaction,
+            request.id,
+            crate::authority::SubjectOrigins::native(),
+        )
+        .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Project {
             id: request.id,
@@ -7149,6 +7155,7 @@ fn transition_task_in_transaction(
     transaction: &Transaction<'_>,
     request: &TaskTransitionRequest,
 ) -> RepositoryResult<Task> {
+    crate::authority::require_backlog_authority(transaction, request.project_id)?;
     let row: Option<(String, i64)> = transaction
         .query_row(
             "SELECT state, revision FROM tasks WHERE project_id = ?1 AND id = ?2",
