@@ -24137,6 +24137,20 @@ async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
             catalog.body
         );
     }
+    for alias in ["claude-work", "claude-personal"] {
+        assert!(providers.contains(&alias), "{}", catalog.body);
+        assert!(
+            body["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["provider"] == alias
+                    && model["id"] == "claude-opus-5"
+                    && model["isDefault"] == true),
+            "the Claude account alias advertises its governed default: {}",
+            catalog.body
+        );
+    }
     assert!(providers.contains(&"opencode"), "{}", catalog.body);
     assert!(
         body["models"]

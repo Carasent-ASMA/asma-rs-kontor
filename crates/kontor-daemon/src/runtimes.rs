@@ -204,7 +204,9 @@ pub struct PaseoSetting {
     /// out, and it is the honest one: those projects are not Kontor's to invent.
     #[serde(default)]
     pub adopted_containers: BTreeMap<String, String>,
-    /// The persisted Orchestrator agent every role launches under.
+    /// Legacy native caller id retained so existing runtime files remain
+    /// readable. Kontor-created agents are top-level in their attested
+    /// workspace; this host-global value is never sent to Paseo.
     pub orchestrator_agent_id: String,
     /// The most sessions Kontor holds open on this plane at once.
     pub max_concurrent_sessions: u32,

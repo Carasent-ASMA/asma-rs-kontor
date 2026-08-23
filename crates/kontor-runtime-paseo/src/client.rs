@@ -57,6 +57,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
+use kontor_core::id::ExternalId;
 use kontor_core::spec::{ModelRung, SeatAutonomy};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
@@ -74,8 +75,12 @@ use crate::wire::{
 /// The JSON flag every lifecycle command carries.
 const JSON_FLAG: &str = "--json";
 
-/// The environment variable Paseo reads the parent agent from.
-pub const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
+/// The environment variable Paseo reads the caller agent from.
+///
+/// Kontor launches top-level into an explicitly attested workspace and never
+/// sets this variable. It remains here only for the optional command-level
+/// contract used by callers that deliberately request native parentage.
+const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
 
 /// Paseo's provider-specific spelling of one [`SeatAutonomy`].
 ///
@@ -302,7 +307,7 @@ impl PaseoCommand {
         autonomy: SeatAutonomy,
         title: &str,
         labels: &BTreeMap<String, String>,
-        parent_agent_id: &str,
+        caller_agent_id: Option<&str>,
         prompt: &str,
     ) -> RuntimeResult<Self> {
         let mode = paseo_mode(model_rung.provider.0.as_str(), autonomy)?;
@@ -312,7 +317,7 @@ impl PaseoCommand {
             model_rung,
             title,
             labels,
-            parent_agent_id,
+            caller_agent_id,
             prompt,
             mode,
         )
@@ -326,7 +331,7 @@ impl PaseoCommand {
         model_rung: &ModelRung,
         title: &str,
         labels: &BTreeMap<String, String>,
-        parent_agent_id: &str,
+        caller_agent_id: Option<&str>,
         prompt: &str,
         credential: &str,
     ) -> RuntimeResult<Self> {
@@ -337,7 +342,7 @@ impl PaseoCommand {
             model_rung,
             title,
             labels,
-            parent_agent_id,
+            caller_agent_id,
             prompt,
             mode,
         )?;
@@ -354,7 +359,7 @@ impl PaseoCommand {
         model_rung: &ModelRung,
         title: &str,
         labels: &BTreeMap<String, String>,
-        parent_agent_id: &str,
+        caller_agent_id: Option<&str>,
         prompt: &str,
         permission_mode: Option<&str>,
     ) -> RuntimeResult<Self> {
@@ -377,9 +382,11 @@ impl PaseoCommand {
         // is positional and terminates the option list.
         argv = argv.trailing(prompt);
         let mut command = Self::mutate(argv, "agent run".to_owned());
-        command
-            .env
-            .push((PARENT_AGENT_ENV.to_owned(), parent_agent_id.to_owned()));
+        if let Some(caller_agent_id) = caller_agent_id {
+            command
+                .env
+                .push((PARENT_AGENT_ENV.to_owned(), caller_agent_id.to_owned()));
+        }
         Ok(command)
     }
 
@@ -606,29 +613,60 @@ impl Argv {
 }
 
 /// One CLI answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PaseoOutput {
     /// The process exit status.
     pub status: i32,
     /// Standard output, already bounded.
     pub stdout: String,
+    /// Standard error, already bounded. It is never returned verbatim; only
+    /// closed, validated refusals may be derived from it.
+    stderr: String,
+}
+
+impl fmt::Debug for PaseoOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PaseoOutput")
+            .field("status", &self.status)
+            .field("stdout", &"<redacted>")
+            .field("stderr", &"<redacted>")
+            .finish()
+    }
 }
 
 impl PaseoOutput {
     /// Build an answer.
     #[must_use]
     pub const fn new(status: i32, stdout: String) -> Self {
-        Self { status, stdout }
+        Self {
+            status,
+            stdout,
+            stderr: String::new(),
+        }
+    }
+
+    /// Build an answer with a bounded stderr stream.
+    #[must_use]
+    pub const fn with_stderr(status: i32, stdout: String, stderr: String) -> Self {
+        Self {
+            status,
+            stdout,
+            stderr,
+        }
     }
 
     /// The JSON of a successful invocation, deserialized.
     ///
-    /// A non-zero exit is a [`RuntimeError::Transport`] naming only that fact.
-    /// Paseo's stderr can quote a prompt, a path or the host URI it was given,
-    /// so it is never read into a refusal.
+    /// A non-zero exit is either a closed, validated native refusal or a
+    /// [`RuntimeError::Transport`] naming only that fact. Paseo's stderr can
+    /// quote a prompt, a path or the host URI it was given, so arbitrary text
+    /// is never read into a refusal.
     ///
     /// # Errors
-    /// * [`RuntimeError::Transport`] — a non-zero exit.
+    /// * [`RuntimeError::CallerAgentNotFound`] — Paseo's validated missing-
+    ///   caller refusal.
+    /// * [`RuntimeError::Transport`] — every other non-zero exit.
     /// * [`RuntimeError::Domain`] — output that is not the pinned 0.3.1 shape,
     ///   which includes output that is not JSON at all.
     pub fn parse<T: serde::de::DeserializeOwned>(&self, subject: &'static str) -> RuntimeResult<T> {
@@ -670,10 +708,31 @@ impl PaseoOutput {
         if self.status == 0 {
             return Ok(());
         }
+        if let Some(caller_agent_id) =
+            caller_agent_not_found(&self.stdout).or_else(|| caller_agent_not_found(&self.stderr))
+        {
+            return Err(RuntimeError::CallerAgentNotFound { caller_agent_id });
+        }
         Err(RuntimeError::Transport {
             rule: "runtime refused the command",
         })
     }
+}
+
+/// Extract only Paseo's closed missing-caller refusal from an untrusted stream.
+///
+/// No other text crosses the boundary. In particular the surrounding line is
+/// discarded because Paseo diagnostics can also contain its credential-bearing
+/// host URI, the task path or prompt text.
+fn caller_agent_not_found(stream: &str) -> Option<ExternalId> {
+    const PREFIX: &str = "Caller agent ";
+    const SUFFIX: &str = " not found";
+    let after = stream.split_once(PREFIX)?.1;
+    let candidate = after.split_once(SUFFIX)?.0.trim();
+    if candidate.is_empty() || candidate.len() > 128 {
+        return None;
+    }
+    ExternalId::parse(candidate).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1442,17 +1501,24 @@ impl PaseoTransport for PaseoLiveTransport {
                 .map_err(|_| RuntimeError::Transport {
                     rule: "channel failed before the runtime answered",
                 })?;
-        if output.stdout.len() > MAX_OUTPUT_BYTES {
+        if output.stdout.len() > MAX_OUTPUT_BYTES || output.stderr.len() > MAX_OUTPUT_BYTES {
             return Err(RuntimeError::Transport {
                 rule: "answer exceeded the bounded output size",
             });
         }
-        // Stderr is deliberately dropped unread. Paseo writes the host URI it
-        // was given into some diagnostics, and that URI is the credential.
+        // Stderr is retained only inside `PaseoOutput`, whose refusal parser
+        // extracts one closed native-id shape and discards every other byte.
+        // It is never logged or serialized: Paseo may write its credential-
+        // bearing host URI, a path or prompt text there.
         let stdout = String::from_utf8(output.stdout).map_err(|_| RuntimeError::Transport {
             rule: "answer was not valid UTF-8",
         })?;
-        Ok(PaseoOutput::new(output.status.code().unwrap_or(-1), stdout))
+        let stderr = String::from_utf8(output.stderr).unwrap_or_default();
+        Ok(PaseoOutput::with_stderr(
+            output.status.code().unwrap_or(-1),
+            stdout,
+            stderr,
+        ))
     }
 
     async fn request(&self, request: &PaseoRpc) -> RuntimeResult<PaseoFrame> {
@@ -1585,7 +1651,7 @@ mod tests {
                 SeatAutonomy::Supervised,
                 "KON-MVP-11 Implement",
                 &labels(),
-                "agt_orchestrator",
+                Some("agt_orchestrator"),
                 "do the work",
             )
             .expect("Codex has a pinned permission mode"),
@@ -1620,7 +1686,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "t",
             &labels(),
-            "agt_p",
+            Some("agt_p"),
             "--not-a-flag",
         )
         .expect("Codex has a pinned permission mode");
@@ -1647,7 +1713,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "t",
             &labels(),
-            "agt_p",
+            Some("agt_p"),
             "p",
         )
         .expect("Claude has a pinned permission mode");
@@ -1673,7 +1739,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "Verifier",
             &labels(),
-            "agt_p",
+            Some("agt_p"),
             "verify",
         )
         .expect("Codex supervised delivery has a pinned mode");
@@ -1764,7 +1830,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "KON-OP-13 Implement",
             &labels(),
-            "agt_orchestrator",
+            Some("agt_orchestrator"),
             "do the work",
         )
         .expect("an account of Codex has a pinned permission mode");
@@ -1794,7 +1860,7 @@ mod tests {
                 &route(provider, model, None),
                 "Reviewer",
                 &labels(),
-                "agt_orchestrator",
+                Some("agt_orchestrator"),
                 "read only",
                 "seat-secret-value",
             )
@@ -1839,7 +1905,7 @@ mod tests {
                 autonomy,
                 "t",
                 &labels(),
-                "agt_p",
+                Some("agt_p"),
                 "p",
             )
             .expect("the autonomy maps to a Paseo mode");
@@ -1877,7 +1943,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "KON-MVP-11 Implement",
             &labels(),
-            "agt_orchestrator",
+            Some("agt_orchestrator"),
             "the actual prompt",
         )
         .expect("Codex has a pinned permission mode");
@@ -1903,7 +1969,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "t",
             &labels(),
-            "agt_orchestrator",
+            Some("agt_orchestrator"),
             "p",
         )
         .expect("Codex has a pinned permission mode");
@@ -1911,6 +1977,62 @@ mod tests {
             command.env(),
             [(PARENT_AGENT_ENV.to_owned(), "agt_orchestrator".to_owned())]
         );
+    }
+
+    /// Kontor already selected and attested the exact workspace. Its runtime
+    /// configuration may still contain a caller left by another epic, but a
+    /// top-level launch must not inherit it or create cross-epic parentage.
+    #[test]
+    fn a_top_level_launch_carries_no_ambient_caller() {
+        let command = PaseoCommand::agent_run(
+            "wks_1",
+            "/w/task-1",
+            &route("claude-work", "claude-opus-5", Some(EffortLevel::Xhigh)),
+            SeatAutonomy::Supervised,
+            "Architect · ASMA-7681",
+            &labels(),
+            None,
+            "architect the task",
+        )
+        .expect("Claude Work has a pinned permission mode");
+
+        assert!(command.env().is_empty());
+        assert!(
+            !command
+                .argv()
+                .iter()
+                .any(|argument| { argument == "619d6f8a-0bbc-4b8d-a3ad-8e38a0cd8234" })
+        );
+    }
+
+    #[test]
+    fn a_missing_caller_refusal_preserves_only_the_exact_actionable_identity() {
+        let caller = "619d6f8a-0bbc-4b8d-a3ad-8e38a0cd8234";
+        let output = PaseoOutput::with_stderr(
+            1,
+            "stdout may also quote a credential-bearing host or prompt".to_owned(),
+            format!(
+                "credential-bearing host and prompt must disappear\nFailed to create agent: Caller agent {caller} not found"
+            ),
+        );
+        let debug = format!("{output:?}");
+        assert!(!debug.contains("credential-bearing"));
+        assert!(!debug.contains("stdout may"));
+        assert!(!debug.contains(caller));
+        let refusal = output
+            .parse::<serde_json::Value>("PaseoCliAgentStarted")
+            .expect_err("Paseo refused the caller before creating an agent");
+
+        assert_eq!(
+            refusal,
+            RuntimeError::CallerAgentNotFound {
+                caller_agent_id: ExternalId::parse(caller).expect("a native caller id"),
+            }
+        );
+        let rendered = refusal.to_string();
+        assert!(rendered.contains(caller));
+        assert!(!rendered.contains("credential-bearing"));
+        assert!(!rendered.contains("prompt"));
     }
 
     #[test]
@@ -1936,7 +2058,7 @@ mod tests {
             SeatAutonomy::Supervised,
             "t",
             &labels(),
-            "agt_p",
+            Some("agt_p"),
             "p",
         )
         .expect("Codex has a pinned permission mode")
@@ -1958,7 +2080,7 @@ mod tests {
                 SeatAutonomy::Supervised,
                 "t",
                 &labels(),
-                "agt_p",
+                Some("agt_p"),
                 "p",
             )
             .expect("Codex has a pinned permission mode")

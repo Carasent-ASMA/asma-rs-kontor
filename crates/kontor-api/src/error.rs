@@ -7,13 +7,14 @@
 //! caller can therefore log the whole envelope, and a test can assert on it,
 //! without either of them becoming a place secrets accumulate.
 //!
-//! The one structured detail any code carries is a position or a revision: a
-//! number the caller already had or is owed.
+//! Structured detail is limited to a position, a revision, or a validated
+//! foreign correlation id inside a closed native-refusal variant — values the
+//! caller already had or needs in order to correct the refusal.
 
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use kontor_core::id::{AggregateRevision, EventCursor, RealmId};
+use kontor_core::id::{AggregateRevision, EventCursor, ExternalId, RealmId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::RepositoryError;
 use kontor_core::{DomainError, closed_enum};
@@ -21,6 +22,22 @@ use kontor_runtime::adapter::RuntimeError;
 use serde::Serialize;
 use tracing::warn;
 use utoipa::ToSchema;
+
+/// A closed, non-secret refusal emitted by a native session runtime.
+///
+/// Arbitrary runtime text never enters this type. The only carried value is a
+/// validated foreign identifier needed to correct placement configuration and
+/// correlate the refusal with the runtime's own registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NativeRuntimeRefusal {
+    /// Paseo refused creation because the supplied caller agent was absent.
+    CallerAgentNotFound {
+        /// The exact native caller that was refused.
+        #[schema(value_type = String)]
+        caller_agent_id: ExternalId,
+    },
+}
 
 closed_enum! {
     /// The stable machine-readable reason a request was refused.
@@ -254,6 +271,10 @@ pub struct ApiErrorBody {
     /// into something a caller can actually go and look at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// A safe, closed native-runtime refusal, when the runtime answered with
+    /// one. Never an arbitrary stderr or daemon-log message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_runtime_refusal: Option<NativeRuntimeRefusal>,
     /// What the caller can do about it, in one line.
     ///
     /// Corrective rather than descriptive: a refusal that only restates itself
@@ -283,6 +304,8 @@ pub struct ApiError {
     /// on every successful call to describe the rare failure is the wrong
     /// trade.
     pub diagnostic: Option<Box<ErrorDiagnostic>>,
+    /// The exact closed native refusal, when one was recognized.
+    pub native_runtime_refusal: Option<Box<NativeRuntimeRefusal>>,
     /// The one-line corrective action.
     pub action: &'static str,
 }
@@ -307,6 +330,7 @@ impl ApiError {
             current_revision: None,
             retained: None,
             diagnostic: None,
+            native_runtime_refusal: None,
             action: code.default_action(),
         }
     }
@@ -357,6 +381,14 @@ impl ApiError {
         self
     }
 
+    /// Preserve a validated native refusal without admitting arbitrary runtime
+    /// output into the API envelope.
+    #[must_use]
+    pub fn with_native_runtime_refusal(mut self, refusal: NativeRuntimeRefusal) -> Self {
+        self.native_runtime_refusal = Some(Box::new(refusal));
+        self
+    }
+
     /// Attach the revision the aggregate actually stands at.
     #[must_use]
     pub const fn with_revision(mut self, revision: Option<AggregateRevision>) -> Self {
@@ -383,6 +415,7 @@ impl ApiError {
             newest_cursor: self.retained.map(|(_, newest)| newest),
             subject: self.subject(),
             at: self.at().map(str::to_owned),
+            native_runtime_refusal: self.native_runtime_refusal.as_deref().cloned(),
             action: self.action,
         }
     }
@@ -659,6 +692,17 @@ impl ApiError {
                 ApiErrorCode::Unavailable,
                 "the session's runtime could not be reached",
             ),
+            RuntimeError::CallerAgentNotFound { caller_agent_id } => Self::new(
+                realm_id,
+                ApiErrorCode::PlacementBlocked,
+                "Paseo refused the launch because the configured caller agent does not exist",
+            )
+            .advising(
+                "remove the stale native caller or select a caller owned by this epic, then resume the exact queued run",
+            )
+            .with_native_runtime_refusal(NativeRuntimeRefusal::CallerAgentNotFound {
+                caller_agent_id: caller_agent_id.clone(),
+            }),
             // A workspace refusal is a *placement* fact, not a channel fact: the
             // runtime answered, and what it said is that the root it was handed
             // is not one it will work in. Letting it fall to the catch-all below
@@ -835,6 +879,30 @@ mod tests {
         assert_eq!(
             refusal.rule,
             "this runtime's concurrent-session capacity is currently spent"
+        );
+    }
+
+    #[test]
+    fn a_missing_native_caller_is_an_actionable_exact_placement_refusal() {
+        let caller =
+            ExternalId::parse("619d6f8a-0bbc-4b8d-a3ad-8e38a0cd8234").expect("a native caller id");
+        let refusal = ApiError::from_runtime(
+            RealmId::generate(),
+            &RuntimeError::CallerAgentNotFound {
+                caller_agent_id: caller.clone(),
+            },
+        );
+
+        assert_eq!(refusal.code, ApiErrorCode::PlacementBlocked);
+        assert!(refusal.action.contains("resume the exact queued run"));
+        let body = serde_json::to_value(refusal.body()).expect("the refusal serializes");
+        assert_eq!(
+            body["native_runtime_refusal"]["kind"],
+            "caller_agent_not_found"
+        );
+        assert_eq!(
+            body["native_runtime_refusal"]["caller_agent_id"],
+            caller.as_str()
         );
     }
 

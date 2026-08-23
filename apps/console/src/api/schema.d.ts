@@ -2789,6 +2789,7 @@ export interface components {
              * @description The revision the aggregate actually stands at, for a revision conflict.
              */
             current_revision?: number | null;
+            native_runtime_refusal?: null | components["schemas"]["NativeRuntimeRefusal"];
             /**
              * Format: int64
              * @description The newest position allocated, for a resnapshot.
@@ -5062,6 +5063,19 @@ export interface components {
              * @description Project revision the caller read.
              */
             expected_revision: number;
+        };
+        /**
+         * @description A closed, non-secret refusal emitted by a native session runtime.
+         *
+         *     Arbitrary runtime text never enters this type. The only carried value is a
+         *     validated foreign identifier needed to correct placement configuration and
+         *     correlate the refusal with the runtime's own registry.
+         */
+        NativeRuntimeRefusal: {
+            /** @description The exact native caller that was refused. */
+            caller_agent_id: string;
+            /** @enum {string} */
+            kind: "caller_agent_not_found";
         };
         /**
          * @description The mandatory context a `needs_human` completion carries.

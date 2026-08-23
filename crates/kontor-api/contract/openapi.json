@@ -8592,6 +8592,17 @@
             "description": "The revision the aggregate actually stands at, for a revision conflict.",
             "minimum": 0
           },
+          "native_runtime_refusal": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NativeRuntimeRefusal",
+                "description": "A safe, closed native-runtime refusal, when the runtime answered with\none. Never an arbitrary stderr or daemon-log message."
+              }
+            ]
+          },
           "newest_cursor": {
             "type": [
               "integer",
@@ -13426,6 +13437,31 @@
           }
         },
         "additionalProperties": false
+      },
+      "NativeRuntimeRefusal": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Paseo refused creation because the supplied caller agent was absent.",
+            "required": [
+              "caller_agent_id",
+              "kind"
+            ],
+            "properties": {
+              "caller_agent_id": {
+                "type": "string",
+                "description": "The exact native caller that was refused."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "caller_agent_not_found"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A closed, non-secret refusal emitted by a native session runtime.\n\nArbitrary runtime text never enters this type. The only carried value is a\nvalidated foreign identifier needed to correct placement configuration and\ncorrelate the refusal with the runtime's own registry."
       },
       "NeedsHumanDto": {
         "type": "object",

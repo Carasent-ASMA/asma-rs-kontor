@@ -24,9 +24,9 @@
 //!   pins ([`PASEO_WS_PROTOCOL_VERSION`], [`PASEO_APP_VERSION`]).
 //! * An agent snapshot carries **no** `projectId` and **no** `parentAgentId`
 //!   field. Placement in a project is proved through the agent's workspace, and
-//!   the parent is only ever the [`label::PARENT_AGENT`] label — so that check
-//!   has one source now instead of two, and [`PaseoAgent::parent_agent_id`]
-//!   says so at its definition.
+//!   native parentage is only ever the [`label::PARENT_AGENT`] label. Kontor
+//!   launches top-level agents into an already-attested workspace, so any such
+//!   label on a Kontor seat is foreign ownership and must be refused.
 //! * A workspace carries **no labels at all**. Kontor keeps native bindings in
 //!   its own durable store and leaves the title human-readable.
 //! * The lifecycle enum is `initializing | idle | running | error | closed`;
@@ -155,12 +155,14 @@ pub mod label {
     pub const WORKSPACE_ID: &str = "kontor.workspace_id";
     /// The canonical task worktree path.
     pub const WORKTREE: &str = "kontor.worktree";
-    /// The orchestrator agent this seat was launched under.
+    /// Native Paseo parentage, when Paseo launched the agent under another
+    /// native agent.
     ///
-    /// Paseo's own key, and the only place 0.3.1 records parentage at all — the
-    /// agent snapshot has no `parentAgentId` field. Paseo writes it for an
-    /// agent one of its agents spawned; Kontor writes the same key for a seat
-    /// it launches. One key, two writers, one meaning.
+    /// Paseo's own key, and the only place 0.3.1 records parentage at all. It
+    /// is deliberately absent from [`ALL`]: Kontor owns the logical seat and
+    /// launches it top-level into the exact attested workspace. A value here
+    /// therefore identifies foreign native ownership rather than a label for
+    /// Kontor to plant.
     pub const PARENT_AGENT: &str = "paseo.parent-agent-id";
     /// Family-qualified Advisor/Committee run id.
     pub const CONSULTATION_RUN: &str = "kontor.consultation_run";
@@ -183,7 +185,6 @@ pub mod label {
         ROLE_SLOT,
         WORKSPACE_ID,
         WORKTREE,
-        PARENT_AGENT,
     ];
 }
 

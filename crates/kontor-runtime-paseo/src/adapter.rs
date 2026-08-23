@@ -197,15 +197,14 @@ pub struct PaseoExecutionScope {
     /// every task must be named so one runtime family can serve several TSWs
     /// without silently falling back to another ticket's worktree or titles.
     pub task_scopes: BTreeMap<TaskId, PaseoTaskScope>,
-    /// The persisted Orchestrator agent every role of this ticket launches
-    /// under.
+    /// Legacy host-level caller id retained for configuration compatibility.
     ///
-    /// It must name a **live Paseo agent**. 0.3.1 reads `PASEO_AGENT_ID` as the
-    /// *caller's* identity and resolves it against its own registry: a launch
-    /// carrying an id the daemon does not hold is refused outright with
-    /// `Caller agent … not found`, before anything is created. That is the right
-    /// direction to fail in, and it is a configuration contract rather than an
-    /// adapter guess — a live Grade-A launch proved it.
+    /// Kontor no longer sends this value to Paseo. A runtime configuration is
+    /// shared by multiple epics, while native caller parentage is scoped to one
+    /// Paseo agent tree; combining those scopes leaked an unrelated epic's TPM
+    /// into a launch. Kontor's durable ECP and SeatBinding records are the
+    /// ownership authority, and the native launch is top-level in the exact
+    /// workspace already attested for the ticket.
     pub orchestrator_agent_id: ExternalId,
 }
 
@@ -484,8 +483,12 @@ pub struct PaseoSeatRecord {
     pub thinking: Option<String>,
     /// The provider's own session id, when Paseo exposed one.
     pub provider_session_id: Option<ExternalId>,
-    /// The Orchestrator agent this seat was launched under.
-    pub parent_agent_id: ExternalId,
+    /// The native parent, when one was explicitly attested.
+    ///
+    /// Kontor-created seats are top-level and record `None`; logical ownership
+    /// lives in Kontor's ECP/SeatBinding topology rather than a process-global
+    /// Paseo caller.
+    pub parent_agent_id: Option<ExternalId>,
     /// The adapter generation the native ids belong to.
     pub generation: u64,
     /// The retired predecessor this seat replaced, when it replaced one.
@@ -1667,10 +1670,6 @@ impl PaseoAdapter {
             (label::ROLE_SLOT, role_slot_id.as_str().to_owned()),
             (label::WORKSPACE_ID, workspace_id.to_owned()),
             (label::WORKTREE, task.worktree.as_str().to_owned()),
-            (
-                label::PARENT_AGENT,
-                self.config.scope.orchestrator_agent_id.as_str().to_owned(),
-            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
@@ -1709,13 +1708,10 @@ impl PaseoAdapter {
 
     /// Refuse an agent Paseo returned that is not the one this launch asked for.
     ///
-    /// The parent is checked from the one place 0.3.1 records it: the
-    /// [`label::PARENT_AGENT`] label. The 0.2.5 adapter checked that label *and*
-    /// an independent `parentAgentId` field and called the seat proven only when
-    /// both agreed; the field is gone from this wire, so this is now a single
-    /// source and the check is exactly as strong as that source is. Reading the
-    /// same label twice under two names would be a second check that cannot
-    /// fail, which is worse than one honest one.
+    /// Kontor-created sessions are top-level inside an explicitly attested
+    /// workspace. A parent label therefore proves drift, not ownership: it can
+    /// only have come from a foreign/legacy launch and accepting it would permit
+    /// cross-epic attachment.
     fn verify_agent_placement(
         &self,
         agent: &PaseoAgent,
@@ -1727,10 +1723,7 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::CorrelationFailed)?;
         let expected_root = WorkspaceRoot::parse(expected_root)?;
         self.verify_agent_location(agent, workspace_id, &expected_root)?;
-        // `paseo.parent-agent-id` is part of `wanted_labels`, so the exact-label
-        // census below already covers it; this line is what makes the refusal
-        // legible when the parent is the half that is wrong.
-        if agent.parent_agent_id() != Some(self.config.scope.orchestrator_agent_id.as_str()) {
+        if agent.parent_agent_id().is_some() {
             return Err(RuntimeError::CorrelationFailed);
         }
         if !agent.matches_labels(wanted_labels) {
@@ -3233,7 +3226,7 @@ impl PaseoAdapter {
             request.autonomy(),
             request.display_name().as_str(),
             &labels,
-            self.config.scope.orchestrator_agent_id.as_str(),
+            None,
             request.prompt().as_str(),
         )?;
         let native_id = match recovered_id {
@@ -3298,7 +3291,7 @@ impl PaseoAdapter {
                 .provider_session_id()
                 .map(ExternalId::parse)
                 .transpose()?,
-            parent_agent_id: self.config.scope.orchestrator_agent_id.clone(),
+            parent_agent_id: None,
             generation,
             previous_agent_id: None,
         };
@@ -3378,10 +3371,6 @@ impl PaseoAdapter {
             (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
             (label::WORKSPACE_ID, workspace_id.to_owned()),
             (label::WORKTREE, request.cwd.as_str().to_owned()),
-            (
-                label::PARENT_AGENT,
-                self.config.scope.orchestrator_agent_id.as_str().to_owned(),
-            ),
             (label::READ_ONLY, "true".to_owned()),
         ]
         .into_iter()
@@ -3467,7 +3456,7 @@ impl PaseoAdapter {
                     &request.model_rung,
                     request.display_name.as_str(),
                     &labels,
-                    self.config.scope.orchestrator_agent_id.as_str(),
+                    None,
                     request.prompt.as_str(),
                     request.credential.expose_secret(),
                 )?;
@@ -3525,10 +3514,6 @@ impl PaseoAdapter {
             (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
             (label::WORKSPACE_ID, workspace_id.to_owned()),
             (label::WORKTREE, request.cwd.as_str().to_owned()),
-            (
-                label::PARENT_AGENT,
-                self.config.scope.orchestrator_agent_id.as_str().to_owned(),
-            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
@@ -3619,7 +3604,7 @@ impl PaseoAdapter {
                     SeatAutonomy::Supervised,
                     request.display_name.as_str(),
                     &labels,
-                    self.config.scope.orchestrator_agent_id.as_str(),
+                    None,
                     request.prompt.as_str(),
                 )?;
                 let native_id = match self.transport.run(&command).await {
@@ -5062,7 +5047,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 .provider_session_id()
                 .map(ExternalId::parse)
                 .transpose()?,
-            parent_agent_id: self.config.scope.orchestrator_agent_id.clone(),
+            parent_agent_id: None,
             generation,
             previous_agent_id: None,
         };
