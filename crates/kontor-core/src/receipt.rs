@@ -203,6 +203,9 @@ closed_enum! {
         /// Replace only the native provider/model filling one persistent Core
         /// Team SeatBinding, preserving its logical topology identity.
         CorrectCoreTeamRoute => "correct_core_team_route",
+        /// Attach one exact already-running native session to a persistent Core
+        /// Team SeatBinding without recreating either native session.
+        ClaimCoreTeamSeat => "claim_core_team_seat",
         /// Move one epic's roster pin to another published revision.
         UpgradeEpicRoster => "upgrade_epic_roster",
         /// Bring a provider-account profile into existence, or prove the one
@@ -530,6 +533,7 @@ impl CommandKind {
             Self::PromoteQuickSession
             | Self::MaterializeCoreTeam
             | Self::CorrectCoreTeamRoute
+            | Self::ClaimCoreTeamSeat
             | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
             // Publishing a Completion Profile is project configuration; the two
             // completion writes are about one epic's own frozen run. Splitting

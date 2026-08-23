@@ -414,6 +414,83 @@ pub struct HostedSeatRetireOutcome {
     pub archived_at: Timestamp,
 }
 
+/// The exact native predecessor a hosted-seat claim is authorized to replace.
+///
+/// Provider-session identity is carried beside the native identity because a
+/// reused native agent id with a different provider conversation is not the
+/// session whose tenure the operator previewed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatClaimPredecessor {
+    /// Exact native identity currently filling the logical seat.
+    pub identity: NativeRuntimeIdentity,
+    /// Provider-native conversation id observed by Kontor, when exposed.
+    pub provider_session_id: Option<ExternalId>,
+}
+
+/// Preview or apply the attachment of an already-running native session to a
+/// persistent Core Team SeatBinding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatClaimRequest {
+    /// Logical identity that remains unchanged.
+    pub seat_binding_id: SeatBindingId,
+    /// Stable Core Team role slot.
+    pub role_slot_id: RoleSlotId,
+    /// Canonical runtime-facing title derived by the daemon.
+    pub display_name: ExternalName,
+    /// Exact native ECP container already persisted for the seat's node.
+    pub container_native_id: ExternalId,
+    /// Canonical ECP working directory.
+    pub cwd: WorkspaceRoot,
+    /// Durable epic execution scope.
+    pub scope: ExecutionScope,
+    /// Exact already-running native session the operator selected.
+    pub claimant_native_id: ExternalId,
+    /// Provider-native conversation frozen by preview, when this is an apply.
+    pub expected_claimant_provider_session_id: Option<ExternalId>,
+    /// Exact current filler the claim may demote, when the seat is occupied.
+    pub expected_predecessor: Option<HostedSeatClaimPredecessor>,
+    /// Read or mutation instant.
+    pub requested_at: Timestamp,
+}
+
+/// One non-owning native session whose duplicate canonical title must be
+/// released before a claim can establish a unique visible owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatTitleConflict {
+    /// Exact session to retitle; titles are never used as an address.
+    pub native_id: ExternalId,
+    /// Deterministic non-canonical title the session will carry afterwards.
+    pub released_title: ExternalName,
+}
+
+/// Read-only claim plan produced from fresh native readback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatClaimPreview {
+    /// Exact claimant identity in the current runtime generation.
+    pub identity: NativeRuntimeIdentity,
+    /// Provider-native conversation id read from that exact claimant.
+    pub provider_session_id: Option<ExternalId>,
+    /// Actual provider/model/effort route the claimant is already running.
+    pub model_rung: ModelRung,
+    /// Exact predecessor that would lose the tenure, when any.
+    pub predecessor: Option<HostedSeatClaimPredecessor>,
+    /// Duplicate-title sessions that would be retitled non-destructively.
+    pub title_conflicts: Vec<HostedSeatTitleConflict>,
+    /// Whether the claimant already carries the canonical seat projection.
+    pub already_claimed: bool,
+    /// When the native facts were read.
+    pub observed_at: Timestamp,
+}
+
+/// Exact readback after applying a hosted-seat claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatClaimOutcome {
+    /// Claim facts re-read after every native mutation.
+    pub claim: HostedSeatClaimPreview,
+    /// Whether any title or label projection changed.
+    pub changed: bool,
+}
+
 /// In-place title repair for a persistent hosted or consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetitleSeatRequest {
@@ -613,6 +690,26 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<HostedSeatRetireOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Retire,
+        })
+    }
+
+    /// Preview attachment of an already-running session to a persistent seat.
+    async fn preview_hosted_seat_claim(
+        &self,
+        _request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<HostedSeatClaimPreview> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Adopt,
+        })
+    }
+
+    /// Apply and read back one still-current persistent-seat claim.
+    async fn claim_hosted_seat(
+        &self,
+        _request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<HostedSeatClaimOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Adopt,
         })
     }
 

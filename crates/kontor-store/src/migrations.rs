@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 58;
+pub const SCHEMA_VERSION: i64 = 59;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -244,6 +244,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0057_jira_materialization.sql"),
     // Schema v58. Idempotent project-scoped legacy backlog import receipt.
     include_str!("../migrations/0058_backlog_import_command.sql"),
+    include_str!("../migrations/0059_core_team_seat_claim_command.sql"),
 ];
 
 const _: () = assert!(

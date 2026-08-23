@@ -3220,6 +3220,159 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply one still-current existing-session claim without archiving either side.",
+        "operationId": "apply_core_team_seat_claim",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamSeatClaimApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamSeatClaimOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview attachment of one exact already-running session to a Core Team seat.",
+        "operationId": "preview_core_team_seat_claim",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamSeatClaimPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamSeatClaimPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize": {
       "post": {
         "tags": [
@@ -11579,6 +11732,196 @@
         },
         "additionalProperties": false
       },
+      "CoreTeamSeatClaimApplyRequest": {
+        "type": "object",
+        "description": "Apply one still-current existing-session Core Team claim.",
+        "required": [
+          "expected_revision",
+          "seat_binding_id",
+          "claimant_native_id",
+          "preview_hash"
+        ],
+        "properties": {
+          "claimant_native_id": {
+            "type": "string",
+            "description": "Exact already-running native session selected by the operator."
+          },
+          "expected_current_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact current filler observed by the caller, or none for an empty seat."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by preview."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Logical SeatBinding that must be preserved."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamSeatClaimOutcomeDto": {
+        "type": "object",
+        "description": "Completed non-destructive attachment of an existing native session.",
+        "required": [
+          "core_team",
+          "seat_binding_id",
+          "claimant_native_id",
+          "released_title_native_ids",
+          "receipt"
+        ],
+        "properties": {
+          "claimant_native_id": {
+            "type": "string",
+            "description": "Exact active claimant."
+          },
+          "core_team": {
+            "$ref": "#/components/schemas/CoreTeamDto",
+            "description": "Core Team projection after the claim."
+          },
+          "predecessor_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Previous filler retained as a live former session, when any."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Audited mutation receipt."
+          },
+          "released_title_native_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Duplicate-title sessions retitled during apply."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Preserved logical SeatBinding."
+          }
+        }
+      },
+      "CoreTeamSeatClaimPreviewDto": {
+        "type": "object",
+        "description": "Fresh runtime-backed plan for one existing-session Core Team claim.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "seat_binding_id",
+          "claimant_native_id",
+          "claimant_model_route",
+          "title_conflicts",
+          "already_claimed",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "already_claimed": {
+            "type": "boolean",
+            "description": "Whether the claimant already carries the canonical seat projection."
+          },
+          "claimant_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Actual provider/model/effort already running in the claimant."
+          },
+          "claimant_native_id": {
+            "type": "string",
+            "description": "Exact claimant read back from the runtime."
+          },
+          "claimant_provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider-native conversation frozen by the preview, when exposed."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Epic whose ECP hosts the seat."
+          },
+          "predecessor_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current logical-seat filler that would become history, when any."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash the apply must name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that computed the plan."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Preserved logical seat identity."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Projection cursor read by the preview."
+          },
+          "title_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoreTeamSeatTitleConflictDto"
+            },
+            "description": "Non-owning duplicate-title sessions that would be retitled."
+          }
+        }
+      },
+      "CoreTeamSeatClaimPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request to attach an already-running native session to a\npersistent Core Team seat.",
+        "required": [
+          "expected_revision",
+          "seat_binding_id",
+          "claimant_native_id"
+        ],
+        "properties": {
+          "claimant_native_id": {
+            "type": "string",
+            "description": "Exact already-running native session selected by the operator."
+          },
+          "expected_current_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact current filler observed by the caller, or none for an empty seat."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Logical SeatBinding that must be preserved."
+          }
+        },
+        "additionalProperties": false
+      },
       "CoreTeamSeatDto": {
         "type": "object",
         "description": "One Core Team seat: the standard role, the policy it is held under, and the\nseat filling it if any.\n\nPresence and ad-hoc eligibility are reported, not just accepted. A Core Team\nedit states the whole roster, so a caller that could not read the policy of\nthe seats it is not changing would have to invent one for each of them — and\nthe first such edit would silently rewrite every other seat's presence.",
@@ -11662,6 +12005,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "CoreTeamSeatTitleConflictDto": {
+        "type": "object",
+        "description": "One duplicate canonical-title session that a claim would release.",
+        "required": [
+          "native_id",
+          "released_title"
+        ],
+        "properties": {
+          "native_id": {
+            "type": "string",
+            "description": "Exact native session; title text is never used as an address."
+          },
+          "released_title": {
+            "type": "string",
+            "description": "Deterministic non-canonical title it would receive."
+          }
+        }
       },
       "CreditBalanceDto": {
         "type": "object",

@@ -462,8 +462,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v58 adds the project-scoped legacy backlog import command.
-    assert_eq!(SCHEMA_VERSION, 58);
+    // side effect. v59 adds the existing-session Core Team seat claim command.
+    assert_eq!(SCHEMA_VERSION, 59);
 }
 
 #[test]

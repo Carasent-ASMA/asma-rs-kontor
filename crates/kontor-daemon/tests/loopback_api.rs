@@ -40,9 +40,9 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey, MiniProjectId,
-    ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId, TeamRunId,
-    TicketLinkId, TopologyNodeId,
+    ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
+    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId,
+    TeamRunId, TicketLinkId, TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
@@ -20686,6 +20686,175 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         qa["seat_binding_id"].is_null(),
         "an on-demand role was seated: {}",
         materialized.body
+    );
+
+    // Prepare the shared ECP through the ordinary TPM route while deliberately
+    // leaving LSA's logical seat empty for the existing-session claim below.
+    let prepared_ecp = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [{
+                "role_code": "TPM",
+                "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}
+            }]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("prepare-ecp-for-seat-claim")
+    .send(world)
+    .await;
+    assert_eq!(prepared_ecp.status, 200, "{}", prepared_ecp.body);
+
+    // A hand-started native LSA can claim the empty durable SeatBinding without
+    // being archived or recreated. Preview freezes its provider conversation
+    // and route; apply and exact-key replay preserve the same native identity.
+    let lsa_binding_id = SeatBindingId::parse(
+        lsa["seat_binding_id"]
+            .as_str()
+            .expect("the logical LSA binding"),
+    )
+    .expect("a canonical LSA binding");
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let lsa_node = world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, lsa_binding_id)
+            .expect("the LSA binding reads")
+            .expect("the LSA binding exists")
+            .topology_node_id
+    });
+    let claimed_native = ExternalId::parse("native-hand-started-lsa").expect("a native id");
+    world
+        .fake
+        .seed_hosted_seat_claimant(
+            lsa_node,
+            claimed_native.clone(),
+            Some(ExternalId::parse("provider-hand-started-lsa").expect("a provider session")),
+            ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            },
+            "hand-started LSA",
+        )
+        .expect("the hand-started claimant is visible in the ECP");
+    let claim_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa_binding_id,
+        "claimant_native_id": claimed_native,
+        "expected_current_native_id": null,
+    });
+    let claim_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:preview"),
+        &claim_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(claim_preview.status, 200, "{}", claim_preview.body);
+    assert_eq!(
+        claim_preview.json()["claimant_native_id"],
+        claimed_native.as_str()
+    );
+    assert_eq!(claim_preview.json()["already_claimed"], false);
+    let mut claim_apply = claim_request;
+    claim_apply["preview_hash"] = claim_preview.json()["preview_hash"].clone();
+    let claimed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:apply"),
+        &claim_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("claim-hand-started-lsa")
+    .send(world)
+    .await;
+    assert_eq!(claimed.status, 200, "{}", claimed.body);
+    assert_eq!(
+        claimed.json()["claimant_native_id"],
+        claimed_native.as_str()
+    );
+    assert_eq!(claimed.json()["receipt"]["applied"], "created");
+    assert_eq!(
+        world.fake.seat_title(&claimed_native).as_deref(),
+        Some("LSA • ASMA-PROMOTION • PROMO")
+    );
+    let replayed_claim = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:apply"),
+        &claim_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("claim-hand-started-lsa")
+    .send(world)
+    .await;
+    assert_eq!(replayed_claim.status, 200, "{}", replayed_claim.body);
+    assert_eq!(replayed_claim.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed_claim.json()["claimant_native_id"],
+        claimed_native.as_str()
+    );
+
+    let takeover_native = ExternalId::parse("native-takeover-lsa").expect("a native id");
+    world
+        .fake
+        .seed_hosted_seat_claimant(
+            lsa_node,
+            takeover_native.clone(),
+            Some(ExternalId::parse("provider-takeover-lsa").expect("a provider session")),
+            ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            },
+            "replacement hand-started LSA",
+        )
+        .expect("the takeover claimant is visible in the ECP");
+    let takeover_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa_binding_id,
+        "claimant_native_id": takeover_native,
+        "expected_current_native_id": claimed_native,
+    });
+    let takeover_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:preview"),
+        &takeover_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(takeover_preview.status, 200, "{}", takeover_preview.body);
+    assert_eq!(
+        takeover_preview.json()["predecessor_native_id"],
+        claimed_native.as_str()
+    );
+    let mut takeover_apply = takeover_request;
+    takeover_apply["preview_hash"] = takeover_preview.json()["preview_hash"].clone();
+    let taken_over = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:apply"),
+        &takeover_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("take-over-hand-started-lsa")
+    .send(world)
+    .await;
+    assert_eq!(taken_over.status, 200, "{}", taken_over.body);
+    assert_eq!(taken_over.json()["receipt"]["applied"], "updated");
+    assert_eq!(
+        taken_over.json()["claimant_native_id"],
+        takeover_native.as_str()
+    );
+    let former_title = format!("Former · lsa · {claimed_native}");
+    assert_eq!(
+        world.fake.seat_title(&claimed_native).as_deref(),
+        Some(former_title.as_str()),
+        "the predecessor remains live under a deterministic non-canonical title"
+    );
+    let historical = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat_history(project_id, lsa_binding_id, &claimed_native)
+            .expect("the prior tenure reads")
+    });
+    assert!(
+        historical.is_some(),
+        "takeover must retain immutable seat history"
     );
 
     // A second, explicitly routed materialization fills the exact same logical

@@ -30,6 +30,7 @@ use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
+    HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
     HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
     RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
@@ -293,6 +294,10 @@ pub enum AdapterCall {
     LaunchConsultation(SeatBindingId),
     /// A persistent topology leadership seat was launched or recovered.
     LaunchHostedSeat(SeatBindingId),
+    /// An already-running persistent topology seat claim was previewed.
+    PreviewClaimHostedSeat(SeatBindingId),
+    /// An already-running session claimed a persistent topology seat.
+    ClaimHostedSeat(SeatBindingId),
     /// A persistent topology leadership predecessor was retired for rerouting.
     RetireHostedSeat(SeatBindingId),
     /// A persistent topology leadership seat received a message.
@@ -488,6 +493,8 @@ struct FakeState {
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Actual routes of already-running sessions made claimable by a test.
+    hosted_claim_routes: BTreeMap<ExternalId, ModelRung>,
     /// Native id -> (container id, provider session id, visible title).
     seat_titles: BTreeMap<ExternalId, (ExternalId, Option<ExternalId>, String)>,
     /// The visible title each container currently carries.
@@ -955,6 +962,7 @@ impl ScriptedFakeRuntime {
                 containers: BTreeMap::new(),
                 consultations: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
@@ -1240,6 +1248,42 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn container_title(&self, topology_node_id: TopologyNodeId) -> Option<String> {
         self.lock().container_titles.get(&topology_node_id).cloned()
+    }
+
+    /// The exact native container currently bound to one topology node.
+    #[must_use]
+    pub fn container_native_id(&self, topology_node_id: TopologyNodeId) -> Option<ExternalId> {
+        self.lock()
+            .containers
+            .get(&topology_node_id)
+            .map(|container| container.binding.identity.native_id.clone())
+    }
+
+    /// Make one already-running native session available to the hosted-seat
+    /// claim contract without launching it through Kontor.
+    ///
+    /// # Errors
+    /// Refuses a node whose native container has not been prepared.
+    pub fn seed_hosted_seat_claimant(
+        &self,
+        topology_node_id: TopologyNodeId,
+        native_id: ExternalId,
+        provider_session_id: Option<ExternalId>,
+        model_rung: ModelRung,
+        title: &str,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let container_native_id = state
+            .containers
+            .get(&topology_node_id)
+            .map(|container| container.binding.identity.native_id.clone())
+            .ok_or(RuntimeError::WorkspaceBindingRequired)?;
+        state.seat_titles.insert(
+            native_id.clone(),
+            (container_native_id, provider_session_id, title.to_owned()),
+        );
+        state.hosted_claim_routes.insert(native_id, model_rung);
+        Ok(())
     }
 
     /// Say what one container is called now, without going through Kontor.
@@ -2026,6 +2070,123 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             ),
         );
         Ok(outcome)
+    }
+
+    async fn preview_hosted_seat_claim(
+        &self,
+        request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<HostedSeatClaimPreview> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Adopt),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::PreviewClaimHostedSeat(request.seat_binding_id));
+        let (container_native_id, provider_session_id, _) = state
+            .seat_titles
+            .get(&request.claimant_native_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the hosted-seat claimant is absent",
+            })?;
+        if container_native_id != request.container_native_id
+            || request
+                .expected_claimant_provider_session_id
+                .as_ref()
+                .is_some_and(|expected| provider_session_id.as_ref() != Some(expected))
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let model_rung = state
+            .hosted_claim_routes
+            .get(&request.claimant_native_id)
+            .cloned()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let current = state.hosted_seats.get(&request.seat_binding_id).cloned();
+        let predecessor = request.expected_predecessor.clone();
+        match (&current, &predecessor) {
+            (Some(held), Some(expected))
+                if held.identity == expected.identity
+                    && held.provider_session_id == expected.provider_session_id => {}
+            (Some(held), _) if held.identity.native_id == request.claimant_native_id => {}
+            (None, None) => {}
+            _ => {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "the fake hosted seat is held by another native session",
+                });
+            }
+        }
+        Ok(HostedSeatClaimPreview {
+            identity: state.identity(request.claimant_native_id.clone()),
+            provider_session_id,
+            model_rung,
+            predecessor,
+            title_conflicts: Vec::new(),
+            already_claimed: current
+                .is_some_and(|held| held.identity.native_id == request.claimant_native_id),
+            observed_at: request.requested_at,
+        })
+    }
+
+    async fn claim_hosted_seat(
+        &self,
+        request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<HostedSeatClaimOutcome> {
+        let preview = self.preview_hosted_seat_claim(request).await?;
+        let mut state = self.lock();
+        let predecessor_changed = preview.predecessor.as_ref().is_some_and(|predecessor| {
+            state
+                .seat_titles
+                .get(&predecessor.identity.native_id)
+                .is_some_and(|(_, _, title)| {
+                    title
+                        != &format!(
+                            "Former · {} · {}",
+                            request.role_slot_id.as_str(),
+                            predecessor.identity.native_id.as_str(),
+                        )
+                })
+        });
+        let changed = predecessor_changed
+            || !preview.already_claimed
+            || state
+                .seat_titles
+                .get(&request.claimant_native_id)
+                .is_some_and(|(_, _, title)| title != request.display_name.as_str());
+        if let Some(predecessor) = &preview.predecessor
+            && let Some((_, _, title)) = state.seat_titles.get_mut(&predecessor.identity.native_id)
+        {
+            *title = format!(
+                "Former · {} · {}",
+                request.role_slot_id.as_str(),
+                predecessor.identity.native_id.as_str(),
+            );
+        }
+        if let Some((_, _, title)) = state.seat_titles.get_mut(&request.claimant_native_id) {
+            *title = request.display_name.as_str().to_owned();
+        }
+        state.hosted_seats.insert(
+            request.seat_binding_id,
+            ConsultationLaunchOutcome {
+                identity: preview.identity.clone(),
+                provider_session_id: preview.provider_session_id.clone(),
+                observed_at: preview.observed_at,
+                created: false,
+            },
+        );
+        state
+            .calls
+            .push(AdapterCall::ClaimHostedSeat(request.seat_binding_id));
+        Ok(HostedSeatClaimOutcome {
+            claim: HostedSeatClaimPreview {
+                already_claimed: true,
+                ..preview
+            },
+            changed,
+        })
     }
 
     async fn preview_retitle_seat(

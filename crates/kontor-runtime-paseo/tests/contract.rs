@@ -42,8 +42,8 @@ use kontor_core::id::{
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
-    HostedSeatLaunchRequest, HostedSeatRetireRequest, LaunchOutcome, RetitleSeatRequest,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatRetireRequest, LaunchOutcome,
+    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
@@ -4939,6 +4939,135 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("agent run"), 1);
+}
+
+/// Claiming a hand-started session is metadata-only: the native id and provider
+/// conversation survive, while a duplicate visible title is released by exact
+/// id. The final readback proves both mutations and the frozen route.
+#[tokio::test]
+async fn an_existing_session_claim_preserves_identity_and_releases_duplicate_titles() {
+    let seat_binding_id = SeatBindingId::generate();
+    let canonical_title = "LSA · ASMA-7744";
+    let conflict_id = "agt_conflict";
+    let conflict_title = format!("Unclaimed · lsa · {conflict_id}");
+    let canonical_labels = [
+        (label::JIRA_EPIC.to_owned(), "ASMA-7744".to_owned()),
+        (label::PROJECT_ID.to_owned(), MINI_PROJECT.to_owned()),
+        (label::SEAT_BINDING.to_owned(), seat_binding_id.to_string()),
+        (label::HOSTED_SEAT.to_owned(), "true".to_owned()),
+        (label::ROLE.to_owned(), "lsa".to_owned()),
+        (label::ROLE_SLOT.to_owned(), "lsa".to_owned()),
+        (label::WORKSPACE_ID.to_owned(), WORKSPACE_ID.to_owned()),
+        (label::WORKTREE.to_owned(), CWD.to_owned()),
+    ]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+    let conflict_labels = [(
+        label::TITLE_RELEASED_FOR.to_owned(),
+        seat_binding_id.to_string(),
+    )]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+
+    let mut claimant_before = v(AGENT);
+    claimant_before["agent"]["title"] = serde_json::json!("hand-started LSA");
+    claimant_before["agent"]["labels"] = serde_json::json!({});
+    let mut claimant_after = claimant_before.clone();
+    claimant_after["agent"]["title"] = serde_json::json!(canonical_title);
+    claimant_after["agent"]["labels"] = serde_json::to_value(&canonical_labels).expect("labels");
+
+    let mut conflict_before = claimant_before.clone();
+    conflict_before["agent"]["id"] = serde_json::json!(conflict_id);
+    conflict_before["agent"]["title"] = serde_json::json!(canonical_title);
+    conflict_before["agent"]["runtimeInfo"]["sessionId"] = serde_json::json!("prov_sess_conflict");
+    conflict_before["agent"]["persistence"]["sessionId"] = serde_json::json!("prov_sess_conflict");
+    let mut conflict_after = conflict_before.clone();
+    conflict_after["agent"]["title"] = serde_json::json!(conflict_title);
+    conflict_after["agent"]["labels"] = serde_json::to_value(&conflict_labels).expect("labels");
+
+    let agent_list = |claimant: &serde_json::Value, conflict: &serde_json::Value| {
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "entries": [
+                { "agent": claimant["agent"].clone(), "project": claimant["project"].clone() },
+                { "agent": conflict["agent"].clone(), "project": conflict["project"].clone() }
+            ],
+            "pageInfo": { "nextCursor": null, "prevCursor": null, "hasMore": false }
+        })
+    };
+    let before_list = agent_list(&claimant_before, &conflict_before);
+    let after_list = agent_list(&claimant_after, &conflict_after);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(
+            &PaseoCommand::agent_update(conflict_id, Some(&conflict_title), &conflict_labels),
+            r#"{"agentId":"agt_conflict"}"#,
+        )
+        .answering(
+            &PaseoCommand::agent_update(AGENT_ID, Some(canonical_title), &canonical_labels),
+            r#"{"agentId":"agt_implement"}"#,
+        )
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_ROOT_LOCAL))
+        .then_answering_rpc("fetch_agent_request", claimant_before.clone())
+        .then_answering_rpc("fetch_agent_request", claimant_before)
+        .then_answering_rpc("fetch_agent_request", conflict_after)
+        .then_answering_rpc("fetch_agent_request", claimant_after.clone())
+        .answering_rpc("fetch_agent_request", claimant_after)
+        .then_answering_rpc("fetch_agents_request", before_list.clone())
+        .then_answering_rpc("fetch_agents_request", before_list)
+        .answering_rpc("fetch_agents_request", after_list);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-seat-claim", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let request = HostedSeatClaimRequest {
+        seat_binding_id,
+        role_slot_id: slot("lsa"),
+        display_name: name(canonical_title),
+        container_native_id: external(WORKSPACE_ID),
+        cwd: root(),
+        scope: epic_execution_scope(),
+        claimant_native_id: external(AGENT_ID),
+        expected_claimant_provider_session_id: None,
+        expected_predecessor: None,
+        requested_at: at("2026-08-20T05:05:00Z"),
+    };
+
+    let preview = plane
+        .adapter
+        .preview_hosted_seat_claim(&request)
+        .await
+        .expect("the exact existing session can be previewed");
+    assert_eq!(preview.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(
+        preview.provider_session_id.as_ref().map(ExternalId::as_str),
+        Some("prov_sess_1")
+    );
+    assert_eq!(preview.title_conflicts.len(), 1);
+    assert_eq!(preview.title_conflicts[0].native_id.as_str(), conflict_id);
+
+    let mut apply = request;
+    apply.expected_claimant_provider_session_id = preview.provider_session_id.clone();
+    let outcome = plane
+        .adapter
+        .claim_hosted_seat(&apply)
+        .await
+        .expect("the metadata-only claim is applied and re-read");
+    assert!(outcome.changed);
+    assert!(outcome.claim.already_claimed);
+    assert_eq!(outcome.claim.identity, preview.identity);
+    assert_eq!(
+        outcome.claim.provider_session_id,
+        preview.provider_session_id
+    );
+    assert_eq!(outcome.claim.model_rung, preview.model_rung);
+    assert_eq!(plane.daemon.count("agent update agt_implement"), 1);
+    assert_eq!(plane.daemon.count("agent update agt_conflict"), 1);
+    assert_eq!(plane.daemon.count("agent archive"), 0);
 }
 
 /// An admin-authorized Core Team route correction archives the exact idle

@@ -1079,6 +1079,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one still-current existing-session claim without archiving either side. */
+        post: operations["apply_core_team_seat_claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview attachment of one exact already-running session to a Core Team seat. */
+        post: operations["preview_core_team_seat_claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize": {
         parameters: {
             query?: never;
@@ -4139,6 +4173,84 @@ export interface components {
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
         };
+        /** @description Apply one still-current existing-session Core Team claim. */
+        CoreTeamSeatClaimApplyRequest: {
+            /** @description Exact already-running native session selected by the operator. */
+            claimant_native_id: string;
+            /** @description Exact current filler observed by the caller, or none for an empty seat. */
+            expected_current_native_id?: string | null;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Hash returned by preview. */
+            preview_hash: string;
+            /** @description Logical SeatBinding that must be preserved. */
+            seat_binding_id: string;
+        };
+        /** @description Completed non-destructive attachment of an existing native session. */
+        CoreTeamSeatClaimOutcomeDto: {
+            /** @description Exact active claimant. */
+            claimant_native_id: string;
+            /** @description Core Team projection after the claim. */
+            core_team: components["schemas"]["CoreTeamDto"];
+            /** @description Previous filler retained as a live former session, when any. */
+            predecessor_native_id?: string | null;
+            /** @description Audited mutation receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Duplicate-title sessions retitled during apply. */
+            released_title_native_ids: string[];
+            /** @description Preserved logical SeatBinding. */
+            seat_binding_id: string;
+        };
+        /** @description Fresh runtime-backed plan for one existing-session Core Team claim. */
+        CoreTeamSeatClaimPreviewDto: {
+            /** @description Whether the claimant already carries the canonical seat projection. */
+            already_claimed: boolean;
+            /** @description Actual provider/model/effort already running in the claimant. */
+            claimant_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact claimant read back from the runtime. */
+            claimant_native_id: string;
+            /** @description Provider-native conversation frozen by the preview, when exposed. */
+            claimant_provider_session_id?: string | null;
+            /** @description Epic whose ECP hosts the seat. */
+            epic_id: string;
+            /** @description Current logical-seat filler that would become history, when any. */
+            predecessor_native_id?: string | null;
+            /** @description Hash the apply must name. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that computed the plan. */
+            realm_id: string;
+            /** @description Preserved logical seat identity. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description Projection cursor read by the preview.
+             */
+            snapshot_cursor: number;
+            /** @description Non-owning duplicate-title sessions that would be retitled. */
+            title_conflicts: components["schemas"]["CoreTeamSeatTitleConflictDto"][];
+        };
+        /**
+         * @description Read-only request to attach an already-running native session to a
+         *     persistent Core Team seat.
+         */
+        CoreTeamSeatClaimPreviewRequest: {
+            /** @description Exact already-running native session selected by the operator. */
+            claimant_native_id: string;
+            /** @description Exact current filler observed by the caller, or none for an empty seat. */
+            expected_current_native_id?: string | null;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Logical SeatBinding that must be preserved. */
+            seat_binding_id: string;
+        };
         /**
          * @description One Core Team seat: the standard role, the policy it is held under, and the
          *     seat filling it if any.
@@ -4186,6 +4298,13 @@ export interface components {
             presence: string;
             /** @description The role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
+        };
+        /** @description One duplicate canonical-title session that a claim would release. */
+        CoreTeamSeatTitleConflictDto: {
+            /** @description Exact native session; title text is never used as an address. */
+            native_id: string;
+            /** @description Deterministic non-canonical title it would receive. */
+            released_title: string;
         };
         /**
          * @description A depleting prepaid balance and the floor under it, on the wire.
@@ -10382,6 +10501,151 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_core_team_seat_claim: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamSeatClaimApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamSeatClaimOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_core_team_seat_claim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamSeatClaimPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamSeatClaimPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

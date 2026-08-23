@@ -1703,6 +1703,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("promote_quick_session", "mini_project", "witness", None),
     ("materialize_core_team", "mini_project", "witness", None),
     ("correct_core_team_route", "mini_project", "witness", None),
+    ("claim_core_team_seat", "mini_project", "witness", None),
     ("upgrade_epic_roster", "mini_project", "witness", None),
     // Publishing a Completion Profile is project configuration, for the same
     // reason as `apply_core_team`: it deliberately does not move any running

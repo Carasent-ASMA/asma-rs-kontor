@@ -170,6 +170,18 @@ pub mod label {
     pub const SEAT_BINDING: &str = "kontor.seat_binding_id";
     /// Persistent non-delivery topology seat (for example LSA/TPM).
     pub const HOSTED_SEAT: &str = "kontor.hosted_seat";
+    /// The logical seat a still-live predecessor formerly filled.
+    ///
+    /// Paseo's public metadata update surface patches string values and cannot
+    /// delete a label. A takeover therefore releases the canonical
+    /// `SEAT_BINDING` value and records its provenance here rather than writing
+    /// internal daemon state to erase it.
+    pub const FORMER_SEAT_BINDING: &str = "kontor.former_seat_binding_id";
+    /// Seat whose canonical title this non-owning session released.
+    ///
+    /// This marker makes a partially-applied title cleanup discoverable on a
+    /// retry, so the preview hash remains stable after a lost acknowledgement.
+    pub const TITLE_RELEASED_FOR: &str = "kontor.title_released_for_seat_binding_id";
     /// Explicit non-mutating authority marker for consultation sessions.
     pub const READ_ONLY: &str = "kontor.read_only";
 
