@@ -175,12 +175,12 @@ pub enum StartupError {
         #[source]
         source: kontor_core::DomainError,
     },
-    /// The configured ASMA connector executable is absent or invalid.
-    #[error("the Jira connector boundary could not be composed: {source}")]
+    /// Native Jira configuration could not be composed.
+    #[error("the native Jira connector could not be composed: {source}")]
     Connector {
         /// The boundary's own typed refusal.
         #[source]
-        source: kontor_integrations_asma::AsmaError,
+        source: kontor_jira::JiraError,
     },
     /// The configured seat-supervision policy could not be loaded.
     #[error(transparent)]
@@ -205,12 +205,9 @@ pub struct DaemonConfig {
     /// so setting the field is infallible and a refused set of ceilings refuses
     /// the *start* — the one moment an operator is watching.
     pub capacity: CapacityConfig,
-    /// The supported ASMA executable used as Jira's single wire boundary.
-    ///
-    /// `None` deliberately composes no Jira transport. Realms that do not use
-    /// Jira keep starting without the ASMA CLI installed, while a Realm that
-    /// configures the boundary validates it before serving any request.
-    pub asma_executable: Option<PathBuf>,
+    /// An explicitly composed connector set for embeddings and tests. Ordinary
+    /// daemon startup reads strict `jira.json` from the state root instead.
+    jira_connectors: Option<kontor_jira::JiraConnectors>,
 }
 
 impl DaemonConfig {
@@ -223,7 +220,7 @@ impl DaemonConfig {
             allowed_origins: kontor_api::auth::IngressPolicy::default().allowed_origins,
             evidence_window_seconds: DEFAULT_EVIDENCE_WINDOW_SECONDS,
             capacity: DEFAULT_CAPACITY,
-            asma_executable: None,
+            jira_connectors: None,
         }
     }
 
@@ -238,10 +235,10 @@ impl DaemonConfig {
         self
     }
 
-    /// Compose Jira through one explicitly resolved ASMA executable.
+    /// Compose an already-validated native Jira connector set.
     #[must_use]
-    pub fn with_asma_executable(mut self, executable: impl Into<PathBuf>) -> Self {
-        self.asma_executable = Some(executable.into());
+    pub fn with_jira_connectors(mut self, connectors: kontor_jira::JiraConnectors) -> Self {
+        self.jira_connectors = Some(connectors);
         self
     }
 
@@ -344,16 +341,15 @@ impl Daemon {
         // holds — so the services are built first, handed in, and given the state
         // immediately afterwards. Nothing can serve a request in between: the
         // router does not exist yet.
-        let asma = config
-            .asma_executable
-            .as_ref()
-            .map(kontor_integrations_asma::AsmaExecutable::new)
-            .transpose()
+        let jira = config
+            .jira_connectors
+            .clone()
+            .map_or_else(|| kontor_jira::JiraConnectors::read(&config.state_root), Ok)
             .map_err(|source| StartupError::Connector { source })?;
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
-            asma,
+            jira,
             config.state_root.join("runtime-roots"),
         )
         .map_err(|source| StartupError::Applications { source })?;

@@ -13,7 +13,7 @@ members = [
     "crates/kontor-scheduler",
     "crates/kontor-calendar",
     "crates/kontor-policy",
-    "crates/kontor-integrations-asma",
+    "crates/kontor-jira",
     "crates/kontor-api",
     "crates/kontor-daemon",
     "crates/kontor-cli",

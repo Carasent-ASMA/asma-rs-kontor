@@ -85,7 +85,12 @@ const EXPECTED_TABLES: &[&str] = &[
     "intake_created_work",
     "intake_decisions",
     "intake_receipts",
+    "asma_epic_activations",
+    "jira_epic_bindings",
     "jira_links",
+    "jira_materialization_batches",
+    "jira_materialization_items",
+    "jira_task_binding_confirmations",
     "lease_events",
     "memory_approvals",
     "memory_authority",
@@ -457,9 +462,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v56 authorizes selecting the topology inherited by future
-    // epics without moving any existing immutable epic pin.
-    assert_eq!(SCHEMA_VERSION, 56);
+    // side effect. v58 adds the project-scoped legacy backlog import command.
+    assert_eq!(SCHEMA_VERSION, 58);
 }
 
 #[test]

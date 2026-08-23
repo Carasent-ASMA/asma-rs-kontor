@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
-use kontor_core::authority::AuthoritySubject;
+use kontor_core::authority::{AuthoritySubject, SubjectAuthority};
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
@@ -47,7 +47,11 @@ use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
-use crate::authority::{SubjectOrigins, create_subject_authorities, require_backlog_authority};
+use crate::authority::{
+    SubjectAuthorityReceipt, SubjectImportManifest, SubjectImportRecord, SubjectOrigins,
+    create_subject_authorities, record_subject_import_in, require_backlog_authority,
+    subject_authority_in,
+};
 use crate::query::column_text;
 use crate::repository::{
     TASK_COLUMNS, backend, conflict, from_json, read_project, read_scope, read_task,
@@ -174,6 +178,34 @@ pub struct EpicApplication<'a> {
     pub team: Option<&'a TeamTemplateRevision>,
     /// When the application happened.
     pub applied_at: Timestamp,
+}
+
+/// One complete legacy backlog export resolved into the existing graph model.
+#[derive(Debug)]
+pub struct BacklogImport<'a> {
+    /// The project receiving the graph.
+    pub project_id: ProjectId,
+    /// Authority-ledger revision the caller read.
+    pub expected_authority_revision: AggregateRevision,
+    /// The bounded source-system name.
+    pub source: &'a str,
+    /// Hash of the canonical submitted export.
+    pub import_hash: &'a ContentHash,
+    /// Canonical submitted export retained in the import manifest.
+    pub canonical_manifest: &'a str,
+    /// Every epic in the export, already resolved against native profiles.
+    pub epics: &'a [EpicApplication<'a>],
+}
+
+/// The atomic result of importing a legacy backlog export.
+#[derive(Debug)]
+pub struct AppliedBacklogImport {
+    /// Existing graph rows created or verified by the import.
+    pub epics: Vec<AppliedEpic>,
+    /// Durable hash-addressed import manifest.
+    pub manifest: SubjectImportManifest,
+    /// Durable authority-ledger receipt for the import.
+    pub receipt: SubjectAuthorityReceipt,
 }
 
 // ---------------------------------------------------------------------------
@@ -645,10 +677,6 @@ impl SqliteStore {
         request: &EpicApplication<'_>,
         commit: bool,
     ) -> RepositoryResult<AppliedEpic> {
-        request.profile.verify()?;
-        ensure_titles_unique(request.tasks)?;
-        ensure_dependencies_named(request.tasks)?;
-
         let transaction = self.begin()?;
         ensure_project_exists(&transaction, request.project_id)?;
         if commit {
@@ -656,72 +684,125 @@ impl SqliteStore {
             // only an authoritative write is withheld.
             require_backlog_authority(&transaction, request.project_id)?;
         }
-        store_specifications(&transaction, request)?;
-
-        let (mini_project, epic_applied) = ensure_mini_project(&transaction, request)?;
-        let execution_scope = ensure_epic_execution_scope(
-            &transaction,
-            request.project_id,
-            mini_project.id,
-            request.execution_scope,
-            request.applied_at,
-        )?;
-        let mut applied: Vec<AppliedTask> = Vec::with_capacity(request.tasks.len());
-        let mut by_title: BTreeMap<&ExternalName, TaskId> = BTreeMap::new();
-
-        for plan in request.tasks {
-            let outcome = ensure_task(&transaction, request, mini_project.id, plan)?;
-            by_title.insert(&plan.title, outcome.task_id);
-            applied.push(outcome);
-        }
-
-        // The edges are written only once every task in the epic has an id, so a
-        // dependency may name a sibling stated later in the same request.
-        for (plan, outcome) in request.tasks.iter().zip(applied.iter_mut()) {
-            let mut resolved = BTreeSet::new();
-            for title in &plan.depends_on {
-                let Some(dependency) = by_title.get(title).copied() else {
-                    return Err(DomainError::invalid(
-                        "task dependency",
-                        "names a task this epic does not state",
-                    )
-                    .into());
-                };
-                resolved.insert(dependency);
-            }
-            write_dependencies(&transaction, request.project_id, outcome.task_id, &resolved)?;
-            outcome.depends_on = resolved;
-        }
-        ensure_acyclic(&transaction, request.project_id)?;
-
-        for (plan, outcome) in request.tasks.iter().zip(applied.iter_mut()) {
-            outcome.links = ensure_links(&transaction, request, outcome.task_id, plan)?;
-        }
-
-        let epic_applied = if epic_applied == Applied::Unchanged
-            && applied.iter().any(|task| task.applied == Applied::Updated)
-        {
-            Applied::Updated
-        } else {
-            epic_applied
-        };
-        let outcome = AppliedEpic {
-            mini_project_id: mini_project.id,
-            applied: epic_applied,
-            revision: mini_project.revision,
-            execution_scope,
-            profile: (request.definition.id.clone(), request.definition.version),
-            team: request
-                .team
-                .map(|revision| (revision.template_id, revision.version)),
-            tasks: applied,
-        };
+        let outcome = evaluate_epic_in(&transaction, request)?;
         if commit {
             transaction.commit().map_err(backend)?;
         } else {
             transaction.rollback().map_err(backend)?;
         }
         Ok(outcome)
+    }
+
+    /// Import one whole legacy backlog and its manifest in one transaction.
+    ///
+    /// # Errors
+    /// Refuses native/already-switched subjects, mixed projects, invalid graphs,
+    /// duplicate manifests and any storage failure without partial graph rows.
+    pub fn import_backlog(
+        &self,
+        import: &BacklogImport<'_>,
+    ) -> Result<AppliedBacklogImport, crate::authority::AuthorityError> {
+        kontor_core::id::reject_sensitive_text("backlog import source", import.source)?;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, rusqlite::TransactionBehavior::Immediate)?;
+        let authority =
+            subject_authority_in(&transaction, import.project_id, AuthoritySubject::Backlog)?;
+        if !authority.origin.permits_cutover()
+            || authority.authority != SubjectAuthority::Agentsroom
+        {
+            return Err(crate::authority::AuthorityError::Rule(
+                "the backlog is not pending legacy import",
+            ));
+        }
+        if authority.revision != import.expected_authority_revision {
+            return Err(crate::authority::AuthorityError::RevisionConflict {
+                expected: import.expected_authority_revision.get(),
+                current: authority.revision.get(),
+            });
+        }
+        ensure_project_exists(&transaction, import.project_id)?;
+        let mut applied = Vec::with_capacity(import.epics.len());
+        for epic in import.epics {
+            if epic.project_id != import.project_id {
+                return Err(crate::authority::AuthorityError::Rule(
+                    "a backlog export may not cross projects",
+                ));
+            }
+            applied.push(evaluate_epic_in(&transaction, epic)?);
+        }
+        let readback_hash = backlog_readback_hash_in(&transaction, import.project_id)?;
+        let imported_count = applied.iter().try_fold(0_u64, |count, epic| {
+            count
+                .checked_add(1 + u64::try_from(epic.tasks.len()).unwrap_or(u64::MAX))
+                .ok_or(crate::authority::AuthorityError::Rule(
+                    "the backlog export contains too many items",
+                ))
+        })?;
+        let (manifest, receipt) = record_subject_import_in(
+            &transaction,
+            &SubjectImportRecord {
+                project_id: import.project_id,
+                subject: AuthoritySubject::Backlog,
+                source: import.source,
+                import_hash: import.import_hash,
+                canonical_manifest: import.canonical_manifest,
+                imported_count,
+                readback_hash: &readback_hash,
+            },
+        )?;
+        transaction.commit()?;
+        Ok(AppliedBacklogImport {
+            epics: applied,
+            manifest,
+            receipt,
+        })
+    }
+
+    /// Validate a complete legacy backlog export and compute its proposed
+    /// stored readback, then roll every graph row back.
+    pub fn preview_backlog(
+        &self,
+        import: &BacklogImport<'_>,
+    ) -> Result<(Vec<AppliedEpic>, ContentHash), crate::authority::AuthorityError> {
+        let transaction =
+            Transaction::new_unchecked(&self.connection, rusqlite::TransactionBehavior::Immediate)?;
+        let authority =
+            subject_authority_in(&transaction, import.project_id, AuthoritySubject::Backlog)?;
+        if !authority.origin.permits_cutover()
+            || authority.authority != SubjectAuthority::Agentsroom
+        {
+            return Err(crate::authority::AuthorityError::Rule(
+                "the backlog is not pending legacy import",
+            ));
+        }
+        if authority.revision != import.expected_authority_revision {
+            return Err(crate::authority::AuthorityError::RevisionConflict {
+                expected: import.expected_authority_revision.get(),
+                current: authority.revision.get(),
+            });
+        }
+        ensure_project_exists(&transaction, import.project_id)?;
+        let mut applied = Vec::with_capacity(import.epics.len());
+        for epic in import.epics {
+            if epic.project_id != import.project_id {
+                return Err(crate::authority::AuthorityError::Rule(
+                    "a backlog export may not cross projects",
+                ));
+            }
+            applied.push(evaluate_epic_in(&transaction, epic)?);
+        }
+        let readback = backlog_readback_hash_in(&transaction, import.project_id)?;
+        transaction.rollback()?;
+        Ok((applied, readback))
+    }
+
+    /// Recompute the canonical hash of one project's stored backlog graph.
+    pub fn backlog_readback_hash(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<ContentHash, crate::authority::AuthorityError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        backlog_readback_hash_in(&transaction, project_id)
     }
 
     /// Read one goal inside a project.
@@ -1430,6 +1511,128 @@ fn out_of_range(subject: &'static str) -> RepositoryError {
 // ---------------------------------------------------------------------------
 // Application steps, all inside one transaction
 // ---------------------------------------------------------------------------
+
+fn evaluate_epic_in(
+    transaction: &Transaction<'_>,
+    request: &EpicApplication<'_>,
+) -> RepositoryResult<AppliedEpic> {
+    request.profile.verify()?;
+    ensure_titles_unique(request.tasks)?;
+    ensure_dependencies_named(request.tasks)?;
+    store_specifications(transaction, request)?;
+
+    let (mini_project, epic_applied) = ensure_mini_project(transaction, request)?;
+    let execution_scope = ensure_epic_execution_scope(
+        transaction,
+        request.project_id,
+        mini_project.id,
+        request.execution_scope,
+        request.applied_at,
+    )?;
+    let mut applied = Vec::with_capacity(request.tasks.len());
+    let mut by_title = BTreeMap::<&ExternalName, TaskId>::new();
+    for plan in request.tasks {
+        let outcome = ensure_task(transaction, request, mini_project.id, plan)?;
+        by_title.insert(&plan.title, outcome.task_id);
+        applied.push(outcome);
+    }
+    for (plan, outcome) in request.tasks.iter().zip(applied.iter_mut()) {
+        let mut resolved = BTreeSet::new();
+        for title in &plan.depends_on {
+            let Some(dependency) = by_title.get(title).copied() else {
+                return Err(DomainError::invalid(
+                    "task dependency",
+                    "names a task this epic does not state",
+                )
+                .into());
+            };
+            resolved.insert(dependency);
+        }
+        write_dependencies(transaction, request.project_id, outcome.task_id, &resolved)?;
+        outcome.depends_on = resolved;
+    }
+    ensure_acyclic(transaction, request.project_id)?;
+    for (plan, outcome) in request.tasks.iter().zip(applied.iter_mut()) {
+        outcome.links = ensure_links(transaction, request, outcome.task_id, plan)?;
+    }
+    let epic_applied = if epic_applied == Applied::Unchanged
+        && applied.iter().any(|task| task.applied == Applied::Updated)
+    {
+        Applied::Updated
+    } else {
+        epic_applied
+    };
+    Ok(AppliedEpic {
+        mini_project_id: mini_project.id,
+        applied: epic_applied,
+        revision: mini_project.revision,
+        execution_scope,
+        profile: (request.definition.id.clone(), request.definition.version),
+        team: request
+            .team
+            .map(|revision| (revision.template_id, revision.version)),
+        tasks: applied,
+    })
+}
+
+fn backlog_readback_hash_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+) -> Result<ContentHash, crate::authority::AuthorityError> {
+    let mut statement = transaction.prepare(
+        "SELECT m.id, m.name, m.revision,
+                t.id, t.title, t.state, t.imported_state, t.revision
+         FROM mini_projects m
+         LEFT JOIN tasks t ON t.project_id=m.project_id AND t.mini_project_id=m.id
+         WHERE m.project_id=?1 ORDER BY m.name, m.id, t.title, t.id",
+    )?;
+    let rows = statement.query_map([project_id.to_string()], |row| {
+        Ok(serde_json::json!({
+            "epic_id": row.get::<_, String>(0)?,
+            "epic_name": row.get::<_, String>(1)?,
+            "epic_revision": row.get::<_, i64>(2)?,
+            "task_id": row.get::<_, Option<String>>(3)?,
+            "task_title": row.get::<_, Option<String>>(4)?,
+            "task_state": row.get::<_, Option<String>>(5)?,
+            "task_imported_state": row.get::<_, Option<String>>(6)?,
+            "task_revision": row.get::<_, Option<i64>>(7)?,
+        }))
+    })?;
+    let graph = rows.collect::<Result<Vec<_>, _>>()?;
+    let mut statement = transaction.prepare(
+        "SELECT d.task_id, d.depends_on_task_id
+         FROM task_dependencies d JOIN tasks t
+           ON t.project_id=d.project_id AND t.id=d.task_id
+         WHERE d.project_id=?1 ORDER BY d.task_id, d.depends_on_task_id",
+    )?;
+    let dependencies = statement
+        .query_map([project_id.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut statement = transaction.prepare(
+        "SELECT task_id, connector, external_issue_key
+         FROM jira_links WHERE project_id=?1
+         ORDER BY task_id, connector, external_issue_key",
+    )?;
+    let links = statement
+        .query_map([project_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let document = kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "project_id": project_id.to_string(),
+        "graph": graph,
+        "dependencies": dependencies,
+        "ticket_links": links,
+    }))?;
+    Ok(document.hash().clone())
+}
 
 /// Refuse two tasks stated under the same title.
 ///

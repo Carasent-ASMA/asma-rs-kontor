@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 56;
+pub const SCHEMA_VERSION: i64 = 58;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -239,6 +239,11 @@ const MIGRATIONS: &[&str] = &[
     // Schema v56. Project topology selection is separately authorized from
     // moving one immutable epic pin.
     include_str!("../migrations/0056_project_topology_selection.sql"),
+    // Schema v57. Durable native Jira materialization, exact readback bindings,
+    // and ASMA activation after the whole epic is confirmed.
+    include_str!("../migrations/0057_jira_materialization.sql"),
+    // Schema v58. Idempotent project-scoped legacy backlog import receipt.
+    include_str!("../migrations/0058_backlog_import_command.sql"),
 ];
 
 const _: () = assert!(

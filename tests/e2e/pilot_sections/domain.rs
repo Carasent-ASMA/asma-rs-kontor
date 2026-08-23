@@ -15,11 +15,8 @@
 //!   rather than an opinion — the same call is made twice against two fixtures
 //!   that share not one status id, and the decision *shapes* are compared.
 //!
-//! Only one criterion here needs the `asma` executable boundary at all
-//! ([`domain.jira-asma`], whose whole claim is about a refetch), and it gets a
-//! real temporary `/bin/sh` script rather than a mocked trait. Every other
-//! delegation case is refused by `build_write_request` *before* `exchange`, so
-//! it needs an [`AsmaExecutable`] that resolves and is never spawned.
+//! Jira transport is exercised through the same [`JiraExchange`] seam the
+//! native connector implements. The process boundary no longer exists.
 //!
 //! Intake proposals are produced by `kontor-intake` and terminal decisions are
 //! committed through the production store transaction. The only staged seam is
@@ -58,12 +55,12 @@ use kontor_core::ticket::{
     TicketPrincipal, TicketSyncProjection, TransitionPlan, reconcile,
 };
 use kontor_intake::{Intake, evaluate};
-use kontor_integrations_asma::jira::{
-    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey, JiraOperation,
-    JiraOutcome, JiraRequest, JiraResponse, Observed, SpecCatalog, TicketDelegation,
+use kontor_jira::jira::{
+    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey, JiraExchange,
+    JiraOperation, JiraOutcome, JiraRequest, JiraResponse, Observed, SpecCatalog, TicketDelegation,
     WorkflowSpecKey, compile_field_writes,
 };
-use kontor_integrations_asma::{AsmaError, AsmaExecutable, WIRE_SCHEMA_VERSION, WireTimestamp};
+use kontor_jira::{JiraError as AsmaError, WIRE_SCHEMA_VERSION, WireTimestamp};
 use kontor_scheduler::model::{IntakeLineage, RejectionCode, TaskOrigin};
 use kontor_store::SqliteStore;
 use kontor_tests_e2e::Bundle;
@@ -104,10 +101,10 @@ pub(crate) async fn run(bundle: &mut Bundle) {
     let mut cleanup = Cleanup::default();
     intake_dedup(bundle, &mut cleanup);
     intake_decisions(bundle, &mut cleanup);
-    jira_asma(bundle, &mut cleanup).await;
+    jira_asma(bundle).await;
     jira_qa_distinct_and_alternate(bundle);
     jira_hold_close_reopen(bundle);
-    jira_ownership(bundle, &mut cleanup).await;
+    jira_ownership(bundle).await;
     privacy_zones(bundle);
     inbound_comment(bundle, &mut cleanup);
     processes(bundle, &cleanup);
@@ -130,30 +127,12 @@ struct Cleanup {
     sessions: Vec<Value>,
     /// One entry per temporary directory, with whether it was really removed.
     directories: Vec<Value>,
-    /// One entry per resolved `asma` executable that was deliberately not run.
+    /// Retained for evidence-schema compatibility; the native connector has no
+    /// executable to resolve without spawning.
     unspawned: Vec<Value>,
 }
 
 impl Cleanup {
-    /// Record a child process, its argv shape and how it ended.
-    fn process(&mut self, purpose: &str, argv: &[String], exited: &str) {
-        self.processes.push(json!({
-            "purpose": purpose,
-            "kind": "/bin/sh script standing in for the `asma` executable",
-            "argv": argv,
-            "spawned_by": "AsmaExecutable::run_json -> tokio::process::Command (kill_on_drop)",
-            "ended": exited,
-        }));
-    }
-
-    /// Record a resolved executable that was never spawned, and why.
-    fn never_spawned(&mut self, purpose: &str, reason: &str) {
-        self.unspawned.push(json!({
-            "purpose": purpose,
-            "reason": reason,
-        }));
-    }
-
     /// Record a temporary directory *after* its owner has been dropped.
     ///
     /// Removal is observed, never asserted from the type: `TempDir` deletes on
@@ -185,9 +164,7 @@ fn processes(bundle: &mut Bundle, cleanup: &Cleanup) {
         "processes": cleanup.processes,
         "processes_retained": [],
         "processes_retained_reason":
-            "none: every child of this section is a one-shot `asma` double that is \
-             reaped by `Child::wait` inside `AsmaExecutable::run_json` before the call \
-             returns, and the handle is `kill_on_drop`",
+            "none: native Jira transport creates no child process",
         "native_sessions": cleanup.sessions,
         "native_sessions_reason":
             "empty: this section opens no runtime session. It never constructs a \
@@ -206,9 +183,7 @@ fn processes(bundle: &mut Bundle, cleanup: &Cleanup) {
         bundle.pass(
             "cleanup.processes",
             format!(
-                "{} child process(es) were spawned, every one reaped by `Child::wait` before its \
-                 call returned; {} resolved `asma` executable(s) were deliberately never spawned \
-                 because the refusal happens in `build_write_request` before `exchange`; {} \
+                "{} child process(es) were spawned; {} legacy executable(s) were resolved; {} \
                  temporary director(ies) were created and all of them were observed gone after \
                  their owner dropped; no native session was opened, and the ledger says why the \
                  list is empty rather than leaving it bare",
@@ -1020,13 +995,12 @@ fn intake_decisions(bundle: &mut Bundle, cleanup: &mut Cleanup) {
 }
 
 // ---------------------------------------------------------------------------
-// The `asma` boundary — the only case that needs a process
+// Native Jira transport confirmation
 // ---------------------------------------------------------------------------
 
 /// The ASMA workflow confirms the principal and a non-null assignee by refetch
 /// before the ticket enters active development.
-#[cfg(unix)]
-async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
+async fn jira_asma(bundle: &mut Bundle) {
     let (workflow, field) = asma_project();
     let spec = workflow.spec();
     let target = target_of(spec, IMPLEMENTATION_ACTIVE);
@@ -1057,10 +1031,9 @@ async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     // 1 — an answer without a principal is never guessed at.
     let mut anonymous = read_response(JiraOperation::Observe, &current, None);
     anonymous.principal_account_id = None;
-    let fake = FakeAsma::answering(&anonymous);
-    let asma = fake.resolved();
+    let fake = FakeJira::answering(anonymous);
     let unresolved = TicketDelegation {
-        asma: &asma,
+        exchange: &fake,
         field_spec: &field,
         workflow_spec: &workflow,
         projection: &projection,
@@ -1077,21 +1050,12 @@ async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
             ..
         })
     );
-    cleanup.process(
-        "jira observe without a principal",
-        &fake.argv(),
-        "exit 0, reaped",
-    );
-    let directory = fake.close();
-    cleanup.directory("asma double: anonymous observe", &directory);
-
     // 2 — an apply that claims `applied` without a refetch is not believed.
     let mut unconfirmed = write_response(&target);
     unconfirmed.confirmation = None;
-    let fake = FakeAsma::answering(&unconfirmed);
-    let asma = fake.resolved();
+    let fake = FakeJira::answering(unconfirmed);
     let unbelieved = TicketDelegation {
-        asma: &asma,
+        exchange: &fake,
         field_spec: &field,
         workflow_spec: &workflow,
         projection: &projection,
@@ -1110,23 +1074,14 @@ async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     let refetch_required = matches!(
         unbelieved,
         Err(AsmaError::Unavailable {
-            reason: kontor_integrations_asma::UnavailableReason::MalformedResponse,
+            reason: kontor_jira::UnavailableReason::MalformedResponse,
             ..
         })
     );
-    cleanup.process(
-        "jira apply without confirmation",
-        &fake.argv(),
-        "exit 0, reaped",
-    );
-    let directory = fake.close();
-    cleanup.directory("asma double: unconfirmed apply", &directory);
-
     // 3 — the confirmed apply, and the receipt it is allowed to produce.
-    let fake = FakeAsma::answering(&write_response(&target));
-    let asma = fake.resolved();
+    let fake = FakeJira::answering(write_response(&target));
     let delegation = TicketDelegation {
-        asma: &asma,
+        exchange: &fake,
         field_spec: &field,
         workflow_spec: &workflow,
         projection: &projection,
@@ -1156,13 +1111,6 @@ async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
             })
     });
     let request = fake.request();
-    cleanup.process(
-        "jira apply with confirmation",
-        &fake.argv(),
-        "exit 0, reaped",
-    );
-    let directory = fake.close();
-    cleanup.directory("asma double: confirmed apply", &directory);
 
     let artifact = bundle
         .artifact(
@@ -1230,22 +1178,6 @@ async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
             ),
         );
     }
-}
-
-/// The refetch proof needs a real executable, and the pilot's double is a POSIX
-/// shell script. On a platform without one the criterion is unproven, and saying
-/// so is the only honest answer available.
-#[cfg(not(unix))]
-async fn jira_asma(bundle: &mut Bundle, cleanup: &mut Cleanup) {
-    cleanup.never_spawned(
-        "jira refetch confirmation",
-        "this platform is not unix, so the `/bin/sh` asma double cannot be installed",
-    );
-    bundle.fail(
-        "domain.jira-asma",
-        "the principal and refetch-confirmation proofs require spawning the `asma` boundary, \
-         whose pilot double is a POSIX shell script; this platform cannot run one",
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,7 +1547,7 @@ fn jira_hold_close_reopen(bundle: &mut Bundle) {
 
 /// A different existing owner and every terminal assignee are preserved, and a
 /// delegated plan that would clear ownership never reaches the boundary.
-async fn jira_ownership(bundle: &mut Bundle, cleanup: &mut Cleanup) {
+async fn jira_ownership(bundle: &mut Bundle) {
     let stranger = external("acct-a-human-being");
     let mut per_project = Vec::new();
     let mut problems = Vec::new();
@@ -1697,9 +1629,7 @@ async fn jira_ownership(bundle: &mut Bundle, cleanup: &mut Cleanup) {
         }));
     }
 
-    // The delegated half: three plans the boundary refuses to build a request
-    // for. `build_write_request` runs before `exchange`, so the executable
-    // resolves and is never spawned.
+    // The delegated half: three plans the boundary refuses before transport.
     let (workflow, field) = asma_project();
     let spec = workflow.spec();
     let target = target_of(spec, IMPLEMENTATION_ACTIVE);
@@ -1707,14 +1637,9 @@ async fn jira_ownership(bundle: &mut Bundle, cleanup: &mut Cleanup) {
     let projection = projection(&field, Vec::new());
     let working = facts(TaskState::InProgress, GateState::NotReady, None);
     let idempotency = key("kon-mvp-18-domain-ownership");
-    let asma = unspawned();
-    cleanup.never_spawned(
-        "ownership refusals",
-        "`build_write_request` refuses at jira.rs:1082-1113, before `exchange` at jira.rs:1178 \
-         can spawn anything; `contract.rs:1012` asserts the same argv stays empty",
-    );
+    let exchange = NeverJira;
     let delegation = TicketDelegation {
-        asma: &asma,
+        exchange: &exchange,
         field_spec: &field,
         workflow_spec: &workflow,
         projection: &projection,
@@ -2234,97 +2159,27 @@ fn inbound_comment(bundle: &mut Bundle, cleanup: &mut Cleanup) {
 }
 
 // ---------------------------------------------------------------------------
-// The `asma` double
+// The Jira transport seam
 // ---------------------------------------------------------------------------
 
-/// A temporary executable standing in for `asma`.
-///
-/// A shell script rather than a mocked trait, for the same reason the connector's
-/// own contract suite uses one: it exercises real argv, real pipes, a real exit
-/// status and a real reap, which is where the bugs at a process boundary live. It
-/// is a [`TempDir`], so the directory the pilot has to account for is removed by
-/// the same drop that ends the fixture's life.
-#[cfg(unix)]
-struct FakeAsma {
-    /// Removed on drop; the process ledger checks that it really was.
-    directory: TempDir,
-    /// The script itself.
-    executable: PathBuf,
-    /// Where the script appends its argv and stdin.
-    record: PathBuf,
-    /// Where the script keeps the last request verbatim.
-    request: PathBuf,
+/// Deterministic transport answer used to prove policy around the native seam.
+struct FakeJira {
+    response: JiraResponse,
+    request: std::sync::Mutex<Option<Value>>,
 }
 
-#[cfg(unix)]
-impl FakeAsma {
-    /// A fake that answers with one document and exits zero.
-    ///
-    /// # Panics
-    /// Panics when the temporary executable cannot be installed, which is a
-    /// driver bug rather than a finding about the tree.
-    fn answering<T: serde::Serialize>(response: &T) -> Self {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let json = serde_json::to_string(response).expect("the response serializes");
-        let directory = TempDir::new().expect("a temporary directory");
-        let executable = directory.path().join("asma");
-        let record = directory.path().join("record");
-        let request = directory.path().join("request");
-        // The paths are baked into the script rather than passed through the
-        // environment: the pilot shares one process, and mutating process
-        // environment variables from several tasks is a race, not a fixture.
-        let script = format!(
-            "#!/bin/sh\nfor arg in \"$@\"; do printf 'arg:%s\\n' \"$arg\" >> '{record}'; done\n\
-             cat > '{request}'\ncat <<'KONTOR_PILOT_EOF'\n{json}\nKONTOR_PILOT_EOF\n",
-            record = record.display(),
-            request = request.display(),
-        );
-        let temporary = directory.path().join("asma.tmp");
-        std::fs::write(&temporary, script).expect("the fake executable is writable");
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
-            .expect("the fake executable is markable executable");
-        std::fs::rename(temporary, &executable).expect("the fake executable is installable");
+impl FakeJira {
+    fn answering(response: JiraResponse) -> Self {
         Self {
-            directory,
-            executable,
-            record,
-            request,
+            response,
+            request: std::sync::Mutex::new(None),
         }
     }
 
-    /// Resolve it as the one writer, with budgets small enough that a wedged
-    /// child could never wedge the pilot.
-    ///
-    /// # Panics
-    /// Panics when the freshly written script does not resolve.
-    fn resolved(&self) -> AsmaExecutable {
-        AsmaExecutable::with_budgets(
-            &self.executable,
-            std::time::Duration::from_secs(10),
-            1 << 20,
-        )
-        .expect("the fake resolves")
-    }
-
-    /// Every argument, one entry per real argv slot. Empty means never spawned.
-    fn argv(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.record)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| line.strip_prefix("arg:").map(str::to_owned))
-            .collect()
-    }
-
-    /// The last request document, reduced to the facts worth retaining.
-    ///
-    /// The whole body is deliberately not kept: it carries specification digests
-    /// and an intent hash, and an evidence file that quoted every byte would be
-    /// larger and no more convincing than the shape.
     fn request(&self) -> Value {
-        let text = std::fs::read_to_string(&self.request).unwrap_or_default();
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            return json!({ "captured": false });
+        let request = self.request.lock().expect("the request lock");
+        let Some(value) = request.as_ref() else {
+            return json!({"captured": false});
         };
         json!({
             "captured": true,
@@ -2333,29 +2188,35 @@ impl FakeAsma {
             "ownership_action": value["ownership_action"],
             "carries_a_transition": !value["transition"].is_null(),
             "field_write_count": value["field_writes"].as_array().map_or(0, Vec::len),
-            "mentions_a_comment": text.to_lowercase().contains("comment"),
+            "mentions_a_comment": value.to_string().to_lowercase().contains("comment"),
         })
-    }
-
-    /// Hand back the directory path and drop everything that holds it.
-    fn close(self) -> PathBuf {
-        let path = self.directory.path().to_path_buf();
-        drop(self.directory);
-        path
     }
 }
 
-/// An executable that resolves but is never spawned, for pure-planning cases.
-///
-/// # Panics
-/// Panics when the running test binary has no path, which cannot happen.
-fn unspawned() -> AsmaExecutable {
-    AsmaExecutable::with_budgets(
-        std::env::current_exe().expect("the test binary has a path"),
-        std::time::Duration::from_secs(1),
-        1 << 10,
-    )
-    .expect("any real file resolves")
+#[async_trait::async_trait]
+impl JiraExchange for FakeJira {
+    async fn execute(
+        &self,
+        _operation: &'static str,
+        request: &JiraRequest,
+    ) -> Result<JiraResponse, AsmaError> {
+        *self.request.lock().expect("the request lock") =
+            Some(serde_json::to_value(request).expect("the request serializes"));
+        Ok(self.response.clone())
+    }
+}
+
+struct NeverJira;
+
+#[async_trait::async_trait]
+impl JiraExchange for NeverJira {
+    async fn execute(
+        &self,
+        _operation: &'static str,
+        _request: &JiraRequest,
+    ) -> Result<JiraResponse, AsmaError> {
+        panic!("policy should refuse before Jira transport")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2420,7 +2281,7 @@ fn asma_project() -> (CompiledWorkflowSpec, CompiledFieldSpec) {
             project: ExternalProjectKey::parse("asma").expect("a legal project key"),
             issue_type: ExternalIssueTypeKey::parse("task").expect("a legal issue-type key"),
             version: SpecVersion::FIRST,
-            work_profile: Some(kontor_integrations_asma::jira::PinnedProfile {
+            work_profile: Some(kontor_jira::jira::PinnedProfile {
                 key: WorkProfileKey::parse("code").expect("a legal profile key"),
                 version: SpecVersion::FIRST,
             }),
@@ -2584,8 +2445,8 @@ fn observed(
 fn wire_observation(
     status: &StatusSelector,
     holder: Option<&ExternalId>,
-) -> kontor_integrations_asma::jira::WireObservation {
-    kontor_integrations_asma::jira::WireObservation {
+) -> kontor_jira::jira::WireObservation {
+    kontor_jira::jira::WireObservation {
         status_id: status.status_id.clone(),
         status_name: status.status_name.clone(),
         status_category: name("In Progress"),
@@ -2616,7 +2477,7 @@ fn read_response(
         observation: Some(wire_observation(status, holder)),
         principal_account_id: Some(principal().account_id),
         live_transitions: Vec::new(),
-        effects: kontor_integrations_asma::jira::WireEffects::default(),
+        effects: kontor_jira::jira::WireEffects::default(),
         confirmation: None,
         conflict: None,
         unavailable: None,
@@ -2632,15 +2493,15 @@ fn write_response(target: &StatusSelector) -> JiraResponse {
         operation: JiraOperation::Apply,
         effective_operation: JiraOperation::Apply,
         outcome: JiraOutcome::Applied,
-        effects: kontor_integrations_asma::jira::WireEffects {
+        effects: kontor_jira::jira::WireEffects {
             field_ids: Vec::new(),
-            assignment: Some(kontor_integrations_asma::jira::WireAssignment {
+            assignment: Some(kontor_jira::jira::WireAssignment {
                 action: OwnershipAction::ReassignToPrincipal,
                 account_id: Some(holder.clone()),
             }),
             transition: None,
         },
-        confirmation: Some(kontor_integrations_asma::jira::WireConfirmation {
+        confirmation: Some(kontor_jira::jira::WireConfirmation {
             observation: wire_observation(target, Some(&holder)),
             confirmed_at: WireTimestamp::new(at("2026-08-12T09:00:02Z")),
         }),

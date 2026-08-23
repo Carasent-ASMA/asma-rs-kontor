@@ -3163,7 +3163,7 @@ dependencies = [
  "kontor-api",
  "kontor-context",
  "kontor-core",
- "kontor-integrations-asma",
+ "kontor-jira",
  "kontor-mcp",
  "kontor-policy",
  "kontor-profiles",
@@ -3213,15 +3213,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "kontor-integrations-asma"
+name = "kontor-jira"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
+ "futures",
+ "kontor-accounts",
  "kontor-core",
+ "reqwest",
+ "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "uuid",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -3419,7 +3426,7 @@ dependencies = [
  "kontor-core",
  "kontor-daemon",
  "kontor-intake",
- "kontor-integrations-asma",
+ "kontor-jira",
  "kontor-mcp",
  "kontor-policy",
  "kontor-profiles",

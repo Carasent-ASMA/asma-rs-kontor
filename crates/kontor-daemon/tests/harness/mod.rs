@@ -15,7 +15,6 @@
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
@@ -142,19 +141,6 @@ impl World {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
-    /// Start an empty Realm with the explicitly configured Jira wire boundary.
-    pub(crate) async fn open_empty_with_asma(executable: &Path) -> Self {
-        Self::compose_with_connector(
-            every_capability(),
-            true,
-            false,
-            false,
-            DEFAULT_CAPACITY,
-            Some(executable),
-        )
-        .await
-    }
-
     /// Start an empty Realm whose runtime holds a **plane-level container**.
     ///
     /// This is the shipped Paseo shape and the one no in-process fake had: every
@@ -242,7 +228,7 @@ impl World {
         planed: bool,
         capacity: CapacityConfig,
     ) -> Self {
-        Self::compose_with_connector(capabilities, configured, seeded, planed, capacity, None).await
+        Self::compose_with_connector(capabilities, configured, seeded, planed, capacity).await
     }
 
     async fn compose_with_connector(
@@ -251,7 +237,6 @@ impl World {
         seeded: bool,
         planed: bool,
         capacity: CapacityConfig,
-        asma_executable: Option<&Path>,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         let fake = Arc::new(if planed {
@@ -264,12 +249,9 @@ impl World {
         } else {
             RuntimeRegistry::new()
         };
-        let mut config = DaemonConfig::at(directory.path())
+        let config = DaemonConfig::at(directory.path())
             .with_port(0)
             .with_capacity(capacity);
-        if let Some(executable) = asma_executable {
-            config = config.with_asma_executable(executable);
-        }
         let daemon = Daemon::start(config, registry).expect("the realm starts");
         let router = daemon.router();
 

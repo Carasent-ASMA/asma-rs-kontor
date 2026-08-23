@@ -78,6 +78,8 @@ closed_enum! {
         EnsureProject => "ensure_project",
         /// Apply a declarative epic's whole work graph.
         ApplyEpicGraph => "apply_epic_graph",
+        /// Import a final legacy backlog export into the native project graph.
+        ImportBacklog => "import_backlog",
         /// Move an epic through a lifecycle transition. The action it carries is
         /// in the intent; the kind says only that epic lifecycle authority was
         /// exercised, which is what must not be confused with applying one.
@@ -101,6 +103,10 @@ closed_enum! {
         SelectTaskAccount => "select_task_account",
         /// Converge a task's external tickets towards its own milestone.
         ReconcileTicket => "reconcile_ticket",
+        /// Materialize or verify one epic's complete Jira binding set.
+        MaterializeJira => "materialize_jira",
+        /// Activate ASMA policy after every Jira binding is confirmed.
+        ActivateAsmaEpic => "activate_asma_epic",
         /// Settle a run against what its runtime currently reports.
         ///
         /// It carries no desired state and no outcome: settling is the act of
@@ -455,10 +461,15 @@ impl CommandKind {
             // with a revision of its own.
             Self::EnsureProject
             | Self::EnsureAccountProfile
+            | Self::ImportBacklog
             | Self::SubmitIntake
             | Self::PublishTrigger
             | Self::InstallWorkflowSpec => witness(matches!(target, A::Project)),
-            Self::ApplyEpicGraph | Self::TransitionEpic | Self::StartScheduledWork => {
+            Self::ApplyEpicGraph
+            | Self::TransitionEpic
+            | Self::StartScheduledWork
+            | Self::MaterializeJira
+            | Self::ActivateAsmaEpic => {
                 witness(matches!(target, A::MiniProject))
             }
             Self::TransitionTask

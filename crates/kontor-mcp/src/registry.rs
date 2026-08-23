@@ -947,9 +947,10 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "backlog_origin",
                 Place::Body,
-                ArgType::Enum(BACKLOG_ORIGINS),
-                "Where this project's backlog comes from. Only `kontor_native` \
-                 until a legacy backlog can be imported.",
+                ArgType::Enum(SUBJECT_ORIGINS),
+                "Where this project's backlog comes from. `kontor_native` is \
+                 writable immediately; `legacy_pending` stays read-only until \
+                 its final export is imported and authority is switched.",
             ),
         ],
         about: "Create a project, or return the existing one unchanged.",
@@ -1172,6 +1173,69 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Apply one whole epic graph atomically.",
+    },
+    ToolSpec {
+        name: "kontor_backlog_import_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/backlog/import:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The receiving project.",
+            ),
+            req(
+                "source",
+                Place::Body,
+                ArgType::ExternalName,
+                "The legacy source identity.",
+            ),
+            req(
+                "expected_authority_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The backlog authority revision read by the caller.",
+            ),
+            req(
+                "epics",
+                Place::Body,
+                ArgType::Json,
+                "The complete final legacy backlog export.",
+            ),
+        ],
+        about: "Validate a final legacy backlog export without committing rows.",
+    },
+    ToolSpec {
+        name: "kontor_backlog_import_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/backlog/import:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The receiving project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "export",
+                Place::Body,
+                ArgType::Json,
+                "The exact final export that was previewed.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash returned by preview.",
+            ),
+        ],
+        about: "Atomically import the exact previewed legacy backlog export.",
     },
     ToolSpec {
         name: "kontor_execution_arm",
@@ -2703,6 +2767,42 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Irreversibly switch this project's memory authority to Kontor after \
                 verification.",
     },
+    ToolSpec {
+        name: "kontor_backlog_cutover_switch",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/backlog/cutover:switch",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The destination project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "source",
+                Place::Body,
+                ArgType::OpenKey,
+                "The legacy authority.",
+            ),
+            req(
+                "final_import_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash of the imported final export.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The authority revision the caller read.",
+            ),
+        ],
+        about: "Irreversibly switch this project's backlog authority to Kontor after \
+                stored readback verification.",
+    },
     // ---- The topology vocabulary: kinds, roles and what every code means ----
     //
     // Draft and validate are POSTs that commit nothing, so they are reads and
@@ -3144,6 +3244,81 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Select the exact previewed default topology revision.",
+    },
+    ToolSpec {
+        name: "kontor_jira_materialization_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic to materialize.",
+            ),
+            req(
+                "epic",
+                Place::Body,
+                ArgType::Json,
+                "The epic create/link intent.",
+            ),
+            req(
+                "tasks",
+                Place::Body,
+                ArgType::Json,
+                "One create/link intent per task id.",
+            ),
+        ],
+        about: "Preview the server-derived epic-first Jira graph without writes.",
+    },
+    ToolSpec {
+        name: "kontor_jira_materialization_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The epic to materialize.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "materialization",
+                Place::Body,
+                ArgType::Json,
+                "The exact previewed create/link intent.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash returned by preview.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The epic revision the caller read.",
+            ),
+        ],
+        about: "Materialize and confirm the Jira graph, then activate ASMA.",
     },
     ToolSpec {
         name: "kontor_topology_upgrade_preview",
@@ -4733,11 +4908,6 @@ pub static PERMISSION_DECISIONS: &[&str] = &["allow", "deny"];
 pub static SUBJECT_ORIGINS: &[&str] = &["kontor_native", "legacy_pending"];
 
 /// The backlog origins a project may declare today.
-///
-/// Deliberately narrower than [`SUBJECT_ORIGINS`]: the backlog import, readback
-/// and switch do not exist yet, so `legacy_pending` names a state no operation
-/// could clear. The daemon refuses it; this keeps a model from naming it at all.
-pub static BACKLOG_ORIGINS: &[&str] = &["kontor_native"];
 
 /// The two facts write authority is tracked for.
 pub static AUTHORITY_SUBJECTS: &[&str] = &["memory", "backlog"];

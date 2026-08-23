@@ -33,6 +33,7 @@ mod commands;
 mod events;
 mod graph;
 mod intake;
+mod jira;
 pub mod memory;
 mod migrations;
 mod policy;
@@ -60,11 +61,15 @@ pub use events::types::{
     ControlObservationOutcome,
 };
 pub use graph::{
-    Applied, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation, EpicApplication,
-    EpicExecutionScope, EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink,
-    IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProjectEnsure, RegisteredPack, SeatRow,
-    SettledTurn, StoredAuthorization, StoredBindingSnapshot, StoredComment, StoredConflict,
-    StoredWaiver, TurnDispatch,
+    Applied, AppliedBacklogImport, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation,
+    BacklogImport, EpicApplication, EpicExecutionScope, EpicExecutionScopeDeclaration, EpicTask,
+    EpicTicketLink, IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProjectEnsure,
+    RegisteredPack, SeatRow, SettledTurn, StoredAuthorization, StoredBindingSnapshot,
+    StoredComment, StoredConflict, StoredWaiver, TurnDispatch,
+};
+pub use jira::{
+    JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,
+    StoredJiraMaterializationItem,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use policy::{

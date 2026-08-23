@@ -61,6 +61,9 @@ impl From<AuthorityError> for MemoryError {
             AuthorityError::Domain(error) => Self::Domain(error),
             AuthorityError::Sqlite(error) => Self::Sqlite(error),
             AuthorityError::Json(error) => Self::Json(error),
+            AuthorityError::Repository(_) => {
+                Self::Rule("a backlog graph refusal reached the memory authority path")
+            }
         }
     }
 }

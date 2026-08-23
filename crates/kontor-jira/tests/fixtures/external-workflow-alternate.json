@@ -16,56 +16,27 @@
           { "kind": "all_required_gates_passed" }
         ]
       },
-      "target": {
-        "status_id": "S-99",
-        "status_name": "Ferdig"
-      }
+      "target": { "status_id": "S-99", "status_name": "Ferdig" }
     },
     {
       "milestone": "terminal_hold",
-      "predicate": {
-        "kind": "task_state_is",
-        "state": "blocked"
-      },
-      "target": {
-        "status_id": "S-90",
-        "status_name": "På vent"
-      }
+      "predicate": { "kind": "task_state_is", "state": "blocked" },
+      "target": { "status_id": "S-90", "status_name": "På vent" }
     },
     {
       "milestone": "qa_active",
-      "predicate": {
-        "kind": "gate_state_is",
-        "gate": "qa-gate",
-        "state": "active"
-      },
-      "target": {
-        "status_id": "S-78",
-        "status_name": "Til kontroll"
-      }
+      "predicate": { "kind": "gate_state_is", "gate": "qa-gate", "state": "active" },
+      "target": { "status_id": "S-78", "status_name": "Til kontroll" }
     },
     {
       "milestone": "qa_ready",
-      "predicate": {
-        "kind": "gate_state_is",
-        "gate": "qa-gate",
-        "state": "ready"
-      },
-      "target": {
-        "status_id": "S-77",
-        "status_name": "Under arbeid"
-      }
+      "predicate": { "kind": "gate_state_is", "gate": "qa-gate", "state": "ready" },
+      "target": { "status_id": "S-77", "status_name": "Under arbeid" }
     },
     {
       "milestone": "implementation_active",
-      "predicate": {
-        "kind": "task_state_is",
-        "state": "in_progress"
-      },
-      "target": {
-        "status_id": "S-77",
-        "status_name": "Under arbeid"
-      }
+      "predicate": { "kind": "task_state_is", "state": "in_progress" },
+      "target": { "status_id": "S-77", "status_name": "Under arbeid" }
     }
   ],
   "statuses": [

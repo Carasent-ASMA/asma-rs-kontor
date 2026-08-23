@@ -22,7 +22,7 @@
 //! Everything in the ticket section is a row this Realm already recorded: a link, a
 //! projection it computed, an observation it took, an inbound comment it mirrored, a
 //! conflict it detected, a convergence attempt it made. Nothing here contacts an
-//! external system — that is `kontor-integrations-asma`'s job, behind the daemon —
+//! external system — that is `kontor-jira`'s job, behind the daemon —
 //! and nothing here decides anything. In particular there is **no outbound comment
 //! read, because there is no outbound comment table**: schema v1's
 //! `ticket_sync_projections.comment_policy` is checked to be `inbound_only`, and
@@ -734,7 +734,7 @@ impl SqliteStore {
     ///   for it, and the scheduler reads an absent pin as "there is no account, so
     ///   there is nothing to prove about one" rather than as "any account will do".
     /// * **external work** — default. Ticket ownership gating is read from live
-    ///   convergence state, which is `kontor-integrations-asma`'s to supply.
+    ///   convergence state, which is `kontor-jira`'s to supply.
     /// * **worktree** — none. A candidate claims one at admission, not before.
     /// * **governance** — the frozen-roster half only. Whether an epic froze a
     ///   roster is a row this crate owns and is read for real; whether its

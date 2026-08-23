@@ -301,6 +301,10 @@ pub fn router(state: ApiState) -> Router {
             "/v1/projects/{project_id}/memory/cutover:switch",
             post(memory::switch),
         )
+        .route(
+            "/v1/projects/{project_id}/backlog/cutover:switch",
+            post(memory::switch_backlog),
+        )
         .route("/v1/openapi.json", get(openapi_document))
         .route("/v1/runs/{agent_run_id}", get(control::run_snapshot))
         .route(
@@ -422,6 +426,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/topology-selection:apply",
                 post(applications::apply_project_topology_selection),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/jira:preview",
+                post(applications::preview_jira_materialization),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/jira:apply",
+                post(applications::apply_jira_materialization),
             )
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
@@ -629,6 +641,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/epics:apply",
                 post(applications::apply_epic),
+            )
+            .route(
+                "/v1/projects/{project_id}/backlog/import:preview",
+                post(applications::preview_backlog_import),
+            )
+            .route(
+                "/v1/projects/{project_id}/backlog/import:apply",
+                post(applications::apply_backlog_import),
             )
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}",
