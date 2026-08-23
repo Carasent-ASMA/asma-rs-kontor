@@ -5916,7 +5916,7 @@ async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
 }
 
 #[tokio::test]
-async fn resolving_a_task_context_is_deterministic_and_returns_no_content() {
+async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let seed = bootstrap(&world, "ctx").await;
@@ -5949,14 +5949,68 @@ async fn resolving_a_task_context_is_deterministic_and_returns_no_content() {
         first.body
     );
 
-    // Same task, same pins, same bytes: a preview is a pure function of what the
-    // task is, so a caller can compare two of them.
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            let document = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "text": "Read the approved project conventions before changing code"
+            }))?;
+            let provenance = kontor_store::memory::MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: None,
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            };
+            let (proposal, _) = store.propose_memory_revision(
+                project_id,
+                "project-conventions",
+                0,
+                &document,
+                &provenance,
+                "test-author",
+            )?;
+            store.approve_memory_revision(
+                project_id,
+                "project-conventions",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )?;
+            Ok::<_, kontor_store::memory::MemoryError>(())
+        })
+        .expect("approved project memory is seeded");
+
+    // Moving approved memory moves the pack and attributes the new paths to the
+    // immutable memory revision. The document still never leaves the process.
     let again = Call::post(&uri, &serde_json::json!({"snapshot": false}))
         .signed_as(&world, "operator")
         .with_key("ctx-preview-2")
         .send(&world)
         .await;
-    assert_eq!(again.json()["context_hash"], hash);
+    assert_ne!(again.json()["context_hash"], hash);
+    assert!(
+        again.json()["provenance"]
+            .as_array()
+            .expect("provenance")
+            .iter()
+            .any(|entry| entry["path"] == "/memory/project-conventions/text"
+                && entry["source_id"]
+                    .as_str()
+                    .is_some_and(|source| source.starts_with("memory."))),
+        "approved memory is attributable in the Context Pack: {}",
+        again.body
+    );
+
+    // Same task, pins and approved revisions, same bytes.
+    let stable = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ctx-preview-3")
+        .send(&world)
+        .await;
+    assert_eq!(stable.json()["context_hash"], again.json()["context_hash"]);
 
     // The merged content itself never leaves the process.
     assert!(

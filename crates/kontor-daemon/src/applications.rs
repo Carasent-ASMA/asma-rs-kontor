@@ -7612,17 +7612,18 @@ const fn layer_name(layer: kontor_context::model::ContextLayer) -> &'static str 
 
 /// The context layers one task resolves through.
 ///
-/// They are derived from the task and its pinned profile and from nothing a
-/// caller supplied, which is what makes the resolution deterministic: the same
-/// task resolves to the same hash until the task or its pin changes.
+/// They are derived from the task, its pinned profile and approved project
+/// memory, and from nothing a caller supplied. The same inputs therefore resolve
+/// to the same hash until the task, its pin or an approved memory revision moves.
 fn context_sources(
     realm_id: kontor_core::id::RealmId,
     task: &kontor_core::repository::Task,
     workflow: &kontor_core::repository::TaskWorkflow,
+    memory: &[kontor_store::memory::MemoryRevision],
 ) -> Result<Vec<kontor_context::model::ContextSource>, ApiError> {
     use kontor_context::model::{ContextLayer, ContextSource};
     let refuse = |error: &kontor_core::DomainError| ApiError::from_domain(realm_id, error);
-    vec![
+    let mut sources = vec![
         ContextSource {
             schema_version: SCHEMA_VERSION,
             realm_id,
@@ -7661,15 +7662,46 @@ fn context_sources(
                 "module": task.module.as_ref().map(kontor_core::id::ModuleKey::as_str),
             }),
         },
-    ]
-    .into_iter()
-    .map(|source| {
-        source
-            .validate(realm_id)
-            .map(|()| source)
-            .map_err(|error| refuse(&error))
-    })
-    .collect::<Result<Vec<_>, _>>()
+    ];
+
+    // ponytail: resolve every approved item until the canonical 1 MiB pack
+    // ceiling is reachable; add a versioned selector only when that happens.
+    for revision in memory {
+        let revision_number = u32::try_from(revision.revision).map_err(|_| {
+            refuse(&kontor_core::DomainError::invalid(
+                "MemoryRevision",
+                "is too large to represent in Context Pack provenance",
+            ))
+        })?;
+        let revision_number =
+            SpecVersion::parse(revision_number).map_err(|error| refuse(&error))?;
+        let document = revision
+            .document
+            .deserialize::<serde_json::Value>()
+            .map_err(|error| refuse(&error))?;
+        let mut items = serde_json::Map::new();
+        items.insert(revision.item_id.clone(), document);
+        sources.push(ContextSource {
+            schema_version: SCHEMA_VERSION,
+            realm_id,
+            layer: ContextLayer::ProjectProfile,
+            source_id: format!("memory.{}", revision.revision_id),
+            revision: revision_number,
+            restricted_references: Vec::new(),
+            redactions: Vec::new(),
+            content: serde_json::json!({ "memory": items }),
+        });
+    }
+
+    sources
+        .into_iter()
+        .map(|source| {
+            source
+                .validate(realm_id)
+                .map(|()| source)
+                .map_err(|error| refuse(&error))
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// The wire view of one account profile.
@@ -15569,10 +15601,19 @@ impl ApplicationOperations for Services {
                 )
             })?;
 
-        // The layers are built from what the task *is*, not from caller-supplied
-        // content: a route that accepted arbitrary context would be a route
-        // through which anything could be handed to a run.
-        let sources = context_sources(realm_id, &task, &workflow)?;
+        // The layers are built from what the task *is* and from approved memory,
+        // never from caller-supplied content: a route that accepted arbitrary
+        // context would be a route through which anything could reach a run.
+        let memory = state
+            .with_store(|store| store.list_memory(project_id))
+            .map_err(|error| match error {
+                kontor_store::memory::MemoryError::Domain(error) => self.refuse_domain(&error),
+                _ => self.deny(
+                    ApiErrorCode::Unavailable,
+                    "approved project memory could not be read",
+                ),
+            })?;
+        let sources = context_sources(realm_id, &task, &workflow, &memory)?;
         let references = kontor_context::model::ReferenceInputs::new();
         let resolution = kontor_context::resolve::ResolutionRequest {
             realm_id,
