@@ -698,7 +698,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_topology_materialize", CallerTier::Operator),
         ("kontor_topology_retire", CallerTier::Operator),
         ("kontor_topology_archive", CallerTier::Operator),
-        ("kontor_project_topology_selection_preview", CallerTier::Admin),
+        (
+            "kontor_project_topology_selection_preview",
+            CallerTier::Admin,
+        ),
         ("kontor_project_topology_selection_apply", CallerTier::Admin),
         ("kontor_jira_materialization_preview", CallerTier::Admin),
         ("kontor_jira_materialization_apply", CallerTier::Admin),
