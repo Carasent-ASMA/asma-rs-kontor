@@ -1420,6 +1420,176 @@
         }
       }
     },
+    "/v1/projects/{project_id}/backlog/cutover:switch": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "switch_backlog",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BacklogSwitch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/backlog/import:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Atomically import the exact previewed legacy backlog export.",
+        "operationId": "apply_backlog_import",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The receiving project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BacklogImportApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BacklogImportAppliedDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/backlog/import:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Validate one final legacy backlog export without committing it.",
+        "operationId": "preview_backlog_import",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The receiving project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BacklogImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BacklogImportPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/capacity": {
       "get": {
         "tags": [
@@ -3250,6 +3420,144 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AuthorizationProjectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply one exact Jira materialization preview and confirm every item.",
+        "operationId": "apply_jira_materialization",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic to materialize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JiraMaterializationApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JiraMaterializationAppliedDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview the complete Jira graph for one epic without writing Jira or SQLite.",
+        "operationId": "preview_jira_materialization",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic to materialize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JiraMaterializationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JiraMaterializationPreviewDto"
                 }
               }
             }
@@ -9014,6 +9322,155 @@
         },
         "additionalProperties": false
       },
+      "BacklogImportAppliedDto": {
+        "type": "object",
+        "description": "Durable result of applying a complete legacy backlog export.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "import_hash",
+          "readback_hash",
+          "imported_count",
+          "receipt_id",
+          "command_receipt_id"
+        ],
+        "properties": {
+          "command_receipt_id": {
+            "type": "string",
+            "description": "Idempotent command receipt id."
+          },
+          "import_hash": {
+            "type": "string",
+            "description": "Hash of the exact imported export."
+          },
+          "imported_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epics plus tasks committed or verified.",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The receiving project."
+          },
+          "readback_hash": {
+            "type": "string",
+            "description": "Hash recomputed from committed native graph state."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that owns the receipt."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "Authority-ledger import receipt id."
+          }
+        }
+      },
+      "BacklogImportApplyRequest": {
+        "type": "object",
+        "description": "Apply the exact backlog export preview.",
+        "required": [
+          "export",
+          "preview_hash"
+        ],
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/BacklogImportRequest",
+            "description": "The exact export that was previewed."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The preview hash returned for that export."
+          }
+        },
+        "additionalProperties": false
+      },
+      "BacklogImportPreviewDto": {
+        "type": "object",
+        "description": "No-write validation of a complete legacy backlog export.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "preview_hash",
+          "proposed_readback_hash",
+          "item_count"
+        ],
+        "properties": {
+          "item_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of epics plus tasks validated.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash of the exact canonical export."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The receiving project."
+          },
+          "proposed_readback_hash": {
+            "type": "string",
+            "description": "Proposed hash recomputed from the transaction-local graph."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that validated it."
+          }
+        }
+      },
+      "BacklogImportRequest": {
+        "type": "object",
+        "description": "One complete, project-scoped legacy backlog export.",
+        "required": [
+          "source",
+          "expected_authority_revision",
+          "epics"
+        ],
+        "properties": {
+          "epics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApplyEpicRequest"
+            },
+            "description": "Every epic in the final export."
+          },
+          "expected_authority_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The backlog authority revision the caller read.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "Bounded source-system identity recorded in the authority manifest."
+          }
+        },
+        "additionalProperties": false
+      },
+      "BacklogSwitch": {
+        "type": "object",
+        "required": [
+          "source",
+          "final_import_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "final_import_hash": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
       "BarrierState": {
         "type": "string",
         "description": "How far startup reconciliation has got, and therefore whether scheduling may\nrun.",
@@ -12316,6 +12773,201 @@
               "null"
             ],
             "description": "Optional ticket scope. It must belong to the epic in the route; absent\nmeans the epic as a whole."
+          }
+        },
+        "additionalProperties": false
+      },
+      "JiraMaterializationAppliedDto": {
+        "type": "object",
+        "description": "A confirmed Jira materialization and ASMA activation receipt.",
+        "required": [
+          "realm_id",
+          "epic_id",
+          "batch_id",
+          "items",
+          "receipt_id",
+          "activation_receipt_id",
+          "activated"
+        ],
+        "properties": {
+          "activated": {
+            "type": "boolean",
+            "description": "Whether the whole required binding set is activated."
+          },
+          "activation_receipt_id": {
+            "type": "string",
+            "description": "The separate ASMA activation command receipt."
+          },
+          "batch_id": {
+            "type": "string",
+            "description": "Stable batch identity."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic whose whole Jira graph is confirmed."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JiraMaterializationItemDto"
+            },
+            "description": "Confirmed ordered items."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that owns the receipt."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The materialization command receipt."
+          }
+        }
+      },
+      "JiraMaterializationApplyRequest": {
+        "type": "object",
+        "description": "What applying a Jira materialization preview is asked for.",
+        "required": [
+          "materialization",
+          "preview_hash",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision observed by the caller.",
+            "minimum": 0
+          },
+          "materialization": {
+            "$ref": "#/components/schemas/JiraMaterializationPreviewRequest",
+            "description": "The exact create/link intent that produced the preview."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The exact preview hash."
+          }
+        },
+        "additionalProperties": false
+      },
+      "JiraMaterializationIntentDto": {
+        "type": "object",
+        "description": "One server-derived Jira object's requested mode.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "issue_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required only for link mode; create has no caller-authored key."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/JiraMaterializationModeDto",
+            "description": "Create or link."
+          }
+        },
+        "additionalProperties": false
+      },
+      "JiraMaterializationItemDto": {
+        "type": "object",
+        "description": "One ordered Jira object in a materialization preview or receipt.",
+        "required": [
+          "item_kind",
+          "mode"
+        ],
+        "properties": {
+          "confirmed_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The confirmed Jira key after apply."
+          },
+          "item_kind": {
+            "type": "string",
+            "description": "Epic or task."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/JiraMaterializationModeDto",
+            "description": "Create or link."
+          },
+          "requested_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The requested linked key, when linking."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The task for a task item."
+          }
+        }
+      },
+      "JiraMaterializationModeDto": {
+        "type": "string",
+        "description": "Whether one Jira object is created or an existing key is verified.",
+        "enum": [
+          "create",
+          "link"
+        ]
+      },
+      "JiraMaterializationPreviewDto": {
+        "type": "object",
+        "description": "A complete no-write Jira materialization preview.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "items",
+          "preview_hash"
+        ],
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "The epic."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JiraMaterializationItemDto"
+            },
+            "description": "Ordered epic-first effects."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash apply must name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          }
+        }
+      },
+      "JiraMaterializationPreviewRequest": {
+        "type": "object",
+        "description": "What the Jira materialization preview is asked for.",
+        "required": [
+          "epic",
+          "tasks"
+        ],
+        "properties": {
+          "epic": {
+            "$ref": "#/components/schemas/JiraMaterializationIntentDto",
+            "description": "The epic Jira object."
+          },
+          "tasks": {
+            "type": "object",
+            "description": "One exact intent per task id."
           }
         },
         "additionalProperties": false

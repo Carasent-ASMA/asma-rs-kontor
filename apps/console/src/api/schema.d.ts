@@ -570,6 +570,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/backlog/cutover:switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["switch_backlog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/backlog/import:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically import the exact previewed legacy backlog export. */
+        post: operations["apply_backlog_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/backlog/import:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one final legacy backlog export without committing it. */
+        post: operations["preview_backlog_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/capacity": {
         parameters: {
             query?: never;
@@ -1074,6 +1124,40 @@ export interface paths {
         put?: never;
         /** Revoke future admission under one authorization. */
         post: operations["disarm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one exact Jira materialization preview and confirm every item. */
+        post: operations["apply_jira_materialization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview the complete Jira graph for one epic without writing Jira or SQLite. */
+        post: operations["preview_jira_materialization"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3038,6 +3122,67 @@ export interface components {
             /** @description Why. Recorded, never interpreted. */
             reason: string;
         };
+        /** @description Durable result of applying a complete legacy backlog export. */
+        BacklogImportAppliedDto: {
+            /** @description Idempotent command receipt id. */
+            command_receipt_id: string;
+            /** @description Hash of the exact imported export. */
+            import_hash: string;
+            /**
+             * Format: int64
+             * @description Epics plus tasks committed or verified.
+             */
+            imported_count: number;
+            /** @description The receiving project. */
+            project_id: string;
+            /** @description Hash recomputed from committed native graph state. */
+            readback_hash: string;
+            /** @description The Realm that owns the receipt. */
+            realm_id: string;
+            /** @description Authority-ledger import receipt id. */
+            receipt_id: string;
+        };
+        /** @description Apply the exact backlog export preview. */
+        BacklogImportApplyRequest: {
+            /** @description The exact export that was previewed. */
+            export: components["schemas"]["BacklogImportRequest"];
+            /** @description The preview hash returned for that export. */
+            preview_hash: string;
+        };
+        /** @description No-write validation of a complete legacy backlog export. */
+        BacklogImportPreviewDto: {
+            /**
+             * Format: int64
+             * @description Number of epics plus tasks validated.
+             */
+            item_count: number;
+            /** @description Hash of the exact canonical export. */
+            preview_hash: string;
+            /** @description The receiving project. */
+            project_id: string;
+            /** @description Proposed hash recomputed from the transaction-local graph. */
+            proposed_readback_hash: string;
+            /** @description The Realm that validated it. */
+            realm_id: string;
+        };
+        /** @description One complete, project-scoped legacy backlog export. */
+        BacklogImportRequest: {
+            /** @description Every epic in the final export. */
+            epics: components["schemas"]["ApplyEpicRequest"][];
+            /**
+             * Format: int64
+             * @description The backlog authority revision the caller read.
+             */
+            expected_authority_revision: number;
+            /** @description Bounded source-system identity recorded in the authority manifest. */
+            source: string;
+        };
+        BacklogSwitch: {
+            /** Format: int64 */
+            expected_revision: number;
+            final_import_hash: string;
+            source: string;
+        };
         /**
          * @description How far startup reconciliation has got, and therefore whether scheduling may
          *     run.
@@ -4624,6 +4769,80 @@ export interface components {
              *     means the epic as a whole.
              */
             task_id?: string | null;
+        };
+        /** @description A confirmed Jira materialization and ASMA activation receipt. */
+        JiraMaterializationAppliedDto: {
+            /** @description Whether the whole required binding set is activated. */
+            activated: boolean;
+            /** @description The separate ASMA activation command receipt. */
+            activation_receipt_id: string;
+            /** @description Stable batch identity. */
+            batch_id: string;
+            /** @description The epic whose whole Jira graph is confirmed. */
+            epic_id: string;
+            /** @description Confirmed ordered items. */
+            items: components["schemas"]["JiraMaterializationItemDto"][];
+            /** @description The Realm that owns the receipt. */
+            realm_id: string;
+            /** @description The materialization command receipt. */
+            receipt_id: string;
+        };
+        /** @description What applying a Jira materialization preview is asked for. */
+        JiraMaterializationApplyRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision observed by the caller.
+             */
+            expected_revision: number;
+            /** @description The exact create/link intent that produced the preview. */
+            materialization: components["schemas"]["JiraMaterializationPreviewRequest"];
+            /** @description The exact preview hash. */
+            preview_hash: string;
+        };
+        /** @description One server-derived Jira object's requested mode. */
+        JiraMaterializationIntentDto: {
+            /** @description Required only for link mode; create has no caller-authored key. */
+            issue_key?: string | null;
+            /** @description Create or link. */
+            mode: components["schemas"]["JiraMaterializationModeDto"];
+        };
+        /** @description One ordered Jira object in a materialization preview or receipt. */
+        JiraMaterializationItemDto: {
+            /** @description The confirmed Jira key after apply. */
+            confirmed_key?: string | null;
+            /** @description Epic or task. */
+            item_kind: string;
+            /** @description Create or link. */
+            mode: components["schemas"]["JiraMaterializationModeDto"];
+            /** @description The requested linked key, when linking. */
+            requested_key?: string | null;
+            /** @description The task for a task item. */
+            task_id?: string | null;
+        };
+        /**
+         * @description Whether one Jira object is created or an existing key is verified.
+         * @enum {string}
+         */
+        JiraMaterializationModeDto: "create" | "link";
+        /** @description A complete no-write Jira materialization preview. */
+        JiraMaterializationPreviewDto: {
+            /** @description The epic. */
+            epic_id: string;
+            /** @description Ordered epic-first effects. */
+            items: components["schemas"]["JiraMaterializationItemDto"][];
+            /** @description The hash apply must name. */
+            preview_hash: string;
+            /** @description The project. */
+            project_id: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+        };
+        /** @description What the Jira materialization preview is asked for. */
+        JiraMaterializationPreviewRequest: {
+            /** @description The epic Jira object. */
+            epic: components["schemas"]["JiraMaterializationIntentDto"];
+            /** @description One exact intent per task id. */
+            tasks: Record<string, never>;
         };
         /** @description One immutable late-handoff disposition recorded after runtime cancellation. */
         LateHandoffAttestationDto: {
@@ -8570,6 +8789,158 @@ export interface operations {
             };
         };
     };
+    switch_backlog: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BacklogSwitch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_backlog_import: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The receiving project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BacklogImportApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BacklogImportAppliedDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_backlog_import: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The receiving project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BacklogImportRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BacklogImportPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     project_capacity: {
         parameters: {
             query?: never;
@@ -10155,6 +10526,119 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthorizationProjectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_jira_materialization: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic to materialize */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JiraMaterializationApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JiraMaterializationAppliedDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_jira_materialization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic to materialize */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JiraMaterializationPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JiraMaterializationPreviewDto"];
                 };
             };
             401: {
