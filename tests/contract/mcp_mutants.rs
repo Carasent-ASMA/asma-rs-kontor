@@ -177,6 +177,11 @@ fn no_tool_names_a_tracker_field_a_status_or_an_assignee() {
             // directly in `the_comment_mirror_can_carry_no_prose_and_sends_nothing`.
             "kontor_ticket_comments_pull",
             "kontor_ticket_comments_list",
+            // Native materialization names the integration it activates, but
+            // its closed body contains only server-interpreted create/link
+            // intents. It cannot name a field, status, assignee or comment.
+            "kontor_jira_materialization_preview",
+            "kontor_jira_materialization_apply",
         ],
     );
     // The ticket tools accept the daemon's closed reconcile DTOs and nothing else:
@@ -194,6 +199,26 @@ fn no_tool_names_a_tracker_field_a_status_or_an_assignee() {
         body,
         vec!["projection_hash"],
         "applying a reconciliation must name a plan, never a status, assignee or comment"
+    );
+    let materialization_preview =
+        ToolSpec::find("kontor_jira_materialization_preview").expect("the preview tool");
+    assert_eq!(
+        materialization_preview
+            .args_in(Place::Body)
+            .map(|arg| arg.name)
+            .collect::<Vec<_>>(),
+        vec!["epic", "tasks"],
+        "materialization preview accepts only closed create/link intents"
+    );
+    let materialization_apply =
+        ToolSpec::find("kontor_jira_materialization_apply").expect("the apply tool");
+    assert_eq!(
+        materialization_apply
+            .args_in(Place::Body)
+            .map(|arg| arg.name)
+            .collect::<Vec<_>>(),
+        vec!["materialization", "preview_hash", "expected_revision"],
+        "materialization apply accepts only the previewed intent and replay guards"
     );
 }
 
@@ -244,7 +269,6 @@ fn no_tool_can_name_a_credential_an_address_or_a_proxy() {
             "authorization",
             "base_url",
             "host",
-            "port",
             "proxy",
             "url",
             "redirect",
@@ -260,6 +284,14 @@ fn no_tool_can_name_a_credential_an_address_or_a_proxy() {
             "authorization_id",
         ],
     );
+    // `port` is an ordinary substring of `import`; only a complete identifier
+    // segment names a network port.
+    for (tool, name) in every_identifier() {
+        assert!(
+            !name.split('_').any(|segment| segment == "port"),
+            "credential and network: {tool}.{name} names a network port"
+        );
+    }
 }
 
 #[test]
