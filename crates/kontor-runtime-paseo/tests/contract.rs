@@ -2115,6 +2115,67 @@ async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
 }
 
 #[tokio::test]
+async fn continuity_an_archived_binding_restores_after_its_workspace_is_retired() {
+    let (_, binding) = launched().await;
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
+    // With no placement left to re-prove, the exact-agent read itself must
+    // carry the archive stamp. A directory-only stamp is insufficient for this
+    // narrower terminal-recovery exception.
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_ARCHIVED));
+    let (restarted, _) = Plane::prepared(recorded).await;
+    // The task topology was retired before the daemon restarted, so the exact
+    // archived agent remains readable while its old workspace no longer appears
+    // in the active workspace census.
+    restarted
+        .daemon
+        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+
+    assert_eq!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("an archived binding remains inspectable after placement retirement"),
+        vec![binding.clone()]
+    );
+    let observed = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the restored archived seat is inspected by exact identity");
+    assert_eq!(
+        closes(&restarted.adapter, &observed, &binding).await,
+        Some(TerminalOutcome::Cancelled)
+    );
+}
+
+#[tokio::test]
+async fn continuity_a_live_binding_without_placement_remains_unrestorable() {
+    let (_, binding) = launched().await;
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
+    let (restarted, _) = Plane::prepared(recorded).await;
+    restarted
+        .daemon
+        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+
+    assert!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("the missing placement is an attestation result")
+            .is_empty(),
+        "only an explicitly archived exact identity may restore without placement"
+    );
+}
+
+#[tokio::test]
 async fn freshness_an_archive_that_is_not_observed_evidences_nothing() {
     let (plane, binding) = launched().await;
     // Paseo acknowledged the archive and then kept reporting the agent running.
@@ -5122,6 +5183,51 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
         plane.daemon.count("agent archive agt_implement"),
         1,
         "retirement replay must not archive twice"
+    );
+}
+
+/// A terminal archive is accepted from its exact correlated predecessor even
+/// when that legacy seat used a permission mode the current policy rejects.
+/// The seat is no longer driveable, so live-route validation must not wedge
+/// the logical Core Team binding before its archived readback can settle.
+#[tokio::test]
+async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut archived = v(AGENT);
+    archived["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    archived["agent"]["currentModeId"] = serde_json::json!("bypassPermissions");
+    archived["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", archived);
+    let plane = Plane::fresh(recorded);
+    let request = HostedSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    };
+
+    let retired = plane
+        .adapter
+        .retire_hosted_seat(&request)
+        .await
+        .expect("the exact archived predecessor settles despite its legacy mode");
+
+    assert_eq!(retired.identity, request.identity);
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an archived replay performs no second native effect"
     );
 }
 

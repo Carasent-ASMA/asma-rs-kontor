@@ -18508,7 +18508,22 @@ impl ApplicationOperations for Services {
             if let Some(receipt_id) = receipt_id {
                 self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
             }
-            let (team_run_closed, team_pending) = self.team_closure_state(project_id, &run)?;
+            let (mut team_run_closed, mut team_pending) =
+                self.team_closure_state(project_id, &run)?;
+            // The first abandonment may have happened while sibling runs were
+            // still live. Once they have all ended, replaying that same operator
+            // decision must converge the team too; otherwise the immutable
+            // abandoned run can never be acted on again and the task stays in
+            // flight forever. Runtime-observed terminal runs carry no abandon
+            // receipt and therefore never enter this operator-only fallback.
+            if team_run_closed.is_none()
+                && receipt_id.is_some()
+                && let Some(abandoned) = self.abandon_team_run(key, project_id, &run, now)?
+            {
+                team_run_closed = Some(abandoned);
+                team_pending = None;
+                state.signals().appended();
+            }
             return Ok(AbandonedRunDto {
                 realm_id: state.realm_id(),
                 agent_run_id: agent_run_id.to_string(),
