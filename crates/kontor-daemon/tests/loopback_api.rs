@@ -1830,6 +1830,34 @@ async fn teams_catalog_drafts_and_immutable_revisions_share_one_realm_projection
     );
 }
 
+#[tokio::test]
+async fn a_team_draft_cannot_publish_a_route_outside_the_governed_catalog() {
+    let world = World::open().await;
+    let mut draft = typed_draft("governed-model-route");
+    draft["slots"][0]["capabilities"]["chain"] = serde_json::json!([{
+        "provider": "opencode",
+        "model": "deepseek/deepseek-v4-pro",
+        "effort": "max"
+    }]);
+
+    let refused = Call::post("/v1/teams/drafts:save", &draft)
+        .signed_as(&world, "operator")
+        .with_key("team-route-pro-refused")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+
+    draft["slots"][0]["capabilities"]["chain"][0]["model"] =
+        serde_json::json!("deepseek/deepseek-v4-flash");
+    let accepted = Call::post("/v1/teams/drafts:save", &draft)
+        .signed_as(&world, "operator")
+        .with_key("team-route-flash-accepted")
+        .send(&world)
+        .await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+}
+
 /// Text that must never appear in a response, in the contract document, in a
 /// stored row or in a log line.
 ///

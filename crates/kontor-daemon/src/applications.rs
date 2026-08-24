@@ -145,10 +145,10 @@ use kontor_core::repository::{
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
     ContextPolicySnapshot, EffectiveContextPolicy, EffortLevel, EpicPresence, IntakeReceipt,
-    IntakeResult, ModelRef, ModelRung, NodeProjectionCapability, ProjectSessionTopologySpec,
-    ProviderRef, RequestedContextPolicy, RoleCatalogRevision, SeatAutonomy, Shareability,
-    ShareabilityTier, SourceIdentity, SourceProcessingState, TeamRunSnapshot, TopologySnapshot,
-    TriggerSpec,
+    IntakeResult, ModelChainPolicy, ModelRef, ModelRung, NodeProjectionCapability,
+    ProjectSessionTopologySpec, ProviderRef, RequestedContextPolicy, RoleCatalogRevision,
+    SeatAutonomy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
+    TeamRunSnapshot, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
     DerivedRunState, GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact,
@@ -8065,6 +8065,29 @@ fn provider_family(provider: &str) -> &str {
     provider
 }
 
+/// Whether one route is exposed by the governed Teams model catalog.
+///
+/// Runtime-only fallback configuration passes through this same predicate.
+/// That closes the old split in which a route omitted from `/v1/catalog` could
+/// still be selected after quota routing failed.
+pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
+    let effort = rung.effort.map(EffortLevel::as_str);
+    let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));
+    match (rung.provider.0.as_str(), rung.model.0.as_str()) {
+        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-sol" | "gpt-5.6-terra") => {
+            effort_is(&["low", "medium", "high", "xhigh", "max", "ultra"])
+        }
+        ("claude" | "claude-work" | "claude-personal", "claude-opus-5") => {
+            effort_is(&["off", "low", "medium", "high", "xhigh", "max", "ultracode"])
+        }
+        ("claude" | "claude-work" | "claude-personal", "claude-fable-5") => {
+            effort_is(&["low", "medium", "high", "xhigh", "max", "ultracode"])
+        }
+        ("opencode", "deepseek/deepseek-v4-flash") => effort_is(&["low", "high", "max"]),
+        _ => false,
+    }
+}
+
 /// The catalog default used when an explicit task account changes provider
 /// family and the frozen role chain contains no route on that family.
 fn default_model_for_provider(provider: &str) -> Option<&'static str> {
@@ -8171,29 +8194,90 @@ fn parse_runtime_model_route(
             "provider and model are required",
         ));
     }
-    let effort = route
-        .effort
-        .as_deref()
-        .map(|effort| match effort {
-            "off" => Ok(EffortLevel::Off),
-            "low" => Ok(EffortLevel::Low),
-            "medium" => Ok(EffortLevel::Medium),
-            "high" => Ok(EffortLevel::High),
-            "xhigh" => Ok(EffortLevel::Xhigh),
-            "max" => Ok(EffortLevel::Max),
-            "ultra" => Ok(EffortLevel::Ultra),
-            "ultracode" => Ok(EffortLevel::Ultracode),
-            _ => Err(kontor_core::DomainError::invalid(
-                "RuntimeModelRouteRequest",
-                "effort is not in the runtime effort vocabulary",
-            )),
-        })
-        .transpose()?;
-    Ok(ModelRung {
+    let effort = route.effort.as_deref().map(parse_effort).transpose()?;
+    let rung = ModelRung {
         provider: ProviderRef(route.provider.clone()),
         model: ModelRef(route.model.clone()),
         effort,
-    })
+    };
+    rung.validate()?;
+    if !model_route_is_catalogued(&rung) {
+        return Err(kontor_core::DomainError::invalid(
+            "RuntimeModelRouteRequest",
+            "the model route is not in the governed catalog",
+        ));
+    }
+    Ok(rung)
+}
+
+fn parse_effort(effort: &str) -> kontor_core::DomainResult<EffortLevel> {
+    match effort {
+        "off" => Ok(EffortLevel::Off),
+        "low" => Ok(EffortLevel::Low),
+        "medium" => Ok(EffortLevel::Medium),
+        "high" => Ok(EffortLevel::High),
+        "xhigh" => Ok(EffortLevel::Xhigh),
+        "max" => Ok(EffortLevel::Max),
+        "ultra" => Ok(EffortLevel::Ultra),
+        "ultracode" => Ok(EffortLevel::Ultracode),
+        _ => Err(kontor_core::DomainError::invalid(
+            "ModelRung",
+            "effort is not in the runtime effort vocabulary",
+        )),
+    }
+}
+
+fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::DomainResult<()> {
+    for slot in &request.slots {
+        let Some(chain) = slot.capabilities.get("chain") else {
+            continue;
+        };
+        let routes = chain.as_array().ok_or_else(|| {
+            kontor_core::DomainError::invalid(
+                "TeamDraftRequest",
+                "a declared model chain must be an array",
+            )
+        })?;
+        let mut rungs = Vec::with_capacity(routes.len());
+        for route in routes {
+            let provider = route.get("provider").and_then(serde_json::Value::as_str);
+            let model = route.get("model").and_then(serde_json::Value::as_str);
+            let (Some(provider), Some(model)) = (provider, model) else {
+                return Err(kontor_core::DomainError::invalid(
+                    "TeamDraftRequest",
+                    "a model rung must name both provider and model",
+                ));
+            };
+            let effort = route
+                .get("effort")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value.as_str().ok_or_else(|| {
+                        kontor_core::DomainError::invalid(
+                            "TeamDraftRequest",
+                            "model effort must use the runtime effort vocabulary",
+                        )
+                    })
+                })
+                .transpose()?
+                .map(parse_effort)
+                .transpose()?;
+            let rung = ModelRung {
+                provider: ProviderRef(provider.to_owned()),
+                model: ModelRef(model.to_owned()),
+                effort,
+            };
+            if !model_route_is_catalogued(&rung) {
+                return Err(kontor_core::DomainError::invalid(
+                    "TeamDraftRequest",
+                    "a model rung must use a route in the governed catalog",
+                ));
+            }
+            rungs.push(rung);
+        }
+        ModelChainPolicy { rungs }.validate()?;
+    }
+    Ok(())
 }
 
 fn runtime_model_route_dto(rung: &ModelRung) -> RuntimeModelRouteRequest {
@@ -10425,6 +10509,7 @@ impl ApplicationOperations for Services {
                 "a team draft needs a non-empty id and name",
             ));
         }
+        validate_team_draft_routes(request).map_err(|error| self.refuse_domain(&error))?;
         let fingerprint = serde_json::to_string(&("save", request)).map_err(|_| {
             self.deny(
                 ApiErrorCode::InvalidRequest,

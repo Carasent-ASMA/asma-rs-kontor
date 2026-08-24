@@ -1919,6 +1919,29 @@ fn a_model_chain_is_closed_and_bounded() {
         .validate()
         .is_err()
     );
+
+    for forbidden in [
+        "deepseek/deepseek-v4-pro",
+        "deepseek-v4pro",
+        "DeepSeek_V4_Pro-Plus",
+    ] {
+        let error = ModelChainPolicy {
+            rungs: vec![ModelRung {
+                provider: ProviderRef("opencode".to_owned()),
+                model: ModelRef(forbidden.to_owned()),
+                effort: Some(EffortLevel::Max),
+            }],
+        }
+        .validate()
+        .expect_err("the DeepSeek V4 Pro family is excluded in every spelling");
+        assert!(matches!(
+            error,
+            DomainError::Invalid {
+                subject: "ModelRung",
+                ..
+            }
+        ));
+    }
 }
 
 #[test]
