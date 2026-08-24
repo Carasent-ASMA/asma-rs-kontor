@@ -473,6 +473,14 @@ fn compose_paseo(
     // adapter compares it with an actual Kontor epic id.
     let mini_project_id =
         MiniProjectId::parse(&setting.mini_project_id).map_err(|_| refuse("mini_project_id"))?;
+    for fallback in setting.provider_fallbacks.values() {
+        fallback
+            .validate()
+            .map_err(|_| refuse("provider_fallbacks model route"))?;
+        if !crate::applications::model_route_is_catalogued(fallback) {
+            return Err(refuse("provider_fallbacks model route"));
+        }
+    }
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
@@ -728,6 +736,38 @@ mod tests {
             ),
             "the refusal names the misconfigured identity field: {error:?}"
         );
+    }
+
+    #[test]
+    fn a_runtime_fallback_cannot_bypass_the_governed_model_catalog() {
+        for model in ["deepseek/deepseek-v4-pro", "vendor/unknown-model"] {
+            let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+            setting.provider_fallbacks.insert(
+                "codex".to_owned(),
+                kontor_core::spec::ModelRung {
+                    provider: kontor_core::spec::ProviderRef("opencode".to_owned()),
+                    model: kontor_core::spec::ModelRef(model.to_owned()),
+                    effort: Some(kontor_core::spec::EffortLevel::Max),
+                },
+            );
+            let settings = RuntimeSettings {
+                schema_version: RUNTIMES_SCHEMA,
+                runtimes: vec![RuntimeSetting::Paseo(setting)],
+            };
+
+            let error = build_registry(&settings, None)
+                .expect_err("a runtime-only model route must fail closed");
+            assert!(
+                matches!(
+                    error,
+                    FleetError::Invalid {
+                        rule: "provider_fallbacks model route",
+                        ..
+                    }
+                ),
+                "the refusal names the governed field without echoing it: {error:?}"
+            );
+        }
     }
 
     #[test]
