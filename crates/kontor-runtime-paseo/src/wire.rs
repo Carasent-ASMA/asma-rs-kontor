@@ -537,10 +537,10 @@ pub struct PaseoWorkspacePage {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoPageInfo {
     /// The cursor the next page starts at.
-    #[serde(default, rename = "nextCursor")]
+    #[serde(default, rename = "nextCursor", alias = "afterCursor")]
     pub next_cursor: Option<String>,
     /// Whether the daemon says more rows exist.
-    #[serde(default, rename = "hasMore")]
+    #[serde(default, rename = "hasMore", alias = "hasMoreAfter")]
     pub has_more: bool,
 }
 
@@ -1686,5 +1686,16 @@ mod tests {
         assert_eq!(info(Some("cur_1"), false).next(), None);
         assert_eq!(info(None, true).next(), None);
         assert_eq!(info(Some(""), true).next(), None);
+    }
+
+    #[test]
+    fn paseo_0_4_directory_cursor_names_are_backward_compatible() {
+        let page_info: PaseoPageInfo = serde_json::from_value(serde_json::json!({
+            "afterCursor": "cur_2",
+            "hasMoreAfter": true
+        }))
+        .expect("Paseo 0.4 page info");
+
+        assert_eq!(page_info.next(), Some("cur_2"));
     }
 }
