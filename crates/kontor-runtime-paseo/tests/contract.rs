@@ -5057,6 +5057,51 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
     );
 }
 
+/// A terminal archive is accepted from its exact correlated predecessor even
+/// when that legacy seat used a permission mode the current policy rejects.
+/// The seat is no longer driveable, so live-route validation must not wedge
+/// the logical Core Team binding before its archived readback can settle.
+#[tokio::test]
+async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut archived = v(AGENT);
+    archived["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    archived["agent"]["currentModeId"] = serde_json::json!("bypassPermissions");
+    archived["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", archived);
+    let plane = Plane::fresh(recorded);
+    let request = HostedSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    };
+
+    let retired = plane
+        .adapter
+        .retire_hosted_seat(&request)
+        .await
+        .expect("the exact archived predecessor settles despite its legacy mode");
+
+    assert_eq!(retired.identity, request.identity);
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an archived replay performs no second native effect"
+    );
+}
+
 /// A legacy alias at the canonical path is retitle-required, not vacancy.
 #[tokio::test]
 async fn a_nonmatching_alias_at_the_canonical_path_blocks_duplication() {

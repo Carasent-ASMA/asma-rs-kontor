@@ -3875,13 +3875,19 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        Self::verify_agent_route(&before, &request.model_rung, SeatAutonomy::Supervised)?;
+        // An archive stamp is the terminal readback this operation exists to
+        // prove. Older hosted seats may carry a permission mode that no longer
+        // matches the current supervised policy; requiring a live route match
+        // before accepting their already-archived state wedges the logical
+        // seat permanently. Exact native identity and seat labels above still
+        // correlate the predecessor without treating it as driveable.
         if before.is_archived() {
             return Ok(HostedSeatRetireOutcome {
                 identity: request.identity.clone(),
                 archived_at: request.requested_at,
             });
         }
+        Self::verify_agent_route(&before, &request.model_rung, SeatAutonomy::Supervised)?;
         if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
             return Err(RuntimeError::ReplacementNotEvidenced {
                 rule: "Core Team route correction requires an idle predecessor with no pending permission",
