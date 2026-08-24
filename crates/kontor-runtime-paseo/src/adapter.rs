@@ -51,14 +51,16 @@ use kontor_core::id::{
     RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::{ModelRung, SeatAutonomy};
+use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
-    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
+    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatMessageOutcome,
+    HostedSeatMessageRequest, HostedSeatRetireOutcome, HostedSeatRetireRequest,
+    HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
+    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -2862,6 +2864,22 @@ struct PaseoRetitlePlan {
     changed: bool,
 }
 
+/// Fresh native facts behind one persistent-seat claim.
+///
+/// The plan owns complete agent snapshots so apply can preserve provider
+/// sessions and verify every metadata mutation against the exact object it
+/// addressed. It is never persisted; the daemon persists only the normalized
+/// claim outcome and its preview hash.
+struct PaseoHostedSeatClaimPlan {
+    claimant: PaseoAgent,
+    claimant_labels: BTreeMap<String, String>,
+    predecessor: Option<PaseoAgent>,
+    predecessor_reference: Option<HostedSeatClaimPredecessor>,
+    title_conflicts: Vec<(PaseoAgent, HostedSeatTitleConflict)>,
+    model_rung: ModelRung,
+    already_claimed: bool,
+}
+
 impl PaseoAdapter {
     /// Locate the addressed container, derive its title, and decide nothing else.
     ///
@@ -3492,13 +3510,16 @@ impl PaseoAdapter {
         })
     }
 
-    fn hosted_seat_labels(
+    fn hosted_labels(
         &self,
-        request: &HostedSeatLaunchRequest,
+        seat_binding_id: SeatBindingId,
+        role_slot_id: &RoleSlotId,
+        execution_scope: &ExecutionScope,
         project: &PaseoProjectBinding,
         workspace_id: &str,
+        cwd: &WorkspaceRoot,
     ) -> RuntimeResult<BTreeMap<String, String>> {
-        let scope = self.effective_scope(&request.scope)?;
+        let scope = self.effective_scope(execution_scope)?;
         Ok([
             (
                 label::JIRA_EPIC,
@@ -3508,16 +3529,318 @@ impl PaseoAdapter {
                 label::PROJECT_ID,
                 project.mini_project_id.as_str().to_owned(),
             ),
-            (label::SEAT_BINDING, request.seat_binding_id.to_string()),
+            (label::SEAT_BINDING, seat_binding_id.to_string()),
             (label::HOSTED_SEAT, "true".to_owned()),
-            (label::ROLE, request.role_slot_id.as_str().to_owned()),
-            (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
+            (label::ROLE, role_slot_id.as_str().to_owned()),
+            (label::ROLE_SLOT, role_slot_id.as_str().to_owned()),
             (label::WORKSPACE_ID, workspace_id.to_owned()),
-            (label::WORKTREE, request.cwd.as_str().to_owned()),
+            (label::WORKTREE, cwd.as_str().to_owned()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect())
+    }
+
+    fn hosted_seat_labels(
+        &self,
+        request: &HostedSeatLaunchRequest,
+        project: &PaseoProjectBinding,
+        workspace_id: &str,
+    ) -> RuntimeResult<BTreeMap<String, String>> {
+        self.hosted_labels(
+            request.seat_binding_id,
+            &request.role_slot_id,
+            &request.scope,
+            project,
+            workspace_id,
+            &request.cwd,
+        )
+    }
+
+    fn released_seat_title(
+        prefix: &str,
+        role_slot_id: &RoleSlotId,
+        native_id: &ExternalId,
+    ) -> RuntimeResult<ExternalName> {
+        ExternalName::parse(&format!(
+            "{prefix} · {} · {}",
+            role_slot_id.as_str(),
+            native_id.as_str(),
+        ))
+        .map_err(RuntimeError::from)
+    }
+
+    fn claimant_has_foreign_ownership(
+        claimant: &PaseoAgent,
+        wanted: &BTreeMap<String, String>,
+    ) -> bool {
+        [
+            label::AGENT_RUN,
+            label::TEAM_RUN,
+            label::CONSULTATION_RUN,
+            label::READ_ONLY,
+            label::PARENT_AGENT,
+        ]
+        .iter()
+        .any(|key| claimant.label(key).is_some())
+            || [
+                label::JIRA_EPIC,
+                label::PROJECT_ID,
+                label::SEAT_BINDING,
+                label::HOSTED_SEAT,
+                label::ROLE,
+                label::ROLE_SLOT,
+                label::WORKSPACE_ID,
+                label::WORKTREE,
+            ]
+            .iter()
+            .any(|key| {
+                claimant
+                    .label(key)
+                    .is_some_and(|value| wanted.get(*key).map(String::as_str) != Some(value))
+            })
+    }
+
+    fn title_conflict_has_kontor_owner(agent: &PaseoAgent) -> bool {
+        [
+            label::AGENT_RUN,
+            label::TEAM_RUN,
+            label::CONSULTATION_RUN,
+            label::SEAT_BINDING,
+            label::HOSTED_SEAT,
+            label::READ_ONLY,
+        ]
+        .iter()
+        .any(|key| agent.label(key).is_some())
+    }
+
+    async fn update_agent_metadata_preserving_session(
+        &self,
+        before: &PaseoAgent,
+        title: &ExternalName,
+        labels: &BTreeMap<String, String>,
+    ) -> RuntimeResult<PaseoAgent> {
+        let output = self
+            .transport
+            .run(&PaseoCommand::agent_update(
+                &before.id,
+                Some(title.as_str()),
+                labels,
+            ))
+            .await?;
+        let updated: PaseoCliAgentUpdated = output.parse("PaseoCliAgentUpdated")?;
+        if updated.agent_id != before.id {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let after = self.fetch_agent(&before.id).await?;
+        if after.id != before.id
+            || after.provider_session_id() != before.provider_session_id()
+            || after.workspace_id != before.workspace_id
+            || after.cwd != before.cwd
+            || after.provider != before.provider
+            || after.model != before.model
+            || after.thinking_option_id != before.thinking_option_id
+            || after.effective_thinking_option_id != before.effective_thinking_option_id
+            || after.current_mode_id != before.current_mode_id
+            || after.title.as_deref() != Some(title.as_str())
+            || !after.matches_labels(labels)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(after)
+    }
+
+    async fn hosted_seat_claim_plan(
+        &self,
+        request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<PaseoHostedSeatClaimPlan> {
+        let declared = self.declared().await?;
+        preflight(&declared, &OperationContext::new(RuntimeCapability::Adopt))?;
+        let scope = self.effective_scope(&request.scope)?;
+        let project = self.require_project_for(&scope)?;
+        let workspace_id = request.container_native_id.as_str();
+        let workspace = self.fetch_workspace_in(&project, workspace_id).await?;
+        self.verify_hosted_workspace_placement(&workspace, &project, &request.cwd)?;
+
+        let claimant = self
+            .fetch_agent(request.claimant_native_id.as_str())
+            .await?;
+        if claimant.is_archived()
+            || !matches!(
+                claimant.status,
+                PaseoAgentStatus::Idle | PaseoAgentStatus::Running | PaseoAgentStatus::Error
+            )
+            || !claimant.pending_permissions.is_empty()
+        {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the hosted-seat claimant is not a live permission-clear session",
+            });
+        }
+        self.verify_agent_location(&claimant, workspace_id, &request.cwd)?;
+        self.ensure_provider_available(&claimant.provider)?;
+        if claimant.provider.is_empty() || claimant.model.is_empty() {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if request
+            .expected_claimant_provider_session_id
+            .as_ref()
+            .is_some_and(|expected| claimant.provider_session_id() != Some(expected.as_str()))
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let model_rung = ModelRung {
+            provider: ProviderRef(claimant.provider.clone()),
+            model: ModelRef(claimant.model.clone()),
+            effort: claimant
+                .effective_thinking_option_id
+                .as_deref()
+                .map(|effort| match effort {
+                    "off" => Ok(EffortLevel::Off),
+                    "low" => Ok(EffortLevel::Low),
+                    "medium" => Ok(EffortLevel::Medium),
+                    "high" => Ok(EffortLevel::High),
+                    "xhigh" => Ok(EffortLevel::Xhigh),
+                    "max" => Ok(EffortLevel::Max),
+                    "ultra" => Ok(EffortLevel::Ultra),
+                    "ultracode" => Ok(EffortLevel::Ultracode),
+                    _ => Err(RuntimeError::LaunchNotAdmitted {
+                        rule: "the claimant exposes an unknown reasoning effort",
+                    }),
+                })
+                .transpose()?,
+        };
+        let claimant_labels = self.hosted_labels(
+            request.seat_binding_id,
+            &request.role_slot_id,
+            &scope,
+            &project,
+            workspace_id,
+            &request.cwd,
+        )?;
+        if Self::claimant_has_foreign_ownership(&claimant, &claimant_labels) {
+            return Err(RuntimeError::SlotAlreadyAdmitted {
+                rule: "the claimant already belongs to another Kontor or native seat",
+            });
+        }
+        let already_claimed = claimant.matches_labels(&claimant_labels)
+            && claimant.title.as_deref() == Some(request.display_name.as_str());
+
+        let seat_text = request.seat_binding_id.to_string();
+        let released_seat_text = format!("former:{seat_text}");
+        let mut predecessor_agent = None;
+        if let Some(expected) = &request.expected_predecessor
+            && expected.identity.native_id != request.claimant_native_id
+        {
+            if expected.identity.runtime_kind != self.config.runtime_kind
+                || expected.identity.host != self.config.host_key
+                || expected.identity.generation > self.generation()
+            {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "the hosted-seat predecessor belongs to another runtime",
+                });
+            }
+            let predecessor = self
+                .fetch_agent(expected.identity.native_id.as_str())
+                .await?;
+            if predecessor.provider_session_id()
+                != expected
+                    .provider_session_id
+                    .as_ref()
+                    .map(ExternalId::as_str)
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            if predecessor.is_archived() {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "the hosted-seat predecessor is archived rather than available for non-destructive takeover",
+                });
+            }
+            self.verify_agent_location(&predecessor, workspace_id, &request.cwd)?;
+            if matches!(
+                predecessor.status,
+                PaseoAgentStatus::Running
+                    | PaseoAgentStatus::Initializing
+                    | PaseoAgentStatus::Unknown
+            ) || !predecessor.pending_permissions.is_empty()
+            {
+                return Err(RuntimeError::ReplacementNotEvidenced {
+                    rule: "a hosted-seat takeover requires a quiescent predecessor with no pending permission",
+                });
+            }
+            let canonical = predecessor.label(label::SEAT_BINDING) == Some(seat_text.as_str())
+                && predecessor.label(label::HOSTED_SEAT) == Some("true");
+            let released = predecessor.label(label::SEAT_BINDING)
+                == Some(released_seat_text.as_str())
+                && predecessor.label(label::FORMER_SEAT_BINDING) == Some(seat_text.as_str());
+            if !canonical && !released {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            predecessor_agent = Some(predecessor);
+        }
+
+        let predecessor_id = predecessor_agent.as_ref().map(|agent| agent.id.as_str());
+        let mut title_conflicts = Vec::new();
+        for agent in self.fetch_project_agents(&project, false).await? {
+            if agent.id == claimant.id || predecessor_id == Some(agent.id.as_str()) {
+                continue;
+            }
+            let title_collides = agent.title.as_deref() == Some(request.display_name.as_str());
+            let cleanup_replay = agent.label(label::TITLE_RELEASED_FOR) == Some(seat_text.as_str());
+            if !title_collides && !cleanup_replay {
+                continue;
+            }
+            if title_collides && Self::title_conflict_has_kontor_owner(&agent) {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "another Kontor-owned session carries the canonical hosted-seat title",
+                });
+            }
+            title_conflicts.push((
+                agent.clone(),
+                HostedSeatTitleConflict {
+                    native_id: ExternalId::parse(&agent.id)?,
+                    released_title: Self::released_seat_title(
+                        "Unclaimed",
+                        &request.role_slot_id,
+                        &ExternalId::parse(&agent.id)?,
+                    )?,
+                },
+            ));
+        }
+        title_conflicts
+            .sort_by(|left, right| left.1.native_id.as_str().cmp(right.1.native_id.as_str()));
+        Ok(PaseoHostedSeatClaimPlan {
+            claimant,
+            claimant_labels,
+            predecessor: predecessor_agent,
+            predecessor_reference: request.expected_predecessor.clone(),
+            title_conflicts,
+            model_rung,
+            already_claimed,
+        })
+    }
+
+    fn hosted_seat_claim_preview(
+        &self,
+        request: &HostedSeatClaimRequest,
+        plan: &PaseoHostedSeatClaimPlan,
+    ) -> RuntimeResult<HostedSeatClaimPreview> {
+        Ok(HostedSeatClaimPreview {
+            identity: self.identity(ExternalId::parse(&plan.claimant.id)?, self.generation()),
+            provider_session_id: plan
+                .claimant
+                .provider_session_id()
+                .map(ExternalId::parse)
+                .transpose()?,
+            model_rung: plan.model_rung.clone(),
+            predecessor: plan.predecessor_reference.clone(),
+            title_conflicts: plan
+                .title_conflicts
+                .iter()
+                .map(|(_, conflict)| conflict.clone())
+                .collect(),
+            already_claimed: plan.already_claimed,
+            observed_at: request.requested_at,
+        })
     }
 
     async fn launch_hosted_seat_inner(
@@ -3831,6 +4154,116 @@ impl RuntimeAdapter for PaseoAdapter {
             }
         }
         let outcome = self.launch_hosted_seat_inner(request).await;
+        self.lock()
+            .hosted_seat_claims
+            .remove(&request.seat_binding_id);
+        outcome
+    }
+
+    async fn preview_hosted_seat_claim(
+        &self,
+        request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<HostedSeatClaimPreview> {
+        let plan = self.hosted_seat_claim_plan(request).await?;
+        self.hosted_seat_claim_preview(request, &plan)
+    }
+
+    async fn claim_hosted_seat(
+        &self,
+        request: &HostedSeatClaimRequest,
+    ) -> RuntimeResult<HostedSeatClaimOutcome> {
+        {
+            let state = &mut *self.lock();
+            if !state.hosted_seat_claims.insert(request.seat_binding_id) {
+                return Err(RuntimeError::SlotAlreadyAdmitted {
+                    rule: "this hosted topology seat already has a claim in flight",
+                });
+            }
+        }
+        let outcome = async {
+            let plan = self.hosted_seat_claim_plan(request).await?;
+            let before = self.hosted_seat_claim_preview(request, &plan)?;
+            let seat_text = request.seat_binding_id.to_string();
+            let mut changed = false;
+
+            if let Some(predecessor) = &plan.predecessor {
+                let released_title = Self::released_seat_title(
+                    "Former",
+                    &request.role_slot_id,
+                    &ExternalId::parse(&predecessor.id)?,
+                )?;
+                let released_seat = format!("former:{seat_text}");
+                let released_role = format!("former:{}", request.role_slot_id.as_str());
+                let labels = [
+                    (label::SEAT_BINDING.to_owned(), released_seat),
+                    (label::HOSTED_SEAT.to_owned(), "false".to_owned()),
+                    (label::FORMER_SEAT_BINDING.to_owned(), seat_text.clone()),
+                    (label::TITLE_RELEASED_FOR.to_owned(), seat_text.clone()),
+                    (label::ROLE.to_owned(), "former".to_owned()),
+                    (label::ROLE_SLOT.to_owned(), released_role),
+                ]
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
+                if predecessor.title.as_deref() != Some(released_title.as_str())
+                    || !predecessor.matches_labels(&labels)
+                {
+                    self.update_agent_metadata_preserving_session(
+                        predecessor,
+                        &released_title,
+                        &labels,
+                    )
+                    .await?;
+                    changed = true;
+                }
+            }
+
+            for (conflicting, conflict) in &plan.title_conflicts {
+                let labels = [(label::TITLE_RELEASED_FOR.to_owned(), seat_text.clone())]
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>();
+                if conflicting.title.as_deref() != Some(conflict.released_title.as_str())
+                    || !conflicting.matches_labels(&labels)
+                {
+                    self.update_agent_metadata_preserving_session(
+                        conflicting,
+                        &conflict.released_title,
+                        &labels,
+                    )
+                    .await?;
+                    changed = true;
+                }
+            }
+
+            if !plan.already_claimed {
+                self.update_agent_metadata_preserving_session(
+                    &plan.claimant,
+                    &request.display_name,
+                    &plan.claimant_labels,
+                )
+                .await?;
+                changed = true;
+            }
+
+            let mut readback_request = request.clone();
+            readback_request.expected_claimant_provider_session_id =
+                before.provider_session_id.clone();
+            let after_plan = self.hosted_seat_claim_plan(&readback_request).await?;
+            let after = self.hosted_seat_claim_preview(&readback_request, &after_plan)?;
+            if !after.already_claimed
+                || after.identity != before.identity
+                || after.provider_session_id != before.provider_session_id
+                || after.model_rung != before.model_rung
+                || after.predecessor != before.predecessor
+                || after.title_conflicts != before.title_conflicts
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            Ok(HostedSeatClaimOutcome {
+                claim: after,
+                changed,
+            })
+        }
+        .await;
         self.lock()
             .hosted_seat_claims
             .remove(&request.seat_binding_id);

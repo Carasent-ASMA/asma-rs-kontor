@@ -61,8 +61,10 @@ use kontor_api::applications::{
     ConsultationVerdictDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
     CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
     CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
-    CoreTeamRoutePreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
-    CoreTeamSeatSelectionDto, DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
+    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
+    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
+    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
+    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
     HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
     ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
     ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
@@ -172,6 +174,7 @@ use kontor_profiles::pack::{
 };
 use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest,
+    HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RetitleSeatRequest,
     RuntimeAdapter, RuntimeError,
 };
@@ -323,6 +326,17 @@ struct CoreTeamRoutePlan {
     predecessor: StoredHostedTopologySeat,
     successor: Option<StoredHostedTopologySeat>,
     desired: ModelRung,
+    preview_hash: ContentHash,
+}
+
+struct CoreTeamSeatClaimPlan {
+    epic: MiniProject,
+    roster: FrozenRoster,
+    binding: SeatBinding,
+    active: Option<StoredHostedTopologySeat>,
+    predecessor: Option<StoredHostedTopologySeat>,
+    runtime_request: HostedSeatClaimRequest,
+    runtime_preview: HostedSeatClaimPreview,
     preview_hash: ContentHash,
 }
 
@@ -4367,6 +4381,218 @@ impl Services {
             predecessor,
             successor,
             desired,
+            preview_hash,
+        })
+    }
+
+    async fn core_team_seat_claim_plan(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamSeatClaimPreviewRequest,
+    ) -> Result<CoreTeamSeatClaimPlan, ApiError> {
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        let binding = state
+            .with_store(|store| store.get_seat_binding(project_id, request.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|binding| binding.is_non_terminal())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the requested persistent Core Team SeatBinding is not active",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| {
+                node.mini_project_id == Some(epic_id)
+                    && node.kind == self.domain.delivery.control_kind
+                    && node.task_id.is_none()
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the SeatBinding is not hosted by this epic's control plane",
+                )
+            })?;
+        if !roster.revision.seats.iter().any(|seat| {
+            seat.presence != EpicPresence::OnDemand
+                && seat.role_slot_id == binding.role_slot_id
+                && seat.role.role_code == binding.role.role_code
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the SeatBinding is not one of this epic's frozen Core Team roles",
+            ));
+        }
+
+        let active = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?;
+        let predecessor = match (&active, &request.expected_current_native_id) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the logical Core Team seat is empty rather than holding the previewed predecessor",
+                ));
+            }
+            (Some(current), Some(expected))
+                if current.native_identity.native_id == *expected =>
+            {
+                Some(current.clone())
+            }
+            (Some(current), None)
+                if current.native_identity.native_id == request.claimant_native_id =>
+            {
+                None
+            }
+            (Some(current), Some(expected))
+                if current.native_identity.native_id == request.claimant_native_id =>
+            {
+                Some(
+                    state
+                        .with_store(|store| {
+                            store.get_hosted_topology_seat_history(
+                                project_id,
+                                binding.id,
+                                expected,
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::RevisionConflict,
+                                "the previewed predecessor is neither active nor recorded in seat history",
+                            )
+                        })?,
+                )
+            }
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the native Core Team filler moved since the caller read it",
+                ));
+            }
+        };
+        if predecessor.as_ref().is_some_and(|predecessor| {
+            predecessor.native_identity.native_id == request.claimant_native_id
+        }) && active
+            .as_ref()
+            .is_none_or(|active| active.native_identity.native_id != request.claimant_native_id)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the claimant cannot also be the predecessor being taken over",
+            ));
+        }
+
+        let container = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control plane has no persisted native container",
+                )
+            })?;
+        let adapter = state
+            .runtimes()
+            .get(&container.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the hosted-seat runtime is not configured in this daemon",
+                )
+            })?;
+        let cwd = self.runtime_root(project_id, Some(epic_id))?;
+        let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
+        let display_name = self.seat_name(project_id, &node, &scope, &binding.role.role_code)?;
+        let runtime_request = HostedSeatClaimRequest {
+            seat_binding_id: binding.id,
+            role_slot_id: binding.role_slot_id.clone(),
+            display_name,
+            container_native_id: container.identity.native_id,
+            cwd,
+            scope,
+            claimant_native_id: request.claimant_native_id.clone(),
+            expected_claimant_provider_session_id: None,
+            expected_predecessor: predecessor.as_ref().map(|predecessor| {
+                HostedSeatClaimPredecessor {
+                    identity: predecessor.native_identity.clone(),
+                    provider_session_id: predecessor.provider_session_id.clone(),
+                }
+            }),
+            requested_at: kontor_api::now(),
+        };
+        let runtime_preview = adapter
+            .preview_hosted_seat_claim(&runtime_request)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if runtime_preview.identity.native_id != request.claimant_native_id
+            || runtime_preview.predecessor != runtime_request.expected_predecessor
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the runtime claim readback differs from the exact requested identities",
+            ));
+        }
+        if active.as_ref().is_some_and(|active| {
+            active.native_identity.native_id == request.claimant_native_id
+                && (active.native_identity != runtime_preview.identity
+                    || active.model_rung != runtime_preview.model_rung)
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the already-active claimant changed runtime identity or model route",
+            ));
+        }
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_seat_claim",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "epic_revision": epic.revision.get(),
+            "seat_binding": binding.id.to_string(),
+            "claimant": {
+                "runtime_kind": runtime_preview.identity.runtime_kind.as_str(),
+                "host": runtime_preview.identity.host.as_str(),
+                "generation": runtime_preview.identity.generation,
+                "native_id": runtime_preview.identity.native_id.as_str(),
+                "provider_session_id": runtime_preview.provider_session_id.as_ref().map(ExternalId::as_str),
+                "model": &runtime_preview.model_rung,
+            },
+            "predecessor": runtime_preview.predecessor.as_ref().map(|predecessor| serde_json::json!({
+                "runtime_kind": predecessor.identity.runtime_kind.as_str(),
+                "host": predecessor.identity.host.as_str(),
+                "generation": predecessor.identity.generation,
+                "native_id": predecessor.identity.native_id.as_str(),
+                "provider_session_id": predecessor.provider_session_id.as_ref().map(ExternalId::as_str),
+            })),
+            "title_conflicts": runtime_preview.title_conflicts.iter().map(|conflict| serde_json::json!({
+                "native_id": conflict.native_id.as_str(),
+                "released_title": conflict.released_title.as_str(),
+            })).collect::<Vec<_>>(),
+        }))?;
+        Ok(CoreTeamSeatClaimPlan {
+            epic,
+            roster,
+            binding,
+            active,
+            predecessor,
+            runtime_request,
+            runtime_preview,
             preview_hash,
         })
     }
@@ -12972,6 +13198,170 @@ impl ApplicationOperations for Services {
                 receipt_id: receipt_id.to_string(),
                 applied: if replayed || plan.predecessor.model_rung == plan.desired {
                     AppliedDto::Unchanged
+                } else {
+                    AppliedDto::Updated
+                },
+                revision: plan.epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn preview_core_team_seat_claim(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamSeatClaimPreviewRequest,
+    ) -> Result<CoreTeamSeatClaimPreviewDto, ApiError> {
+        let state = self.state()?;
+        let plan = self
+            .core_team_seat_claim_plan(project_id, epic_id, request)
+            .await?;
+        Ok(CoreTeamSeatClaimPreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            epic_id,
+            seat_binding_id: plan.binding.id,
+            claimant_native_id: plan.runtime_preview.identity.native_id.clone(),
+            claimant_provider_session_id: plan.runtime_preview.provider_session_id.clone(),
+            claimant_model_route: runtime_model_route_dto(&plan.runtime_preview.model_rung),
+            predecessor_native_id: plan
+                .predecessor
+                .as_ref()
+                .map(|predecessor| predecessor.native_identity.native_id.clone()),
+            title_conflicts: plan
+                .runtime_preview
+                .title_conflicts
+                .iter()
+                .map(|conflict| CoreTeamSeatTitleConflictDto {
+                    native_id: conflict.native_id.clone(),
+                    released_title: conflict.released_title.clone(),
+                })
+                .collect(),
+            already_claimed: plan.runtime_preview.already_claimed,
+            preview_hash: plan.preview_hash,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    async fn apply_core_team_seat_claim(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamSeatClaimApplyRequest,
+    ) -> Result<CoreTeamSeatClaimOutcomeDto, ApiError> {
+        let state = self.state()?;
+        let plan = self
+            .core_team_seat_claim_plan(project_id, epic_id, &request.claim())
+            .await?;
+        if plan.preview_hash != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the Core Team seat claim no longer matches its preview",
+            ));
+        }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_seat_claim",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": plan.binding.id.to_string(),
+            "claimant": plan.runtime_preview.identity.native_id.as_str(),
+            "predecessor": plan.predecessor.as_ref().map(|predecessor| predecessor.native_identity.native_id.as_str()),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        let adapter = state
+            .runtimes()
+            .get(&plan.runtime_preview.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the hosted-seat runtime is not configured in this daemon",
+                )
+            })?;
+        let mut runtime_request = plan.runtime_request.clone();
+        runtime_request.expected_claimant_provider_session_id =
+            plan.runtime_preview.provider_session_id.clone();
+        let runtime_outcome = adapter
+            .claim_hosted_seat(&runtime_request)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let successor = StoredHostedTopologySeat {
+            project_id,
+            seat_binding_id: plan.binding.id,
+            model_rung: runtime_outcome.claim.model_rung.clone(),
+            native_identity: runtime_outcome.claim.identity.clone(),
+            provider_session_id: runtime_outcome.claim.provider_session_id.clone(),
+            observed_at: runtime_outcome.claim.observed_at,
+        };
+        match plan.active.as_ref() {
+            Some(active)
+                if active.native_identity.native_id != successor.native_identity.native_id =>
+            {
+                state
+                    .with_store(|store| {
+                        store.replace_hosted_topology_seat_route(
+                            active,
+                            &successor,
+                            successor.observed_at,
+                            "authorized existing-session Core Team seat claim",
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
+            _ => state
+                .with_store(|store| store.bind_hosted_topology_seat(&successor))
+                .map_err(|error| self.refuse(&error))?,
+        }
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(
+                    project_id,
+                    plan.binding.id,
+                    &SeatLivenessObservation {
+                        attached_at: Some(successor.observed_at),
+                        runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                        ..SeatLivenessObservation::default()
+                    },
+                    successor.observed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::ClaimCoreTeamSeat,
+            target,
+            plan.epic.revision,
+            &intent,
+        )?;
+        let was_empty = plan.active.is_none();
+        Ok(CoreTeamSeatClaimOutcomeDto {
+            core_team: self.epic_core_team_dto(project_id, epic_id, &plan.roster)?,
+            seat_binding_id: plan.binding.id,
+            predecessor_native_id: plan
+                .predecessor
+                .as_ref()
+                .map(|predecessor| predecessor.native_identity.native_id.clone()),
+            claimant_native_id: successor.native_identity.native_id,
+            released_title_native_ids: plan
+                .runtime_preview
+                .title_conflicts
+                .into_iter()
+                .map(|conflict| conflict.native_id)
+                .collect(),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: if replayed || !runtime_outcome.changed {
+                    AppliedDto::Unchanged
+                } else if was_empty {
+                    AppliedDto::Created
                 } else {
                     AppliedDto::Updated
                 },

@@ -871,6 +871,131 @@ pub struct CoreTeamRouteOutcomeDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Read-only request to attach an already-running native session to a
+/// persistent Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamSeatClaimPreviewRequest {
+    /// Epic revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Logical SeatBinding that must be preserved.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact already-running native session selected by the operator.
+    #[schema(value_type = String)]
+    pub claimant_native_id: ExternalId,
+    /// Exact current filler observed by the caller, or none for an empty seat.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub expected_current_native_id: Option<ExternalId>,
+}
+
+/// One duplicate canonical-title session that a claim would release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatTitleConflictDto {
+    /// Exact native session; title text is never used as an address.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Deterministic non-canonical title it would receive.
+    #[schema(value_type = String)]
+    pub released_title: ExternalName,
+}
+
+/// Fresh runtime-backed plan for one existing-session Core Team claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatClaimPreviewDto {
+    /// Realm that computed the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Epic whose ECP hosts the seat.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Preserved logical seat identity.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact claimant read back from the runtime.
+    #[schema(value_type = String)]
+    pub claimant_native_id: ExternalId,
+    /// Provider-native conversation frozen by the preview, when exposed.
+    #[schema(value_type = Option<String>)]
+    pub claimant_provider_session_id: Option<ExternalId>,
+    /// Actual provider/model/effort already running in the claimant.
+    pub claimant_model_route: RuntimeModelRouteRequest,
+    /// Current logical-seat filler that would become history, when any.
+    #[schema(value_type = Option<String>)]
+    pub predecessor_native_id: Option<ExternalId>,
+    /// Non-owning duplicate-title sessions that would be retitled.
+    pub title_conflicts: Vec<CoreTeamSeatTitleConflictDto>,
+    /// Whether the claimant already carries the canonical seat projection.
+    pub already_claimed: bool,
+    /// Hash the apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Projection cursor read by the preview.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Apply one still-current existing-session Core Team claim.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamSeatClaimApplyRequest {
+    /// Epic revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Logical SeatBinding that must be preserved.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact already-running native session selected by the operator.
+    #[schema(value_type = String)]
+    pub claimant_native_id: ExternalId,
+    /// Exact current filler observed by the caller, or none for an empty seat.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub expected_current_native_id: Option<ExternalId>,
+    /// Hash returned by preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+impl CoreTeamSeatClaimApplyRequest {
+    /// Recover the exact preview request represented by this apply.
+    #[must_use]
+    pub fn claim(&self) -> CoreTeamSeatClaimPreviewRequest {
+        CoreTeamSeatClaimPreviewRequest {
+            expected_revision: self.expected_revision,
+            seat_binding_id: self.seat_binding_id,
+            claimant_native_id: self.claimant_native_id.clone(),
+            expected_current_native_id: self.expected_current_native_id.clone(),
+        }
+    }
+}
+
+/// Completed non-destructive attachment of an existing native session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatClaimOutcomeDto {
+    /// Core Team projection after the claim.
+    pub core_team: CoreTeamDto,
+    /// Preserved logical SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Previous filler retained as a live former session, when any.
+    #[schema(value_type = Option<String>)]
+    pub predecessor_native_id: Option<ExternalId>,
+    /// Exact active claimant.
+    #[schema(value_type = String)]
+    pub claimant_native_id: ExternalId,
+    /// Duplicate-title sessions retitled during apply.
+    #[schema(value_type = Vec<String>)]
+    pub released_title_native_ids: Vec<ExternalId>,
+    /// Audited mutation receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// One bounded message to an already attached persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -5100,6 +5225,21 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &CoreTeamRouteApplyRequest,
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError>;
+    /// Preview attachment of an already-running session to a persistent seat.
+    async fn preview_core_team_seat_claim(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamSeatClaimPreviewRequest,
+    ) -> Result<CoreTeamSeatClaimPreviewDto, ApiError>;
+    /// Apply one still-current existing-session claim.
+    async fn apply_core_team_seat_claim(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamSeatClaimApplyRequest,
+    ) -> Result<CoreTeamSeatClaimOutcomeDto, ApiError>;
     /// Send one bounded handoff to an attached persistent Core Team seat.
     async fn message_hosted_seat(
         &self,
@@ -6971,6 +7111,71 @@ pub async fn apply_core_team_route(
         state
             .applications()
             .apply_core_team_route(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview attachment of one exact already-running session to a Core Team seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic")
+    ),
+    request_body = CoreTeamSeatClaimPreviewRequest,
+    responses(
+        (status = 200, body = CoreTeamSeatClaimPreviewDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn preview_core_team_seat_claim(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<CoreTeamSeatClaimPreviewRequest>,
+) -> Result<Json<CoreTeamSeatClaimPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_core_team_seat_claim(project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply one still-current existing-session claim without archiving either side.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamSeatClaimApplyRequest,
+    responses(
+        (status = 200, body = CoreTeamSeatClaimOutcomeDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn apply_core_team_seat_claim(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamSeatClaimApplyRequest>,
+) -> Result<Json<CoreTeamSeatClaimOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_core_team_seat_claim(&key, project_id, epic_id, &request)
             .await?,
     ))
 }
