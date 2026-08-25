@@ -234,7 +234,7 @@ impl Credential {
     pub fn read(state_root: &Path, tier: CallerTier) -> Result<Self, LocalError> {
         if tier == CallerTier::Operator
             && let Ok(secret) = std::env::var(CONSULTATION_AUTH_ENV)
-            && secret.starts_with("kontor-seat-v1.")
+            && is_consultation_seat_secret(&secret)
         {
             return Ok(Self {
                 tier,
@@ -285,6 +285,14 @@ impl Credential {
     pub const fn tier(&self) -> CallerTier {
         self.tier
     }
+}
+
+/// Whether an inherited bearer has a consultation-seat wire identity.
+///
+/// Version 1 remains readable until every pre-fencing seat has retired. Version 2
+/// carries the occupancy generation that fences a replaced native filler.
+fn is_consultation_seat_secret(secret: &str) -> bool {
+    secret.starts_with("kontor-seat-v1.") || secret.starts_with("kontor-seat-v2.")
 }
 
 /// Where this caller's Realm is listening.
@@ -937,6 +945,20 @@ mod tests {
             rendered.to_lowercase().contains("admin"),
             "the tier is safe to name: {rendered}"
         );
+    }
+
+    #[test]
+    fn both_legacy_and_generation_fenced_consultation_credentials_are_recognized() {
+        assert!(is_consultation_seat_secret(
+            "kontor-seat-v1.binding.signature"
+        ));
+        assert!(is_consultation_seat_secret(
+            "kontor-seat-v2.binding.2.signature"
+        ));
+        assert!(!is_consultation_seat_secret("operator-secret"));
+        assert!(!is_consultation_seat_secret(
+            "kontor-seat-v3.binding.signature"
+        ));
     }
 
     #[test]
