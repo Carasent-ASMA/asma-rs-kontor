@@ -38,6 +38,7 @@ use std::sync::Arc;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
+use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
     ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
@@ -49,8 +50,9 @@ use kontor_core::repository::{
     CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject, NewObservation,
     NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun,
     NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
-    SourceDisposition, SpecRepository, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, TicketRepository, TopologyRepository, WorkflowRepository,
+    SourceDisposition, SpecRepository, StoredConsultationProfileRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{
@@ -16719,8 +16721,8 @@ fn advisor_definition(profile_id: &str, version: u32) -> serde_json::Value {
 const ADVISOR_PROFILE: &str = "01991c00-0000-7000-8000-0000000000a1";
 
 /// The Advisor catalog starts empty; the production Committee preset is seeded.
-/// Existing projects receive the same hash-verified preset lazily, which is what
-/// makes upgrading a realm repair the catalog without rebuilding its database.
+/// Existing projects receive an absent preset lazily, which is what makes
+/// upgrading a realm repair the catalog without rebuilding its database.
 #[tokio::test]
 async fn consultation_catalogs_seed_the_operational_committee_preset() {
     let world = World::open().await;
@@ -16751,6 +16753,59 @@ async fn consultation_catalogs_seed_the_operational_committee_preset() {
         "01991c00-0000-7000-8000-000000000001"
     );
     assert_eq!(committees.json()["revisions"][0]["version"], 1);
+}
+
+/// A bundle is only a lazy bootstrap source. Once a revision is published, its
+/// stored bytes remain authoritative even if a later daemon ships different
+/// bytes under that identity; policy changes must append another version.
+#[tokio::test]
+async fn a_bundled_preset_change_does_not_block_an_immutable_published_revision() {
+    let world = World::open().await;
+    let mut historical = kontor_profiles::seeds::bundled_consultation_presets()
+        .expect("the bundled presets load")
+        .committee_templates
+        .remove(0);
+    historical.name =
+        ExternalName::parse("Historical independent review").expect("a bounded historical name");
+    let canonical = historical
+        .canonicalize()
+        .expect("the historical revision canonicalizes");
+    let historical_hash = canonical.hash().clone();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id: world.project,
+                family: ConsultationFamily::Committee,
+                profile_id: historical.template_id.to_string(),
+                version: historical.version,
+                name: historical.name.clone(),
+                definition: canonical.json().to_owned(),
+                definition_hash: historical_hash.clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the historical immutable revision publishes");
+    });
+
+    let catalog = Call::get(format!(
+        "/v1/projects/{}/committee-templates",
+        world.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_eq!(
+        catalog.json()["revisions"].as_array().map(Vec::len),
+        Some(1),
+        "the lazy seed appended or replaced an existing identity: {}",
+        catalog.body
+    );
+    assert_eq!(
+        catalog.json()["revisions"][0]["definition_hash"],
+        historical_hash.as_str(),
+        "the catalog did not preserve the published bytes: {}",
+        catalog.body
+    );
 }
 
 /// Preview, publish, read back — and the version after it.

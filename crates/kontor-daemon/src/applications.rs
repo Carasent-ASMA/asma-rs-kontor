@@ -4862,21 +4862,21 @@ impl Services {
             let presets = kontor_profiles::seeds::bundled_consultation_presets()
                 .map_err(|error| self.refuse_domain(&error))?;
             for template in presets.committee_templates {
+                let id = template.template_id.to_string();
+                if published.iter().any(|revision| {
+                    revision.profile_id == id && revision.version == template.version
+                }) {
+                    // A preset is bootstrap data, not a mutable source of truth.
+                    // The repository already proves that the stored definition
+                    // still matches its published hash. Once this immutable
+                    // identity exists, an upgraded build must keep serving it;
+                    // changed policy belongs in the next bundled version and is
+                    // appended through the normal publication path below.
+                    continue;
+                }
                 let canonical = template
                     .canonicalize()
                     .map_err(|error| self.refuse_domain(&error))?;
-                let id = template.template_id.to_string();
-                if let Some(existing) = published.iter().find(|revision| {
-                    revision.profile_id == id && revision.version == template.version
-                }) {
-                    if existing.definition_hash != *canonical.hash() {
-                        return Err(self.deny(
-                            ApiErrorCode::PlacementBlocked,
-                            "a built-in Committee preset identity names different published bytes",
-                        ));
-                    }
-                    continue;
-                }
                 state
                     .with_store(|store| {
                         store.publish_consultation_profile_revision(
