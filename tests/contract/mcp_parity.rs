@@ -413,13 +413,24 @@ fn every_declared_nested_object_matches_the_contracts_own_dto() {
         };
 
         for arg in tool.args_in(Place::Body) {
-            let ArgType::Object(fields) = arg.ty else {
-                continue;
+            let (fields, is_array) = match arg.ty {
+                ArgType::Object(fields) => (fields, false),
+                ArgType::ObjectArray(fields) => (fields, true),
+                _ => continue,
             };
             let property = schema
                 .pointer(&format!("/properties/{}", arg.name))
                 .unwrap_or_else(|| panic!("{}'s {} is a property of its DTO", tool.name, arg.name));
-            let resolved = resolve(&document, property);
+            let resolved = if is_array {
+                resolve(
+                    &document,
+                    property.get("items").unwrap_or_else(|| {
+                        panic!("{}'s {} declares array items", tool.name, arg.name)
+                    }),
+                )
+            } else {
+                resolve(&document, property)
+            };
 
             let contracted: BTreeSet<String> = resolved
                 .get("properties")

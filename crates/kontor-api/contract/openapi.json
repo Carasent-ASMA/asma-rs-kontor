@@ -11170,7 +11170,8 @@
         "required": [
           "role_slot_id",
           "logical_role",
-          "seat_binding_id"
+          "seat_binding_id",
+          "occupancy_generation"
         ],
         "properties": {
           "logical_role": {
@@ -11187,6 +11188,12 @@
                 "description": "Native runtime identity after launch/recovery."
               }
             ]
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Monotonic native-filler generation. Seat-scoped credentials are fenced\nto this value.",
+            "minimum": 0
           },
           "role_slot_id": {
             "type": "string",
@@ -15581,6 +15588,13 @@
           "reason": {
             "$ref": "#/components/schemas/ConsultationSeatRecoveryReasonDto",
             "description": "Supported recovery reason that selects the route policy."
+          },
+          "recovery_profile": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeModelRouteRequest"
+            },
+            "description": "Explicit ordered recovery policy. When present, every route must be an\nexact governed provider alias; the daemon evaluates the whole sequence\nand selects the first currently admissible route."
           }
         },
         "additionalProperties": false

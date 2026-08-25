@@ -343,12 +343,83 @@ pub struct StoredConsultationSeat {
     pub seat_binding_id: SeatBindingId,
     /// Exact selected provider/model/effort rung.
     pub model_rung: crate::spec::ModelRung,
+    /// Monotonic native-filler occupancy generation. A scoped credential is
+    /// valid only while this exact generation remains active.
+    pub occupancy_generation: u64,
     /// Runtime readback after launch/recovery.
     pub native_identity: Option<NativeRuntimeIdentity>,
     /// Provider-native conversation id, when the runtime exposes one.
     pub provider_session_id: Option<ExternalId>,
     /// When the native identity was last read back.
     pub observed_at: Option<Timestamp>,
+}
+
+/// Durable receipt-first intent for replacing one consultation native filler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationRecoveryAttempt {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Owning consultation.
+    pub run_id: ConsultationRunId,
+    /// Stable template slot.
+    pub role_slot_id: RoleSlotId,
+    /// Immutable logical seat identity.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor fenced by this attempt.
+    pub predecessor_native_id: ExternalId,
+    /// Credential generation held by the predecessor.
+    pub predecessor_occupancy_generation: u64,
+    /// Credential generation reserved for the successor.
+    pub successor_occupancy_generation: u64,
+    /// Committee revision on which the recovery was authorized.
+    pub predecessor_run_revision: AggregateRevision,
+    /// Committee revision committed by the durable fence.
+    pub prepared_run_revision: AggregateRevision,
+    /// Stable recovery reason.
+    pub recovery_reason: String,
+    /// Digest of the exact API intent that prepared this attempt.
+    pub request_intent_hash: ContentHash,
+    /// Canonical immutable ordered recovery profile.
+    pub recovery_profile: serde_json::Value,
+    /// Digest of the canonical recovery profile.
+    pub recovery_profile_hash: ContentHash,
+    /// First admissible route selected from the profile.
+    pub selected_model_rung: crate::spec::ModelRung,
+    /// Forward-only saga state.
+    pub state: String,
+    /// Exact observed successor, once launched/adopted.
+    pub successor_native_identity: Option<NativeRuntimeIdentity>,
+    /// Provider-native successor conversation, when exposed.
+    pub successor_provider_session_id: Option<ExternalId>,
+    /// Successor observation instant.
+    pub successor_observed_at: Option<Timestamp>,
+    /// Preparation instant.
+    pub prepared_at: Timestamp,
+    /// Exact predecessor retirement instant, once observed.
+    pub retired_at: Option<Timestamp>,
+    /// Installation instant, once committed.
+    pub installed_at: Option<Timestamp>,
+}
+
+/// Inputs frozen before one consultation recovery reaches the runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewConsultationRecoveryAttempt {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Exact active predecessor the caller read.
+    pub predecessor: StoredConsultationSeat,
+    /// Consultation revision read before fencing.
+    pub expected_revision: AggregateRevision,
+    /// Stable recovery reason.
+    pub recovery_reason: String,
+    /// Digest of the exact API intent being prepared.
+    pub request_intent_hash: ContentHash,
+    /// Canonical ordered recovery profile.
+    pub recovery_profile: CanonicalDocument,
+    /// First admissible route selected from that profile.
+    pub selected_model_rung: crate::spec::ModelRung,
+    /// Preparation instant.
+    pub prepared_at: Timestamp,
 }
 
 /// Exact runtime readback filling a persistent non-delivery topology seat.
