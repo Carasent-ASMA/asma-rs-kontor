@@ -20879,23 +20879,45 @@ impl Services {
                     "the task's work profile prescribes no team, so there is no seat to fill",
                 )
             })?;
-        // Every pack this realm holds, not only the compiled one. A registered
-        // pack's profile can be selected and frozen onto a task, so its team has
-        // to be seatable too — resolving only the seeds here made a registered
-        // profile applicable and unrunnable, which is worse than refusing it.
-        let team = self
-            .packs()?
-            .into_iter()
-            .find_map(|pack| pack.team(pinned.template_id, pinned.version).cloned())
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "the pinned team template revision is in no pack this realm holds",
-                )
-            })?;
-        let revision = team
-            .to_revision()
-            .map_err(|error| self.refuse_domain(&error))?;
+        // The *stored* revision is authoritative, exactly like a published
+        // consultation preset: the row may have been seeded by an older build
+        // whose bundled bytes differed, and the run must freeze the bytes the
+        // project actually holds rather than whatever this build ships under
+        // the same identity. A pack is only the lazy bootstrap source for an
+        // identity this project has not stored yet — which is also how the
+        // identity entered the store in the first place. Every pack this realm
+        // holds, not only the compiled one: a registered pack's profile can be
+        // selected and frozen onto a task, so its team has to be seatable too —
+        // resolving only the seeds here made a registered profile applicable
+        // and unrunnable, which is worse than refusing it.
+        let (team, revision) = match state
+            .with_store(|store| {
+                store.get_team_template(project_id, pinned.template_id, pinned.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(stored) => {
+                let team = kontor_teams::spec::TeamTemplateSpec::from_revision(&stored)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                (team, stored)
+            }
+            None => {
+                let team = self
+                    .packs()?
+                    .into_iter()
+                    .find_map(|pack| pack.team(pinned.template_id, pinned.version).cloned())
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::NotFound,
+                            "the pinned team template revision is in no pack this realm holds",
+                        )
+                    })?;
+                let revision = team
+                    .to_revision()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                (team, revision)
+            }
+        };
         // *Every* declared slot, not the first one. A team run that seated one of
         // five roles can never be certified closed — the closure walks the frozen
         // template's declared slots, and a seat that never ran is unaccounted for

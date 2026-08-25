@@ -43,7 +43,7 @@ use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
     ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
     MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId,
-    TeamRunId, TicketLinkId, TopologyNodeId,
+    TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
@@ -16806,6 +16806,517 @@ async fn a_bundled_preset_change_does_not_block_an_immutable_published_revision(
         "the catalog did not preserve the published bytes: {}",
         catalog.body
     );
+}
+
+/// A bundled team template is bootstrap data, exactly like a consultation
+/// preset: once the identity is published, the stored bytes are authoritative
+/// even when a later daemon ships different bytes under it, and changed policy
+/// belongs in the next bundled version. Preview and apply must therefore
+/// tolerate the drift instead of refusing the application, and the stored
+/// bytes must stay the ones every later read resolves.
+#[tokio::test]
+async fn a_bundled_team_template_change_does_not_block_an_immutable_published_revision() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "team-drift-1",
+        "Team drift",
+        "/tmp/kontor-team-drift",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    // The historical bytes the project froze under this identity before the
+    // daemon shipped a different definition: same template id and version, a
+    // different frozen name.
+    let historical = bundled_team(Some("Historical bundled team"), at("2026-08-10T09:00:00Z"));
+    let historical_hash = historical.definition.hash().clone();
+    let historical_id = historical.template_id;
+    let historical_version = historical.version;
+    world.daemon.state().with_store(|store| {
+        store
+            .insert_team_template(
+                ProjectId::parse(&project).expect("a project id"),
+                &historical,
+            )
+            .expect("the historical immutable revision publishes");
+    });
+
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Drifted epic",
+        &category,
+        serde_json::json!([{"title": "Reapply the epic"}]),
+    );
+
+    // The CAT-12 shape: preview, apply and a same-key reapply all succeed while
+    // the published identity names different bundled bytes.
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["team_template"]["version"],
+        serde_json::json!(1),
+        "the preview still pins the published identity: {}",
+        preview.body
+    );
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("drifted-epic")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let replayed = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("drifted-epic")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+
+    // The stored historical bytes are untouched and are the ones the read path
+    // resolves — a team run freezes exactly this revision.
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_team_template(
+                ProjectId::parse(&project).expect("a project id"),
+                historical_id,
+                historical_version,
+            )
+        })
+        .expect("the stored revision reads")
+        .expect("the published identity is still stored");
+    assert_eq!(
+        stored.definition.hash(),
+        &historical_hash,
+        "the application replaced the published bytes: {}",
+        stored.definition.json()
+    );
+    assert_eq!(stored.name.as_str(), "Historical bundled team");
+}
+
+/// An absent team identity is still inserted normally with the bundled bytes.
+#[tokio::test]
+async fn an_absent_team_template_identity_is_still_inserted_normally() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "team-insert-1",
+        "Team insert",
+        "/tmp/kontor-team-insert",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Fresh epic",
+            &category,
+            serde_json::json!([{"title": "First task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("fresh-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let bundled = bundled_team(None, at("2026-08-10T09:00:00Z"));
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_team_template(
+                ProjectId::parse(&project).expect("a project id"),
+                bundled.template_id,
+                bundled.version,
+            )
+        })
+        .expect("the stored revision reads")
+        .expect("the missing identity was inserted");
+    assert_eq!(
+        stored.definition.hash(),
+        bundled.definition.hash(),
+        "the inserted bytes are not the bundled bytes: {}",
+        stored.definition.json()
+    );
+}
+
+/// The work profile is a *contract*, not bootstrap data: a different definition
+/// at an already-published profile identity must stay refused even while the
+/// team template under the same application tolerates drift.
+#[tokio::test]
+async fn a_work_profile_drift_stays_refused_while_a_team_identity_tolerates_it() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "profile-drift-1",
+        "Profile drift",
+        "/tmp/kontor-profile-drift",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    // Same profile identity as the bundle will pin, different stored bytes.
+    let mut historical = bundled_profile_under(at("2026-08-10T09:00:00Z"));
+    historical.name = ExternalName::parse("Historical profile").expect("a bounded historical name");
+    world.daemon.state().with_store(|store| {
+        store
+            .insert_work_profile(
+                ProjectId::parse(&project).expect("a project id"),
+                &historical,
+            )
+            .expect("the historical profile revision publishes");
+    });
+
+    let category = first_category(&world).await;
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Drifted profile epic",
+            &category,
+            serde_json::json!([{"title": "Refused"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("drifted-profile-epic")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 409,
+        "the work-profile drift stayed refused: {}",
+        refused.body
+    );
+}
+
+/// The user-published Teams ledger is a different immutability surface: its
+/// revisions stay append-only no matter what the application contract stores
+/// under the bundled team identities.
+#[tokio::test]
+async fn a_user_published_team_ledger_stays_append_only_after_epic_drift() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created =
+        ensure_project(&world, "ledger-1", "Team ledger", "/tmp/kontor-team-ledger").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    let draft = serde_json::json!({
+        "id": "user-team",
+        "name": "User team v1",
+        "slots": [{
+            "id": "lead",
+            "role": {
+                "catalog_revision": {"id": "standard-roles", "version": 1},
+                "role_code": "LSA"
+            },
+            "capabilities": {"context": {"class": "standard"}}
+        }]
+    });
+    let saved = Call::post("/v1/teams/drafts:save", &draft)
+        .signed_as(&world, "operator")
+        .with_key("user-team-save-1")
+        .send(&world)
+        .await;
+    assert_eq!(saved.status, 200, "{}", saved.body);
+    let first = Call::post("/v1/teams/user-team/publish", &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("user-team-publish-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["revisions"][0]["name"],
+        serde_json::json!("User team v1")
+    );
+
+    // A drifted epic application under the bundled team identity changes nothing
+    // in the user-published ledger.
+    let historical = bundled_team(Some("Historical bundled team"), at("2026-08-10T09:00:00Z"));
+    world.daemon.state().with_store(|store| {
+        store
+            .insert_team_template(
+                ProjectId::parse(&project).expect("a project id"),
+                &historical,
+            )
+            .expect("the historical immutable revision publishes");
+    });
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Drifted epic",
+            &category,
+            serde_json::json!([{"title": "Reapply the epic"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("ledger-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let second = Call::post("/v1/teams/user-team/publish", &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("user-team-publish-2")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(
+        second.json()["revisions"][0]["name"],
+        serde_json::json!("User team v1"),
+        "the published v1 was rewritten: {}",
+        second.body
+    );
+    assert_eq!(
+        second.json()["revisions"][1]["version"],
+        serde_json::json!(2),
+        "the user-published ledger did not append: {}",
+        second.body
+    );
+}
+
+/// The semantics, not only the conflict: a task started under a drifted
+/// identity freezes the *stored* historical bytes into its team run — never
+/// the current bundle's — so no current-bundle policy can leak under the old
+/// identity. The realm team-template catalog keeps advertising the shipped
+/// bundle (it is a realm build advertisement, like the work-profile catalog);
+/// the frozen run is the proof of what actually executes.
+#[tokio::test]
+async fn a_started_team_run_freezes_the_stored_bytes_of_a_drifted_identity() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "launch-drift-1",
+        "Launch drift",
+        "/tmp/kontor-launch-drift",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+
+    let historical = bundled_team(Some("Historical bundled team"), at("2026-08-10T09:00:00Z"));
+    let historical_hash = historical.definition.hash().clone();
+    let historical_id = historical.template_id;
+    let historical_version = historical.version;
+    world.daemon.state().with_store(|store| {
+        store
+            .insert_team_template(
+                ProjectId::parse(&project).expect("a project id"),
+                &historical,
+            )
+            .expect("the historical immutable revision publishes");
+    });
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("launch-drift-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Launch drift epic",
+        &category,
+        serde_json::json!([{"title": "Launch under the old identity"}]),
+    );
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("launch-drift-epic")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("a revision");
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {
+                "max_tokens": 1000,
+                "max_commands": 10,
+                "max_duration_seconds": 600,
+                "max_cost_minor_units": 100,
+                "cost_currency": "NOK"
+            },
+            "granted_by": account_id,
+            "reason": "Launch under the stored identity"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("launch-drift-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("launch-drift-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let started_body = started.json();
+    let seats = started_body["started"].as_array().expect("seats");
+    assert!(!seats.is_empty(), "the task was seated: {}", started.body);
+    let team_run_id = seats[0]["team_run_id"]
+        .as_str()
+        .expect("a team run id")
+        .to_owned();
+
+    // The frozen run carries the stored historical bytes, not the current
+    // bundle's: same identity, historical policy.
+    let run = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_team_run(
+                ProjectId::parse(&project).expect("a project id"),
+                TeamRunId::parse(&team_run_id).expect("a team run id"),
+            )
+        })
+        .expect("the run reads")
+        .expect("the started run is stored");
+    assert_eq!(
+        run.snapshot.definition.hash(),
+        &historical_hash,
+        "the run froze current-bundle bytes under the historical identity: {}",
+        run.snapshot.definition.json()
+    );
+    assert_eq!(
+        run.snapshot.template_id, historical_id,
+        "the run names the stored identity"
+    );
+    assert_eq!(
+        run.snapshot.template_version, historical_version,
+        "the run pins the stored version"
+    );
+
+    // The realm catalog remains the shipped-build advertisement: it names the
+    // current bundle's bytes for that identity, which is why the frozen run —
+    // not the catalog — is the authority a project actually executes against.
+    let catalog = Call::get("/v1/catalog/team-templates")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    let catalog_body = catalog.json();
+    let advertised = catalog_body
+        .as_array()
+        .expect("a catalog array")
+        .iter()
+        .find(|entry| {
+            entry["template"]["id"] == historical_id.to_string()
+                && entry["template"]["version"] == serde_json::json!(1)
+        })
+        .expect("the bundled identity is advertised");
+    let current = bundled_team(None, at("2026-08-10T09:00:00Z"));
+    assert_eq!(
+        advertised["definition_hash"],
+        current.definition.hash().as_str(),
+        "the catalog advertises the current bundle: {}",
+        catalog.body
+    );
+}
+
+/// Resolve the seeded category's bundled team, optionally renamed so the bytes
+/// differ from what the current build ships.
+fn bundled_team(name: Option<&str>, at: Timestamp) -> kontor_core::spec::TeamTemplateRevision {
+    let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let entry = pack
+        .manifest
+        .iter()
+        .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+        .expect("the bundled pack seeds at least one category");
+    let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, at)
+        .expect("the seeded category resolves");
+    let mut spec = kontor_teams::spec::TeamTemplateSpec::from_revision(
+        bundle.team.as_ref().expect("the profile pinned a team"),
+    )
+    .expect("the bundled team parses");
+    if let Some(name) = name {
+        spec.name = ExternalName::parse(name).expect("a bounded historical name");
+    }
+    spec.to_revision().expect("the revision canonicalizes")
+}
+
+/// The seeded category's bundled work profile, under its current name.
+fn bundled_profile_under(at: Timestamp) -> kontor_core::spec::WorkProfileSpec {
+    let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let entry = pack
+        .manifest
+        .iter()
+        .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+        .expect("the bundled pack seeds at least one category");
+    let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, at)
+        .expect("the seeded category resolves");
+    bundle.profile.definition.clone()
 }
 
 /// Preview, publish, read back — and the version after it.

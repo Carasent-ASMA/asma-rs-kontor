@@ -1699,10 +1699,13 @@ fn ensure_project_exists(
 
 /// Store the profile and team revisions the epic pins, if they are not stored.
 ///
-/// Both tables are insert-only, so a revision that is already there is left
-/// alone and one that differs at the same `(id, version)` is refused by the
-/// unique index — which is the drift check this needs and could not do better
-/// itself.
+/// The two tables follow different contracts. A work profile is a *contract*:
+/// the same `(id, version)` may only ever name the bytes it was published
+/// with, so drift at an existing identity is refused. A team template is
+/// bootstrap data, exactly like a bundled consultation preset: the identity is
+/// insert-only and, once it exists, the stored bytes are authoritative even
+/// when a newer daemon ships different bytes under it — changed policy belongs
+/// in the next bundled version, appended through the normal insert path below.
 fn store_specifications(
     transaction: &Transaction<'_>,
     request: &EpicApplication<'_>,
@@ -1766,11 +1769,12 @@ fn store_specifications(
         .optional()
         .map_err(backend)?;
     match stored {
-        Some(hash) if hash.as_str() == team.definition.hash().as_str() => Ok(()),
-        Some(_) => Err(conflict(
-            "team template",
-            "that revision is already stored with different content",
-        )),
+        // Bootstrap contract: the bundle is a lazy bootstrap source, not a
+        // mutable source of truth. Once this immutable identity exists, the
+        // stored bytes stay authoritative even if a later daemon ships
+        // different bytes under it; changed policy belongs in the next bundled
+        // version and is appended through the insert path below.
+        Some(_) => Ok(()),
         None => {
             let authority = crate::repository::to_json(&team.role_authority)?;
             transaction
