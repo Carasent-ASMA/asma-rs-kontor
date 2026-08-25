@@ -8625,7 +8625,7 @@ fn consultation_revision_dto(stored: &StoredConsultationProfileRevision) -> Prof
 /// Normalize a human Committee name and a profile reference to one catalog key.
 /// The built-in Completion profile says `independent_review@1`, while the
 /// published template's display name is `Independent review`; neither spelling
-/// is an identity on its own, but the normalized name plus pinned version is.
+/// is an identity on its own, but the normalized name is.
 fn normalize_committee_reference(value: &str) -> String {
     value
         .trim()
@@ -8639,6 +8639,23 @@ fn normalize_committee_reference(value: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The logical Committee template one side of a completion/run match names.
+///
+/// A Completion profile pins the *committee*, not one revision of its policy:
+/// the built-in seed says `independent_review@1`, while a run freezes whatever
+/// published revision was current at invocation (the live ASMA-8001 run froze
+/// revision 4). The revision suffix is therefore dropped from both sides, and
+/// the run's own frozen revision stays authoritative for what the Committee
+/// actually reviewed. A different template — a different normalized name — is
+/// never matched.
+fn committee_template_name(reference: &str) -> String {
+    normalize_committee_reference(reference)
+        .split('@')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// One candidate definition, parsed into the type its route selected.
@@ -9612,91 +9629,44 @@ impl Services {
                     .map_err(|error| self.refuse(&error))?;
                 let compiled = self.pinned_completion(stored)?;
                 let expected_template =
-                    normalize_committee_reference(compiled.profile.verdict_committee.as_str());
-                let settled = runs
-                    .into_iter()
-                    .filter(|run| {
-                        run.state == ConsultationRunState::Settled
-                            && u8::try_from(run.round).ok() == Some(round)
+                    committee_template_name(compiled.profile.verdict_committee.as_str());
+                let matches_template = |run: &StoredConsultationRun| -> bool {
+                    self.committee_template(run).is_ok_and(|(revision, _)| {
+                        committee_template_name(&format!(
+                            "{}@{}",
+                            revision.name.as_str(),
+                            revision.version.get()
+                        )) == expected_template
                     })
-                    .find(|run| {
-                        self.committee_template(run).is_ok_and(|(revision, _)| {
-                            normalize_committee_reference(&format!(
-                                "{}@{}",
-                                revision.name.as_str(),
-                                revision.version.get()
-                            )) == expected_template
-                        })
-                    })
-                    .ok_or_else(|| {
-                        self.deny(
-                            ApiErrorCode::Unavailable,
-                            "no settled Committee run matches this completion round",
-                        )
-                    })?;
-                let result = settled.result.as_ref().ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the settled Committee run has no immutable result",
-                    )
-                })?;
-                let verdict = match result.get("verdict").and_then(serde_json::Value::as_str) {
-                    Some("compliant") => CommitteeVerdict::Pass,
-                    Some("non_compliant") => CommitteeVerdict::Fail,
-                    _ => {
-                        return Err(self.deny(
-                            ApiErrorCode::Unavailable,
-                            "the settled Committee result has no recognized verdict",
-                        ));
+                };
+                // The live path: a run currently settled for this exact round.
+                // Its verdict and evidence digest are read from the immutable
+                // result, exactly as before.
+                if let Some(settled) = runs.iter().find(|run| {
+                    run.state == ConsultationRunState::Settled
+                        && u8::try_from(run.round).ok() == Some(round)
+                        && matches_template(run)
+                }) {
+                    return self.verdict_observation(stored, settled, round);
+                }
+                // The historical path: the round may already be durably
+                // settled-failed while the same run advanced into its re-review.
+                // The mutable run row only shows the current round, so the
+                // earlier round's verdict is re-derived from the immutable
+                // findings plus the durable remediation transition, and the
+                // recomputed result digest must bind to the remediation's own
+                // failed_result_hash before anything is ingested.
+                for run in runs.iter().filter(|run| matches_template(run)) {
+                    if let Some(observation) =
+                        self.remediated_round_observation(stored.project_id, run, round)?
+                    {
+                        return Ok(observation);
                     }
-                };
-                let evidence = result
-                    .get("evidence_hash")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        self.deny(
-                            ApiErrorCode::Unavailable,
-                            "the settled Committee result has no evidence digest",
-                        )
-                    })
-                    .and_then(|value| {
-                        ContentHash::parse(value).map_err(|error| self.refuse_domain(&error))
-                    })?;
-                let committee_run_id = match settled.id {
-                    ConsultationRunId::Committee(id) => id,
-                    ConsultationRunId::Advisor(_) => unreachable!(),
-                };
-                let findings = self
-                    .state()?
-                    .with_store(|store| {
-                        store.list_committee_findings(
-                            stored.project_id,
-                            committee_run_id,
-                            settled.round,
-                        )
-                    })
-                    .map_err(|error| self.refuse(&error))?;
-                let consultation = ExternalName::parse(&committee_run_id.to_string())
-                    .map_err(|error| self.refuse_domain(&error))?;
-                let deliberation = findings
-                    .into_iter()
-                    .map(|finding| {
-                        Ok(DeliberationStep {
-                            role: ExternalName::parse(finding.role_slot_id.as_str())
-                                .map_err(|error| self.refuse_domain(&error))?,
-                            consultation: consultation.clone(),
-                            round,
-                            outcome: ExternalName::parse(finding.verdict.as_str())
-                                .map_err(|error| self.refuse_domain(&error))?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ApiError>>()?;
-                Ok(CompletionObservation::VerdictRecorded {
-                    round,
-                    verdict,
-                    evidence,
-                    deliberation,
-                })
+                }
+                Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "no settled Committee evidence matches this completion round",
+                ))
             }
             CompletionPhase::AwaitRemediation(_) => Err(self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -9758,6 +9728,253 @@ impl Services {
                 "this completion has reached a terminal state",
             )),
         }
+    }
+
+    /// One completed round's verdict and evidence, from a run currently settled
+    /// for that exact round.
+    ///
+    /// The verdict and the evidence digest are read from the immutable result
+    /// the settle froze; nothing here synthesizes either from native session
+    /// state. The deliberation path is rebuilt from the round's immutable
+    /// findings in slot order.
+    fn verdict_observation(
+        &self,
+        stored: &StoredEpicCompletion,
+        settled: &StoredConsultationRun,
+        round: u8,
+    ) -> Result<CompletionObservation, ApiError> {
+        let result = settled.result.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the settled Committee run has no immutable result",
+            )
+        })?;
+        let verdict = match result.get("verdict").and_then(serde_json::Value::as_str) {
+            Some("compliant") => CommitteeVerdict::Pass,
+            Some("non_compliant") => CommitteeVerdict::Fail,
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the settled Committee result has no recognized verdict",
+                ));
+            }
+        };
+        let evidence = result
+            .get("evidence_hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the settled Committee result has no evidence digest",
+                )
+            })
+            .and_then(|value| {
+                ContentHash::parse(value).map_err(|error| self.refuse_domain(&error))
+            })?;
+        let committee_run_id = match settled.id {
+            ConsultationRunId::Committee(id) => id,
+            ConsultationRunId::Advisor(_) => unreachable!(),
+        };
+        let findings = self
+            .state()?
+            .with_store(|store| {
+                store.list_committee_findings(stored.project_id, committee_run_id, settled.round)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let deliberation = self.verdict_deliberation(&findings, committee_run_id, settled.round)?;
+        Ok(CompletionObservation::VerdictRecorded {
+            round,
+            verdict,
+            evidence,
+            deliberation,
+        })
+    }
+
+    /// One earlier round's settled-failed verdict, re-derived after the run
+    /// advanced into its re-review.
+    ///
+    /// The mutable `consultation_runs` row only shows the current round, so the
+    /// earlier round's outcome is reconstructed from the two durable facts a
+    /// failed settle always leaves behind: the immutable per-slot findings, and
+    /// the immutable remediation transition the settle wrote when it opened the
+    /// next round. Every invariant of the settle path is re-applied here —
+    /// all reviewer findings durable and conjunctively non-compliant, the Judge
+    /// aggregate durable and consistent — and the evidence digest is recomputed
+    /// deterministically from the finding document hashes. As the closing
+    /// proof, the recomputed result digest must equal the remediation's own
+    /// `failed_result_hash`; that equality is what shows this round actually
+    /// settled non-compliant with exactly this evidence, rather than findings
+    /// that merely exist. Returns `None` when the run carries no remediation
+    /// naming this round; anything else is a refusal, never an ingestion.
+    fn remediated_round_observation(
+        &self,
+        project_id: ProjectId,
+        run: &StoredConsultationRun,
+        round: u8,
+    ) -> Result<Option<CompletionObservation>, ApiError> {
+        let ConsultationRunId::Committee(committee_run_id) = run.id else {
+            return Ok(None);
+        };
+        let round = u32::from(round);
+        let Some(remediation) = self
+            .state()?
+            .with_store(|store| store.get_committee_remediation(project_id, committee_run_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            // No remediation transition means this run never settled a failed
+            // round; it is not this round's proof.
+            return Ok(None);
+        };
+        let Some(from_round) = remediation
+            .get("from_round")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the durable remediation has no source round",
+            ));
+        };
+        if from_round != u64::from(round) {
+            return Ok(None);
+        }
+        let (_, template) = self.committee_template(run)?;
+        let findings = self
+            .state()?
+            .with_store(|store| store.list_committee_findings(project_id, committee_run_id, round))
+            .map_err(|error| self.refuse(&error))?;
+        let reviewers: Vec<RecordedFinding> = findings
+            .iter()
+            .filter(|finding| finding.role == CommitteeRole::Reviewer)
+            .map(|finding| RecordedFinding {
+                slot: finding.role_slot_id.clone(),
+                verdict: finding.verdict,
+                evidence_complete: finding.evidence_complete,
+            })
+            .collect();
+        let outcome = conjunctive_outcome(
+            &template
+                .reviewer_slots()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            &reviewers,
+        )
+        .ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the failed round's independent findings are not all durable",
+            )
+        })?;
+        if outcome != ConsultationVerdict::NonCompliant {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "a remediation transition can only follow a non-compliant settlement",
+            ));
+        }
+        if let Some(judge_slot) = template.judge_slot() {
+            let judge = findings
+                .iter()
+                .find(|finding| &finding.role_slot_id == judge_slot)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the failed round's Judge aggregate is not durable",
+                    )
+                })?;
+            if judge.role != CommitteeRole::Judge || judge.verdict != outcome {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the failed round's Judge aggregate contradicts the recomputed outcome",
+                ));
+            }
+        }
+        // The same canonical documents the settle froze, rebuilt from the same
+        // immutable hashes, so a re-derivation cannot disagree with it.
+        let evidence_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "committee_run_id": committee_run_id.to_string(),
+                "round": round,
+                "findings": findings
+                    .iter()
+                    .map(|finding| finding.document_hash.as_str())
+                    .collect::<Vec<_>>(),
+            }))?
+            .hash()
+            .clone();
+        let result_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "verdict": outcome.as_str(),
+                "evidence_hash": evidence_hash.as_str(),
+                "round": round,
+                "finding_hashes": findings
+                    .iter()
+                    .map(|finding| finding.document_hash.as_str())
+                    .collect::<Vec<_>>(),
+            }))?
+            .hash()
+            .clone();
+        let failed_result_hash = remediation
+            .get("failed_result_hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the durable remediation has no failed result digest",
+                )
+            })
+            .and_then(|value| {
+                ContentHash::parse(value).map_err(|error| self.refuse_domain(&error))
+            })?;
+        if result_hash != failed_result_hash {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the durable remediation does not bind this round's recomputed result",
+            ));
+        }
+        let deliberation = self.verdict_deliberation(&findings, committee_run_id, round)?;
+        Ok(Some(CompletionObservation::VerdictRecorded {
+            round: u8::try_from(round).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the failed round number exceeds this build's range",
+                )
+            })?,
+            verdict: CommitteeVerdict::Fail,
+            evidence: evidence_hash,
+            deliberation,
+        }))
+    }
+
+    /// The deliberation path one verdict observation reports: every finding of
+    /// the round, in slot order, named by its frozen slot and its typed verdict.
+    fn verdict_deliberation(
+        &self,
+        findings: &[StoredCommitteeFinding],
+        committee_run_id: CommitteeRunId,
+        round: u32,
+    ) -> Result<Vec<DeliberationStep>, ApiError> {
+        let consultation = ExternalName::parse(&committee_run_id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        findings
+            .iter()
+            .map(|finding| {
+                Ok(DeliberationStep {
+                    role: ExternalName::parse(finding.role_slot_id.as_str())
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    consultation: consultation.clone(),
+                    round: u8::try_from(round).map_err(|_| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the round number exceeds this build's range",
+                        )
+                    })?,
+                    outcome: ExternalName::parse(finding.verdict.as_str())
+                        .map_err(|error| self.refuse_domain(&error))?,
+                })
+            })
+            .collect()
     }
 
     /// Commit one transition and append the wake intents its commands ask for.

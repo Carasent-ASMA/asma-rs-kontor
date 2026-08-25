@@ -40,10 +40,10 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
-    ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
-    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId,
-    TeamRunId, TicketLinkId, TopologyNodeId,
+    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, CommitteeRunId,
+    CommitteeTemplateId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
+    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode,
+    SeatBindingId, SpecVersion, TaskId, TeamRunId, TicketLinkId, TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
@@ -23762,6 +23762,596 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         distinct.len(),
         consultation_cwds.len(),
         "two consultations claimed one directory: {consultation_cwds:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-7869 — completion must ingest a failed Committee round after the run
+// advanced into its re-review.
+//
+// The live Operational epic hit this exact state: round one settled
+// non_compliant, the same run automatically opened round two, and
+// `completion:advance` at verdict round one refused with 503 because the
+// mutable `consultation_runs` row only shows the current round. The round-one
+// facts survive immutably in `committee_findings` and `committee_remediations`
+// (whose document carries the settle's own `failed_result_hash`), and the
+// completion machine must re-derive its verdict from exactly those bytes.
+// ---------------------------------------------------------------------------
+
+/// Compose a realm, promote one epic with a materialized control plane, and
+/// answer with the epic id plus its LSA and TPM SeatBindings.
+async fn promoted_control_plane(
+    world: &World,
+    project: &str,
+    project_revision: u64,
+    root: &str,
+) -> (String, String, String) {
+    adopt_session_base(world, project, project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (quick, preview_hash) = quick_session_ready_to_promote(
+        world,
+        project,
+        "Completion historical round fixture",
+        "completion-historical-quick",
+    )
+    .await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("promote-{root}"))
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("control-{root}"))
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let materialized_json = materialized.json();
+    let seats = materialized_json["core_team"]["seats"]
+        .as_array()
+        .expect("core seats");
+    let find = |code: &str| {
+        seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == code)
+            .and_then(|seat| seat["seat_binding_id"].as_str())
+            .unwrap_or_else(|| panic!("the {code} SeatBinding"))
+            .to_owned()
+    };
+    (epic, find("LSA"), find("TPM"))
+}
+
+/// Invoke the seeded Independent review Committee for one epic, answering with
+/// the run, its two reviewer and Judge SeatBindings, and the run revision.
+async fn invoke_independent_review(
+    world: &World,
+    project: &str,
+    epic: &str,
+    lsa: &str,
+) -> (String, Vec<String>, String, u64) {
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": "01991c00-0000-7000-8000-000000000001", "version": 1},
+            "question": "Does the completion evidence satisfy the operational gate?",
+            "caller_seat_binding_id": lsa,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("invoke-{epic}"))
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run id")
+        .to_owned();
+    let invoked_json = invoked.json();
+    let seats = invoked_json["seats"].as_array().expect("Committee seats");
+    let reviewers: Vec<String> = seats
+        .iter()
+        .filter(|seat| {
+            seat["role_slot_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("reviewer"))
+        })
+        .map(|seat| {
+            seat["seat_binding_id"]
+                .as_str()
+                .expect("a reviewer SeatBinding")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(reviewers.len(), 2, "{}", invoked.body);
+    let judge = seats
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the Judge SeatBinding")
+        .to_owned();
+    let revision = invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("run revision");
+    (run, reviewers, judge, revision)
+}
+
+/// Record one finding from one Committee seat, answering with the run revision.
+async fn record_committee_finding(
+    world: &World,
+    project: &str,
+    run: &str,
+    seat: &str,
+    round: u32,
+    verdict: &str,
+    revision: u64,
+) -> u64 {
+    let token = world
+        .daemon
+        .state()
+        .credentials()
+        .consultation_seat_credential(SeatBindingId::parse(seat).expect("a SeatBinding"));
+    let recorded = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": round,
+            "verdict": verdict,
+            "evidence_complete": true,
+            "rationale": format!("a {verdict} finding for round {round}"),
+            "evidence_refs": [format!("evidence:{seat}-{round}")],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(token)
+    .with_key(format!("finding-{seat}-{round}-{revision}"))
+    .send(world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+    recorded.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("run revision")
+}
+
+/// Settle the current round, answering with the run projection.
+async fn settle_committee_round(
+    world: &World,
+    project: &str,
+    run: &str,
+    non_compliant: bool,
+    revision: u64,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({"expected_revision": revision});
+    if non_compliant {
+        body["recommendation"] =
+            serde_json::json!("Re-run the gate after correcting the missing evidence.");
+        body["tried_path"] =
+            serde_json::json!("Round one identified the missing operational receipt.");
+    }
+    let settled = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/settle"),
+        &body,
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("settle-{run}-{non_compliant}-{revision}"))
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    settled.json()
+}
+
+/// Seed a completion run for one epic, parked at the given verdict round.
+fn seed_completion_at_verdict(world: &World, project: &str, epic: &str, tpm: &str, round: u8) {
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the built-in profile compiles");
+    let mut completion = kontor_scheduler::start(
+        &compiled,
+        SeatBindingId::parse(tpm).expect("the TPM seat id"),
+        Vec::new(),
+    )
+    .expect("completion starts");
+    completion.phase = kontor_scheduler::CompletionPhase::Verdict(round);
+    let project_id = ProjectId::parse(project).expect("project id");
+    let epic_id = MiniProjectId::parse(epic).expect("epic id");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&completion).expect("completion serializes"),
+                revision: completion.revision,
+                updated_at: kontor_api::now(),
+            })
+            .expect("completion state is seeded at its verdict gate");
+    });
+}
+
+/// The exact live sequence: round one settles non_compliant, the same run
+/// automatically opens round two, and completion at verdict round one must
+/// advance into `await_remediation` carrying the round-one verdict and the
+/// settle's own immutable evidence digest — not a synthesized one.
+#[tokio::test]
+async fn completion_ingests_a_failed_round_after_the_committee_run_advanced() {
+    let composed = compose_realm("/tmp/kontor-7869-historical-failed-round").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let (epic, lsa, tpm) =
+        promoted_control_plane(world, project, composed.project_revision, "7869-historical").await;
+    let (run, reviewers, judge, mut revision) =
+        invoke_independent_review(world, project, &epic, &lsa).await;
+
+    // Round one: both reviewers and the Judge settle non-compliant.
+    for reviewer in &reviewers {
+        revision =
+            record_committee_finding(world, project, &run, reviewer, 1, "non_compliant", revision)
+                .await;
+    }
+    revision =
+        record_committee_finding(world, project, &run, &judge, 1, "non_compliant", revision).await;
+    let remediating = settle_committee_round(world, project, &run, true, revision).await;
+    assert_eq!(remediating["state"], "running");
+    assert_eq!(remediating["round"], 2);
+    assert_eq!(remediating["remediation"]["from_round"], 1);
+
+    // The durable round-one evidence is the settle's own: recompute the
+    // evidence digest deterministically from the immutable finding hashes, and
+    // prove the remediation binds the recomputed result document.
+    let project_id = ProjectId::parse(project).expect("project id");
+    let committee_run_id = CommitteeRunId::parse(&run).expect("a Committee run id");
+    let findings = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_committee_findings(project_id, committee_run_id, 1))
+        .expect("the round-one findings read");
+    assert_eq!(findings.len(), 3, "two reviewers and the Judge are durable");
+    let hashes: Vec<&str> = findings
+        .iter()
+        .map(|finding| finding.document_hash.as_str())
+        .collect();
+    let evidence_document = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "committee_run_id": run,
+        "round": 1,
+        "findings": hashes,
+    }))
+    .expect("the evidence document canonicalizes");
+    let expected_evidence = evidence_document.hash().clone();
+    let result_document = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "verdict": "non_compliant",
+        "evidence_hash": expected_evidence.as_str(),
+        "round": 1,
+        "finding_hashes": hashes,
+    }))
+    .expect("the result document canonicalizes");
+    assert_eq!(
+        remediating["remediation"]["failed_result_hash"],
+        result_document.hash().as_str(),
+        "the remediation must seal the settle's own result document"
+    );
+
+    seed_completion_at_verdict(world, project, &epic, &tpm, 1);
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-historical-round")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(
+        advanced.json()["state"]["phase"]["phase"],
+        "awaiting_lsa",
+        "{}",
+        advanced.body
+    );
+    assert_eq!(advanced.json()["state"]["rounds"][0]["verdict"], "fail");
+    assert_eq!(
+        advanced.json()["state"]["rounds"][0]["evidence"],
+        expected_evidence.as_str(),
+        "the ingested round must carry the settle's exact evidence digest: {}",
+        advanced.body
+    );
+    assert_eq!(
+        advanced.json()["state"]["rounds"][0]["deliberation"]
+            .as_array()
+            .map(Vec::len),
+        Some(3),
+        "{}",
+        advanced.body
+    );
+}
+
+/// A round that never settled has no remediation transition, so its findings —
+/// however many are durable — must not be ingested as a verdict.
+#[tokio::test]
+async fn completion_refuses_an_unsettled_round_without_durable_proof() {
+    let composed = compose_realm("/tmp/kontor-7869-unsettled-round").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let (epic, lsa, tpm) =
+        promoted_control_plane(world, project, composed.project_revision, "7869-unsettled").await;
+    let (run, reviewers, _judge, revision) =
+        invoke_independent_review(world, project, &epic, &lsa).await;
+
+    // One reviewer finding only: the run stays `running`, nothing settled.
+    record_committee_finding(
+        world,
+        project,
+        &run,
+        &reviewers[0],
+        1,
+        "non_compliant",
+        revision,
+    )
+    .await;
+    seed_completion_at_verdict(world, project, &epic, &tpm, 1);
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-unsettled-round")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 503, "{}", advanced.body);
+    assert_eq!(advanced.code(), "unavailable");
+    let completion = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(completion.status, 200, "{}", completion.body);
+    assert_eq!(completion.json()["phase"]["phase"], "verdict");
+    assert_eq!(
+        completion.json()["rounds"].as_array().map(Vec::len),
+        Some(0),
+        "a refused advance must not record a round: {}",
+        completion.body
+    );
+}
+
+/// A remediation row without the durable Judge aggregate is a settle that
+/// never happened. The completion machine must refuse to ingest the round
+/// rather than trust the transition alone.
+#[tokio::test]
+async fn completion_refuses_a_remediation_without_the_durable_judge_aggregate() {
+    let composed = compose_realm("/tmp/kontor-7869-forged-remediation").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let (epic, lsa, tpm) =
+        promoted_control_plane(world, project, composed.project_revision, "7869-forged").await;
+    let (run, reviewers, _judge, mut revision) =
+        invoke_independent_review(world, project, &epic, &lsa).await;
+
+    // Both reviewers durable, Judge never recorded. The settle path would
+    // refuse here; forge the remediation transition directly into the store to
+    // prove the completion machine enforces the same invariant on read.
+    for reviewer in &reviewers {
+        revision =
+            record_committee_finding(world, project, &run, reviewer, 1, "non_compliant", revision)
+                .await;
+    }
+    let remediation = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "committee_run_id": run,
+        "from_round": 1,
+        "recommendation": "Re-run the gate after correcting the missing evidence.",
+        "tried_path": "Round one identified the missing operational receipt.",
+        "failed_result_hash": ContentHash::of(b"forged").as_str(),
+    }))
+    .expect("the forged remediation canonicalizes");
+    let project_id = ProjectId::parse(project).expect("project id");
+    let committee_run_id = CommitteeRunId::parse(&run).expect("a Committee run id");
+    let recommendation =
+        BoundedText::parse("Re-run the gate after correcting the missing evidence.")
+            .expect("bounded");
+    let tried_path = BoundedText::parse("Round one identified the missing operational receipt.")
+        .expect("bounded");
+    world.daemon.state().with_store(|store| {
+        store
+            .remediate_committee_run(
+                project_id,
+                committee_run_id,
+                AggregateRevision::parse(revision).expect("a run revision"),
+                &recommendation,
+                &tried_path,
+                &serde_json::from_str(remediation.json()).expect("the document decodes"),
+                remediation.hash(),
+                kontor_api::now(),
+            )
+            .expect("the remediation transition is written directly");
+    });
+
+    seed_completion_at_verdict(world, project, &epic, &tpm, 1);
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-forged-remediation")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 503, "{}", advanced.body);
+    assert_eq!(advanced.code(), "unavailable");
+}
+
+/// A Committee run of a different template is not this completion's evidence:
+/// its settled verdict, compliant or not, must be ignored.
+#[tokio::test]
+async fn completion_ignores_a_committee_run_of_a_different_template() {
+    let composed = compose_realm("/tmp/kontor-7869-wrong-template").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let (epic, lsa, tpm) =
+        promoted_control_plane(world, project, composed.project_revision, "7869-template").await;
+
+    // Publish a second, unrelated Committee template and run it to a settled
+    // compliant verdict.
+    let mut other = kontor_profiles::seeds::bundled_consultation_presets()
+        .expect("the bundled presets load")
+        .committee_templates
+        .remove(0);
+    other.template_id =
+        CommitteeTemplateId::parse("01991c00-0000-7000-8000-0000000000b2").expect("a template id");
+    other.name = ExternalName::parse("Unrelated review").expect("a bounded name");
+    let canonical = other.canonicalize().expect("the template canonicalizes");
+    let project_id = ProjectId::parse(project).expect("project id");
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: other.template_id.to_string(),
+                version: other.version,
+                name: other.name.clone(),
+                definition: canonical.json().to_owned(),
+                definition_hash: canonical.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the unrelated template publishes");
+    });
+
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": "01991c00-0000-7000-8000-0000000000b2", "version": 1},
+            "question": "Is this unrelated review settled?",
+            "caller_seat_binding_id": lsa,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("invoke-unrelated-review")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run id")
+        .to_owned();
+    let invoked_json = invoked.json();
+    let seats = invoked_json["seats"].as_array().expect("Committee seats");
+    let reviewers: Vec<String> = seats
+        .iter()
+        .filter(|seat| {
+            seat["role_slot_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("reviewer"))
+        })
+        .map(|seat| {
+            seat["seat_binding_id"]
+                .as_str()
+                .expect("a reviewer SeatBinding")
+                .to_owned()
+        })
+        .collect();
+    let judge = seats
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the Judge SeatBinding")
+        .to_owned();
+    let mut revision = invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("run revision");
+    for reviewer in &reviewers {
+        revision =
+            record_committee_finding(world, project, &run, reviewer, 1, "compliant", revision)
+                .await;
+    }
+    revision =
+        record_committee_finding(world, project, &run, &judge, 1, "compliant", revision).await;
+    let settled = settle_committee_round(world, project, &run, false, revision).await;
+    assert_eq!(settled["state"], "settled");
+    assert_eq!(settled["outcome"], "compliant");
+
+    seed_completion_at_verdict(world, project, &epic, &tpm, 1);
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-wrong-template")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 503, "{}", advanced.body);
+    assert_eq!(advanced.code(), "unavailable");
+}
+
+/// A run currently settled compliant for the exact round still feeds the
+/// completion machine exactly as before: the verdict and the evidence digest
+/// come from the immutable result.
+#[tokio::test]
+async fn completion_still_consumes_a_current_settled_compliant_run() {
+    let composed = compose_realm("/tmp/kontor-7869-settled-compliant").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let (epic, lsa, tpm) =
+        promoted_control_plane(world, project, composed.project_revision, "7869-compliant").await;
+    let (run, reviewers, judge, mut revision) =
+        invoke_independent_review(world, project, &epic, &lsa).await;
+
+    for reviewer in &reviewers {
+        revision =
+            record_committee_finding(world, project, &run, reviewer, 1, "compliant", revision)
+                .await;
+    }
+    revision =
+        record_committee_finding(world, project, &run, &judge, 1, "compliant", revision).await;
+    let settled = settle_committee_round(world, project, &run, false, revision).await;
+    assert_eq!(settled["state"], "settled");
+    assert_eq!(settled["outcome"], "compliant");
+    let expected_evidence = settled["result"]["evidence_hash"]
+        .as_str()
+        .expect("the settle's evidence digest")
+        .to_owned();
+
+    seed_completion_at_verdict(world, project, &epic, &tpm, 1);
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-settled-compliant")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["state"]["phase"]["phase"], "closeout");
+    assert_eq!(advanced.json()["state"]["rounds"][0]["verdict"], "pass");
+    assert_eq!(
+        advanced.json()["state"]["rounds"][0]["evidence"],
+        expected_evidence,
+        "{}",
+        advanced.body
     );
 }
 
