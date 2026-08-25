@@ -141,7 +141,7 @@ use kontor_core::repository::{
     StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
     StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
     StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, TaskTransitionRequest, TicketLink, TicketRepository,
+    StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow, TicketLink, TicketRepository,
     TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
@@ -280,6 +280,19 @@ struct PreparedEpic {
     team_source: TeamTemplateSource,
     execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
+}
+
+/// The immutable policy one active task workflow proves from project storage.
+///
+/// Replay compares this across every task in the epic. A realm catalog or a
+/// currently resolved bundle is deliberately absent: neither is evidence of
+/// what the already-applied graph executes.
+#[derive(Clone, PartialEq, Eq)]
+struct StoredWorkflowPolicy {
+    profile: RevisionRefDto,
+    profile_hash: ContentHash,
+    team: Option<RevisionRefDto>,
+    team_hash: Option<String>,
 }
 
 fn split_declared_modules(
@@ -859,6 +872,72 @@ impl Services {
         Ok(Some(stored.unwrap_or_else(|| candidate.clone())))
     }
 
+    /// Re-prove the policy frozen by one active workflow against both immutable
+    /// specification ledgers.
+    fn stored_workflow_policy(
+        &self,
+        project_id: ProjectId,
+        workflow: &TaskWorkflow,
+    ) -> Result<StoredWorkflowPolicy, ApiError> {
+        workflow
+            .snapshot
+            .verify()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let state = self.state()?;
+        let definition = &workflow.snapshot.definition;
+        let stored_profile = state
+            .with_store(|store| {
+                store.get_work_profile(project_id, &definition.id, definition.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the active workflow's work-profile revision is not stored",
+                )
+            })?;
+        let stored_profile = stored_profile
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if stored_profile.hash() != &workflow.snapshot.definition_hash {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the active workflow does not match its stored work-profile revision",
+            ));
+        }
+
+        let team = definition.team_template.map(|pin| RevisionRefDto {
+            id: pin.template_id.to_string(),
+            version: pin.version,
+        });
+        let team_hash = definition
+            .team_template
+            .map(|pin| {
+                state
+                    .with_store(|store| {
+                        store.get_team_template(project_id, pin.template_id, pin.version)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                    .map(|revision| revision.definition.hash().as_str().to_owned())
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the active workflow's team-template revision is not stored",
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(StoredWorkflowPolicy {
+            profile: RevisionRefDto {
+                id: definition.id.as_str().to_owned(),
+                version: definition.version,
+            },
+            profile_hash: workflow.snapshot.definition_hash.clone(),
+            team,
+            team_hash,
+        })
+    }
+
     /// Validate and type one epic request once for both preview and apply.
     fn prepare_epic(
         &self,
@@ -1063,10 +1142,8 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        bundle: &ResolvedProfileBundle,
     ) -> Result<AppliedEpicDto, ApiError> {
         let state = self.state()?;
-        let effective_team = self.effective_team_template(project_id, bundle.team.as_ref())?;
         let epic = self.epic_row(project_id, epic_id)?;
         let execution_scope = state
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
@@ -1078,10 +1155,28 @@ impl Services {
             .with_store(|store| store.task_dependency_graph(project_id))
             .map_err(|error| self.refuse(&error))?;
         let mut applied = Vec::with_capacity(tasks.len());
+        let mut stored_policy: Option<StoredWorkflowPolicy> = None;
         for task in &tasks {
             let workflow = state
                 .with_store(|store| store.get_active_task_workflow(project_id, task.id))
-                .map_err(|error| self.refuse(&error))?;
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "an applied epic task has no active stored workflow",
+                    )
+                })?;
+            let policy = self.stored_workflow_policy(project_id, &workflow)?;
+            if stored_policy
+                .as_ref()
+                .is_some_and(|expected| expected != &policy)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the epic's active task workflows do not agree on one stored policy",
+                ));
+            }
+            stored_policy.get_or_insert(policy);
             let links = state
                 .with_store(|store| store.list_task_ticket_links(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?;
@@ -1100,9 +1195,7 @@ impl Services {
                 applied: AppliedDto::Unchanged,
                 state: task.state.as_str().to_owned(),
                 revision: task.revision,
-                workflow_id: workflow
-                    .map(|workflow| workflow.id.to_string())
-                    .unwrap_or_default(),
+                workflow_id: workflow.id.to_string(),
                 depends_on: edges
                     .get(&task.id)
                     .map(|set| set.iter().copied().collect())
@@ -1119,6 +1212,12 @@ impl Services {
                 worktree,
             });
         }
+        let stored_policy = stored_policy.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "an applied epic has no task workflow from which to prove its stored policy",
+            )
+        })?;
         self.sealed(AppliedEpicDto {
             realm_id: state.realm_id(),
             project_id,
@@ -1131,17 +1230,9 @@ impl Services {
                 kontor_backlog_code: scope.kontor_backlog_code,
                 ai_short_name: scope.ai_short_name,
             }),
-            work_profile: RevisionRefDto {
-                id: bundle.profile.definition.id.as_str().to_owned(),
-                version: bundle.profile.definition.version,
-            },
-            team_template: bundle.team.as_ref().map(|team| RevisionRefDto {
-                id: team.template_id.to_string(),
-                version: team.version,
-            }),
-            team_template_hash: effective_team
-                .as_ref()
-                .map(|team| team.definition.hash().as_str().to_owned()),
+            work_profile: stored_policy.profile,
+            team_template: stored_policy.team,
+            team_template_hash: stored_policy.team_hash,
             // Sealed below, from the finished shape, exactly as the fresh apply
             // is. Reporting the resolved bundle's digest here is what made a
             // receipt-served replay of an unchanged graph disagree with the
@@ -16512,17 +16603,11 @@ impl ApplicationOperations for Services {
     ) -> Result<AppliedEpicDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
-        let PreparedEpic {
-            bundle,
-            effective_team,
-            team_source,
-            execution_scope,
-            tasks,
-        } = self.prepare_epic(project_id, request, now)?;
 
-        // The key is judged before the graph is written. `apply_epic` is atomic,
-        // so a conflict discovered afterwards would have to be reported against a
-        // graph this call had already created.
+        // Build and judge the durable operation before consulting today's
+        // catalog. A replay belongs to the graph the original call stored; a
+        // later pack revision (or an optional historical team pin) cannot change
+        // or invalidate that operation after the fact.
         let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "epics_apply",
@@ -16624,8 +16709,16 @@ impl ApplicationOperations for Services {
             // an epic that has none — and the replay is the only call that ever
             // comes back for it.
             self.govern_epic(project_id, mini_project_id)?;
-            return self.applied_epic_replay(project_id, mini_project_id, &bundle);
+            return self.applied_epic_replay(project_id, mini_project_id);
         }
+
+        let PreparedEpic {
+            bundle,
+            effective_team,
+            team_source,
+            execution_scope,
+            tasks,
+        } = self.prepare_epic(project_id, request, now)?;
 
         // The epic and the admission position it starts at are written under one
         // hold of the store. An epic that existed without a position would be
@@ -17982,10 +18075,24 @@ impl ApplicationOperations for Services {
         let current = state
             .with_store(|store| store.get_active_task_workflow(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
-        let unchanged = current.as_ref().is_some_and(|workflow| {
-            workflow.snapshot.definition.id == bundle.profile.definition.id
-                && workflow.snapshot.definition.version == bundle.profile.definition.version
+        let current_policy = current
+            .as_ref()
+            .map(|workflow| self.stored_workflow_policy(project_id, workflow))
+            .transpose()?;
+        let unchanged = current_policy.as_ref().is_some_and(|policy| {
+            policy.profile.id == bundle.profile.definition.id.as_str()
+                && policy.profile.version == bundle.profile.definition.version
         });
+        if unchanged
+            && current_policy
+                .as_ref()
+                .is_some_and(|policy| policy.profile_hash != bundle.profile.definition_hash)
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "that work-profile revision is already stored with different content",
+            ));
+        }
 
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -18029,20 +18136,30 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse(&error))?;
             state.signals().appended();
         }
+        let (work_profile, team_template, team_template_hash) = if unchanged {
+            let policy = current_policy.expect("unchanged means an active stored workflow exists");
+            (policy.profile, policy.team, policy.team_hash)
+        } else {
+            (
+                RevisionRefDto {
+                    id: bundle.profile.definition.id.as_str().to_owned(),
+                    version: bundle.profile.definition.version,
+                },
+                bundle.team.as_ref().map(|team| RevisionRefDto {
+                    id: team.template_id.to_string(),
+                    version: team.version,
+                }),
+                effective_team
+                    .as_ref()
+                    .map(|team| team.definition.hash().as_str().to_owned()),
+            )
+        };
         Ok(SelectionDto {
             realm_id: state.realm_id(),
             task_id,
-            work_profile: Some(RevisionRefDto {
-                id: bundle.profile.definition.id.as_str().to_owned(),
-                version: bundle.profile.definition.version,
-            }),
-            team_template: bundle.team.as_ref().map(|team| RevisionRefDto {
-                id: team.template_id.to_string(),
-                version: team.version,
-            }),
-            team_template_hash: effective_team
-                .as_ref()
-                .map(|team| team.definition.hash().as_str().to_owned()),
+            work_profile: Some(work_profile),
+            team_template,
+            team_template_hash,
             account_profile_id: None,
             applied: if unchanged {
                 AppliedDto::Unchanged

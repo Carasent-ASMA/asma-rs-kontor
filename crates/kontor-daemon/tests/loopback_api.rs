@@ -43,7 +43,7 @@ use kontor_core::id::{
     AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
     ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
     MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId,
-    TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
+    TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
@@ -64,6 +64,7 @@ use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
 use kontor_scheduler::model::CapacityConfig;
+use kontor_store::{IdempotencyBinding, RegisteredPack, TeamTemplateSource};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -11388,6 +11389,181 @@ async fn a_receipt_served_replay_returns_the_digest_the_apply_returned() {
     );
 }
 
+/// A same-key replay is a read of the graph the first call stored, not a fresh
+/// resolution of the category. This fixture publishes P1/T1, applies it, then
+/// additively introduces a P2/T2 pack revision that wins category resolution.
+/// Both an ordinary replay and a legacy caller still carrying the old optional
+/// team pin must report P1/T1. Mixed task workflows are refused rather than
+/// projecting whichever task happened to be visited first.
+#[tokio::test]
+async fn an_epic_replay_reads_one_agreed_stored_policy_after_category_progression() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let first_pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+    let category = first_pack["manifest"][0]["category"]
+        .as_str()
+        .expect("a category")
+        .to_owned();
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": first_pack.clone()}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("progression-pack-p1")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(
+        &world,
+        "progression-project",
+        "Progression",
+        "/tmp/kontor-progression",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let body = epic_body(
+        revision,
+        "Progressed category",
+        &category,
+        serde_json::json!([
+            {"title": "First task"},
+            {"title": "Second task", "depends_on": ["First task"]}
+        ]),
+    );
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("progressed-category-epic")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["work_profile"]["version"], 1);
+    assert_eq!(first.json()["team_template"]["version"], 1);
+    let p1_profile = first.json()["work_profile"].clone();
+    let p1_team = first.json()["team_template"].clone();
+    let p1_team_hash = first.json()["team_template_hash"].clone();
+
+    // A later build/revision of the same category. The older P1 row has a
+    // deliberately later catalogue timestamp, so the append-only P2 row becomes
+    // the category owner without editing or deleting P1.
+    let mut second_pack = first_pack;
+    second_pack["pack_id"] = serde_json::json!("kontor-pilot-incident-v2");
+    second_pack["version"] = serde_json::json!(2);
+    second_pack["manifest"][0]["profile_version"] = serde_json::json!(2);
+    second_pack["profiles"][0]["version"] = serde_json::json!(2);
+    second_pack["profiles"][0]["team_template"]["version"] = serde_json::json!(2);
+    second_pack["teams"][0]["version"] = serde_json::json!(2);
+    let second_document = serde_json::to_string(&second_pack).expect("the second pack serializes");
+    kontor_profiles::pack::parse_pack(&second_document).expect("the progressed pack remains valid");
+    world.daemon.state().with_store(|store| {
+        store
+            .register_profile_pack(
+                &RegisteredPack {
+                    pack_id: "kontor-pilot-incident-v2".to_owned(),
+                    version: SpecVersion::parse(2).expect("version two"),
+                    document_hash: ContentHash::of(second_document.as_bytes()),
+                    document: second_document.clone(),
+                    registered_at: at("2020-01-01T00:00:00Z"),
+                },
+                &IdempotencyBinding {
+                    key: "progression-pack-p2".to_owned(),
+                    operation: "register_profile_pack",
+                    fingerprint: ContentHash::of(b"progression-pack-p2"),
+                    bound_at: at("2020-01-01T00:00:00Z"),
+                },
+            )
+            .expect("the additive P2 pack is stored");
+    });
+    let current = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(current.status, 200, "{}", current.body);
+    assert_eq!(current.json()["profile"]["version"], 2, "{}", current.body);
+    assert_eq!(current.json()["team"]["version"], 2, "{}", current.body);
+
+    let replay = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("progressed-category-epic")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["work_profile"], p1_profile);
+    assert_eq!(replay.json()["team_template"], p1_team);
+    assert_eq!(replay.json()["team_template_hash"], p1_team_hash);
+    assert_eq!(replay.json()["bundle_hash"], first.json()["bundle_hash"]);
+
+    let mut pinned_replay = body.clone();
+    pinned_replay["team_template"] = p1_team.clone();
+    let pinned = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &pinned_replay,
+    )
+    .signed_as(&world, "admin")
+    .with_key("progressed-category-epic")
+    .send(&world)
+    .await;
+    assert_eq!(pinned.status, 200, "{}", pinned.body);
+    assert_eq!(pinned.json()["work_profile"], p1_profile);
+    assert_eq!(pinned.json()["team_template"], p1_team);
+    assert_eq!(pinned.json()["team_template_hash"], p1_team_hash);
+
+    // Prove replay does not merely choose the first task's workflow. If one
+    // task now freezes P2/T2, there is no one honest epic-level policy to return.
+    let second_pack = kontor_profiles::pack::parse_pack(&second_document)
+        .expect("the progressed pack parses twice");
+    let category_key =
+        kontor_profiles::pack::PackCategoryKey::parse(&category).expect("the category parses");
+    let p2 = kontor_profiles::pack::resolve_profile(
+        &second_pack,
+        &category_key,
+        at("2026-08-26T00:00:00Z"),
+    )
+    .expect("P2/T2 resolves");
+    let second_task = TaskId::parse(
+        first.json()["tasks"][1]["task_id"]
+            .as_str()
+            .expect("a task id"),
+    )
+    .expect("a task id");
+    world.daemon.state().with_store(|store| {
+        store
+            .replace_task_workflow(
+                project_id,
+                second_task,
+                &NewTaskWorkflow {
+                    id: TaskWorkflowId::generate(),
+                    project_id,
+                    task_id: second_task,
+                    snapshot: p2.profile.clone(),
+                    current_phase: p2.profile.definition.entry_phase.clone(),
+                    created_at: at("2026-08-26T00:00:00Z"),
+                },
+                &p2.profile.definition,
+                p2.team.as_ref(),
+                TeamTemplateSource::Registered,
+            )
+            .expect("the second task advances to P2/T2");
+    });
+    let mixed = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("progressed-category-epic")
+        .send(&world)
+        .await;
+    assert_eq!(mixed.status, 503, "{}", mixed.body);
+    assert_eq!(mixed.code(), "unavailable");
+}
+
 /// BLK-006. A session bound before a restart could not be operated after one.
 /// The binding survived, the native session survived, and every session
 /// operation refused `stale_binding` — the frozen capability snapshot lived only
@@ -17095,6 +17271,125 @@ async fn a_work_profile_drift_stays_refused_while_a_team_identity_tolerates_it()
         "the work-profile drift stayed refused: {}",
         refused.body
     );
+}
+
+/// Profile selection must reconcile immutable bytes even when the catalogue's
+/// candidate repeats the active workflow's `(id, version)`. Comparing only that
+/// pair would call the selection unchanged, skip the store's fail-closed check,
+/// and project facts from bytes the task never froze.
+#[tokio::test]
+async fn profile_selection_refuses_same_identity_work_profile_byte_drift() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "profile-selection-drift").await;
+
+    let bundled = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let active = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the active workflow reads")
+            .expect("the bootstrapped task has a workflow")
+    });
+    let first_index = bundled
+        .manifest
+        .iter()
+        .position(|entry| {
+            entry.profile.as_ref() == Some(&active.snapshot.definition.id)
+                && entry.profile_version == Some(active.snapshot.definition.version)
+        })
+        .expect("the active workflow's bundled category");
+    let first = &bundled.manifest[first_index];
+    let profile_id = first.profile.as_ref().expect("a profile id");
+    let profile_version = first.profile_version.expect("a profile version");
+    let mut drifted = serde_json::to_value(&bundled).expect("the bundled pack serializes");
+    drifted["pack_id"] = serde_json::json!("profile-selection-drift-pack");
+    for (index, entry) in drifted["manifest"]
+        .as_array_mut()
+        .expect("a manifest")
+        .iter_mut()
+        .enumerate()
+    {
+        entry["category"] = serde_json::json!(format!("selection-drift-{index}"));
+    }
+    let profile = drifted["profiles"]
+        .as_array_mut()
+        .expect("profiles")
+        .iter_mut()
+        .find(|profile| {
+            profile["id"] == profile_id.as_str()
+                && profile["version"].as_u64() == Some(u64::from(profile_version.get()))
+        })
+        .expect("the seeded profile");
+    profile["name"] = serde_json::json!("Same identity, different bytes");
+    let drift_category = drifted["manifest"][first_index]["category"]
+        .as_str()
+        .expect("the drift category")
+        .to_owned();
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": drifted}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("profile-selection-drift-pack")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let advertised = Call::get(format!("/v1/catalog/work-profiles/{drift_category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(advertised.status, 200, "{}", advertised.body);
+    assert_eq!(
+        advertised.json()["profile"]["id"],
+        active.snapshot.definition.id.as_str(),
+        "{}",
+        advertised.body
+    );
+    assert_eq!(
+        advertised.json()["profile"]["version"],
+        u64::from(active.snapshot.definition.version.get()),
+        "{}",
+        advertised.body
+    );
+
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/profile-selection",
+        seed.project, seed.task
+    );
+    let refused = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": drift_category,
+            "reason": "Try the same published identity with different bytes"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("profile-selection-drift-attempt")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+
+    // The refusal happened before a receipt or workflow mutation: the same key
+    // is still free for the exact bundled definition the task already froze.
+    let accepted = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": first.category.as_str(),
+            "reason": "Try the same published identity with different bytes"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("profile-selection-drift-attempt")
+    .send(&world)
+    .await;
+    assert_eq!(accepted.status, 200, "{}", accepted.body);
+    assert_eq!(accepted.json()["applied"], "unchanged");
 }
 
 /// The user-published Teams ledger is a different immutability surface: its
