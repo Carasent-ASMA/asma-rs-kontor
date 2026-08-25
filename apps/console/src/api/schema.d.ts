@@ -3548,6 +3548,34 @@ export interface components {
             /** @description Typed conclusion. */
             verdict: components["schemas"]["ConsultationVerdictDto"];
         };
+        /**
+         * @description Immutable lineage that authorizes one clean Committee re-review for an epic
+         *     completion. Every identity and digest is checked against the completion and
+         *     the original failed Committee run before any native seat is launched.
+         */
+        CommitteeReReviewProvenance: {
+            /**
+             * Format: int64
+             * @description The completion revision after the remediation evidence freeze.
+             */
+            completion_revision: number;
+            /**
+             * Format: int32
+             * @description Completion round whose failed result is being remediated.
+             */
+            completion_round: number;
+            /** @description The original Committee run that produced the failed result. */
+            failed_committee_run_id: string;
+            /** @description Hash of the exact failed result document, not its evidence digest. */
+            failed_result_hash: string;
+            /** @description Hash of the immutable Committee remediation document. */
+            remediation_hash: string;
+            /**
+             * @description Frozen integration-evidence content digest from the completion's
+             *     `IntegrationRecord.receipt` (not a command receipt or UUID).
+             */
+            remediation_integration_receipt: string;
+        };
         /** @description One Committee consultation. */
         CommitteeRunDto: {
             /** @description The consultation. */
@@ -3567,8 +3595,12 @@ export interface components {
             receipt?: null | components["schemas"]["MutationReceiptDto"];
             /** @description Immutable recommendation and tried path that authorized round two. */
             remediation?: unknown;
+            /** @description Hash of the immutable remediation document. */
+            remediation_hash?: string | null;
             /** @description Immutable terminal result, including needs-human recommendation/tried path. */
             result?: unknown;
+            /** @description Hash of the immutable terminal result document. */
+            result_hash?: string | null;
             /**
              * Format: int64
              * @description Aggregate revision a recovery or findings write must name.
@@ -3805,10 +3837,19 @@ export interface components {
         };
         /** @description One immutable Committee round in the epic's lineage. */
         CompletionRoundDto: {
+            /** @description The exact Committee run that produced this round. */
+            committee_run_id?: string | null;
             /** @description The roles and consultations that produced it. */
             deliberation: components["schemas"]["DeliberationStepDto"][];
             /** @description The immutable finding/evidence digest. */
             evidence: string;
+            /** @description Hash of the durable remediation that follows this failed round. */
+            remediation_hash?: string | null;
+            /**
+             * @description Hash of the immutable result document, when the round came from the
+             *     repository-backed Committee service.
+             */
+            result_hash?: string | null;
             /**
              * Format: int32
              * @description One-based round.
@@ -3834,6 +3875,8 @@ export interface components {
             profile: components["schemas"]["ProfileRevisionDto"];
             /** @description The Realm it was read in. */
             realm_id: string;
+            /** @description Completed governed remediations, oldest first. */
+            remediations: components["schemas"]["RemediationRecordDto"][];
             /**
              * Format: int64
              * @description The revision a write must present.
@@ -4944,6 +4987,7 @@ export interface components {
             profile: components["schemas"]["RevisionRefDto"];
             /** @description What is being asked. */
             question: string;
+            re_review?: null | components["schemas"]["CommitteeReReviewProvenance"];
             /**
              * @description Optional ticket scope. It must belong to the epic in the route; absent
              *     means the epic as a whole.
@@ -6118,6 +6162,25 @@ export interface components {
             round: number;
             /** @description The digest of the routed task set, dependencies and team selections. */
             route: string;
+        };
+        /** @description The two immutable authorities required before remediation integration. */
+        RemediationAuthorizationDto: {
+            /** @description LSA proposal evidence. */
+            lsa_proposal: string;
+            /** @description TPM routing evidence. */
+            tpm_routing: string;
+        };
+        /** @description One completed, governed remediation and its frozen integration evidence. */
+        RemediationRecordDto: {
+            /** @description The two-authority approval. */
+            authorization: components["schemas"]["RemediationAuthorizationDto"];
+            /** @description Integration result; `receipt` is a frozen content digest. */
+            integration: components["schemas"]["IntegrationRecordDto"];
+            /**
+             * Format: int32
+             * @description Failed completion round this remediation follows.
+             */
+            round: number;
         };
         /** @description What the Admin-only unusable-seat replacement is asked for. */
         ReplaceSeatRequest: {

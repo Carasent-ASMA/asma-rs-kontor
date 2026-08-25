@@ -3633,30 +3633,49 @@ impl SqliteStore {
             })
     }
 
-    /// Record the single bounded Committee remediation and open round two.
+    /// Record one bounded Committee remediation and terminally settle its
+    /// failed round. A re-review is a separate Committee run; this transition
+    /// never mutates the failed run into a new mutable round.
     #[allow(clippy::too_many_arguments)]
     pub fn remediate_committee_run(
         &self,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
         expected_revision: AggregateRevision,
+        from_round: u32,
         recommendation: &BoundedText,
         tried_path: &BoundedText,
         document: &serde_json::Value,
         document_hash: &ContentHash,
+        failed_result: &serde_json::Value,
+        failed_result_hash: &ContentHash,
         recorded_at: Timestamp,
     ) -> RepositoryResult<StoredConsultationRun> {
         let encoded = canonical_json(document, "Committee remediation")?;
+        if ContentHash::of(encoded.as_bytes()) != *document_hash {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee remediation",
+                rule: "the remediation bytes do not match their stored hash",
+            });
+        }
+        let failed_result_encoded = canonical_json(failed_result, "Committee result")?;
+        if ContentHash::of(failed_result_encoded.as_bytes()) != *failed_result_hash {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee result",
+                rule: "the failed result bytes do not match their stored hash",
+            });
+        }
         let transaction = self.begin()?;
         transaction
             .execute(
                 "INSERT INTO committee_remediations
                      (committee_run_id, project_id, from_round, recommendation,
                       tried_path, document, document_hash, recorded_at)
-                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     committee_run_id.to_string(),
                     project_id.to_string(),
+                    i64::from(from_round),
                     recommendation.as_str(),
                     tried_path.as_str(),
                     encoded,
@@ -3668,22 +3687,25 @@ impl SqliteStore {
         let changed = transaction
             .execute(
                 "UPDATE consultation_runs
-                 SET state = 'running', round = 2, revision = revision + 1,
-                     updated_at = ?4, settled_at = NULL
+                 SET state = 'settled', result = ?4, result_hash = ?5,
+                     revision = revision + 1, updated_at = ?6, settled_at = ?6
                  WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
-                   AND round = 1 AND state = 'awaiting_judge' AND revision = ?3",
+                   AND round = ?7 AND state = 'awaiting_judge' AND revision = ?3",
                 params![
                     project_id.to_string(),
                     committee_run_id.to_string(),
                     i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    failed_result_encoded,
+                    failed_result_hash.as_str(),
                     text(recorded_at),
+                    i64::from(from_round),
                 ],
             )
             .map_err(backend)?;
         if changed != 1 {
             return Err(RepositoryError::Conflict {
                 subject: "Committee remediation",
-                rule: "only a settled-evidence round one may open round two",
+                rule: "only the expected awaiting-judge round may be terminally settled",
             });
         }
         transaction.commit().map_err(backend)?;
@@ -3693,27 +3715,44 @@ impl SqliteStore {
             })
     }
 
-    /// Read the immutable remediation document, when round two was opened.
+    /// Read the immutable remediation document, when one was recorded.
     pub fn get_committee_remediation(
         &self,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
     ) -> RepositoryResult<Option<serde_json::Value>> {
+        Ok(self
+            .get_committee_remediation_with_hash(project_id, committee_run_id)?
+            .map(|(document, _)| document))
+    }
+
+    /// Read the immutable remediation and prove its stored bytes match the
+    /// stored digest before exposing either to a caller.
+    pub fn get_committee_remediation_with_hash(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> RepositoryResult<Option<(serde_json::Value, ContentHash)>> {
         let encoded = self
             .connection
             .query_row(
-                "SELECT document FROM committee_remediations
+                "SELECT document, document_hash FROM committee_remediations
                  WHERE project_id = ?1 AND committee_run_id = ?2",
                 params![project_id.to_string(), committee_run_id.to_string()],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(backend)?;
         encoded
-            .map(|document| {
-                serde_json::from_str(&document).map_err(|error| RepositoryError::Backend {
-                    detail: format!("a Committee remediation could not be decoded: {error}"),
-                })
+            .map(|(document, hash)| {
+                let hash = ContentHash::parse(&hash)?;
+                let canonical = CanonicalDocument::from_stored(&document, &hash)?;
+                let value = serde_json::from_str(canonical.json()).map_err(|error| {
+                    RepositoryError::Backend {
+                        detail: format!("a Committee remediation could not be decoded: {error}"),
+                    }
+                })?;
+                Ok((value, hash))
             })
             .transpose()
     }

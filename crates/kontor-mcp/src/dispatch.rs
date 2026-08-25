@@ -625,6 +625,46 @@ mod tests {
     }
 
     #[test]
+    fn committee_re_review_provenance_is_reachable_through_the_mcp_route() {
+        let request = build(
+            spec("kontor_committee_run_invoke"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "epic_id": UUID,
+                "idempotency_key": "committee-re-review-1",
+                "profile": {"id": "independent_review", "version": 1},
+                "question": "Verify the governed remediation.",
+                "caller_seat_binding_id": UUID,
+                "expected_revision": 7,
+                "re_review": {
+                    "completion_round": 1,
+                    "completion_revision": 9,
+                    "failed_committee_run_id": UUID,
+                    "failed_result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "remediation_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "remediation_integration_receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                }
+            }),
+        )
+        .expect("the supported MCP route accepts provenance-linked re-review");
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/epics/{UUID}/committee-runs:invoke")
+        );
+        assert_eq!(
+            request.body.as_ref().and_then(|body| body.get("re_review")),
+            Some(&serde_json::json!({
+                "completion_round": 1,
+                "completion_revision": 9,
+                "failed_committee_run_id": UUID,
+                "failed_result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "remediation_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "remediation_integration_receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            }))
+        );
+    }
+
+    #[test]
     fn an_unknown_property_is_refused_rather_than_dropped() {
         let denied = build(
             spec("kontor_realm_get"),

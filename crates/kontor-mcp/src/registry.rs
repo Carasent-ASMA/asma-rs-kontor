@@ -4622,6 +4622,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Revision,
                 "The revision the caller read.",
             ),
+            opt(
+                "re_review",
+                Place::Body,
+                ArgType::Json,
+                "The exact completion/remediation provenance for a clean round-two run.",
+            ),
         ],
         about: "Invoke one Committee consultation against an epic.",
     },

@@ -1174,6 +1174,37 @@ pub struct InvokeConsultationRequest {
     /// The epic revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
+    /// Provenance for a clean completion re-review. A re-review is a new
+    /// Committee run, never a mutable reuse of whichever run currently says
+    /// `round = 2`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub re_review: Option<CommitteeReReviewProvenance>,
+}
+
+/// Immutable lineage that authorizes one clean Committee re-review for an epic
+/// completion. Every identity and digest is checked against the completion and
+/// the original failed Committee run before any native seat is launched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommitteeReReviewProvenance {
+    /// Completion round whose failed result is being remediated.
+    pub completion_round: u8,
+    /// The completion revision after the remediation evidence freeze.
+    #[schema(value_type = u64)]
+    pub completion_revision: AggregateRevision,
+    /// The original Committee run that produced the failed result.
+    #[schema(value_type = String)]
+    pub failed_committee_run_id: CommitteeRunId,
+    /// Hash of the exact failed result document, not its evidence digest.
+    #[schema(value_type = String)]
+    pub failed_result_hash: ContentHash,
+    /// Hash of the immutable Committee remediation document.
+    #[schema(value_type = String)]
+    pub remediation_hash: ContentHash,
+    /// Frozen integration-evidence content digest from the completion's
+    /// `IntegrationRecord.receipt` (not a command receipt or UUID).
+    #[schema(value_type = String)]
+    pub remediation_integration_receipt: ContentHash,
 }
 
 /// One declared consultation seat and its exact runtime readback.
@@ -1281,9 +1312,17 @@ pub struct CommitteeRunDto {
     /// Immutable recommendation and tried path that authorized round two.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<serde_json::Value>,
+    /// Hash of the immutable remediation document.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation_hash: Option<ContentHash>,
     /// Immutable terminal result, including needs-human recommendation/tried path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Hash of the immutable terminal result document.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_hash: Option<ContentHash>,
     /// Aggregate revision a recovery or findings write must name.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -1600,6 +1639,19 @@ pub struct CompletionRoundDto {
     /// The immutable finding/evidence digest.
     #[schema(value_type = String)]
     pub evidence: ContentHash,
+    /// The exact Committee run that produced this round.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committee_run_id: Option<CommitteeRunId>,
+    /// Hash of the immutable result document, when the round came from the
+    /// repository-backed Committee service.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_hash: Option<ContentHash>,
+    /// Hash of the durable remediation that follows this failed round.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation_hash: Option<ContentHash>,
     /// The roles and consultations that produced it.
     pub deliberation: Vec<DeliberationStepDto>,
 }
@@ -1633,6 +1685,28 @@ pub struct IntegrationRecordDto {
     pub receipt: ContentHash,
     /// Per-repository results, in a stable order.
     pub repositories: Vec<RepositoryOutcomeDto>,
+}
+
+/// The two immutable authorities required before remediation integration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RemediationAuthorizationDto {
+    /// LSA proposal evidence.
+    #[schema(value_type = String)]
+    pub lsa_proposal: ContentHash,
+    /// TPM routing evidence.
+    #[schema(value_type = String)]
+    pub tpm_routing: ContentHash,
+}
+
+/// One completed, governed remediation and its frozen integration evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RemediationRecordDto {
+    /// Failed completion round this remediation follows.
+    pub round: u8,
+    /// The two-authority approval.
+    pub authorization: RemediationAuthorizationDto,
+    /// Integration result; `receipt` is a frozen content digest.
+    pub integration: IntegrationRecordDto,
 }
 
 /// The closeout receipts recorded so far.
@@ -1714,6 +1788,8 @@ pub struct CompletionStateDto {
     pub integrations: Vec<IntegrationRecordDto>,
     /// The immutable Committee round lineage, oldest first.
     pub rounds: Vec<CompletionRoundDto>,
+    /// Completed governed remediations, oldest first.
+    pub remediations: Vec<RemediationRecordDto>,
     /// The closeout receipts recorded so far.
     pub closeout: CloseoutEvidenceDto,
     /// The wake intents this completion has appended, oldest first.

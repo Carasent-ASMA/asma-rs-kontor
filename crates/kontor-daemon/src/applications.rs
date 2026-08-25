@@ -55,22 +55,23 @@ use kontor_api::applications::{
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
-    CloseoutRequirementDto, CommitteeFindingDto, CommitteeRunDto, CommitteeVerdictDto,
-    CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto, CompletionPhaseDto,
-    CompletionRoundDto, CompletionStateDto, CompletionWakeDto, ConsultationSeatDto,
-    ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
-    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
-    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
-    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
-    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
-    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
-    IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest,
-    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
-    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
-    RecordFindingsRequest, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto, RosterUpgradePreviewDto,
+    CloseoutRequirementDto, CommitteeFindingDto, CommitteeReReviewProvenance, CommitteeRunDto,
+    CommitteeVerdictDto, CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto,
+    CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
+    ConsultationSeatDto, ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto,
+    ConsultationVerdictDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
+    CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
+    CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
+    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
+    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
+    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
+    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
+    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
+    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
+    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorizationDto,
+    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto, RosterUpgradePreviewDto,
     RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
 use kontor_api::applications::{
@@ -175,10 +176,10 @@ use kontor_profiles::pack::{
     ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
 use kontor_runtime::adapter::{
-    ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest,
-    ConsultationSeatRetireRequest, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
-    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
-    HostedSeatRetireRequest, RetitleSeatRequest, RuntimeAdapter, RuntimeError,
+    ConsultationCredential, ConsultationLaunchRequest, ConsultationSeatRetireRequest,
+    HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
+    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RetitleSeatRequest,
+    RuntimeAdapter, RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -238,6 +239,25 @@ struct CommitteeInvocation<'a> {
     template_revision: &'a StoredConsultationProfileRevision,
     template: &'a CommitteeTemplateSpec,
     caller: &'a kontor_core::state::SeatBinding,
+    round: u32,
+    re_review: Option<&'a CommitteeReReviewProvenance>,
+    /// Server-reconstructed remediation and integration evidence delivered to
+    /// every clean re-review seat. Callers provide only the fenced provenance;
+    /// these bytes come back from immutable Kontor state.
+    re_review_evidence: Option<&'a serde_json::Value>,
+}
+
+/// The exact immutable result a Committee settlement derives from one round.
+/// This is shared by live settlement and historical completion ingestion so the
+/// two paths cannot disagree about cardinality, order, evidence or the result
+/// document's bytes.
+struct ReconstructedCommitteeSettlement {
+    findings: Vec<StoredCommitteeFinding>,
+    outcome: ConsultationVerdict,
+    evidence_hash: ContentHash,
+    result: serde_json::Value,
+    result_document: CanonicalDocument,
+    result_hash: ContentHash,
 }
 
 /// The adopted session base a Quick session is placed under.
@@ -6793,6 +6813,206 @@ impl Services {
         Ok((stored, template))
     }
 
+    /// Recompute one Committee result from its immutable findings in the exact
+    /// order the settlement path uses. Historical completion ingestion calls
+    /// this for a run whose current round has already advanced, so it must not
+    /// read a mutable current-round projection or trust a stored digest alone.
+    fn reconstruct_committee_settlement(
+        &self,
+        run: &StoredConsultationRun,
+        round: u32,
+    ) -> Result<ReconstructedCommitteeSettlement, ApiError> {
+        let (_, template) = self.committee_template(run)?;
+        let committee_run_id = match run.id {
+            ConsultationRunId::Committee(id) => id,
+            ConsultationRunId::Advisor(_) => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this result reconstruction requires a Committee run",
+                ));
+            }
+        };
+        let findings = self
+            .state()?
+            .with_store(|store| {
+                store.list_committee_findings(run.project_id, committee_run_id, round)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        if findings.len() != template.slots.len() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Committee result requires exactly one durable finding for every pinned slot",
+            ));
+        }
+        let expected_roles = template
+            .slots
+            .iter()
+            .map(|slot| (slot.id.clone(), slot.role))
+            .collect::<BTreeMap<_, _>>();
+        let mut seen = BTreeSet::new();
+        for finding in &findings {
+            let Some(expected_role) = expected_roles.get(&finding.role_slot_id) else {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a Committee result contains a finding for a slot absent from its pinned template",
+                ));
+            };
+            if !seen.insert(finding.role_slot_id.clone()) {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a Committee result contains a duplicate pinned slot",
+                ));
+            }
+            if finding.role != *expected_role {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a Committee finding's role contradicts its pinned template slot",
+                ));
+            }
+        }
+
+        let reviewers = findings
+            .iter()
+            .filter(|finding| finding.role == CommitteeRole::Reviewer)
+            .map(|finding| RecordedFinding {
+                slot: finding.role_slot_id.clone(),
+                verdict: finding.verdict,
+                evidence_complete: finding.evidence_complete,
+            })
+            .collect::<Vec<_>>();
+        let outcome = conjunctive_outcome(
+            &template
+                .reviewer_slots()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            &reviewers,
+        )
+        .ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Committee result requires every pinned reviewer finding with complete evidence",
+            )
+        })?;
+        if let Some(judge_slot) = template.judge_slot() {
+            let judge = findings
+                .iter()
+                .find(|finding| &finding.role_slot_id == judge_slot)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "a Committee result requires its pinned Judge finding",
+                    )
+                })?;
+            if judge.role != CommitteeRole::Judge || judge.verdict != outcome {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the durable Judge aggregate contradicts the recomputed conjunction",
+                ));
+            }
+        }
+
+        // `findings` is deliberately the store's stable role-slot order. This
+        // exact sequence is part of the evidence identity and is never rebuilt
+        // from a mutable template or a HashMap iteration.
+        let evidence_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "committee_run_id": committee_run_id.to_string(),
+                "round": round,
+                "findings": findings
+                    .iter()
+                    .map(|finding| finding.document_hash.as_str())
+                    .collect::<Vec<_>>(),
+            }))?
+            .hash()
+            .clone();
+        let result_document = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "verdict": outcome.as_str(),
+            "evidence_hash": evidence_hash.as_str(),
+            "round": round,
+            "finding_hashes": findings
+                .iter()
+                .map(|finding| finding.document_hash.as_str())
+                .collect::<Vec<_>>(),
+        }))?;
+        let result = serde_json::from_str(result_document.json()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the Committee result could not be reconstructed",
+            )
+        })?;
+        let result_hash = result_document.hash().clone();
+        Ok(ReconstructedCommitteeSettlement {
+            findings,
+            outcome,
+            evidence_hash,
+            result,
+            result_document,
+            result_hash,
+        })
+    }
+
+    /// Verify a durable remediation's identity and the result hash it claims to
+    /// answer. The failed-result hash is never used as the evidence digest.
+    fn verify_committee_remediation(
+        &self,
+        run: &StoredConsultationRun,
+        expected_round: u32,
+        settlement: &ReconstructedCommitteeSettlement,
+    ) -> Result<ContentHash, ApiError> {
+        let committee_run_id = match run.id {
+            ConsultationRunId::Committee(id) => id,
+            ConsultationRunId::Advisor(_) => unreachable!(),
+        };
+        let (remediation, remediation_hash) = self
+            .state()?
+            .with_store(|store| {
+                store.get_committee_remediation_with_hash(run.project_id, committee_run_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the advanced Committee run has no durable remediation",
+                )
+            })?;
+        if remediation
+            .get("committee_run_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(committee_run_id.to_string().as_str())
+            || remediation
+                .get("from_round")
+                .and_then(serde_json::Value::as_u64)
+                != Some(u64::from(expected_round))
+        {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the durable Committee remediation has the wrong source identity",
+            ));
+        }
+        let failed_result_hash = remediation
+            .get("failed_result_hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the durable Committee remediation has no failed result hash",
+                )
+            })
+            .and_then(|value| {
+                ContentHash::parse(value).map_err(|error| self.refuse_domain(&error))
+            })?;
+        if failed_result_hash != settlement.result_hash {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the durable remediation does not name the exact reconstructed failed result",
+            ));
+        }
+        Ok(remediation_hash)
+    }
+
     /// Prove that the exact active seat may invoke this template at this scope.
     fn authorize_committee_caller(
         &self,
@@ -7265,6 +7485,9 @@ impl Services {
             template_revision,
             template,
             caller,
+            round,
+            re_review,
+            re_review_evidence,
         } = invocation;
         let state = self.state()?;
         let topology = self.project_topology(project_id)?;
@@ -7294,6 +7517,9 @@ impl Services {
             "template_version": template_revision.version.get(),
             "template_hash": template_revision.definition_hash.as_str(),
             "question_hash": question_hash.as_str(),
+            "round": round,
+            "re_review": re_review,
+            "re_review_evidence": re_review_evidence,
         }))?;
         let run = StoredConsultationRun {
             id: ConsultationRunId::Committee(run_id),
@@ -7316,7 +7542,7 @@ impl Services {
             invoke_key: key.clone(),
             invoke_intent_hash: intent.hash().clone(),
             state: ConsultationRunState::Materializing,
-            round: 1,
+            round,
             result: None,
             result_hash: None,
             revision: AggregateRevision::INITIAL,
@@ -7452,6 +7678,19 @@ impl Services {
         } else {
             Vec::new()
         };
+        let re_review_evidence = run
+            .context
+            .get("re_review_evidence")
+            .filter(|value| !value.is_null())
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen re-review evidence could not be delivered to its seats",
+                )
+            })?
+            .unwrap_or_else(|| "not applicable".to_owned());
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -7498,12 +7737,14 @@ impl Services {
                 "Read-only Committee seat. You may inspect evidence but must not mutate code, \
                  Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
                  Question: {} Durable reviewer findings available to this seat: {} \
+                 Governed re-review evidence reconstructed by Kontor: {} \
                  Submit this seat's own finding using the KONTOR_AUTH environment value. \
                  It is valid only for SeatBinding {} and must not be disclosed.",
                 template.charter.as_str(),
                 slot.behavior.as_str(),
                 run.question.as_str(),
                 evidence,
+                re_review_evidence,
                 seat.seat_binding_id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
@@ -7736,110 +7977,6 @@ impl Services {
         })
     }
 
-    /// Re-engage the same native Committee seats for the bounded second round.
-    async fn dispatch_committee_round_two(
-        &self,
-        run: &StoredConsultationRun,
-        template: &CommitteeTemplateSpec,
-        judge_only: bool,
-    ) -> Result<(), ApiError> {
-        let state = self.state()?;
-        let runtime_kind = self.node_runtime_kind()?;
-        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the runtime selected for Committee re-review is not configured",
-            )
-        })?;
-        let remediation = state
-            .with_store(|store| {
-                store.get_committee_remediation(
-                    run.project_id,
-                    match run.id {
-                        ConsultationRunId::Committee(id) => id,
-                        ConsultationRunId::Advisor(_) => unreachable!(),
-                    },
-                )
-            })
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "round two has no durable remediation brief",
-                )
-            })?;
-        let findings = if judge_only {
-            state
-                .with_store(|store| {
-                    store.list_committee_findings(
-                        run.project_id,
-                        match run.id {
-                            ConsultationRunId::Committee(id) => id,
-                            ConsultationRunId::Advisor(_) => unreachable!(),
-                        },
-                        run.round,
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?
-        } else {
-            Vec::new()
-        };
-        let seats = state
-            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
-            .map_err(|error| self.refuse(&error))?;
-        for seat in seats {
-            let role = seat.committee_role.ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "a Committee seat has no frozen role",
-                )
-            })?;
-            if (judge_only && role != CommitteeRole::Judge)
-                || (!judge_only && role != CommitteeRole::Reviewer)
-            {
-                continue;
-            }
-            let identity = seat.native_identity.clone().ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::StaleBinding,
-                    "a Committee re-review seat has no attested native session",
-                )
-            })?;
-            let slot = template
-                .slots
-                .iter()
-                .find(|slot| slot.id == seat.role_slot_id)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "a Committee re-review seat is absent from its pinned template",
-                    )
-                })?;
-            let body = BoundedText::parse(&format!(
-                "Read-only Committee round {} re-review. Do not mutate code, Jira, topology, scheduling, or runtime state. Role instructions: {} Question: {} Durable remediation brief: {} Durable reviewer findings available to this seat: {} Submit this seat's finding using the existing KONTOR_AUTH environment value.",
-                run.round,
-                slot.behavior.as_str(),
-                run.question.as_str(),
-                remediation,
-                serde_json::to_string(&findings.iter().map(|finding| &finding.document).collect::<Vec<_>>())
-                    .map_err(|_| self.deny(ApiErrorCode::Unavailable, "round-two findings could not be encoded"))?,
-            ))
-            .map_err(|error| self.refuse_domain(&error))?;
-            adapter
-                .message_consultation(&ConsultationMessageRequest {
-                    run_id: run.id,
-                    seat_binding_id: seat.seat_binding_id,
-                    identity,
-                    message_id: MessageId::generate(),
-                    body,
-                    sent_at: kontor_api::now(),
-                })
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        }
-        Ok(())
-    }
-
     /// Stable wire projection of one Committee run and its durable evidence.
     fn committee_run_dto(
         &self,
@@ -7866,9 +8003,14 @@ impl Services {
                 store.list_committee_findings(run.project_id, committee_run_id, run.round)
             })
             .map_err(|error| self.refuse(&error))?;
-        let remediation = state
-            .with_store(|store| store.get_committee_remediation(run.project_id, committee_run_id))
+        let remediation_with_hash = state
+            .with_store(|store| {
+                store.get_committee_remediation_with_hash(run.project_id, committee_run_id)
+            })
             .map_err(|error| self.refuse(&error))?;
+        let (remediation, remediation_hash) = remediation_with_hash
+            .map(|(document, hash)| (Some(document), Some(hash)))
+            .unwrap_or((None, None));
         let outcome = run
             .result
             .as_ref()
@@ -7947,7 +8089,9 @@ impl Services {
                 })
                 .collect(),
             remediation,
+            remediation_hash,
             result: run.result.clone(),
+            result_hash: run.result_hash.clone(),
             revision: run.revision,
             snapshot_cursor: self.cursor()?,
             receipt,
@@ -9649,6 +9793,171 @@ impl Services {
         })
     }
 
+    /// Admit a clean Committee re-review only from the completion freeze that
+    /// follows both remediation authorities and the new integration evidence.
+    /// The old Committee run remains historical evidence; it is never selected
+    /// merely because its mutable current round happens to be two.
+    fn validate_committee_re_review(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        provenance: &CommitteeReReviewProvenance,
+        template_revision: &StoredConsultationProfileRevision,
+    ) -> Result<serde_json::Value, ApiError> {
+        let completion = self.require_completion(project_id, epic_id)?;
+        let completion_state = self.completion_state(&completion)?;
+        let compiled = self.pinned_completion(&completion)?;
+        let expected_round = provenance.completion_round.checked_add(1).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the completion re-review round overflowed",
+            )
+        })?;
+        if completion_state.phase != CompletionPhase::Verdict(expected_round)
+            || completion_state.revision != provenance.completion_revision
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the completion has no matching post-remediation evidence freeze",
+            ));
+        }
+        let failed_round = completion_state
+            .rounds
+            .iter()
+            .find(|round| round.round == provenance.completion_round)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the completion has no failed round for this re-review",
+                )
+            })?;
+        if failed_round.verdict != CommitteeVerdict::Fail
+            || failed_round.committee_run_id != Some(provenance.failed_committee_run_id)
+            || failed_round.result_hash.as_ref() != Some(&provenance.failed_result_hash)
+            || failed_round.remediation_hash.as_ref() != Some(&provenance.remediation_hash)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the re-review provenance does not match the completion's failed round",
+            ));
+        }
+        let remediation = completion_state
+            .remediations
+            .iter()
+            .find(|remediation| remediation.round == provenance.completion_round)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the remediation integration evidence has not been frozen for this round",
+                )
+            })?;
+        if remediation.integration.receipt != provenance.remediation_integration_receipt {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the re-review does not name the completion's remediation evidence freeze",
+            ));
+        }
+        let failed_run = self
+            .state()?
+            .with_store(|store| {
+                store.get_consultation_run(
+                    project_id,
+                    ConsultationRunId::Committee(provenance.failed_committee_run_id),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the failed Committee run named by the re-review is absent",
+                )
+            })?;
+        let legacy_advanced = failed_run.round > provenance.completion_round as u32;
+        let terminal_failed = failed_run.round == provenance.completion_round as u32
+            && failed_run.state == ConsultationRunState::Settled;
+        if failed_run.mini_project_id != epic_id || (!legacy_advanced && !terminal_failed) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the re-review source is neither the terminal failed run nor its supported legacy-advanced shape",
+            ));
+        }
+        let reconstructed =
+            self.reconstruct_committee_settlement(&failed_run, provenance.completion_round as u32)?;
+        if reconstructed.outcome != ConsultationVerdict::NonCompliant
+            || reconstructed.evidence_hash != failed_round.evidence
+            || reconstructed.result_hash != provenance.failed_result_hash
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the failed Committee result cannot be reproduced from its immutable evidence",
+            ));
+        }
+        let verified_remediation_hash = self.verify_committee_remediation(
+            &failed_run,
+            u32::from(provenance.completion_round),
+            &reconstructed,
+        )?;
+        if verified_remediation_hash != provenance.remediation_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the re-review remediation bytes do not match their stored digest",
+            ));
+        }
+        let expected_template =
+            normalize_committee_reference(compiled.profile.verdict_committee.as_str());
+        let actual_template = normalize_committee_reference(&format!(
+            "{}@{}",
+            template_revision.name.as_str(),
+            template_revision.version.get()
+        ));
+        if expected_template != actual_template {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the clean re-review uses a template other than the completion's pinned Committee",
+            ));
+        }
+        let (committee_remediation, stored_remediation_hash) = self
+            .state()?
+            .with_store(|store| {
+                store.get_committee_remediation_with_hash(
+                    project_id,
+                    provenance.failed_committee_run_id,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the failed Committee remediation disappeared after validation",
+                )
+            })?;
+        if stored_remediation_hash != verified_remediation_hash {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the failed Committee remediation changed during validation",
+            ));
+        }
+        Ok(serde_json::json!({
+            "schema_version": 1,
+            "failed_committee": {
+                "committee_run_id": provenance.failed_committee_run_id,
+                "round": provenance.completion_round,
+                "result": reconstructed.result,
+                "result_hash": reconstructed.result_hash,
+                "evidence_hash": reconstructed.evidence_hash,
+            },
+            "committee_remediation": committee_remediation,
+            "completion_freeze": {
+                "revision": provenance.completion_revision,
+                "approvals": {
+                    "lsa_proposal_hash": remediation.authorization.lsa_proposal,
+                    "tpm_routing_hash": remediation.authorization.tpm_routing,
+                },
+                "integration": remediation.integration,
+            },
+        }))
+    }
+
     /// The exact seat in this epic's control plane holding one standard role.
     ///
     /// Read-only: `scope_nodes` finds the ECP that promotion already placed and
@@ -9815,6 +10124,18 @@ impl Services {
                 .collect(),
             integrations: state.integrations.iter().map(integration_dto).collect(),
             rounds: state.rounds.iter().map(completion_round_dto).collect(),
+            remediations: state
+                .remediations
+                .iter()
+                .map(|remediation| RemediationRecordDto {
+                    round: remediation.round,
+                    authorization: RemediationAuthorizationDto {
+                        lsa_proposal: remediation.authorization.lsa_proposal.clone(),
+                        tpm_routing: remediation.authorization.tpm_routing.clone(),
+                    },
+                    integration: integration_dto(&remediation.integration),
+                })
+                .collect(),
             closeout: closeout_dto(&state.closeout),
             wakes: wakes
                 .iter()
@@ -10025,73 +10346,161 @@ impl Services {
                 let compiled = self.pinned_completion(stored)?;
                 let expected_template =
                     normalize_committee_reference(compiled.profile.verdict_committee.as_str());
-                let settled = runs
-                    .into_iter()
-                    .filter(|run| {
-                        run.state == ConsultationRunState::Settled
-                            && u8::try_from(run.round).ok() == Some(round)
+                let expected_re_review = if round > 1 {
+                    let failed_round = state
+                        .rounds
+                        .iter()
+                        .find(|candidate| candidate.round == round - 1)
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "completion has no immutable failed round for this re-review",
+                            )
+                        })?;
+                    let remediation = state
+                        .remediations
+                        .iter()
+                        .find(|candidate| candidate.round == round - 1)
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "completion has no governed remediation evidence freeze for this re-review",
+                            )
+                        })?;
+                    Some(CommitteeReReviewProvenance {
+                        completion_round: round - 1,
+                        completion_revision: state.revision,
+                        failed_committee_run_id: failed_round.committee_run_id.ok_or_else(
+                            || {
+                                self.deny(
+                                    ApiErrorCode::Unavailable,
+                                    "completion's failed round has no Committee identity",
+                                )
+                            },
+                        )?,
+                        failed_result_hash: failed_round.result_hash.clone().ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "completion's failed round has no immutable result hash",
+                            )
+                        })?,
+                        remediation_hash: failed_round.remediation_hash.clone().ok_or_else(
+                            || {
+                                self.deny(
+                                    ApiErrorCode::Unavailable,
+                                    "completion's failed round has no remediation hash",
+                                )
+                            },
+                        )?,
+                        remediation_integration_receipt: remediation.integration.receipt.clone(),
                     })
-                    .find(|run| {
-                        self.committee_template(run).is_ok_and(|(revision, _)| {
-                            normalize_committee_reference(&format!(
-                                "{}@{}",
-                                revision.name.as_str(),
-                                revision.version.get()
-                            )) == expected_template
+                } else {
+                    None
+                };
+
+                let mut candidates = Vec::new();
+                for run in runs {
+                    if !self.committee_template(&run).is_ok_and(|(revision, _)| {
+                        normalize_committee_reference(&format!(
+                            "{}@{}",
+                            revision.name.as_str(),
+                            revision.version.get()
+                        )) == expected_template
+                    }) {
+                        continue;
+                    }
+                    let committee_run_id = match run.id {
+                        ConsultationRunId::Committee(id) => id,
+                        ConsultationRunId::Advisor(_) => continue,
+                    };
+                    let historical = round == 1
+                        && run.round > 1
+                        && run
+                            .context
+                            .get("re_review")
+                            .is_none_or(serde_json::Value::is_null);
+                    let clean_re_review = round > 1
+                        && run.state == ConsultationRunState::Settled
+                        && run.round == u32::from(round)
+                        && expected_re_review.as_ref().is_some_and(|expected| {
+                            run.context
+                                .get("re_review")
+                                .and_then(|value| {
+                                    serde_json::from_value::<CommitteeReReviewProvenance>(
+                                        value.clone(),
+                                    )
+                                    .ok()
+                                })
+                                .as_ref()
+                                == Some(expected)
+                        });
+                    let current_round =
+                        round == 1 && run.state == ConsultationRunState::Settled && run.round == 1;
+                    if !historical && !current_round && !clean_re_review {
+                        continue;
+                    }
+                    let has_remediation = self
+                        .state()?
+                        .with_store(|store| {
+                            store.get_committee_remediation(stored.project_id, committee_run_id)
                         })
-                    })
-                    .ok_or_else(|| {
-                        self.deny(
-                            ApiErrorCode::Unavailable,
-                            "no settled Committee run matches this completion round",
-                        )
-                    })?;
-                let result = settled.result.as_ref().ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the settled Committee run has no immutable result",
-                    )
-                })?;
-                let verdict = match result.get("verdict").and_then(serde_json::Value::as_str) {
-                    Some("compliant") => CommitteeVerdict::Pass,
-                    Some("non_compliant") => CommitteeVerdict::Fail,
-                    _ => {
+                        .map_err(|error| self.refuse(&error))?
+                        .is_some();
+                    // An old mutable round number alone is not historical
+                    // evidence. The published writer inserted remediation in
+                    // the same transaction as its advance; without it this is
+                    // an unrelated/incomplete run and must not poison intake.
+                    if historical && !has_remediation {
+                        continue;
+                    }
+                    let reconstructed = self.reconstruct_committee_settlement(
+                        &run,
+                        if historical { 1 } else { u32::from(round) },
+                    )?;
+                    let remediation_hash = if historical || (round == 1 && has_remediation) {
+                        if reconstructed.outcome != ConsultationVerdict::NonCompliant {
+                            return Err(self.deny(
+                                ApiErrorCode::Unavailable,
+                                "the historical remediation does not follow a failed Committee result",
+                            ));
+                        }
+                        Some(self.verify_committee_remediation(&run, 1, &reconstructed)?)
+                    } else {
+                        None
+                    };
+                    if run.state == ConsultationRunState::Settled
+                        && (run.result.as_ref() != Some(&reconstructed.result)
+                            || run.result_hash.as_ref() != Some(&reconstructed.result_hash))
+                    {
                         return Err(self.deny(
                             ApiErrorCode::Unavailable,
-                            "the settled Committee result has no recognized verdict",
+                            "the stored Committee result is not the exact reconstructed result",
                         ));
                     }
-                };
-                let evidence = result
-                    .get("evidence_hash")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        self.deny(
-                            ApiErrorCode::Unavailable,
-                            "the settled Committee result has no evidence digest",
-                        )
-                    })
-                    .and_then(|value| {
-                        ContentHash::parse(value).map_err(|error| self.refuse_domain(&error))
-                    })?;
+                    candidates.push((run, reconstructed, remediation_hash));
+                }
+                if candidates.len() != 1 {
+                    return Err(self.deny(
+                        ApiErrorCode::Unavailable,
+                        if candidates.is_empty() {
+                            "no exact Committee result matches this completion round"
+                        } else {
+                            "more than one exact Committee result matches this completion round"
+                        },
+                    ));
+                }
+                let (settled, reconstructed, remediation_hash) = candidates
+                    .pop()
+                    .expect("the exact Committee candidate count was checked");
                 let committee_run_id = match settled.id {
                     ConsultationRunId::Committee(id) => id,
                     ConsultationRunId::Advisor(_) => unreachable!(),
                 };
-                let findings = self
-                    .state()?
-                    .with_store(|store| {
-                        store.list_committee_findings(
-                            stored.project_id,
-                            committee_run_id,
-                            settled.round,
-                        )
-                    })
-                    .map_err(|error| self.refuse(&error))?;
                 let consultation = ExternalName::parse(&committee_run_id.to_string())
                     .map_err(|error| self.refuse_domain(&error))?;
-                let deliberation = findings
-                    .into_iter()
+                let deliberation = reconstructed
+                    .findings
+                    .iter()
                     .map(|finding| {
                         Ok(DeliberationStep {
                             role: ExternalName::parse(finding.role_slot_id.as_str())
@@ -10105,8 +10514,14 @@ impl Services {
                     .collect::<Result<Vec<_>, ApiError>>()?;
                 Ok(CompletionObservation::VerdictRecorded {
                     round,
-                    verdict,
-                    evidence,
+                    verdict: match reconstructed.outcome {
+                        ConsultationVerdict::Compliant => CommitteeVerdict::Pass,
+                        ConsultationVerdict::NonCompliant => CommitteeVerdict::Fail,
+                    },
+                    evidence: reconstructed.evidence_hash,
+                    committee_run_id: Some(committee_run_id),
+                    result_hash: Some(reconstructed.result_hash),
+                    remediation_hash,
                     deliberation,
                 })
             }
@@ -10377,6 +10792,9 @@ fn completion_round_dto(round: &kontor_scheduler::CompletionRound) -> Completion
             CommitteeVerdict::Fail => CommitteeVerdictDto::Fail,
         },
         evidence: round.evidence.clone(),
+        committee_run_id: round.committee_run_id,
+        result_hash: round.result_hash.clone(),
+        remediation_hash: round.remediation_hash.clone(),
         deliberation: round.deliberation.iter().map(deliberation_dto).collect(),
     }
 }
@@ -14553,6 +14971,12 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
+        if request.re_review.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "completion re-review provenance is accepted only by the Committee route",
+            ));
+        }
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "invoke_advisor_run",
@@ -14974,6 +15398,7 @@ impl ApplicationOperations for Services {
             "question": request.question.as_str(),
             "caller_seat_binding_id": request.caller_seat_binding_id.to_string(),
             "task_id": request.task_id.map(|id| id.to_string()),
+            "re_review": request.re_review.as_ref(),
         }))?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
@@ -15040,8 +15465,48 @@ impl ApplicationOperations for Services {
             template
                 .validate()
                 .map_err(|error| self.refuse_domain(&error))?;
+            let re_review_evidence = request
+                .re_review
+                .as_ref()
+                .map(|provenance| {
+                    self.validate_committee_re_review(project_id, epic_id, provenance, &revision)
+                })
+                .transpose()?;
+            if let Some(provenance) = request.re_review.as_ref()
+                && self
+                    .state()?
+                    .with_store(|store| {
+                        store.list_consultation_runs(
+                            project_id,
+                            epic_id,
+                            ConsultationFamily::Committee,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                    .iter()
+                    .any(|candidate| {
+                        candidate
+                            .context
+                            .get("re_review")
+                            .and_then(|value| {
+                                serde_json::from_value::<CommitteeReReviewProvenance>(value.clone())
+                                    .ok()
+                            })
+                            .as_ref()
+                            == Some(provenance)
+                    })
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "this completion freeze already has a provenance-linked Committee re-review; replay its original idempotency key",
+                ));
+            }
             let caller =
                 self.authorize_committee_caller(project_id, epic_id, request, &template)?;
+            let round = request
+                .re_review
+                .as_ref()
+                .map_or(1, |provenance| u32::from(provenance.completion_round) + 1);
             self.freeze_committee_run(
                 key,
                 &intent,
@@ -15052,6 +15517,9 @@ impl ApplicationOperations for Services {
                     template_revision: &revision,
                     template: &template,
                     caller: &caller,
+                    round,
+                    re_review: request.re_review.as_ref(),
+                    re_review_evidence: re_review_evidence.as_ref(),
                 },
             )?
         };
@@ -15483,6 +15951,21 @@ impl ApplicationOperations for Services {
                 "this Committee run no longer accepts findings",
             ));
         }
+        let has_legacy_remediation = self
+            .state()?
+            .with_store(|store| store.get_committee_remediation(project_id, committee_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some()
+            && run
+                .context
+                .get("re_review")
+                .is_none_or(serde_json::Value::is_null);
+        if has_legacy_remediation {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a remediated historical Committee run is immutable; invoke a provenance-linked re-review run",
+            ));
+        }
         if request.round != run.round {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -15638,10 +16121,6 @@ impl ApplicationOperations for Services {
         if reviewers_complete && template.judge_slot().is_some() {
             self.materialize_committee_seats(&run, &template, true)
                 .await?;
-            if run.round == 2 {
-                self.dispatch_committee_round_two(&run, &template, true)
-                    .await?;
-            }
         }
         let receipt_id = self.record(
             key,
@@ -15710,81 +16189,10 @@ impl ApplicationOperations for Services {
                 .with_revision(Some(run.revision)));
         }
         let (_, template) = self.committee_template(&run)?;
-        let findings = self
-            .state()?
-            .with_store(|store| {
-                store.list_committee_findings(project_id, committee_run_id, run.round)
-            })
-            .map_err(|error| self.refuse(&error))?;
-        let reviewers: Vec<RecordedFinding> = findings
-            .iter()
-            .filter(|finding| finding.role == CommitteeRole::Reviewer)
-            .map(|finding| RecordedFinding {
-                slot: finding.role_slot_id.clone(),
-                verdict: finding.verdict,
-                evidence_complete: finding.evidence_complete,
-            })
-            .collect();
-        let outcome = conjunctive_outcome(
-            &template
-                .reviewer_slots()
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            &reviewers,
-        )
-        .ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::InvalidRequest,
-                "a Committee cannot settle before every independent finding is durable",
-            )
-        })?;
-        if let Some(judge_slot) = template.judge_slot() {
-            let judge = findings
-                .iter()
-                .find(|finding| &finding.role_slot_id == judge_slot)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::InvalidRequest,
-                        "the Committee cannot settle before its Judge aggregate is durable",
-                    )
-                })?;
-            if judge.role != CommitteeRole::Judge || judge.verdict != outcome {
-                return Err(self.deny(
-                    ApiErrorCode::InvalidRequest,
-                    "the durable Judge aggregate contradicts the recomputed outcome",
-                ));
-            }
-        }
-        let evidence_hash = self
-            .intent(&serde_json::json!({
-                "schema_version": 1,
-                "committee_run_id": committee_run_id.to_string(),
-                "round": run.round,
-                "findings": findings
-                    .iter()
-                    .map(|finding| finding.document_hash.as_str())
-                    .collect::<Vec<_>>(),
-            }))?
-            .hash()
-            .clone();
-        let result_document = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "verdict": outcome.as_str(),
-            "evidence_hash": evidence_hash.as_str(),
-            "round": run.round,
-            "finding_hashes": findings
-                .iter()
-                .map(|finding| finding.document_hash.as_str())
-                .collect::<Vec<_>>(),
-        }))?;
-        let result: serde_json::Value =
-            serde_json::from_str(result_document.json()).map_err(|_| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the Committee result could not be frozen",
-                )
-            })?;
+        let settlement = self.reconstruct_committee_settlement(&run, run.round)?;
+        let outcome = settlement.outcome;
+        let result = &settlement.result;
+        let result_document = &settlement.result_document;
         if outcome == ConsultationVerdict::NonCompliant {
             let recommendation = request.recommendation.as_ref().ok_or_else(|| {
                 self.deny(
@@ -15821,16 +16229,17 @@ impl ApplicationOperations for Services {
                             project_id,
                             committee_run_id,
                             run.revision,
+                            run.round,
                             recommendation,
                             tried_path,
                             &remediation,
                             remediation_document.hash(),
+                            result,
+                            result_document.hash(),
                             kontor_api::now(),
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;
-                self.dispatch_committee_round_two(&remediating, &template, false)
-                    .await?;
                 let receipt_id = self.record(
                     key,
                     project_id,
@@ -15841,31 +16250,19 @@ impl ApplicationOperations for Services {
                 )?;
                 return self.committee_run_dto(&remediating, Some(receipt_id), AppliedDto::Created);
             }
-            let needs_human_document = self.intent(&serde_json::json!({
-                "schema_version": 1,
-                "verdict": outcome.as_str(),
-                "reason": "remediation_budget_exhausted",
-                "round": run.round,
-                "recommendation": recommendation.as_str(),
-                "tried_path": tried_path.as_str(),
-                "failed_result_hash": result_document.hash().as_str(),
-            }))?;
-            let needs_human: serde_json::Value = serde_json::from_str(needs_human_document.json())
-                .map_err(|_| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the needs-human result could not be frozen",
-                    )
-                })?;
-            let escalated = self
+            // At the final allowed round the Committee still freezes the
+            // standard reproducible result and settles. Completion owns the
+            // policy transition to NeedsHuman; storing a different envelope
+            // here would make the failed result impossible to ingest exactly.
+            let settled = self
                 .state()?
                 .with_store(|store| {
                     store.advance_consultation_run(
                         project_id,
                         run.id,
                         run.revision,
-                        ConsultationRunState::NeedsHuman,
-                        Some((&needs_human, needs_human_document.hash())),
+                        ConsultationRunState::Settled,
+                        Some((result, result_document.hash())),
                         kontor_api::now(),
                     )
                 })
@@ -15875,10 +16272,10 @@ impl ApplicationOperations for Services {
                 project_id,
                 CommandKind::SettleCommitteeRun,
                 target,
-                escalated.revision,
+                settled.revision,
                 &intent,
             )?;
-            return self.committee_run_dto(&escalated, Some(receipt_id), AppliedDto::Created);
+            return self.committee_run_dto(&settled, Some(receipt_id), AppliedDto::Created);
         }
         if request.recommendation.is_some() || request.tried_path.is_some() {
             return Err(self.deny(
@@ -15894,7 +16291,7 @@ impl ApplicationOperations for Services {
                     run.id,
                     run.revision,
                     ConsultationRunState::Settled,
-                    Some((&result, result_document.hash())),
+                    Some((result, result_document.hash())),
                     kontor_api::now(),
                 )
             })

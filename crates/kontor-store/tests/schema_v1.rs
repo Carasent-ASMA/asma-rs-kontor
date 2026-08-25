@@ -466,8 +466,111 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v59 adds the existing-session Core Team seat claim command.
-    assert_eq!(SCHEMA_VERSION, 63);
+    // side effect. v64 freezes a failed Committee result without opening a
+    // mutable second round.
+    assert_eq!(SCHEMA_VERSION, 64);
+}
+
+#[test]
+fn v64_preserves_published_committee_remediation_and_its_immutability() {
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys enable");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE consultation_runs (
+                 run_id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 UNIQUE (project_id, run_id)
+             ) STRICT;
+             INSERT INTO projects (id) VALUES
+                 ('0193f000-0000-7000-8000-000000000001');
+             INSERT INTO consultation_runs (run_id, project_id) VALUES
+                 ('0193f000-0000-7000-8000-000000000002',
+                  '0193f000-0000-7000-8000-000000000001'),
+                 ('0193f000-0000-7000-8000-000000000003',
+                  '0193f000-0000-7000-8000-000000000001');",
+        )
+        .expect("the parent identities seed");
+    connection
+        .execute_batch(include_str!("../migrations/0039_committee_remediation.sql"))
+        .expect("the published v39 shape installs");
+    connection
+        .execute(
+            "INSERT INTO committee_remediations
+                 (committee_run_id, project_id, from_round, recommendation,
+                  tried_path, document, document_hash, recorded_at)
+             VALUES (?1, ?2, 1, 'preserve this recommendation',
+                     'preserve this tried path', ?3, ?4, '2026-08-25T20:00:00Z')",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000002",
+                "0193f000-0000-7000-8000-000000000001",
+                r#"{"from_round":1,"immutable":true}"#,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        )
+        .expect("the historical immutable row publishes");
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0064_committee_remediation_rounds.sql"
+        ))
+        .expect("the supported v64 migration reconciles the schema");
+
+    let preserved: (i64, String, String, String) = connection
+        .query_row(
+            "SELECT from_round, recommendation, document, document_hash
+             FROM committee_remediations WHERE committee_run_id = ?1",
+            ["0193f000-0000-7000-8000-000000000002"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the historical row reads after migration");
+    assert_eq!(preserved.0, 1);
+    assert_eq!(preserved.1, "preserve this recommendation");
+    assert_eq!(preserved.2, r#"{"from_round":1,"immutable":true}"#);
+    assert_eq!(
+        preserved.3,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    connection
+        .execute(
+            "INSERT INTO committee_remediations
+                 (committee_run_id, project_id, from_round, recommendation,
+                  tried_path, document, document_hash, recorded_at)
+             VALUES (?1, ?2, 2, 'round two', 'bounded path', '{}', ?3,
+                     '2026-08-25T20:01:00Z')",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000003",
+                "0193f000-0000-7000-8000-000000000001",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ],
+        )
+        .expect("the widened source-round constraint admits round two");
+    assert!(
+        connection
+            .execute(
+                "UPDATE committee_remediations SET recommendation = 'rewritten'
+                 WHERE committee_run_id = ?1",
+                ["0193f000-0000-7000-8000-000000000002"],
+            )
+            .is_err(),
+        "migration must recreate the immutable-update trigger"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM committee_remediations WHERE committee_run_id = ?1",
+                ["0193f000-0000-7000-8000-000000000002"],
+            )
+            .is_err(),
+        "migration must recreate the permanent-row trigger"
+    );
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the migrated generation reads");
+    assert_eq!(version, 64);
 }
 
 #[test]

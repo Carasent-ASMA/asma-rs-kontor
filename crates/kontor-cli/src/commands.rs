@@ -273,6 +273,43 @@ mod tests {
     }
 
     #[test]
+    fn committee_re_review_is_exposed_by_the_generated_cli_command() {
+        let command = build();
+        let matches = command
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "operator",
+                "committee-run-invoke",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--epic-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--idempotency-key",
+                "committee-re-review-1",
+                "--profile",
+                r#"{"id":"independent_review","version":1}"#,
+                "--question",
+                "Verify the governed remediation.",
+                "--caller-seat-binding-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72",
+                "--expected-revision",
+                "7",
+                "--re-review",
+                r#"{"completion_round":1,"completion_revision":9,"failed_committee_run_id":"01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b73","failed_result_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","remediation_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","remediation_integration_receipt":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}"#,
+            ])
+            .expect("the generated CLI accepts the re-review route");
+        let (tool, sub) = resolve(&matches).expect("the Committee invoke tool");
+        let arguments = arguments(tool, sub).expect("the re-review payload is JSON");
+        assert_eq!(
+            arguments["re_review"]["completion_round"],
+            serde_json::json!(1)
+        );
+    }
+
+    #[test]
     fn a_value_of_the_wrong_shape_is_refused_before_anything_is_dispatched() {
         let command = build();
         let matches = command
