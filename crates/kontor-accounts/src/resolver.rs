@@ -45,6 +45,8 @@ use kontor_core::id::{
 };
 use kontor_core::repository::{AccountProfile, CredentialReference, CredentialReferenceKind};
 use secrecy::{ExposeSecret, SecretString};
+#[cfg(target_os = "macos")]
+use zeroize::Zeroize;
 
 use crate::profile::AccountEnvironmentMap;
 
@@ -114,7 +116,8 @@ pub enum KeychainFailure {
 ///
 /// Implementations must map their own errors to [`KeychainFailure`] rather than
 /// returning or wrapping them: a `keyring` error's text can name the service and
-/// the account it failed on.
+/// the account it failed on, and so can a line `/usr/bin/security` writes to
+/// stderr.
 pub trait KeychainBackend: Send + Sync {
     /// Read one entry.
     ///
@@ -123,10 +126,85 @@ pub trait KeychainBackend: Send + Sync {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure>;
 }
 
-/// The production backend: the OS keychain, through the pinned `keyring` crate.
+/// The production backend: the OS keychain.
+///
+/// # Why macOS shells out to `/usr/bin/security`
+///
+/// Reading the keychain in-process makes *this binary* the requesting process,
+/// and macOS can only pin a grant to whatever stable identity that binary has.
+/// `kontor-daemon` is ad-hoc/linker-signed with no Team ID, so the only identity
+/// available is its cdhash — a hash of its own contents. Every rebuild changes
+/// it, invalidates the grant, and puts an authorization dialog in front of the
+/// next daemon start; answering "Always Allow" appends one more soon-to-be-dead
+/// cdhash to the item's ACL. A host that rebuilds Kontor several times a day is
+/// therefore never done answering that prompt, and an operator working headless
+/// or from a phone cannot answer it at all.
+///
+/// `/usr/bin/security` is Apple-signed with a designated requirement that does
+/// not churn, so a grant to it survives every rebuild. It is the same route the
+/// usage poller already takes to read Claude's tokens. It gives up no
+/// confidentiality the item does not already give up: an entry reachable by
+/// `/usr/bin/security` is reachable by anything running as this user, which is
+/// what a cdhash pin on an hourly-rebuilt binary was failing to prevent anyway.
+/// A binding that actually held would need a Developer ID — the keychain's
+/// partition list can express `teamid:`, but has no spelling for a self-signed
+/// certificate, and falls back to `cdhash:` for one.
+///
+/// The cost is that the service and account travel in `argv`, where another
+/// local process can read them. They identify a user; they are not the secret,
+/// and the secret itself comes back over a pipe.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemKeychain;
 
+#[cfg(target_os = "macos")]
+impl KeychainBackend for SystemKeychain {
+    fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
+        /// `security`'s exit status for "no such item" — the one outcome worth
+        /// telling apart. Every other status is reported as unavailable rather
+        /// than guessed at, because the detail that would distinguish them is on
+        /// stderr, and that text can name the service and account.
+        const NOT_FOUND: i32 = 44;
+
+        let output = Command::new("/usr/bin/security")
+            .args([
+                "find-generic-password",
+                "-s",
+                target.service(),
+                "-a",
+                target.account(),
+                "-w",
+            ])
+            .output()
+            .map_err(|_| KeychainFailure::Unavailable)?;
+
+        if !output.status.success() {
+            return Err(match output.status.code() {
+                Some(NOT_FOUND) => KeychainFailure::NotFound,
+                _ => KeychainFailure::Unavailable,
+            });
+        }
+
+        // `-w` writes the value followed by one newline. Only that newline is
+        // removed: trailing whitespace inside a secret is part of the secret.
+        let mut bytes = output.stdout;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        match String::from_utf8(bytes) {
+            // `SecretString` owns the buffer from here and zeroizes it on drop.
+            Ok(secret) => Ok(SecretString::from(secret)),
+            Err(error) => {
+                // A non-text entry: `security` renders it as hex and this
+                // backend cannot use it. Wipe the bytes before they are freed.
+                let mut raw = error.into_bytes();
+                raw.zeroize();
+                Err(KeychainFailure::Unavailable)
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 impl KeychainBackend for SystemKeychain {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
         // Both `?`-free branches below drop the `keyring` error deliberately:

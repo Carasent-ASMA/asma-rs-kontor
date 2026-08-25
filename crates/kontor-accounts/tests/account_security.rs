@@ -25,8 +25,8 @@ use kontor_accounts::{
     AccountAvailability, AccountEnvironmentMap, AccountProfileDraft, AccountResolver,
     AccountService, AvailabilityObservation, FailoverReason, FailoverRefusal, FailoverRequest,
     KeychainBackend, KeychainFailure, KeychainTarget, LaunchAdmissionRequest, LaunchRefusal,
-    PolicyError, ResolutionReason, ResolverPolicy, ResolverPolicyBuilder, admit_pinned_launch,
-    fail_over_to_new_run,
+    PolicyError, ResolutionReason, ResolverPolicy, ResolverPolicyBuilder, SystemKeychain,
+    admit_pinned_launch, fail_over_to_new_run,
 };
 use kontor_core::DomainError;
 use kontor_core::id::{
@@ -1932,4 +1932,23 @@ fn database_logs_export_and_argv_contain_ids_not_secrets() {
             .iter()
             .any(|key| key == "ZZ_PROVIDER_CREDENTIAL")
     );
+}
+
+/// The macOS backend reads exactly one of `security`'s exit statuses — the one
+/// meaning "no such item" — and reports everything else as unavailable. A
+/// lookup for a service that cannot exist proves that mapping against the real
+/// `/usr/bin/security` without needing a keychain entry, a grant, or an
+/// authorization dialog: a miss is answered from the search alone.
+#[cfg(target_os = "macos")]
+#[test]
+fn system_keychain_reports_a_missing_entry_as_not_found() {
+    let target = KeychainTarget::new(
+        "kontor-account-security-absent-service",
+        "kontor-account-security-absent-account",
+    );
+
+    assert!(matches!(
+        SystemKeychain.secret(&target),
+        Err(KeychainFailure::NotFound)
+    ));
 }
