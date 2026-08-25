@@ -26,9 +26,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
-keyring = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }
+
+# macOS reads the keychain through `/usr/bin/security` instead, so that a grant
+# survives a rebuild of this ad-hoc-signed binary — see `SystemKeychain`.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+keyring = { workspace = true }
 
 [dev-dependencies]
 # The security suite proves the *persisted* bytes carry no credential material,
