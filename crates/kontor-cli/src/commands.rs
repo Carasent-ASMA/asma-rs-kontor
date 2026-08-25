@@ -108,7 +108,7 @@ const fn value_name(ty: ArgType) -> &'static str {
             "N"
         }
         ArgType::Bool => "true|false",
-        ArgType::TextArray => "JSON_ARRAY",
+        ArgType::TextArray | ArgType::ObjectArray(_) => "JSON_ARRAY",
         ArgType::Json => "JSON",
         ArgType::Timestamp => "RFC3339",
         _ => "VALUE",
@@ -167,7 +167,7 @@ fn convert(ty: ArgType, raw: &str) -> Result<serde_json::Value, String> {
             .map_err(|_| "true or false".to_owned()),
         // A nested document is given as JSON, because there is no shell spelling of
         // a task graph that is not just JSON with more steps.
-        ArgType::TextArray | ArgType::Json | ArgType::Object(_) => {
+        ArgType::TextArray | ArgType::Json | ArgType::Object(_) | ArgType::ObjectArray(_) => {
             serde_json::from_str(raw).map_err(|_| "a JSON document".to_owned())
         }
         // Everything else is text the dispatcher validates against the domain.
@@ -342,6 +342,54 @@ mod tests {
                 "native_id": "native-claude-1",
                 "provider": "claude"
             })
+        );
+    }
+
+    #[test]
+    fn a_declared_object_array_reaches_the_dispatcher_as_an_array() {
+        let command = build();
+        let matches = command
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "admin",
+                "consultation-seat-recover",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--committee-run-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--seat-binding-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72",
+                "--idempotency-key",
+                "recover-1",
+                "--expected-revision",
+                "9",
+                "--expected-native-id",
+                "native-claude-1",
+                "--reason",
+                "provider_unavailable",
+                "--recovery-profile",
+                r#"[{"provider":"codex-work","model":"gpt-5.6-sol","effort":"xhigh"},{"provider":"codex-personal","model":"gpt-5.6-sol","effort":"xhigh"}]"#,
+            ])
+            .expect("a well-formed command line");
+        let (tool, sub) = resolve(&matches).expect("the consultation recovery tool");
+        let arguments = arguments(tool, sub).expect("well-formed arguments");
+        assert_eq!(
+            arguments["recovery_profile"],
+            serde_json::json!([
+                {
+                    "provider": "codex-work",
+                    "model": "gpt-5.6-sol",
+                    "effort": "xhigh"
+                },
+                {
+                    "provider": "codex-personal",
+                    "model": "gpt-5.6-sol",
+                    "effort": "xhigh"
+                }
+            ])
         );
     }
 
