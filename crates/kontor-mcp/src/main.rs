@@ -127,11 +127,18 @@ mod tests {
             error.contains("worker"),
             "the refusal lists the valid profiles: {error}"
         );
+        assert!(
+            error.contains("consultation"),
+            "the refusal lists every valid profile: {error}"
+        );
     }
 
     #[test]
     fn a_declared_profile_resolves() {
         let profile = resolve_profile("worker").expect("the worker profile is declared");
         assert_eq!(profile.name, "worker");
+        let profile =
+            resolve_profile("consultation").expect("the consultation profile is declared");
+        assert_eq!(profile.name, "consultation");
     }
 }

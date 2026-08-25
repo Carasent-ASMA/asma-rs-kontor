@@ -6,8 +6,10 @@
 //! whatever authority the operator's own console carries — measured live, that
 //! was kontor at *admin* tier plus two unrelated servers, ~18k tokens of tool
 //! schemas per turn. Composing the config into the seat's own working directory
-//! gives every Claude seat exactly one kontor server at **operator** tier under
-//! the registry's **worker** serve profile, and nothing else from Kontor's side.
+//! gives every Claude consultation seat exactly one kontor server at
+//! **operator** tier under the registry's narrow **consultation** serve profile,
+//! and nothing else from Kontor's side. The inherited seat credential, not the
+//! profile, remains the authority and supplies the consultation SeatBinding.
 //!
 //! Three files are touched, all local to the worktree and all kept out of the
 //! seat's own diff via `git rev-parse --git-path info/exclude` — a seat whose
@@ -108,7 +110,7 @@ fn write_mcp_json(cwd: &Path, command: &str, state_root: &Path) -> io::Result<()
         "args": [
             "--state-root", state_root.to_string_lossy(),
             "--credential-tier", "operator",
-            "--serve-profile", "worker",
+            "--serve-profile", "consultation",
         ],
     });
     merge_json(&cwd.join(".mcp.json"), |document| {
@@ -284,9 +286,9 @@ mod tests {
                 "--credential-tier",
                 "operator",
                 "--serve-profile",
-                "worker"
+                "consultation"
             ]),
-            "the seat gets operator tier under the worker profile, nothing wider"
+            "the seat gets operator tier under the consultation profile, nothing wider"
         );
 
         let settings: serde_json::Value = serde_json::from_str(
@@ -340,7 +342,7 @@ mod tests {
                 "--credential-tier",
                 "operator",
                 "--serve-profile",
-                "worker"
+                "consultation"
             ])
         );
         assert_eq!(

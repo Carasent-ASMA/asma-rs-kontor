@@ -566,29 +566,46 @@ impl ServeProfile {
 /// settle a turn, record a gate verdict, talk on the session, submit intake,
 /// read/propose memory and resolve context — 18 tools, all at or below operator
 /// tier, which the drift test below pins against the registry.
-pub static SERVE_PROFILES: &[ServeProfile] = &[ServeProfile {
-    name: "worker",
-    tools: &[
-        "kontor_task_get",
-        "kontor_run_get",
-        "kontor_realm_get",
-        "kontor_code_help_get",
-        "kontor_intake_receipt_get",
-        "kontor_ticket_comments_list",
-        "kontor_events_list",
-        "kontor_completion_get",
-        "kontor_ticket_claim",
-        "kontor_turn_settle",
-        "kontor_gate_record",
-        "kontor_session_message_send",
-        "kontor_ticket_comments_pull",
-        "kontor_intake_submit",
-        "kontor_memory_search",
-        "kontor_memory_history",
-        "kontor_memory_propose",
-        "kontor_context_resolve",
-    ],
-}];
+///
+/// `consultation` is deliberately separate. An Advisor or Committee native
+/// filler may read only its consultation aggregate and make only the one
+/// seat-authored write its scoped credential permits. In particular it cannot
+/// invoke, recover or disposition a consultation, publish a template, or reach
+/// an ordinary worker's task/gate/memory surface.
+pub static SERVE_PROFILES: &[ServeProfile] = &[
+    ServeProfile {
+        name: "worker",
+        tools: &[
+            "kontor_task_get",
+            "kontor_run_get",
+            "kontor_realm_get",
+            "kontor_code_help_get",
+            "kontor_intake_receipt_get",
+            "kontor_ticket_comments_list",
+            "kontor_events_list",
+            "kontor_completion_get",
+            "kontor_ticket_claim",
+            "kontor_turn_settle",
+            "kontor_gate_record",
+            "kontor_session_message_send",
+            "kontor_ticket_comments_pull",
+            "kontor_intake_submit",
+            "kontor_memory_search",
+            "kontor_memory_history",
+            "kontor_memory_propose",
+            "kontor_context_resolve",
+        ],
+    },
+    ServeProfile {
+        name: "consultation",
+        tools: &[
+            "kontor_advisor_run_get",
+            "kontor_advisor_run_settle",
+            "kontor_committee_run_get",
+            "kontor_committee_findings_record",
+        ],
+    },
+];
 
 /// Every operation a Paseo Lead Architect can reach, and nothing else.
 ///
@@ -5255,6 +5272,34 @@ mod tests {
         assert_eq!(worker.tools.len(), 18, "worker v2 is exactly 18 tools");
         assert!(worker.allows("kontor_memory_search"));
         assert!(worker.allows("kontor_memory_history"));
+    }
+
+    #[test]
+    fn the_consultation_profile_is_the_exact_seat_surface() {
+        let consultation =
+            ServeProfile::find("consultation").expect("the consultation profile is declared");
+        assert_eq!(
+            consultation.tools,
+            [
+                "kontor_advisor_run_get",
+                "kontor_advisor_run_settle",
+                "kontor_committee_run_get",
+                "kontor_committee_findings_record",
+            ],
+            "a consultation native can only read and submit its own result"
+        );
+        for excluded in [
+            "kontor_advisor_run_invoke",
+            "kontor_committee_run_invoke",
+            "kontor_consultation_seat_recover",
+            "kontor_committee_run_settle",
+            "kontor_gate_record",
+        ] {
+            assert!(
+                !consultation.allows(excluded),
+                "the consultation profile must not serve {excluded}"
+            );
+        }
     }
 
     #[test]

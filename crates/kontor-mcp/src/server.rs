@@ -342,6 +342,41 @@ mod tests {
         assert_eq!(served.len(), 18, "worker v2 is eighteen tools");
     }
 
+    /// A consultation native receives both family reads and the two
+    /// seat-authored submission routes, and no broader operator surface.
+    #[test]
+    fn the_consultation_profile_at_operator_serves_exactly_the_profile() {
+        let served: BTreeSet<&str> = profiled(CallerTier::Operator, "consultation")
+            .served()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(
+            served,
+            BTreeSet::from([
+                "kontor_advisor_run_get",
+                "kontor_advisor_run_settle",
+                "kontor_committee_findings_record",
+                "kontor_committee_run_get",
+            ])
+        );
+    }
+
+    /// The presentation profile still cannot turn an observer credential into
+    /// a finding author: only the two consultation reads remain visible.
+    #[test]
+    fn the_consultation_profile_never_widens_observer_authority() {
+        let served: BTreeSet<&str> = profiled(CallerTier::Observer, "consultation")
+            .served()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(
+            served,
+            BTreeSet::from(["kontor_advisor_run_get", "kontor_committee_run_get"])
+        );
+    }
+
     /// TEST-002: a tool the tier reaches but the profile excludes is refused at
     /// call time with a distinct error, and nothing is dispatched. A narrowed
     /// list with open calls would be a defect (REQ-003).
