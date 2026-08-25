@@ -211,8 +211,8 @@ use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport, EpicApplication,
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
     JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem, NewRoleTurn,
-    ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore, StoredConflict, StoredTeamDraft,
-    StoredTeamsProjection, TeamTemplateSource, TurnDispatch,
+    ProfileSelection, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore, StoredConflict,
+    StoredTeamDraft, StoredTeamsProjection, TeamTemplateSource, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -18054,6 +18054,53 @@ impl ApplicationOperations for Services {
         request: &SelectionRequest,
     ) -> Result<SelectionDto, ApiError> {
         let state = self.state()?;
+        let category = request.work_profile_category.as_deref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a profile correction names the category to pin",
+            )
+        })?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "profile_selection",
+            "task_id": task_id.to_string(),
+            "work_profile_category": category,
+            "reason": request.reason.as_str(),
+        }))?;
+        let target = AggregateRef::Task { task_id };
+
+        // A durable retry is answered before consulting mutable operational
+        // state. Its result is receipt-scoped rather than active-workflow scoped:
+        // a later legitimate selection may move the active workflow, but cannot
+        // rewrite what this receipt originally selected.
+        if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            let outcome = state
+                .with_store(|store| store.get_profile_selection_outcome(project_id, existing.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the durable selection receipt predates exact outcome binding",
+                    )
+                })?;
+            return Ok(SelectionDto {
+                realm_id: state.realm_id(),
+                task_id,
+                work_profile: Some(RevisionRefDto {
+                    id: outcome.profile.0.as_str().to_owned(),
+                    version: outcome.profile.1,
+                }),
+                team_template: outcome.team.as_ref().map(|team| RevisionRefDto {
+                    id: team.0.to_string(),
+                    version: team.1,
+                }),
+                team_template_hash: outcome.team.as_ref().map(|team| team.2.as_str().to_owned()),
+                account_profile_id: None,
+                applied: applied_dto(outcome.applied),
+                receipt_id: existing.id.to_string(),
+            });
+        }
+
         let task = self.task_row(project_id, task_id)?;
         self.ensure_pre_run(project_id, task_id)?;
         if task.revision != request.expected_revision {
@@ -18064,109 +18111,53 @@ impl ApplicationOperations for Services {
                 )
                 .with_revision(Some(task.revision)));
         }
-        let category = request.work_profile_category.as_deref().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::InvalidRequest,
-                "a profile correction names the category to pin",
-            )
-        })?;
-        let (bundle, team_source) = self.bundle_with_team_source(category, kontor_api::now())?;
-        let effective_team = self.effective_team_template(project_id, bundle.team.as_ref())?;
-        let current = state
-            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?;
-        let current_policy = current
-            .as_ref()
-            .map(|workflow| self.stored_workflow_policy(project_id, workflow))
-            .transpose()?;
-        let unchanged = current_policy.as_ref().is_some_and(|policy| {
-            policy.profile.id == bundle.profile.definition.id.as_str()
-                && policy.profile.version == bundle.profile.definition.version
-        });
-        if unchanged
-            && current_policy
-                .as_ref()
-                .is_some_and(|policy| policy.profile_hash != bundle.profile.definition_hash)
-        {
-            return Err(self.deny(
-                ApiErrorCode::RevisionConflict,
-                "that work-profile revision is already stored with different content",
-            ));
-        }
-
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "profile_selection",
-            "task_id": task_id.to_string(),
-            "work_profile_category": category,
-            "reason": request.reason.as_str(),
-        }))?;
-        let target = AggregateRef::Task { task_id };
-        let receipt = if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
-            existing.id
-        } else {
-            self.record(
-                key,
-                project_id,
-                CommandKind::SelectTaskProfile,
-                target,
-                task.revision,
-                &intent,
-            )?
+        let now = kontor_api::now();
+        let (bundle, team_source) = self.bundle_with_team_source(category, now)?;
+        let command = NewLocalCommand {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::SelectTaskProfile,
+            target,
+            target_revision: task.revision,
+            intent,
+            created_at: now,
         };
-        if !unchanged {
-            state
-                .with_store(|store| {
-                    store.replace_task_workflow(
-                        project_id,
-                        task_id,
-                        &kontor_core::repository::NewTaskWorkflow {
-                            id: kontor_core::id::TaskWorkflowId::generate(),
-                            project_id,
-                            task_id,
-                            snapshot: bundle.profile.clone(),
-                            current_phase: bundle.profile.definition.entry_phase.clone(),
-                            created_at: kontor_api::now(),
-                        },
-                        &bundle.profile.definition,
-                        bundle.team.as_ref(),
-                        team_source,
-                    )
+        let workflow = kontor_core::repository::NewTaskWorkflow {
+            id: kontor_core::id::TaskWorkflowId::generate(),
+            project_id,
+            task_id,
+            snapshot: bundle.profile.clone(),
+            current_phase: bundle.profile.definition.entry_phase.clone(),
+            created_at: now,
+        };
+        let outcome = state
+            .with_store(|store| {
+                store.apply_profile_selection(&ProfileSelection {
+                    command: &command,
+                    workflow: &workflow,
+                    definition: &bundle.profile.definition,
+                    team: bundle.team.as_ref(),
+                    team_source,
                 })
-                .map_err(|error| self.refuse(&error))?;
-            state.signals().appended();
-        }
-        let (work_profile, team_template, team_template_hash) = if unchanged {
-            let policy = current_policy.expect("unchanged means an active stored workflow exists");
-            (policy.profile, policy.team, policy.team_hash)
-        } else {
-            (
-                RevisionRefDto {
-                    id: bundle.profile.definition.id.as_str().to_owned(),
-                    version: bundle.profile.definition.version,
-                },
-                bundle.team.as_ref().map(|team| RevisionRefDto {
-                    id: team.template_id.to_string(),
-                    version: team.version,
-                }),
-                effective_team
-                    .as_ref()
-                    .map(|team| team.definition.hash().as_str().to_owned()),
-            )
-        };
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
         Ok(SelectionDto {
             realm_id: state.realm_id(),
             task_id,
-            work_profile: Some(work_profile),
-            team_template,
-            team_template_hash,
+            work_profile: Some(RevisionRefDto {
+                id: outcome.profile.0.as_str().to_owned(),
+                version: outcome.profile.1,
+            }),
+            team_template: outcome.team.as_ref().map(|team| RevisionRefDto {
+                id: team.0.to_string(),
+                version: team.1,
+            }),
+            team_template_hash: outcome.team.as_ref().map(|team| team.2.as_str().to_owned()),
             account_profile_id: None,
-            applied: if unchanged {
-                AppliedDto::Unchanged
-            } else {
-                AppliedDto::Created
-            },
-            receipt_id: receipt.to_string(),
+            applied: applied_dto(outcome.applied),
+            receipt_id: outcome.receipt_id.to_string(),
         })
     }
 

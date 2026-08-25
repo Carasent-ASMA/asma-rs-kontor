@@ -218,7 +218,7 @@ pub(crate) fn complete_local_command(
 }
 
 /// Write the non-dispatching half of the command protocol in one transaction.
-fn insert_local_command(
+pub(crate) fn insert_local_command(
     transaction: &rusqlite::Transaction<'_>,
     request: &NewLocalCommand,
 ) -> RepositoryResult<Option<CommandReceipt>> {

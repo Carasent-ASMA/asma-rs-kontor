@@ -63,9 +63,10 @@ pub use events::types::{
 pub use graph::{
     Applied, AppliedBacklogImport, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation,
     BacklogImport, EpicApplication, EpicExecutionScope, EpicExecutionScopeDeclaration, EpicTask,
-    EpicTicketLink, IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProjectEnsure,
-    RegisteredPack, SeatRow, SettledTurn, StoredAuthorization, StoredBindingSnapshot,
-    StoredComment, StoredConflict, StoredWaiver, TeamTemplateSource, TurnDispatch,
+    EpicTicketLink, IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProfileSelection,
+    ProjectEnsure, RegisteredPack, SeatRow, SettledTurn, StoredAuthorization,
+    StoredBindingSnapshot, StoredComment, StoredConflict, StoredProfileSelectionOutcome,
+    StoredWaiver, TeamTemplateSource, TurnDispatch,
 };
 pub use jira::{
     JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,

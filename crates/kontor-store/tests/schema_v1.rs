@@ -122,6 +122,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
+    "profile_selection_outcomes",
     "quick_session_promotions",
     "quick_sessions",
     "realm_idempotency_bindings",
@@ -465,7 +466,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     );
     // Pinned deliberately: appending a migration must be a decision, not a
     // side effect. v59 adds the existing-session Core Team seat claim command.
-    assert_eq!(SCHEMA_VERSION, 61);
+    assert_eq!(SCHEMA_VERSION, 62);
 }
 
 #[test]
@@ -2885,6 +2886,60 @@ fn a_terminal_task_cannot_be_changed_by_direct_sql() {
 }
 
 #[test]
+fn a_profile_selection_outcome_is_an_immutable_receipt_to_policy_binding() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(RUN_FIXTURE)
+        .expect("the workflow fixture inserts");
+    connection
+        .execute_batch(
+            "INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision,
+                  intent, intent_hash, state, attempts, created_at, updated_at,
+                  execution_mode)
+             VALUES
+                 ('0193f000-0000-7000-8000-000000000050',
+                  '0193f000-0000-7000-8000-000000000001', 'selection-outcome',
+                  'select_task_profile', '{}', 1, '{}',
+                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  'intent_persisted', 0, '2026-08-09T10:00:00Z',
+                  '2026-08-09T10:00:00Z', 'local');
+             INSERT INTO profile_selection_outcomes
+                 (project_id, receipt_id, task_id, workflow_id, profile_key,
+                  profile_version, profile_hash, team_template_id,
+                  team_template_version, team_template_hash, applied, recorded_at)
+             VALUES
+                 ('0193f000-0000-7000-8000-000000000001',
+                  '0193f000-0000-7000-8000-000000000050',
+                  '0193f000-0000-7000-8000-000000000010',
+                  '0193f000-0000-7000-8000-000000000030', 'q7.delivery', 1,
+                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  '0193f000-0000-7000-8000-000000000020', 1,
+                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  'created', '2026-08-09T10:00:00Z');",
+        )
+        .expect("the receipt and its exact outcome insert");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE profile_selection_outcomes SET applied = 'unchanged'",
+                [],
+            )
+            .is_err(),
+        "the historical result cannot follow a later active workflow"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM profile_selection_outcomes", [])
+            .is_err(),
+        "the receipt-to-policy binding cannot be withdrawn"
+    );
+}
+
+#[test]
 fn a_derived_state_may_only_be_terminal_together_with_an_outcome() {
     let directory = temp();
     let _store = open(&directory);
@@ -3013,6 +3068,36 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
             &["project_id", "profile_key", "profile_version"],
             "work_profiles",
             &["project_id", "profile_key", "version"],
+        ),
+        (
+            "profile_selection_outcomes",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        (
+            "profile_selection_outcomes",
+            &["project_id", "task_id"],
+            "tasks",
+            &["project_id", "id"],
+        ),
+        (
+            "profile_selection_outcomes",
+            &["project_id", "workflow_id"],
+            "task_workflows",
+            &["project_id", "id"],
+        ),
+        (
+            "profile_selection_outcomes",
+            &["project_id", "profile_key", "profile_version"],
+            "work_profiles",
+            &["project_id", "profile_key", "version"],
+        ),
+        (
+            "profile_selection_outcomes",
+            &["project_id", "team_template_id", "team_template_version"],
+            "team_templates",
+            &["project_id", "template_id", "version"],
         ),
         (
             "task_gate_evaluations",

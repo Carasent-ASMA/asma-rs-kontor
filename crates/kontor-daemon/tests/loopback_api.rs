@@ -40,10 +40,10 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash,
-    ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey,
-    MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion, TaskId,
-    TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
+    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey,
+    ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
+    IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion,
+    TaskId, TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
@@ -9505,6 +9505,59 @@ async fn epic_read_preserves_the_team_revision_apply_froze_across_restart() {
 const INCIDENT_PACK: &str =
     include_str!("../../../tests/fixtures/pilot/incident-response-pack.json");
 
+/// Build a later immutable revision of the incident fixture while keeping its
+/// category stable. Tests use append-only rows with deliberately ordered
+/// registration instants to model a daemon/catalog progression without editing
+/// either published revision.
+fn incident_pack_revision(version: u32, pack_id: &str) -> serde_json::Value {
+    let mut pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+    pack["pack_id"] = serde_json::json!(pack_id);
+    pack["version"] = serde_json::json!(version);
+    pack["manifest"][0]["profile_version"] = serde_json::json!(version);
+    pack["profiles"][0]["version"] = serde_json::json!(version);
+    pack["profiles"][0]["team_template"]["version"] = serde_json::json!(version);
+    pack["teams"][0]["version"] = serde_json::json!(version);
+    pack
+}
+
+/// Append one validated pack directly through the store's public immutable
+/// registration operation, returning its exact document for later resolution.
+fn append_profile_pack(
+    world: &World,
+    pack: &serde_json::Value,
+    registered_at: Timestamp,
+    key: &str,
+) -> String {
+    let document = serde_json::to_string(pack).expect("the pack serializes");
+    kontor_profiles::pack::parse_pack(&document).expect("the appended pack remains valid");
+    let pack_id = pack["pack_id"].as_str().expect("a pack id").to_owned();
+    let version = SpecVersion::parse(
+        u32::try_from(pack["version"].as_u64().expect("a pack version")).expect("the version fits"),
+    )
+    .expect("a legal pack version");
+    world.daemon.state().with_store(|store| {
+        store
+            .register_profile_pack(
+                &RegisteredPack {
+                    pack_id,
+                    version,
+                    document_hash: ContentHash::of(document.as_bytes()),
+                    document: document.clone(),
+                    registered_at,
+                },
+                &IdempotencyBinding {
+                    key: key.to_owned(),
+                    operation: "register_profile_pack",
+                    fingerprint: ContentHash::of(key.as_bytes()),
+                    bound_at: registered_at,
+                },
+            )
+            .expect("the additive pack is stored");
+    });
+    document
+}
+
 /// BLK-002. The catalogue was compiled in and `/v1/catalog/**` was read-only, so
 /// a custom work profile or team template could not enter over the MCP-only
 /// boundary at all. It can now, additively and revisioned — and an epic can pin
@@ -11456,34 +11509,13 @@ async fn an_epic_replay_reads_one_agreed_stored_policy_after_category_progressio
     // A later build/revision of the same category. The older P1 row has a
     // deliberately later catalogue timestamp, so the append-only P2 row becomes
     // the category owner without editing or deleting P1.
-    let mut second_pack = first_pack;
-    second_pack["pack_id"] = serde_json::json!("kontor-pilot-incident-v2");
-    second_pack["version"] = serde_json::json!(2);
-    second_pack["manifest"][0]["profile_version"] = serde_json::json!(2);
-    second_pack["profiles"][0]["version"] = serde_json::json!(2);
-    second_pack["profiles"][0]["team_template"]["version"] = serde_json::json!(2);
-    second_pack["teams"][0]["version"] = serde_json::json!(2);
-    let second_document = serde_json::to_string(&second_pack).expect("the second pack serializes");
-    kontor_profiles::pack::parse_pack(&second_document).expect("the progressed pack remains valid");
-    world.daemon.state().with_store(|store| {
-        store
-            .register_profile_pack(
-                &RegisteredPack {
-                    pack_id: "kontor-pilot-incident-v2".to_owned(),
-                    version: SpecVersion::parse(2).expect("version two"),
-                    document_hash: ContentHash::of(second_document.as_bytes()),
-                    document: second_document.clone(),
-                    registered_at: at("2020-01-01T00:00:00Z"),
-                },
-                &IdempotencyBinding {
-                    key: "progression-pack-p2".to_owned(),
-                    operation: "register_profile_pack",
-                    fingerprint: ContentHash::of(b"progression-pack-p2"),
-                    bound_at: at("2020-01-01T00:00:00Z"),
-                },
-            )
-            .expect("the additive P2 pack is stored");
-    });
+    let second_pack = incident_pack_revision(2, "kontor-pilot-incident-v2");
+    let second_document = append_profile_pack(
+        &world,
+        &second_pack,
+        at("2020-01-01T00:00:00Z"),
+        "progression-pack-p2",
+    );
     let current = Call::get(format!("/v1/catalog/work-profiles/{category}"))
         .signed_as(&world, "observer")
         .send(&world)
@@ -17390,6 +17422,317 @@ async fn profile_selection_refuses_same_identity_work_profile_byte_drift() {
     .await;
     assert_eq!(accepted.status, 200, "{}", accepted.body);
     assert_eq!(accepted.json()["applied"], "unchanged");
+}
+
+/// Profile selection retries are receipt reads, never a second resolution or
+/// effect. P1 is selected under key K, the category progresses to P2, and K
+/// still reports its exact stored P1 result with its original receipt. A fresh
+/// key K2 may then select P2. Even if the category later becomes unavailable,
+/// each key remains replayable as its own historical result while P2 stays
+/// active.
+#[tokio::test]
+async fn profile_selection_replay_precedes_category_resolution_and_never_replaces_twice() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "profile-selection-replay").await;
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+
+    let first_pack = incident_pack_revision(1, "selection-replay-p1");
+    let category = first_pack["manifest"][0]["category"]
+        .as_str()
+        .expect("a category")
+        .to_owned();
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": first_pack}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("selection-replay-pack-p1")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/profile-selection",
+        seed.project, seed.task
+    );
+    let body = serde_json::json!({
+        "expected_revision": seed.task_revision,
+        "work_profile_category": category,
+        "reason": "Select the incident policy"
+    });
+    let selected = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("selection-replay-k")
+        .send(&world)
+        .await;
+    assert_eq!(selected.status, 200, "{}", selected.body);
+    assert_eq!(selected.json()["applied"], "created");
+    assert_eq!(selected.json()["work_profile"]["version"], 1);
+    assert_eq!(selected.json()["team_template"]["version"], 1);
+    let p1_profile = selected.json()["work_profile"].clone();
+    let p1_team = selected.json()["team_template"].clone();
+    let p1_hash = selected.json()["team_template_hash"].clone();
+    let receipt = selected.json()["receipt_id"].clone();
+    let p1_workflow = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the active workflow reads")
+            .expect("P1 is active")
+            .id
+    });
+    let p1_outcome = world.daemon.state().with_store(|store| {
+        store
+            .get_profile_selection_outcome(
+                project_id,
+                CommandReceiptId::parse(receipt.as_str().expect("a receipt id"))
+                    .expect("a valid receipt id"),
+            )
+            .expect("the selection outcome reads")
+            .expect("P1 has a durable selection outcome")
+    });
+    assert_eq!(p1_outcome.workflow_id, p1_workflow);
+    assert_eq!(p1_outcome.profile.1.get(), 1);
+
+    let second_pack = incident_pack_revision(2, "selection-replay-p2");
+    append_profile_pack(
+        &world,
+        &second_pack,
+        at("2020-01-01T00:00:00Z"),
+        "selection-replay-pack-p2",
+    );
+    let current = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(current.status, 200, "{}", current.body);
+    assert_eq!(current.json()["profile"]["version"], 2, "{}", current.body);
+
+    let replayed = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("selection-replay-k")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt_id"], receipt);
+    assert_eq!(replayed.json()["work_profile"], p1_profile);
+    assert_eq!(replayed.json()["team_template"], p1_team);
+    assert_eq!(replayed.json()["team_template_hash"], p1_hash);
+    assert_eq!(replayed.json()["applied"], "created");
+    let after_replay = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the active workflow reads")
+            .expect("P1 remains active")
+            .id
+    });
+    assert_eq!(
+        after_replay, p1_workflow,
+        "a retry created no second workflow"
+    );
+
+    let changed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": category,
+            "reason": "A different operation wearing K"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("selection-replay-k")
+    .send(&world)
+    .await;
+    assert_eq!(changed.status, 409, "{}", changed.body);
+    assert_eq!(changed.code(), "idempotency_conflict");
+
+    let progressed = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("selection-replay-k2")
+        .send(&world)
+        .await;
+    assert_eq!(progressed.status, 200, "{}", progressed.body);
+    assert_eq!(progressed.json()["applied"], "created");
+    assert_eq!(progressed.json()["work_profile"]["version"], 2);
+    assert_eq!(progressed.json()["team_template"]["version"], 2);
+    let p2_profile = progressed.json()["work_profile"].clone();
+    let p2_team = progressed.json()["team_template"].clone();
+    let p2_hash = progressed.json()["team_template_hash"].clone();
+    let p2_receipt = progressed.json()["receipt_id"].clone();
+    let p2_workflow = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the active workflow reads")
+            .expect("P2 is active")
+            .id
+    });
+    assert_ne!(p2_workflow, p1_workflow, "the fresh key selected P2");
+    let p2_outcome = world.daemon.state().with_store(|store| {
+        store
+            .get_profile_selection_outcome(
+                project_id,
+                CommandReceiptId::parse(p2_receipt.as_str().expect("a receipt id"))
+                    .expect("a valid receipt id"),
+            )
+            .expect("the selection outcome reads")
+            .expect("P2 has a durable selection outcome")
+    });
+    assert_eq!(p2_outcome.workflow_id, p2_workflow);
+    assert_eq!(p2_outcome.profile.1.get(), 2);
+
+    let mut unavailable = incident_pack_revision(3, "selection-replay-unavailable");
+    unavailable["manifest"][0]["availability"] = serde_json::json!("manifest_only");
+    unavailable["manifest"][0]["profile"] = serde_json::Value::Null;
+    unavailable["manifest"][0]["profile_version"] = serde_json::Value::Null;
+    append_profile_pack(
+        &world,
+        &unavailable,
+        at("2010-01-01T00:00:00Z"),
+        "selection-replay-pack-unavailable",
+    );
+    let unavailable_now = Call::get(format!("/v1/catalog/work-profiles/{category}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_ne!(
+        unavailable_now.status, 200,
+        "the fixture no longer resolves: {}",
+        unavailable_now.body
+    );
+
+    let replayed_without_category = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("selection-replay-k")
+        .send(&world)
+        .await;
+    assert_eq!(
+        replayed_without_category.status, 200,
+        "{}",
+        replayed_without_category.body
+    );
+    assert_eq!(replayed_without_category.json()["receipt_id"], receipt);
+    assert_eq!(replayed_without_category.json()["work_profile"], p1_profile);
+    assert_eq!(replayed_without_category.json()["team_template"], p1_team);
+    assert_eq!(
+        replayed_without_category.json()["team_template_hash"],
+        p1_hash
+    );
+    assert_eq!(replayed_without_category.json()["applied"], "created");
+
+    let replayed_k2_without_category = Call::post(&uri, &body)
+        .signed_as(&world, "admin")
+        .with_key("selection-replay-k2")
+        .send(&world)
+        .await;
+    assert_eq!(
+        replayed_k2_without_category.status, 200,
+        "{}",
+        replayed_k2_without_category.body
+    );
+    assert_eq!(
+        replayed_k2_without_category.json()["receipt_id"],
+        p2_receipt
+    );
+    assert_eq!(
+        replayed_k2_without_category.json()["work_profile"],
+        p2_profile
+    );
+    assert_eq!(
+        replayed_k2_without_category.json()["team_template"],
+        p2_team
+    );
+    assert_eq!(
+        replayed_k2_without_category.json()["team_template_hash"],
+        p2_hash
+    );
+    assert_eq!(replayed_k2_without_category.json()["applied"], "created");
+    let after_unavailable_replay = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the active workflow reads")
+            .expect("P2 remains active")
+            .id
+    });
+    assert_eq!(after_unavailable_replay, p2_workflow);
+}
+
+/// A receipt created before schema v62 has no exact receipt-to-workflow result
+/// to replay. It must fail explicitly rather than project the task's current
+/// workflow (which may belong to an unrelated later selection) or try to
+/// resolve a category that no longer exists.
+#[tokio::test]
+async fn a_legacy_profile_selection_receipt_never_borrows_the_active_workflow() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "legacy-profile-selection-receipt").await;
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let key = IdempotencyKey::parse("legacy-receipt-without-selection-outcome-k")
+        .expect("an idempotency key");
+    let category = "category-that-no-pack-holds";
+    let reason = "Replay a historical selection";
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "profile_selection",
+        "task_id": seed.task,
+        "work_profile_category": category,
+        "reason": reason,
+    }))
+    .expect("a canonical selection intent");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_local_command(&NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::SelectTaskProfile,
+                target: AggregateRef::Task { task_id },
+                target_revision: AggregateRevision::parse(seed.task_revision)
+                    .expect("a task revision"),
+                intent,
+                created_at: at("2026-08-26T00:00:00Z"),
+            })
+            .expect("the historical receipt is durable");
+    });
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the workflow reads")
+            .expect("the bootstrap workflow is active")
+            .id
+    });
+
+    let replay = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/profile-selection",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "work_profile_category": category,
+            "reason": reason,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(key.as_str())
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 409, "{}", replay.body);
+    assert_eq!(replay.code(), "revision_conflict");
+    assert!(
+        replay.body.contains("predates exact outcome binding"),
+        "the refusal identifies unreconstructable history, not category lookup: {}",
+        replay.body
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the workflow reads")
+            .expect("the bootstrap workflow remains active")
+            .id
+    });
+    assert_eq!(after, before, "an unreconstructable replay writes nothing");
 }
 
 /// The user-published Teams ledger is a different immutability surface: its
