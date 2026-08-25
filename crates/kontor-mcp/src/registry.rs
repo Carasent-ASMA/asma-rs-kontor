@@ -143,6 +143,11 @@ pub enum ArgType {
     /// The fields are emitted into the tool's own JSON Schema, so a caller sees
     /// the shape before it calls instead of discovering it from a refusal.
     Object(&'static [FieldSpec]),
+    /// An array of nested documents whose fields are declared.
+    ///
+    /// This is distinct from [`ArgType::Json`] so an ordered recovery policy can
+    /// advertise and validate every route before the request reaches the daemon.
+    ObjectArray(&'static [FieldSpec]),
 }
 
 /// One field of a declared nested object.
@@ -211,7 +216,7 @@ impl ArgType {
             | Self::Enum(_) => "string",
             Self::Revision | Self::SpecVersion | Self::U32 | Self::U64 | Self::I64 => "integer",
             Self::Bool => "boolean",
-            Self::TextArray => "array",
+            Self::TextArray | Self::ObjectArray(_) => "array",
             Self::Json | Self::Object(_) => "object",
         }
     }
@@ -248,6 +253,9 @@ impl ArgType {
                 // Same reasoning as the top-level schema: the daemon's DTOs are
                 // closed, so advertising openness would invite a smuggled field.
                 fragment.insert("additionalProperties".into(), false.into());
+            }
+            Self::ObjectArray(fields) => {
+                fragment.insert("items".into(), Self::Object(fields).schema().into());
             }
             _ => {}
         }
@@ -4736,6 +4744,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Enum(&["credential_propagation", "provider_unavailable"]),
                 "The supported recovery policy.",
+            ),
+            opt(
+                "recovery_profile",
+                Place::Body,
+                ArgType::ObjectArray(RUNTIME_MODEL_ROUTE),
+                "Ordered governed provider/model/effort routes; the first currently admissible route is selected.",
             ),
         ],
         about: "Replace one idle consultation native filler while preserving its SeatBinding.",

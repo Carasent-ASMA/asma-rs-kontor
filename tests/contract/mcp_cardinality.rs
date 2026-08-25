@@ -83,6 +83,13 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
             .map(|field| (field.name.to_owned(), sample(field.ty, field.name)))
             .collect::<serde_json::Map<_, _>>()
             .into(),
+        ArgType::ObjectArray(fields) => serde_json::Value::Array(vec![
+            fields
+                .iter()
+                .map(|field| (field.name.to_owned(), sample(field.ty, field.name)))
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+        ]),
         ArgType::Revision | ArgType::U32 | ArgType::U64 => serde_json::Value::from(1),
         ArgType::I64 => serde_json::Value::from(1),
         ArgType::Bool => serde_json::Value::Bool(true),

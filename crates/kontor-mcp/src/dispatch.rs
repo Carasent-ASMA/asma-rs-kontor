@@ -538,6 +538,19 @@ fn check_value(
                 }
             }
         }
+        ArgType::ObjectArray(fields) => {
+            let items = value
+                .as_array()
+                .ok_or_else(|| wrong("an array of objects"))?;
+            for (index, item) in items.iter().enumerate() {
+                check_value(
+                    tool,
+                    &format!("{property}[{index}]"),
+                    ArgType::Object(fields),
+                    item,
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -581,7 +594,8 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         | ArgType::Bool
         | ArgType::TextArray
         | ArgType::Json
-        | ArgType::Object(_) => Ok(()),
+        | ArgType::Object(_)
+        | ArgType::ObjectArray(_) => Ok(()),
     }
 }
 

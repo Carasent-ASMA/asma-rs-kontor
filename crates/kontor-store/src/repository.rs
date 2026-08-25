@@ -50,22 +50,22 @@ use kontor_core::repository::{
     HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
     IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewGateEvaluation, NewIntakeDecision,
-    NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand, NewMiniProject,
-    NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState, NewRuntimeEvent,
-    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot,
-    NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository,
-    ProjectTopologyDefault, ProviderQuotaState, RealmEventPage, RealmRepository, ReceiptAdvance,
-    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
-    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
-    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
-    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    NewCapacityObservation, NewCommandIntent, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
+    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, RealmEventPage, RealmRepository,
+    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
+    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
+    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
+    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -271,6 +271,7 @@ type ConsultationSeatColumns = (
     String,
     String,
     String,
+    i64,
     Option<String>,
     Option<String>,
     Option<i64>,
@@ -289,6 +290,7 @@ fn read_consultation_seat(
         logical_role,
         seat_binding_id,
         model_rung,
+        occupancy_generation,
         runtime_kind,
         host,
         generation,
@@ -327,6 +329,12 @@ fn read_consultation_seat(
         model_rung: serde_json::from_str(&model_rung).map_err(|error| {
             RepositoryError::Backend {
                 detail: format!("a consultation model rung could not be decoded: {error}"),
+            }
+        })?,
+        occupancy_generation: u64::try_from(occupancy_generation).map_err(|_| {
+            RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "occupancy generation is not positive",
             }
         })?,
         native_identity,
@@ -1866,10 +1874,10 @@ impl SqliteStore {
                 .execute(
                     "INSERT INTO consultation_seats
                          (run_id, project_id, role_slot_id, committee_role,
-                          logical_role, seat_binding_id, model_rung,
+                          logical_role, seat_binding_id, model_rung, occupancy_generation,
                           runtime_kind, host, generation, native_id,
                           provider_session_id, observed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                              NULL, NULL, NULL, NULL, NULL, NULL)",
                     params![
                         run.id.as_text(),
@@ -1879,6 +1887,7 @@ impl SqliteStore {
                         seat.logical_role.as_str(),
                         seat.seat_binding_id.to_string(),
                         model,
+                        i64::try_from(seat.occupancy_generation).unwrap_or(i64::MAX),
                     ],
                 )
                 .map_err(backend)?;
@@ -2006,7 +2015,7 @@ impl SqliteStore {
             .connection
             .prepare(
                 "SELECT role_slot_id, committee_role, logical_role,
-                        seat_binding_id, model_rung, runtime_kind, host,
+                        seat_binding_id, model_rung, occupancy_generation, runtime_kind, host,
                         generation, native_id, provider_session_id, observed_at
                  FROM consultation_seats
                  WHERE project_id = ?1 AND run_id = ?2
@@ -2021,12 +2030,13 @@ impl SqliteStore {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(5)?,
                     row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(backend)?
@@ -2048,7 +2058,7 @@ impl SqliteStore {
             .query_row(
                 "SELECT s.run_id, r.family, s.role_slot_id, s.committee_role,
                         s.logical_role, s.seat_binding_id, s.model_rung,
-                        s.runtime_kind, s.host, s.generation, s.native_id,
+                        s.occupancy_generation, s.runtime_kind, s.host, s.generation, s.native_id,
                         s.provider_session_id, s.observed_at
                  FROM consultation_seats AS s
                  JOIN consultation_runs AS r
@@ -2065,12 +2075,13 @@ impl SqliteStore {
                             row.get::<_, String>(4)?,
                             row.get::<_, String>(5)?,
                             row.get::<_, String>(6)?,
-                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, i64>(7)?,
                             row.get::<_, Option<String>>(8)?,
-                            row.get::<_, Option<i64>>(9)?,
-                            row.get::<_, Option<String>>(10)?,
+                            row.get::<_, Option<String>>(9)?,
+                            row.get::<_, Option<i64>>(10)?,
                             row.get::<_, Option<String>>(11)?,
                             row.get::<_, Option<String>>(12)?,
+                            row.get::<_, Option<String>>(13)?,
                         ),
                     ))
                 },
@@ -2158,6 +2169,414 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Read the receipt-first recovery attempt for one exact predecessor.
+    pub fn get_consultation_recovery_attempt(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        role_slot_id: &RoleSlotId,
+        predecessor_native_id: &ExternalId,
+    ) -> RepositoryResult<Option<StoredConsultationRecoveryAttempt>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT seat_binding_id, predecessor_occupancy_generation,
+                        successor_occupancy_generation, predecessor_run_revision,
+                        prepared_run_revision, recovery_reason, request_intent_hash,
+                        recovery_profile, recovery_profile_hash, selected_model_rung,
+                        state, successor_runtime_kind, successor_host,
+                        successor_generation, successor_native_id,
+                        successor_provider_session, successor_observed_at,
+                        prepared_at, retired_at, installed_at
+                 FROM consultation_seat_recovery_attempts
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND predecessor_native_id = ?4",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    role_slot_id.as_str(),
+                    predecessor_native_id.as_str(),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                        row.get::<_, Option<i64>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, Option<String>>(16)?,
+                        row.get::<_, String>(17)?,
+                        row.get::<_, Option<String>>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(
+            |(
+                seat_binding_id,
+                predecessor_occupancy_generation,
+                successor_occupancy_generation,
+                predecessor_run_revision,
+                prepared_run_revision,
+                recovery_reason,
+                request_intent_hash,
+                recovery_profile,
+                recovery_profile_hash,
+                selected_model_rung,
+                state,
+                successor_runtime_kind,
+                successor_host,
+                successor_generation,
+                successor_native_id,
+                successor_provider_session,
+                successor_observed_at,
+                prepared_at,
+                retired_at,
+                installed_at,
+            )| {
+                let successor_native_identity = match (
+                    successor_runtime_kind,
+                    successor_host,
+                    successor_generation,
+                    successor_native_id,
+                ) {
+                    (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) => {
+                        Some(NativeRuntimeIdentity {
+                            runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                            host: ExternalName::parse(&host)?,
+                            generation: u64::try_from(generation).map_err(|_| {
+                                RepositoryError::Conflict {
+                                    subject: "consultation recovery attempt",
+                                    rule: "successor runtime generation is negative",
+                                }
+                            })?,
+                            native_id: ExternalId::parse(&native_id)?,
+                        })
+                    }
+                    (None, None, None, None) => None,
+                    _ => {
+                        return Err(RepositoryError::Conflict {
+                            subject: "consultation recovery attempt",
+                            rule: "successor native identity is partially present",
+                        });
+                    }
+                };
+                let profile_hash = ContentHash::parse(&recovery_profile_hash)?;
+                let profile = CanonicalDocument::from_stored(&recovery_profile, &profile_hash)?;
+                Ok(StoredConsultationRecoveryAttempt {
+                    project_id,
+                    run_id,
+                    role_slot_id: role_slot_id.clone(),
+                    seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+                    predecessor_native_id: predecessor_native_id.clone(),
+                    predecessor_occupancy_generation: u64::try_from(
+                        predecessor_occupancy_generation,
+                    )
+                    .map_err(|_| RepositoryError::Conflict {
+                        subject: "consultation recovery attempt",
+                        rule: "predecessor occupancy generation is negative",
+                    })?,
+                    successor_occupancy_generation: u64::try_from(
+                        successor_occupancy_generation,
+                    )
+                    .map_err(|_| RepositoryError::Conflict {
+                        subject: "consultation recovery attempt",
+                        rule: "successor occupancy generation is negative",
+                    })?,
+                    predecessor_run_revision: AggregateRevision::parse(
+                        u64::try_from(predecessor_run_revision).map_err(|_| {
+                            RepositoryError::Conflict {
+                                subject: "consultation recovery attempt",
+                                rule: "predecessor run revision is negative",
+                            }
+                        })?,
+                    )?,
+                    prepared_run_revision: AggregateRevision::parse(
+                        u64::try_from(prepared_run_revision).map_err(|_| {
+                            RepositoryError::Conflict {
+                                subject: "consultation recovery attempt",
+                                rule: "prepared run revision is negative",
+                            }
+                        })?,
+                    )?,
+                    recovery_reason,
+                    request_intent_hash: ContentHash::parse(&request_intent_hash)?,
+                    recovery_profile: serde_json::from_str(profile.json()).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!("a recovery profile could not be decoded: {error}"),
+                        }
+                    })?,
+                    recovery_profile_hash: profile_hash,
+                    selected_model_rung: serde_json::from_str(&selected_model_rung).map_err(
+                        |error| RepositoryError::Backend {
+                            detail: format!(
+                                "a selected consultation recovery route could not be decoded: {error}"
+                            ),
+                        },
+                    )?,
+                    state,
+                    successor_native_identity,
+                    successor_provider_session_id: successor_provider_session
+                        .map(|value| ExternalId::parse(&value))
+                        .transpose()?,
+                    successor_observed_at: successor_observed_at
+                        .map(|value| read_timestamp(&value))
+                        .transpose()?,
+                    prepared_at: read_timestamp(&prepared_at)?,
+                    retired_at: retired_at.map(|value| read_timestamp(&value)).transpose()?,
+                    installed_at: installed_at
+                        .map(|value| read_timestamp(&value))
+                        .transpose()?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    /// Fence one exact predecessor and persist the selected recovery policy
+    /// before any runtime archive or launch effect.
+    pub fn prepare_consultation_recovery_attempt(
+        &self,
+        request: &NewConsultationRecoveryAttempt,
+    ) -> RepositoryResult<StoredConsultationRecoveryAttempt> {
+        let project_id = request.project_id;
+        let predecessor = &request.predecessor;
+        let expected_revision = request.expected_revision;
+        let recovery_reason = request.recovery_reason.as_str();
+        let recovery_profile = &request.recovery_profile;
+        let selected_model_rung = &request.selected_model_rung;
+        let prepared_at = request.prepared_at;
+        let predecessor_identity =
+            predecessor
+                .native_identity
+                .as_ref()
+                .ok_or(RepositoryError::Conflict {
+                    subject: "consultation recovery attempt",
+                    rule: "the predecessor has no native identity",
+                })?;
+        if let Some(existing) = self.get_consultation_recovery_attempt(
+            project_id,
+            predecessor.run_id,
+            &predecessor.role_slot_id,
+            &predecessor_identity.native_id,
+        )? {
+            if existing.recovery_reason != recovery_reason
+                || existing.request_intent_hash != request.request_intent_hash
+                || existing.recovery_profile_hash != *recovery_profile.hash()
+                || existing.selected_model_rung != *selected_model_rung
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "consultation recovery attempt",
+                    rule: "the predecessor already has a different fenced recovery intent",
+                });
+            }
+            return Ok(existing);
+        }
+        let successor_occupancy_generation = predecessor
+            .occupancy_generation
+            .checked_add(1)
+            .ok_or(RepositoryError::Conflict {
+                subject: "consultation recovery attempt",
+                rule: "the occupancy generation overflowed",
+            })?;
+        let prepared_run_revision = expected_revision.next()?;
+        let selected_model_rung = serde_json::to_string(selected_model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a selected recovery route could not be encoded: {error}"),
+            }
+        })?;
+        let transaction = self.begin()?;
+        let active: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT native_id, occupancy_generation FROM consultation_seats
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3",
+                params![
+                    project_id.to_string(),
+                    predecessor.run_id.as_text(),
+                    predecessor.role_slot_id.as_str(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if active
+            .as_ref()
+            .map(|(native, generation)| (native.as_str(), u64::try_from(*generation).ok()))
+            != Some((
+                predecessor_identity.native_id.as_str(),
+                Some(predecessor.occupancy_generation),
+            ))
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation recovery attempt",
+                rule: "the active predecessor or occupancy generation moved",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO consultation_seat_recovery_attempts
+                     (project_id, run_id, role_slot_id, seat_binding_id,
+                      predecessor_native_id, predecessor_occupancy_generation,
+                      successor_occupancy_generation, predecessor_run_revision,
+                      prepared_run_revision, recovery_reason, request_intent_hash,
+                      recovery_profile, recovery_profile_hash, selected_model_rung,
+                      state, prepared_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14, 'prepared', ?15)",
+                params![
+                    project_id.to_string(),
+                    predecessor.run_id.as_text(),
+                    predecessor.role_slot_id.as_str(),
+                    predecessor.seat_binding_id.to_string(),
+                    predecessor_identity.native_id.as_str(),
+                    i64::try_from(predecessor.occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(successor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    i64::try_from(prepared_run_revision.get()).unwrap_or(i64::MAX),
+                    recovery_reason,
+                    request.request_intent_hash.as_str(),
+                    recovery_profile.json(),
+                    recovery_profile.hash().as_str(),
+                    selected_model_rung,
+                    text(prepared_at),
+                ],
+            )
+            .map_err(backend)?;
+        let seat_changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                 SET occupancy_generation = ?4
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND native_id = ?5 AND occupancy_generation = ?6",
+                params![
+                    project_id.to_string(),
+                    predecessor.run_id.as_text(),
+                    predecessor.role_slot_id.as_str(),
+                    i64::try_from(successor_occupancy_generation).unwrap_or(i64::MAX),
+                    predecessor_identity.native_id.as_str(),
+                    i64::try_from(predecessor.occupancy_generation).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        let run_changed = transaction
+            .execute(
+                "UPDATE consultation_runs SET revision = revision + 1, updated_at = ?4
+                 WHERE project_id = ?1 AND run_id = ?2 AND revision = ?3",
+                params![
+                    project_id.to_string(),
+                    predecessor.run_id.as_text(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    text(prepared_at),
+                ],
+            )
+            .map_err(backend)?;
+        if seat_changed != 1 || run_changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation recovery attempt",
+                rule: "the seat or Committee revision moved during fencing",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_recovery_attempt(
+            project_id,
+            predecessor.run_id,
+            &predecessor.role_slot_id,
+            &predecessor_identity.native_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "prepared consultation recovery attempt",
+        })
+    }
+
+    /// Persist exact predecessor retirement for replay diagnostics.
+    pub fn mark_consultation_recovery_predecessor_retired(
+        &self,
+        attempt: &StoredConsultationRecoveryAttempt,
+        retired_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        self.connection
+            .execute(
+                "UPDATE consultation_seat_recovery_attempts
+                 SET state = CASE WHEN state = 'prepared' THEN 'predecessor_retired' ELSE state END,
+                     retired_at = COALESCE(retired_at, ?5)
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND predecessor_native_id = ?4",
+                params![
+                    attempt.project_id.to_string(),
+                    attempt.run_id.as_text(),
+                    attempt.role_slot_id.as_str(),
+                    attempt.predecessor_native_id.as_str(),
+                    text(retired_at),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Persist exact successor readback before installing it as active.
+    pub fn mark_consultation_recovery_successor_observed(
+        &self,
+        attempt: &StoredConsultationRecoveryAttempt,
+        successor: &StoredConsultationSeat,
+    ) -> RepositoryResult<()> {
+        let identity = successor
+            .native_identity
+            .as_ref()
+            .ok_or(RepositoryError::Conflict {
+                subject: "consultation recovery attempt",
+                rule: "the successor has no native identity",
+            })?;
+        let observed_at = successor.observed_at.ok_or(RepositoryError::Conflict {
+            subject: "consultation recovery attempt",
+            rule: "the successor has no observation",
+        })?;
+        self.connection
+            .execute(
+                "UPDATE consultation_seat_recovery_attempts
+                 SET state = CASE WHEN state IN ('prepared', 'predecessor_retired')
+                                  THEN 'successor_observed' ELSE state END,
+                     successor_runtime_kind = COALESCE(successor_runtime_kind, ?5),
+                     successor_host = COALESCE(successor_host, ?6),
+                     successor_generation = COALESCE(successor_generation, ?7),
+                     successor_native_id = COALESCE(successor_native_id, ?8),
+                     successor_provider_session = COALESCE(successor_provider_session, ?9),
+                     successor_observed_at = COALESCE(successor_observed_at, ?10)
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND predecessor_native_id = ?4
+                   AND (successor_native_id IS NULL OR successor_native_id = ?8)",
+                params![
+                    attempt.project_id.to_string(),
+                    attempt.run_id.as_text(),
+                    attempt.role_slot_id.as_str(),
+                    attempt.predecessor_native_id.as_str(),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                    identity.native_id.as_str(),
+                    successor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str),
+                    text(observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
     /// Read the active successor of an already-recorded consultation recovery.
     ///
     /// The predecessor native id is the replay key. A matching history row is
@@ -2220,6 +2639,12 @@ impl SqliteStore {
             return Err(RepositoryError::Conflict {
                 subject: "consultation seat recovery",
                 rule: "a recovery cannot move the logical consultation SeatBinding",
+            });
+        }
+        if successor.occupancy_generation <= predecessor.occupancy_generation {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "the successor occupancy generation must fence the predecessor",
             });
         }
         if !matches!(
@@ -2300,12 +2725,14 @@ impl SqliteStore {
                       predecessor_host, predecessor_generation,
                       predecessor_native_id, predecessor_provider_session,
                       predecessor_observed_at, successor_model_rung,
+                      predecessor_occupancy_generation,
                       successor_runtime_kind, successor_host,
                       successor_generation, successor_native_id,
                       successor_provider_session, successor_observed_at,
-                      retired_at, recovery_reason)
+                      successor_occupancy_generation, retired_at, recovery_reason)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                         ?21, ?22)",
                 params![
                     project_id.to_string(),
                     predecessor.run_id.as_text(),
@@ -2322,6 +2749,7 @@ impl SqliteStore {
                         .map(ExternalId::as_str),
                     text(predecessor_observed_at),
                     successor_model,
+                    i64::try_from(predecessor.occupancy_generation).unwrap_or(i64::MAX),
                     successor_identity.runtime_kind.as_str(),
                     successor_identity.host.as_str(),
                     i64::try_from(successor_identity.generation).unwrap_or(i64::MAX),
@@ -2331,6 +2759,7 @@ impl SqliteStore {
                         .as_ref()
                         .map(ExternalId::as_str),
                     text(successor_observed_at),
+                    i64::try_from(successor.occupancy_generation).unwrap_or(i64::MAX),
                     text(retired_at),
                     recovery_reason,
                 ],
@@ -2339,11 +2768,12 @@ impl SqliteStore {
         let changed = transaction
             .execute(
                 "UPDATE consultation_seats
-                 SET model_rung = ?4, runtime_kind = ?5, host = ?6,
-                     generation = ?7, native_id = ?8,
-                     provider_session_id = ?9, observed_at = ?10
+                 SET model_rung = ?4, occupancy_generation = ?5,
+                     runtime_kind = ?6, host = ?7,
+                     generation = ?8, native_id = ?9,
+                     provider_session_id = ?10, observed_at = ?11
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
-                   AND native_id = ?11",
+                   AND native_id = ?12 AND occupancy_generation = ?5",
                 params![
                     project_id.to_string(),
                     successor.run_id.as_text(),
@@ -2355,6 +2785,7 @@ impl SqliteStore {
                             ),
                         }
                     })?,
+                    i64::try_from(successor.occupancy_generation).unwrap_or(i64::MAX),
                     successor_identity.runtime_kind.as_str(),
                     successor_identity.host.as_str(),
                     i64::try_from(successor_identity.generation).unwrap_or(i64::MAX),
@@ -2391,6 +2822,30 @@ impl SqliteStore {
             return Err(RepositoryError::Conflict {
                 subject: "consultation seat recovery",
                 rule: "the Committee revision moved during recovery",
+            });
+        }
+        let attempt_changed = transaction
+            .execute(
+                "UPDATE consultation_seat_recovery_attempts
+                 SET state = 'installed', installed_at = ?5
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND predecessor_native_id = ?4
+                   AND successor_occupancy_generation = ?6
+                   AND state IN ('successor_observed', 'installed')",
+                params![
+                    project_id.to_string(),
+                    successor.run_id.as_text(),
+                    successor.role_slot_id.as_str(),
+                    predecessor_identity.native_id.as_str(),
+                    text(successor_observed_at),
+                    i64::try_from(successor.occupancy_generation).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if attempt_changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "the prepared recovery attempt was not ready to install",
             });
         }
         transaction.commit().map_err(backend)?;

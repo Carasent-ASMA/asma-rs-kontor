@@ -3893,6 +3893,12 @@ export interface components {
             /** @description Logical role under the pinned policy. */
             logical_role: string;
             observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /**
+             * Format: int64
+             * @description Monotonic native-filler generation. Seat-scoped credentials are fenced
+             *     to this value.
+             */
+            occupancy_generation: number;
             /** @description Stable profile/template slot. */
             role_slot_id: string;
             /** @description Exact persistent SeatBinding. */
@@ -6023,6 +6029,12 @@ export interface components {
             expected_revision: number;
             /** @description Supported recovery reason that selects the route policy. */
             reason: components["schemas"]["ConsultationSeatRecoveryReasonDto"];
+            /**
+             * @description Explicit ordered recovery policy. When present, every route must be an
+             *     exact governed provider alias; the daemon evaluates the whole sequence
+             *     and selects the first currently admissible route.
+             */
+            recovery_profile?: components["schemas"]["RuntimeModelRouteRequest"][];
         };
         /**
          * @description One member the resolver removed, and why.

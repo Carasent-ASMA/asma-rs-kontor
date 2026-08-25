@@ -31,6 +31,15 @@ use kontor_core::id::{ContentHash, SeatBindingId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
+/// Authenticated consultation-seat subject, fenced to one native occupancy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsultationSeatSubject {
+    /// Immutable logical seat identity.
+    pub seat_binding_id: SeatBindingId,
+    /// Monotonic filler generation carried by this bearer.
+    pub occupancy_generation: u64,
+}
+
 closed_enum! {
     /// How much of the control plane one caller may reach.
     ///
@@ -162,6 +171,36 @@ impl RealmCredentials {
         format!("kontor-seat-v1.{binding}.{}", signature.as_str())
     }
 
+    /// Mint a bearer scoped to one logical seat and one native-filler
+    /// occupancy generation. Fencing the generation invalidates every bearer
+    /// inherited by the predecessor without rotating Realm credentials.
+    #[must_use]
+    pub fn consultation_seat_credential_for_generation(
+        &self,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> String {
+        let held = self
+            .secrets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let binding = seat_binding_id.to_string();
+        let generation = occupancy_generation.to_string();
+        let mut material = Vec::with_capacity(
+            held.operator.expose_secret().len() + binding.len() + generation.len() + 40,
+        );
+        material.extend_from_slice(held.operator.expose_secret().as_bytes());
+        material.extend_from_slice(b"\0kontor-consultation-seat-v2\0");
+        material.extend_from_slice(binding.as_bytes());
+        material.push(0);
+        material.extend_from_slice(generation.as_bytes());
+        let signature = ContentHash::of(&material);
+        format!(
+            "kontor-seat-v2.{binding}.{occupancy_generation}.{}",
+            signature.as_str()
+        )
+    }
+
     /// Authenticate a seat-scoped bearer and return its server-derived binding.
     ///
     /// Ordinary Realm credentials deliberately do not match here. A findings
@@ -169,13 +208,44 @@ impl RealmCredentials {
     /// shared operator credential plus a caller-supplied identity.
     #[must_use]
     pub fn consultation_seat(&self, presented: &str) -> Option<SeatBindingId> {
+        self.consultation_subject(presented)
+            .map(|subject| subject.seat_binding_id)
+    }
+
+    /// Authenticate a generation-fenced seat bearer. Legacy v1 bearers map to
+    /// generation one so already-running seats survive the schema upgrade; the
+    /// first replacement increments the stored generation and fences them.
+    #[must_use]
+    pub fn consultation_subject(&self, presented: &str) -> Option<ConsultationSeatSubject> {
+        if let Some(rest) = presented.strip_prefix("kontor-seat-v2.") {
+            let mut parts = rest.split('.');
+            let binding = parts.next()?;
+            let generation = parts.next()?.parse::<u64>().ok()?;
+            let signature = parts.next()?;
+            if parts.next().is_some() || generation == 0 {
+                return None;
+            }
+            let seat_binding_id = SeatBindingId::parse(binding).ok()?;
+            let expected =
+                self.consultation_seat_credential_for_generation(seat_binding_id, generation);
+            let expected_signature = expected.rsplit_once('.')?.1;
+            return constant_time_eq(expected_signature.as_bytes(), signature.as_bytes())
+                .then_some(ConsultationSeatSubject {
+                    seat_binding_id,
+                    occupancy_generation: generation,
+                });
+        }
         let rest = presented.strip_prefix("kontor-seat-v1.")?;
         let (binding, signature) = rest.split_once('.')?;
         let seat_binding_id = SeatBindingId::parse(binding).ok()?;
         let expected = self.consultation_seat_credential(seat_binding_id);
         let expected_signature = expected.rsplit_once('.')?.1;
-        constant_time_eq(expected_signature.as_bytes(), signature.as_bytes())
-            .then_some(seat_binding_id)
+        constant_time_eq(expected_signature.as_bytes(), signature.as_bytes()).then_some(
+            ConsultationSeatSubject {
+                seat_binding_id,
+                occupancy_generation: 1,
+            },
+        )
     }
 
     /// Swap in a whole new generation of secrets.
@@ -519,6 +589,14 @@ mod tests {
         let retargeted = credential.replace(&seat.to_string(), &other.to_string());
         assert_eq!(credentials.consultation_seat(&retargeted), None);
         assert_eq!(credentials.consultation_seat("operator-secret"), None);
+        let second_generation = credentials.consultation_seat_credential_for_generation(seat, 2);
+        assert_eq!(
+            credentials.consultation_subject(&second_generation),
+            Some(ConsultationSeatSubject {
+                seat_binding_id: seat,
+                occupancy_generation: 2,
+            })
+        );
     }
 
     #[test]

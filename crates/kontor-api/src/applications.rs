@@ -1186,6 +1186,9 @@ pub struct ConsultationSeatDto {
     /// Exact persistent SeatBinding.
     #[schema(value_type = String)]
     pub seat_binding_id: SeatBindingId,
+    /// Monotonic native-filler generation. Seat-scoped credentials are fenced
+    /// to this value.
+    pub occupancy_generation: u64,
     /// Native runtime identity after launch/recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_binding: Option<ObservedBindingDto>,
@@ -1327,6 +1330,11 @@ pub struct RecoverConsultationSeatRequest {
     pub expected_native_id: ExternalId,
     /// Supported recovery reason that selects the route policy.
     pub reason: ConsultationSeatRecoveryReasonDto,
+    /// Explicit ordered recovery policy. When present, every route must be an
+    /// exact governed provider alias; the daemon evaluates the whole sequence
+    /// and selects the first currently admissible route.
+    #[serde(default)]
+    pub recovery_profile: Vec<RuntimeModelRouteRequest>,
 }
 
 /// Completed identity-preserving consultation seat recovery.
@@ -5384,6 +5392,7 @@ pub trait ApplicationOperations: Send + Sync {
         key: &IdempotencyKey,
         project_id: ProjectId,
         advisor_run_id: AdvisorRunId,
+        seat_occupancy_generation: Option<u64>,
         request: &SettleConsultationRequest,
     ) -> Result<AdvisorRunDto, ApiError>;
     /// Every published Committee template revision.
@@ -5431,6 +5440,7 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
         seat_binding_id: SeatBindingId,
+        seat_occupancy_generation: u64,
         request: &RecordFindingsRequest,
     ) -> Result<CommitteeRunDto, ApiError>;
     /// Settle one Committee consultation.
@@ -7636,6 +7646,7 @@ pub async fn settle_advisor_run(
     headers: HeaderMap,
     Json(mut request): Json<SettleConsultationRequest>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
+    let seat_occupancy_generation = caller.consultation_occupancy_generation();
     if caller.consultation_seat().is_some() {
         let seat_binding_id = caller.require_consultation_seat(&state)?;
         if request
@@ -7672,7 +7683,13 @@ pub async fn settle_advisor_run(
     Ok(Json(
         state
             .applications()
-            .settle_advisor_run(&key, project_id, advisor_run_id, &request)
+            .settle_advisor_run(
+                &key,
+                project_id,
+                advisor_run_id,
+                seat_occupancy_generation,
+                &request,
+            )
             .await?,
     ))
 }
@@ -7885,6 +7902,13 @@ pub async fn record_committee_findings(
     Json(request): Json<RecordFindingsRequest>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
     let seat_binding_id = caller.require_consultation_seat(&state)?;
+    let seat_occupancy_generation =
+        caller.consultation_occupancy_generation().ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::Forbidden,
+                "the consultation credential has no occupancy generation",
+            )
+        })?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;
@@ -7896,6 +7920,7 @@ pub async fn record_committee_findings(
                 project_id,
                 committee_run_id,
                 seat_binding_id,
+                seat_occupancy_generation,
                 &request,
             )
             .await?,

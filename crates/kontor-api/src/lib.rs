@@ -46,6 +46,7 @@ pub mod openapi;
 pub mod sessions;
 pub mod state;
 
+use crate::auth::ConsultationSeatSubject;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::middleware::Next;
@@ -76,7 +77,7 @@ pub fn now() -> Timestamp {
 /// handler cannot be reached without one. Extracting it is infallible for that
 /// reason; the fallible part already happened, before any handler ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Caller(pub CallerCapability, Option<SeatBindingId>);
+pub struct Caller(pub CallerCapability, Option<ConsultationSeatSubject>);
 
 impl Caller {
     /// Refuse a caller whose tier does not reach `required`.
@@ -104,7 +105,19 @@ impl Caller {
     /// a seat-scoped credential rather than a shared Realm credential.
     #[must_use]
     pub const fn consultation_seat(self) -> Option<SeatBindingId> {
-        self.1
+        match self.1 {
+            Some(subject) => Some(subject.seat_binding_id),
+            None => None,
+        }
+    }
+
+    /// Occupancy generation authenticated by a seat-scoped bearer.
+    #[must_use]
+    pub const fn consultation_occupancy_generation(self) -> Option<u64> {
+        match self.1 {
+            Some(subject) => Some(subject.occupancy_generation),
+            None => None,
+        }
     }
 
     /// Require the exact consultation-seat subject carried by a scoped bearer.
@@ -185,12 +198,12 @@ async fn authenticate(
     })?;
     let caller = if let Some(authority) = state.credentials().authority(presented) {
         Caller(authority, None)
-    } else if let Some(seat_binding_id) = state.credentials().consultation_seat(presented) {
+    } else if let Some(subject) = state.credentials().consultation_subject(presented) {
         // The capability value is only a storage placeholder: `Caller::require`
         // denies every seat-scoped caller before checking it. Submission routes
         // opt in through `require_consultation_seat`, so the bearer cannot read
         // peers' findings or inherit the signing secret's Realm authority.
-        Caller(CallerCapability::Observer, Some(seat_binding_id))
+        Caller(CallerCapability::Observer, Some(subject))
     } else {
         return Err(state.refuse(
             ApiErrorCode::Unauthenticated,

@@ -23119,6 +23119,25 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .and_then(|seat| seat["seat_binding_id"].as_str())
         .expect("the TPM SeatBinding")
         .to_owned();
+    let codex_recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Codex recovery",
+            "harness": "fake.runtime",
+            "credential_alias": "codex-work",
+            "selectable_providers": ["codex-work"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-codex-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(
+        codex_recovery_account.status, 200,
+        "{}",
+        codex_recovery_account.body
+    );
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
         .send(world)
@@ -23326,16 +23345,15 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         })
         .collect();
     assert_eq!(reviewer_ids.len(), 2, "{}", invoked.body);
+    let predecessor_token = world
+        .daemon
+        .state()
+        .credentials()
+        .consultation_seat_credential(
+            SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
+        );
     let reviewer_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
-        .with_token(
-            world
-                .daemon
-                .state()
-                .credentials()
-                .consultation_seat_credential(
-                    SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
-                ),
-        )
+        .with_token(predecessor_token.clone())
         .send(world)
         .await;
     assert_eq!(
@@ -23394,6 +23412,14 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "the predecessor was not replaced: {}",
         recovered.body
     );
+    let recovered_generation = recovered.json()["committee"]["seats"]
+        .as_array()
+        .expect("recovered Committee seats")
+        .iter()
+        .find(|seat| seat["seat_binding_id"] == reviewer_ids[0])
+        .and_then(|seat| seat["occupancy_generation"].as_u64())
+        .expect("the successor occupancy generation");
+    assert_eq!(recovered_generation, 2);
     let recovery_calls = world.fake.calls();
     assert!(
         recovery_calls.contains(&AdapterCall::RetireConsultation(
@@ -23426,6 +23452,26 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         calls_after_recovery,
         "a recovery replay reached the runtime"
     );
+
+    // The predecessor's inherited bearer is invalid as soon as its occupancy
+    // generation is fenced, even if that native process later wakes up.
+    let zombie = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "a fenced predecessor cannot submit",
+            "evidence_refs": ["evidence:zombie"],
+            "expected_revision": recovered.json()["receipt"]["revision"],
+        }),
+    )
+    .with_token(predecessor_token)
+    .with_key("committee-zombie-predecessor")
+    .send(world)
+    .await;
+    assert_eq!(zombie.status, 409, "{}", zombie.body);
+    assert_eq!(zombie.json()["code"], "stale_binding");
 
     let mut revision = recovered.json()["receipt"]["revision"]
         .as_u64()
@@ -23516,8 +23562,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .daemon
             .state()
             .credentials()
-            .consultation_seat_credential(
+            .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
+                recovered_generation,
             ),
     )
     .with_key("committee-incomplete-evidence")
@@ -23529,8 +23576,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .daemon
             .state()
             .credentials()
-            .consultation_seat_credential(
+            .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
+                if index == 0 { recovered_generation } else { 1 },
             );
         let recorded = Call::post(
             format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
@@ -23565,6 +23613,50 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             );
         }
     }
+    let awaiting_judge = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(awaiting_judge.status, 200, "{}", awaiting_judge.body);
+    let judge_native = awaiting_judge.json()["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["seat_binding_id"] == judge_id)
+        .and_then(|seat| seat["observed_binding"]["native_id"].as_str())
+        .expect("the launched Judge predecessor")
+        .to_owned();
+    let recovered_judge = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/seats/{judge_id}/recover"),
+        &serde_json::json!({
+            "expected_revision": revision,
+            "expected_native_id": judge_native,
+            "reason": "provider_unavailable",
+            "recovery_profile": [
+                {"provider": "claude-personal", "model": "claude-fable-5", "effort": "xhigh"},
+                {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh"}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-judge-cross-family-recovery")
+    .send(world)
+    .await;
+    assert_eq!(recovered_judge.status, 200, "{}", recovered_judge.body);
+    assert_eq!(
+        recovered_judge.json()["active_model_route"]["provider"],
+        "codex-work"
+    );
+    let judge_generation = recovered_judge.json()["committee"]["seats"]
+        .as_array()
+        .expect("recovered Committee seats")
+        .iter()
+        .find(|seat| seat["seat_binding_id"] == judge_id)
+        .and_then(|seat| seat["occupancy_generation"].as_u64())
+        .expect("the Judge successor occupancy generation");
+    revision = recovered_judge.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the recovered Committee revision");
     let contradictory = Call::post(
         format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
         &serde_json::json!({
@@ -23581,8 +23673,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .daemon
             .state()
             .credentials()
-            .consultation_seat_credential(
+            .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+                judge_generation,
             ),
     )
     .with_key("committee-contradictory-judge")
@@ -23605,8 +23698,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .daemon
             .state()
             .credentials()
-            .consultation_seat_credential(
+            .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+                judge_generation,
             ),
     )
     .with_key("committee-judge")
@@ -23663,8 +23757,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
                 .daemon
                 .state()
                 .credentials()
-                .consultation_seat_credential(
+                .consultation_seat_credential_for_generation(
                     SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
+                    if index == 0 { recovered_generation } else { 1 },
                 ),
         )
         .with_key(format!("committee-round-two-reviewer-{}", index + 1))
@@ -23691,8 +23786,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .daemon
             .state()
             .credentials()
-            .consultation_seat_credential(
+            .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+                judge_generation,
             ),
     )
     .with_key("committee-round-two-judge")
