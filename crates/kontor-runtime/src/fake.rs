@@ -30,10 +30,11 @@ use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
-    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest, HostedSeatClaimOutcome,
+    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatLaunchRequest,
+    HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatRetireOutcome,
+    HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
+    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -292,6 +293,8 @@ pub enum AdapterCall {
     Launch(AgentRunId),
     /// A read-only consultation seat was launched or recovered.
     LaunchConsultation(SeatBindingId),
+    /// An exact idle consultation predecessor was retired for recovery.
+    RetireConsultation(SeatBindingId),
     /// A persistent topology leadership seat was launched or recovered.
     LaunchHostedSeat(SeatBindingId),
     /// An already-running persistent topology seat claim was previewed.
@@ -2016,6 +2019,36 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Err(RuntimeError::CorrelationFailed);
         }
         Ok(())
+    }
+
+    async fn retire_consultation_seat(
+        &self,
+        request: &ConsultationSeatRetireRequest,
+    ) -> RuntimeResult<ConsultationSeatRetireOutcome> {
+        let mut state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Retire),
+        )?;
+        let held = state.consultations.get(&request.seat_binding_id).ok_or(
+            RuntimeError::StaleBinding {
+                rule: "the consultation seat is absent",
+            },
+        )?;
+        if held.identity != request.identity
+            || state.consultation_routes.get(&request.seat_binding_id) != Some(&request.model_rung)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        state.consultations.remove(&request.seat_binding_id);
+        state.seat_titles.remove(&request.identity.native_id);
+        state
+            .calls
+            .push(AdapterCall::RetireConsultation(request.seat_binding_id));
+        Ok(ConsultationSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: request.requested_at,
+        })
     }
 
     async fn launch_hosted_seat(

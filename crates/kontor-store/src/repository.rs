@@ -2158,6 +2158,245 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Read the active successor of an already-recorded consultation recovery.
+    ///
+    /// The predecessor native id is the replay key. A matching history row is
+    /// not enough on its own: the current seat must still be the exact
+    /// successor that row names.
+    pub fn get_consultation_recovery_successor(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        role_slot_id: &RoleSlotId,
+        predecessor_native_id: &ExternalId,
+    ) -> RepositoryResult<Option<StoredConsultationSeat>> {
+        let recovered: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT seat_binding_id, successor_native_id
+                 FROM consultation_seat_recoveries
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND predecessor_native_id = ?4",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    role_slot_id.as_str(),
+                    predecessor_native_id.as_str(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((seat_binding_id, successor_native_id)) = recovered else {
+            return Ok(None);
+        };
+        let seat_binding_id = SeatBindingId::parse(&seat_binding_id)?;
+        let seat = self.get_consultation_seat_by_binding(project_id, seat_binding_id)?;
+        Ok(seat.filter(|seat| {
+            seat.run_id == run_id
+                && seat.role_slot_id == *role_slot_id
+                && seat
+                    .native_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.native_id.as_str() == successor_native_id)
+        }))
+    }
+
+    /// Atomically archive one exact consultation predecessor and install its
+    /// successor as the active filler of the same logical SeatBinding.
+    pub fn replace_consultation_seat(
+        &self,
+        project_id: ProjectId,
+        predecessor: &StoredConsultationSeat,
+        successor: &StoredConsultationSeat,
+        expected_revision: AggregateRevision,
+        retired_at: Timestamp,
+        recovery_reason: &str,
+    ) -> RepositoryResult<Applied> {
+        if predecessor.run_id != successor.run_id
+            || predecessor.role_slot_id != successor.role_slot_id
+            || predecessor.seat_binding_id != successor.seat_binding_id
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "a recovery cannot move the logical consultation SeatBinding",
+            });
+        }
+        if !matches!(
+            recovery_reason,
+            "credential_propagation" | "provider_unavailable"
+        ) {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "the recovery reason is not supported",
+            });
+        }
+        let predecessor_identity =
+            predecessor
+                .native_identity
+                .as_ref()
+                .ok_or(RepositoryError::Conflict {
+                    subject: "consultation seat recovery",
+                    rule: "the predecessor has no native identity",
+                })?;
+        let successor_identity =
+            successor
+                .native_identity
+                .as_ref()
+                .ok_or(RepositoryError::Conflict {
+                    subject: "consultation seat recovery",
+                    rule: "the successor has no native identity",
+                })?;
+        let predecessor_observed_at = predecessor.observed_at.ok_or(RepositoryError::Conflict {
+            subject: "consultation seat recovery",
+            rule: "the predecessor has no native observation",
+        })?;
+        let successor_observed_at = successor.observed_at.ok_or(RepositoryError::Conflict {
+            subject: "consultation seat recovery",
+            rule: "the successor has no native observation",
+        })?;
+        let predecessor_model =
+            serde_json::to_string(&predecessor.model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!(
+                        "a consultation predecessor route could not be encoded: {error}"
+                    ),
+                }
+            })?;
+        let successor_model = serde_json::to_string(&successor.model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a consultation successor route could not be encoded: {error}"),
+            }
+        })?;
+        let transaction = self.begin()?;
+        let active_native: Option<String> = transaction
+            .query_row(
+                "SELECT native_id FROM consultation_seats
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3",
+                params![
+                    project_id.to_string(),
+                    predecessor.run_id.as_text(),
+                    predecessor.role_slot_id.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if active_native.as_deref() == Some(successor_identity.native_id.as_str()) {
+            transaction.rollback().map_err(backend)?;
+            return Ok(Applied::Unchanged);
+        }
+        if active_native.as_deref() != Some(predecessor_identity.native_id.as_str()) {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "the active native predecessor differs from the recovery request",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO consultation_seat_recoveries
+                     (project_id, run_id, role_slot_id, seat_binding_id,
+                      predecessor_model_rung, predecessor_runtime_kind,
+                      predecessor_host, predecessor_generation,
+                      predecessor_native_id, predecessor_provider_session,
+                      predecessor_observed_at, successor_model_rung,
+                      successor_runtime_kind, successor_host,
+                      successor_generation, successor_native_id,
+                      successor_provider_session, successor_observed_at,
+                      retired_at, recovery_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                params![
+                    project_id.to_string(),
+                    predecessor.run_id.as_text(),
+                    predecessor.role_slot_id.as_str(),
+                    predecessor.seat_binding_id.to_string(),
+                    predecessor_model,
+                    predecessor_identity.runtime_kind.as_str(),
+                    predecessor_identity.host.as_str(),
+                    i64::try_from(predecessor_identity.generation).unwrap_or(i64::MAX),
+                    predecessor_identity.native_id.as_str(),
+                    predecessor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str),
+                    text(predecessor_observed_at),
+                    successor_model,
+                    successor_identity.runtime_kind.as_str(),
+                    successor_identity.host.as_str(),
+                    i64::try_from(successor_identity.generation).unwrap_or(i64::MAX),
+                    successor_identity.native_id.as_str(),
+                    successor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str),
+                    text(successor_observed_at),
+                    text(retired_at),
+                    recovery_reason,
+                ],
+            )
+            .map_err(backend)?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                 SET model_rung = ?4, runtime_kind = ?5, host = ?6,
+                     generation = ?7, native_id = ?8,
+                     provider_session_id = ?9, observed_at = ?10
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND native_id = ?11",
+                params![
+                    project_id.to_string(),
+                    successor.run_id.as_text(),
+                    successor.role_slot_id.as_str(),
+                    serde_json::to_string(&successor.model_rung).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!(
+                                "a consultation successor route could not be encoded: {error}"
+                            ),
+                        }
+                    })?,
+                    successor_identity.runtime_kind.as_str(),
+                    successor_identity.host.as_str(),
+                    i64::try_from(successor_identity.generation).unwrap_or(i64::MAX),
+                    successor_identity.native_id.as_str(),
+                    successor
+                        .provider_session_id
+                        .as_ref()
+                        .map(ExternalId::as_str),
+                    text(successor_observed_at),
+                    predecessor_identity.native_id.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "the active native predecessor moved during recovery",
+            });
+        }
+        let run_changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET revision = revision + 1, updated_at = ?4
+                 WHERE project_id = ?1 AND run_id = ?2 AND revision = ?3",
+                params![
+                    project_id.to_string(),
+                    successor.run_id.as_text(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    text(successor_observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        if run_changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat recovery",
+                rule: "the Committee revision moved during recovery",
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
     /// Read the exact native identity filling one persistent topology seat.
     pub fn get_hosted_topology_seat(
         &self,

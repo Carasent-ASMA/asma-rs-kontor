@@ -323,35 +323,6 @@ impl PaseoCommand {
         )
     }
 
-    /// Start a consultation in the provider's non-mutating review/plan mode.
-    #[allow(clippy::too_many_arguments)]
-    pub fn consultation_run(
-        workspace_id: &str,
-        canonical_cwd: &str,
-        model_rung: &ModelRung,
-        title: &str,
-        labels: &BTreeMap<String, String>,
-        caller_agent_id: Option<&str>,
-        prompt: &str,
-        credential: &str,
-    ) -> RuntimeResult<Self> {
-        let mode = consultation_permission_mode(model_rung.provider.0.as_str())?;
-        let mut command = Self::agent_run_with_mode(
-            workspace_id,
-            canonical_cwd,
-            model_rung,
-            title,
-            labels,
-            caller_agent_id,
-            prompt,
-            mode,
-        )?;
-        command
-            .env
-            .push(("KONTOR_AUTH".to_owned(), credential.to_owned()));
-        Ok(command)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn agent_run_with_mode(
         workspace_id: &str,
@@ -747,7 +718,7 @@ fn caller_agent_not_found(stream: &str) -> Option<ExternalId> {
 /// by id alone accepts an `rpc_error` — or any other frame the daemon chose to
 /// stamp with that id — as the readback a placement rule is about to be decided
 /// from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct PaseoRpc {
     /// The session message, ready to be wrapped in the `session` envelope.
     pub message: serde_json::Value,
@@ -759,7 +730,45 @@ pub struct PaseoRpc {
     pub request_id: String,
     /// Whether this request can change Paseo.
     pub mutates: bool,
+    /// Agent-process environment held outside the ordinary message so Debug,
+    /// fixtures, ledgers and checkpoints can never observe its values.
+    secret_env: BTreeMap<String, SecretString>,
 }
+
+impl fmt::Debug for PaseoRpc {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PaseoRpc")
+            .field("request_type", &self.request_type)
+            .field("response_type", &self.response_type)
+            .field("request_id", &self.request_id)
+            .field("mutates", &self.mutates)
+            .field(
+                "secret_env_names",
+                &self.secret_env.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl PartialEq for PaseoRpc {
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+            && self.request_type == other.request_type
+            && self.response_type == other.response_type
+            && self.request_id == other.request_id
+            && self.mutates == other.mutates
+            && self.secret_env.len() == other.secret_env.len()
+            && self.secret_env.iter().all(|(name, value)| {
+                other
+                    .secret_env
+                    .get(name)
+                    .is_some_and(|other| value.expose_secret() == other.expose_secret())
+            })
+    }
+}
+
+impl Eq for PaseoRpc {}
 
 impl PaseoRpc {
     /// `daemon.get_status.request` — the correlated version readback.
@@ -885,6 +894,54 @@ impl PaseoRpc {
         )
     }
 
+    /// `create_agent_request` for one read-only consultation seat.
+    ///
+    /// The scoped credential travels in the daemon session frame's `env`
+    /// object. It is deliberately absent from both the CLI process environment
+    /// and argv: the short-lived CLI does not own the agent process, while argv
+    /// would expose the value to process inspection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consultation_agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+    ) -> RuntimeResult<Self> {
+        let mode = consultation_permission_mode(model_rung.provider.0.as_str())?;
+        let mut config = serde_json::json!({
+            "provider": model_rung.provider.0,
+            "cwd": canonical_cwd,
+            "model": model_rung.model.0,
+            "title": title,
+        });
+        if let Some(mode) = mode {
+            config["modeId"] = serde_json::json!(mode);
+        }
+        if let Some(effort) = model_rung.effort {
+            config["thinkingOptionId"] = serde_json::json!(effort.as_str());
+        }
+        let mut request = Self::mutate(
+            "create_agent_request",
+            "status",
+            request_id,
+            serde_json::json!({
+                "config": config,
+                "workspaceId": workspace_id,
+                "initialPrompt": prompt,
+                "labels": labels,
+            }),
+        );
+        request.secret_env.insert(
+            "KONTOR_AUTH".to_owned(),
+            SecretString::from(credential.to_owned()),
+        );
+        Ok(request)
+    }
+
     /// `fetch_agent_timeline_request` under one projection and direction.
     ///
     /// The projection is a parameter rather than a constant so the recorded
@@ -979,7 +1036,21 @@ impl PaseoRpc {
     /// The complete outbound frame, envelope and all.
     #[must_use]
     pub fn envelope(&self) -> serde_json::Value {
-        serde_json::json!({ "type": "session", "message": self.message })
+        let mut message = self.message.clone();
+        if !self.secret_env.is_empty() {
+            message["env"] = serde_json::Value::Object(
+                self.secret_env
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            serde_json::Value::String(value.expose_secret().to_owned()),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        serde_json::json!({ "type": "session", "message": message })
     }
 
     fn read(
@@ -1018,6 +1089,7 @@ impl PaseoRpc {
             response_type,
             request_id,
             mutates,
+            secret_env: BTreeMap::new(),
         }
     }
 }
@@ -1848,35 +1920,30 @@ mod tests {
     }
 
     #[test]
-    fn consultation_routes_are_read_only_and_the_scoped_secret_is_not_debugged() {
+    fn consultation_routes_are_read_only_and_the_scoped_secret_crosses_only_the_session_frame() {
         for (provider, model, expected_mode) in [
             ("claude", "claude-opus-5", "plan"),
             ("cursor", "composer-2", "plan"),
             ("codex", "gpt-5.6-sol", "auto-review"),
         ] {
-            let command = PaseoCommand::consultation_run(
+            let request = PaseoRpc::consultation_agent_create(
+                "request-1".to_owned(),
                 "wks_1",
                 "/w/epic",
                 &route(provider, model, None),
                 "Reviewer",
                 &labels(),
-                Some("agt_orchestrator"),
                 "read only",
                 "seat-secret-value",
             )
             .expect("a consultation-safe provider");
-            assert!(
-                command
-                    .argv()
-                    .windows(2)
-                    .any(|pair| pair == ["--mode", expected_mode])
+            assert_eq!(request.message["config"]["modeId"], expected_mode);
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("seat-secret-value"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "seat-secret-value"
             );
-            assert!(
-                command
-                    .env()
-                    .contains(&("KONTOR_AUTH".to_owned(), "seat-secret-value".to_owned()))
-            );
-            assert!(!format!("{command:?}").contains("seat-secret-value"));
         }
         assert!(matches!(
             consultation_permission_mode("opencode"),

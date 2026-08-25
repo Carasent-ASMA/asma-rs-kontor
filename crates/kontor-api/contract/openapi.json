@@ -1872,6 +1872,90 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Replace one idle Committee native filler while preserving its SeatBinding.",
+        "operationId": "recover_consultation_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The consultation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The preserved logical seat",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverConsultationSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsultationSeatRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle": {
       "post": {
         "tags": [
@@ -10197,7 +10281,9 @@
           "state",
           "findings_recorded",
           "round",
-          "findings"
+          "findings",
+          "revision",
+          "snapshot_cursor"
         ],
         "properties": {
           "committee_run_id": {
@@ -10253,6 +10339,12 @@
           "result": {
             "description": "Immutable terminal result, including needs-human recommendation/tried path."
           },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Aggregate revision a recovery or findings write must name.",
+            "minimum": 0
+          },
           "round": {
             "type": "integer",
             "format": "int32",
@@ -10265,6 +10357,11 @@
               "$ref": "#/components/schemas/ConsultationSeatDto"
             },
             "description": "Every template-declared seat in stable slot order."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Projection cursor read with this revision."
           },
           "state": {
             "type": "string",
@@ -11100,6 +11197,52 @@
             "description": "Exact persistent SeatBinding."
           }
         }
+      },
+      "ConsultationSeatRecoveryDto": {
+        "type": "object",
+        "description": "Completed identity-preserving consultation seat recovery.",
+        "required": [
+          "committee",
+          "seat_binding_id",
+          "predecessor_native_id",
+          "successor_native_id",
+          "active_model_route",
+          "receipt"
+        ],
+        "properties": {
+          "active_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Route frozen onto the successor."
+          },
+          "committee": {
+            "$ref": "#/components/schemas/CommitteeRunDto",
+            "description": "Committee projection after recovery."
+          },
+          "predecessor_native_id": {
+            "type": "string",
+            "description": "Archived native predecessor."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable audited command receipt."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Preserved logical SeatBinding."
+          },
+          "successor_native_id": {
+            "type": "string",
+            "description": "Active native successor."
+          }
+        }
+      },
+      "ConsultationSeatRecoveryReasonDto": {
+        "type": "string",
+        "description": "Why a consultation native filler may be replaced.",
+        "enum": [
+          "credential_propagation",
+          "provider_unavailable"
+        ]
       },
       "ConsultationVerdictDto": {
         "type": "string",
@@ -15412,6 +15555,32 @@
               "$ref": "#/components/schemas/QuotaWindowDto"
             },
             "description": "Every concurrent window this pair holds. Replaces the stored set\nwholesale rather than merging into it: a collector reports what the\nprovider offers *now*, and a merge would keep a window it has withdrawn."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecoverConsultationSeatRequest": {
+        "type": "object",
+        "description": "Exact compare-and-swap request for one consultation seat recovery.",
+        "required": [
+          "expected_revision",
+          "expected_native_id",
+          "reason"
+        ],
+        "properties": {
+          "expected_native_id": {
+            "type": "string",
+            "description": "Exact native predecessor shown by the Committee read."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Committee revision the caller read.",
+            "minimum": 0
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ConsultationSeatRecoveryReasonDto",
+            "description": "Supported recovery reason that selects the route policy."
           }
         },
         "additionalProperties": false

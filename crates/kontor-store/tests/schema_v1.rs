@@ -47,6 +47,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // seat bindings, and immutable Committee findings.
     "consultation_runs",
     "consultation_seats",
+    "consultation_seat_recoveries",
     "committee_findings",
     "committee_remediations",
     "advisor_advice_artifacts",
@@ -463,7 +464,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     );
     // Pinned deliberately: appending a migration must be a decision, not a
     // side effect. v59 adds the existing-session Core Team seat claim command.
-    assert_eq!(SCHEMA_VERSION, 59);
+    assert_eq!(SCHEMA_VERSION, 60);
 }
 
 #[test]

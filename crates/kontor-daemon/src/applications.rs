@@ -58,17 +58,18 @@ use kontor_api::applications::{
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeRunDto, CommitteeVerdictDto,
     CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto, CompletionPhaseDto,
     CompletionRoundDto, CompletionStateDto, CompletionWakeDto, ConsultationSeatDto,
-    ConsultationVerdictDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
-    CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
-    CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
-    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
-    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
-    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
-    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
-    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
-    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
-    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
-    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RemediateCompletionRequest,
+    ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
+    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
+    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
+    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
+    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
+    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
+    IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest,
+    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
+    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RecoverConsultationSeatRequest, RemediateCompletionRequest,
     RemediationActionDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto, RosterUpgradePreviewDto,
     RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
@@ -174,9 +175,9 @@ use kontor_profiles::pack::{
 };
 use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RetitleSeatRequest,
-    RuntimeAdapter, RuntimeError,
+    ConsultationSeatRetireRequest, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
+    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
+    HostedSeatRetireRequest, RetitleSeatRequest, RuntimeAdapter, RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -6725,14 +6726,14 @@ impl Services {
     /// an exhausted account while the chain's other rungs sat unconsulted. The
     /// walk here is the same account-before-rung resolution delivery seats use.
     ///
-    /// Two deliberate asymmetries against the delivery path. When nothing is
-    /// admissible, the frozen primary is taken — exactly the previous behaviour
-    /// — rather than the adapter fallback, so a realm that has declared no
-    /// aliases freezes precisely what it froze before this walk existed. And
-    /// the admitted account is honoured through the rung's provider alias
-    /// alone, never claimed: a consultation launch carries no account pin, so
-    /// there is nothing for preflight to attest and nothing unverified in the
-    /// receipt.
+    /// Two deliberate asymmetries against the delivery path. A realm that has
+    /// declared no addressable account aliases preserves the prior primary-rung
+    /// fallback when nothing is admissible; once aliases exist, an exhausted
+    /// walk refuses rather than silently launching onto one of those blocked
+    /// accounts. And the admitted account is honoured through the rung's
+    /// provider alias alone, never claimed: a consultation launch carries no
+    /// account pin, so there is nothing for preflight to attest and nothing
+    /// unverified in the receipt.
     fn freeze_consultation_model_rung(
         &self,
         project_id: ProjectId,
@@ -6753,9 +6754,11 @@ impl Services {
         let quota_states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
+        let accounts = self.eligible_accounts(project_id)?;
+        let effective_rungs = consultation_account_rungs(rungs, &accounts);
         let placement = resolve_chain_placement(
             adapter.as_ref(),
-            rungs,
+            &effective_rungs,
             // Consultations are raised by control seats but do delivery-shaped
             // thinking work; they must not spend the reserve that exists so the
             // epic can keep rerouting when delivery has eaten everything else.
@@ -6763,17 +6766,26 @@ impl Services {
             &QuotaOutlook {
                 states: &quota_states,
                 account: None,
-                accounts: &self.eligible_accounts(project_id)?,
+                accounts: &accounts,
                 headroom: self.headroom_policy(),
                 now,
             },
         )
         .map_err(|error| self.refuse_domain(&error))?;
-        Ok(match placement {
-            kontor_scheduler::headroom::Placement::Admit { rung, .. } => rung,
+        match placement {
+            kontor_scheduler::headroom::Placement::Admit { rung, .. } => Ok(rung),
             kontor_scheduler::headroom::Placement::Wait { .. }
-            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => primary,
-        })
+            | kontor_scheduler::headroom::Placement::NeedsHuman { .. }
+                if effective_rungs != rungs =>
+            {
+                Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "no governed consultation account currently has admissible headroom",
+                ))
+            }
+            kontor_scheduler::headroom::Placement::Wait { .. }
+            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Ok(primary),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7393,6 +7405,180 @@ impl Services {
         Ok(())
     }
 
+    /// Launch a replacement native filler for one already-frozen Committee
+    /// SeatBinding. The caller has archived the exact predecessor first; this
+    /// helper reuses the immutable run context and never rewrites the template.
+    async fn launch_committee_recovery_successor(
+        &self,
+        run: &StoredConsultationRun,
+        template: &CommitteeTemplateSpec,
+        predecessor: &StoredConsultationSeat,
+        model_rung: ModelRung,
+    ) -> Result<StoredConsultationSeat, ApiError> {
+        let state = self.state()?;
+        let slot = template
+            .slots
+            .iter()
+            .find(|slot| slot.id == predecessor.role_slot_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the consultation seat is absent from its pinned Committee template",
+                )
+            })?;
+        let project = self.project_row(run.project_id)?;
+        let node = state
+            .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Committee's frozen topology node is missing",
+                )
+            })?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Committee recovery is not configured",
+            )
+        })?;
+        let cwd = self.consultation_root(project.root_path.as_str(), node.id)?;
+        let container = self
+            .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
+            .await?;
+        let scope = self.execution_scope(
+            run.project_id,
+            run.mini_project_id,
+            node.task_id,
+            adapter.as_ref(),
+        )?;
+        let capabilities = adapter
+            .discover_capabilities()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy = ContextPolicySnapshot::standard(
+            &capabilities.limits.context_window,
+            capabilities.supports(RuntimeCapability::ContextPolicy),
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let evidence = if slot.role == CommitteeRole::Judge {
+            let committee_run_id = match run.id {
+                ConsultationRunId::Committee(id) => id,
+                ConsultationRunId::Advisor(_) => unreachable!(),
+            };
+            let findings = state
+                .with_store(|store| {
+                    store.list_committee_findings(run.project_id, committee_run_id, run.round)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            serde_json::to_string(
+                &findings
+                    .iter()
+                    .filter(|finding| finding.role == CommitteeRole::Reviewer)
+                    .map(|finding| &finding.document)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the durable Committee findings could not be delivered to the replacement Judge",
+                )
+            })?
+        } else {
+            "[]".to_owned()
+        };
+        let prompt = BoundedText::parse(&format!(
+            "Read-only Committee seat. You may inspect evidence but must not mutate code, \
+             Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
+             Question: {} Durable reviewer findings available to this seat: {} \
+             Submit this seat's own finding using the KONTOR_AUTH environment value. \
+             It is valid only for SeatBinding {} and must not be disclosed.",
+            template.charter.as_str(),
+            slot.behavior.as_str(),
+            run.question.as_str(),
+            evidence,
+            predecessor.seat_binding_id,
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let topology_seat = state
+            .with_store(|store| store.get_seat_binding(run.project_id, predecessor.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Committee recovery target has no persistent topology binding",
+                )
+            })?;
+        let display_name =
+            self.seat_name(run.project_id, &node, &scope, &topology_seat.role.role_code)?;
+        let requested_at = kontor_api::now();
+        let outcome = adapter
+            .launch_consultation(&ConsultationLaunchRequest {
+                scope,
+                run_id: run.id,
+                seat_binding_id: predecessor.seat_binding_id,
+                role_slot_id: predecessor.role_slot_id.clone(),
+                display_name,
+                container,
+                cwd,
+                prompt,
+                credential: ConsultationCredential::new(
+                    state
+                        .credentials()
+                        .consultation_seat_credential(predecessor.seat_binding_id),
+                ),
+                model_rung: model_rung.clone(),
+                context_policy,
+                requested_at,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let mut successor = predecessor.clone();
+        successor.model_rung = model_rung;
+        successor.native_identity = Some(outcome.identity);
+        successor.provider_session_id = outcome.provider_session_id;
+        successor.observed_at = Some(outcome.observed_at);
+        Ok(successor)
+    }
+
+    fn consultation_recovery_dto(
+        &self,
+        run: &StoredConsultationRun,
+        predecessor_native_id: ExternalId,
+        successor: &StoredConsultationSeat,
+        receipt_id: CommandReceiptId,
+        applied: AppliedDto,
+    ) -> Result<ConsultationSeatRecoveryDto, ApiError> {
+        let committee = self.committee_run_dto(run, Some(receipt_id), applied)?;
+        let receipt = committee.receipt.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the consultation recovery receipt could not be projected",
+            )
+        })?;
+        let successor_native_id = successor
+            .native_identity
+            .as_ref()
+            .map(|identity| identity.native_id.clone())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the consultation recovery successor is not bound",
+                )
+            })?;
+        Ok(ConsultationSeatRecoveryDto {
+            committee,
+            seat_binding_id: successor.seat_binding_id,
+            predecessor_native_id,
+            successor_native_id,
+            active_model_route: runtime_model_route_dto(&successor.model_rung),
+            receipt,
+        })
+    }
+
     /// Re-engage the same native Committee seats for the bounded second round.
     async fn dispatch_committee_round_two(
         &self,
@@ -7604,6 +7790,8 @@ impl Services {
                 .collect(),
             remediation,
             result: run.result.clone(),
+            revision: run.revision,
+            snapshot_cursor: self.cursor()?,
             receipt,
         })
     }
@@ -8063,6 +8251,47 @@ fn provider_family(provider: &str) -> &str {
         }
     }
     provider
+}
+
+/// Qualify generic consultation providers with every governed account alias.
+///
+/// Paseo selects an account through the provider alias itself. A template's
+/// generic `claude` rung therefore cannot participate in the account-before-
+/// rung walk whose candidates are `claude-work` and `claude-personal`; this
+/// expansion preserves the declared model/effort while making those governed
+/// choices explicit and deterministic. Already-qualified routes remain exact.
+fn consultation_account_rungs(
+    rungs: &[ModelRung],
+    accounts: &[kontor_scheduler::headroom::EligibleAccount],
+) -> Vec<ModelRung> {
+    let mut qualified = Vec::new();
+    for rung in rungs {
+        let provider = rung.provider.0.as_str();
+        let family = provider_family(provider);
+        if provider != family {
+            qualified.push(rung.clone());
+            continue;
+        }
+        let mut ordered_accounts: Vec<_> = accounts.iter().collect();
+        ordered_accounts.sort_by_key(|account| account.account_profile_id);
+        let mut seen = BTreeSet::new();
+        let aliases: Vec<&str> = ordered_accounts
+            .into_iter()
+            .flat_map(|account| account.selectable_providers.iter().map(String::as_str))
+            .filter(|alias| *alias != provider && provider_family(alias) == family)
+            .filter(|alias| seen.insert((*alias).to_owned()))
+            .collect();
+        if aliases.is_empty() {
+            qualified.push(rung.clone());
+        } else {
+            for alias in aliases {
+                let mut route = rung.clone();
+                route.provider = ProviderRef(alias.to_owned());
+                qualified.push(route);
+            }
+        }
+    }
+    qualified
 }
 
 /// Whether one route is exposed by the governed Teams model catalog.
@@ -14667,6 +14896,247 @@ impl ApplicationOperations for Services {
         let run =
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
         self.committee_run_dto(&run, None, AppliedDto::Unchanged)
+    }
+    async fn recover_consultation_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        request: &RecoverConsultationSeatRequest,
+    ) -> Result<ConsultationSeatRecoveryDto, ApiError> {
+        let mut run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: run.mini_project_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "recover_consultation_seat",
+            "project": project_id.to_string(),
+            "committee_run": committee_run_id.to_string(),
+            "seat_binding_id": seat_binding_id.to_string(),
+            "expected_native_id": request.expected_native_id.as_str(),
+            "reason": request.reason.as_str(),
+        }))?;
+        let mut predecessor = self
+            .state()?
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.run_id == run.id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee has no such logical consultation seat",
+                )
+            })?;
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            return self.consultation_recovery_dto(
+                &run,
+                request.expected_native_id.clone(),
+                &predecessor,
+                receipt.id,
+                AppliedDto::Unchanged,
+            );
+        }
+        if let Some(successor) = self
+            .state()?
+            .with_store(|store| {
+                store.get_consultation_recovery_successor(
+                    project_id,
+                    run.id,
+                    &predecessor.role_slot_id,
+                    &request.expected_native_id,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::RecoverConsultationSeat,
+                target,
+                run.revision,
+                &intent,
+            )?;
+            return self.consultation_recovery_dto(
+                &run,
+                request.expected_native_id.clone(),
+                &successor,
+                receipt_id,
+                AppliedDto::Unchanged,
+            );
+        }
+        if run.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Committee run moved since the recovery target was read",
+                )
+                .with_revision(Some(run.revision)));
+        }
+        if !matches!(
+            run.state,
+            ConsultationRunState::Running | ConsultationRunState::AwaitingJudge
+        ) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a running Committee seat may be recovered",
+            ));
+        }
+        let predecessor_identity = predecessor.native_identity.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee recovery target has no attested native predecessor",
+            )
+        })?;
+        if predecessor_identity.native_id != request.expected_native_id {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the active consultation native filler differs from the recovery request",
+            ));
+        }
+        let findings = self
+            .state()?
+            .with_store(|store| {
+                store.list_committee_findings(project_id, committee_run_id, run.round)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        if findings
+            .iter()
+            .any(|finding| finding.role_slot_id == predecessor.role_slot_id)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Committee seat with a durable current-round finding cannot be recovered",
+            ));
+        }
+        let (_, template) = self.committee_template(&run)?;
+        let slot = template
+            .slots
+            .iter()
+            .find(|slot| slot.id == predecessor.role_slot_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the recovery target is absent from its pinned Committee template",
+                )
+            })?;
+        let state = self.state()?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Committee recovery is not configured",
+            )
+        })?;
+        let desired_rung = match request.reason {
+            ConsultationSeatRecoveryReasonDto::CredentialPropagation => {
+                predecessor.model_rung.clone()
+            }
+            ConsultationSeatRecoveryReasonDto::ProviderUnavailable => {
+                let quota_states = state
+                    .with_store(|store| store.list_provider_quota_states(project_id))
+                    .map_err(|error| self.refuse(&error))?;
+                let accounts = self.eligible_accounts(project_id)?;
+                let effective_rungs = consultation_account_rungs(&slot.models.rungs, &accounts);
+                match resolve_chain_placement(
+                    adapter.as_ref(),
+                    &effective_rungs,
+                    kontor_scheduler::headroom::SeatClass::Delivery,
+                    &QuotaOutlook {
+                        states: &quota_states,
+                        account: None,
+                        accounts: &accounts,
+                        headroom: self.headroom_policy(),
+                        now: kontor_api::now(),
+                    },
+                )
+                .map_err(|error| self.refuse_domain(&error))?
+                {
+                    kontor_scheduler::headroom::Placement::Admit { rung, .. } => rung,
+                    kontor_scheduler::headroom::Placement::Wait { .. }
+                    | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "no governed consultation account currently has admissible headroom",
+                        ));
+                    }
+                }
+            }
+        };
+        if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
+            && desired_rung == predecessor.model_rung
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "provider recovery did not resolve to a different governed route",
+            ));
+        }
+        let retired = adapter
+            .retire_consultation_seat(&ConsultationSeatRetireRequest {
+                seat_binding_id,
+                identity: predecessor_identity,
+                model_rung: predecessor.model_rung.clone(),
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let successor = self
+            .launch_committee_recovery_successor(&run, &template, &predecessor, desired_rung)
+            .await?;
+        let applied = state
+            .with_store(|store| {
+                store.replace_consultation_seat(
+                    project_id,
+                    &predecessor,
+                    &successor,
+                    request.expected_revision,
+                    retired.archived_at,
+                    request.reason.as_str(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let observed_at = successor.observed_at.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the consultation successor was not observed",
+            )
+        })?;
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(
+                    project_id,
+                    seat_binding_id,
+                    &SeatLivenessObservation {
+                        attached_at: Some(observed_at),
+                        runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                        ..SeatLivenessObservation::default()
+                    },
+                    observed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        run = self.consultation_run(project_id, run.id)?;
+        predecessor.native_identity = Some(retired.identity);
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::RecoverConsultationSeat,
+            target,
+            run.revision,
+            &intent,
+        )?;
+        self.consultation_recovery_dto(
+            &run,
+            request.expected_native_id.clone(),
+            &successor,
+            receipt_id,
+            match applied {
+                Applied::Created | Applied::Updated => AppliedDto::Created,
+                Applied::Unchanged => AppliedDto::Unchanged,
+            },
+        )
     }
     async fn record_committee_findings(
         &self,
@@ -22527,8 +22997,8 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        QuotaOutlook, counts_towards_completion, eligible_roots, render_legacy_container_name,
-        seat_block, slot_prompt,
+        QuotaOutlook, consultation_account_rungs, counts_towards_completion, eligible_roots,
+        render_legacy_container_name, seat_block, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -22570,6 +23040,45 @@ mod tests {
         assert_eq!(frozen[0].provider.0, "claude-work");
         assert_eq!(frozen[0].model.0, "claude-opus-5");
         assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
+    }
+
+    #[test]
+    fn generic_consultation_routes_expand_to_governed_aliases_and_explicit_routes_do_not() {
+        let accounts = [
+            EligibleAccount {
+                account_profile_id: AccountProfileId::parse("0193f000-0000-7000-8000-000000000001")
+                    .expect("an account id"),
+                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            },
+            EligibleAccount {
+                account_profile_id: AccountProfileId::parse("0193f000-0000-7000-8000-000000000002")
+                    .expect("an account id"),
+                selectable_providers: BTreeSet::from(["claude-personal".to_owned()]),
+            },
+        ];
+        let generic = ModelRung {
+            provider: ProviderRef("claude".to_owned()),
+            model: ModelRef("claude-opus-5".to_owned()),
+            effort: Some(EffortLevel::Xhigh),
+        };
+        let expanded = consultation_account_rungs(&[generic], &accounts);
+
+        assert_eq!(expanded.len(), 2);
+        assert_eq!(expanded[0].provider.0, "claude-work");
+        assert_eq!(expanded[1].provider.0, "claude-personal");
+        assert!(expanded.iter().all(|route| {
+            route.model.0 == "claude-opus-5" && route.effort == Some(EffortLevel::Xhigh)
+        }));
+
+        let explicit = ModelRung {
+            provider: ProviderRef("claude-work".to_owned()),
+            model: ModelRef("claude-opus-5".to_owned()),
+            effort: Some(EffortLevel::High),
+        };
+        assert_eq!(
+            consultation_account_rungs(std::slice::from_ref(&explicit), &accounts),
+            [explicit]
+        );
     }
 
     #[test]

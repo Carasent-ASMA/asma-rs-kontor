@@ -49,9 +49,10 @@ pub mod workspace;
 
 pub use adapter::{
     ConsultationCredential, ConsultationLaunchOutcome, ConsultationLaunchRequest,
-    ConsultationMessageRequest, HostedSeatClaimOutcome, HostedSeatClaimPredecessor,
-    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatTitleConflict, LaunchOutcome,
-    MessageAck, PermissionAck, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationMessageRequest, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
+    HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
+    HostedSeatClaimRequest, HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 pub use admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,

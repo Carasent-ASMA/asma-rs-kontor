@@ -591,6 +591,10 @@ pub fn router(state: ApiState) -> Router {
                 get(applications::committee_run),
             )
             .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover",
+                post(applications::recover_consultation_seat),
+            )
+            .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
                 post(applications::record_committee_findings),
             )
