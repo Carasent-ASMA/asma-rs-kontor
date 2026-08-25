@@ -613,6 +613,10 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_committee_findings_record",
         ],
     },
+    ServeProfile {
+        name: "leadership",
+        tools: &["kontor_completion_get", "kontor_completion_remediate"],
+    },
 ];
 
 /// Every operation a Paseo Lead Architect can reach, and nothing else.
@@ -5320,6 +5324,16 @@ mod tests {
                 "the consultation profile must not serve {excluded}"
             );
         }
+    }
+
+    #[test]
+    fn the_leadership_profile_is_the_exact_identity_bound_completion_surface() {
+        let leadership =
+            ServeProfile::find("leadership").expect("the leadership profile is declared");
+        assert_eq!(
+            leadership.tools,
+            ["kontor_completion_get", "kontor_completion_remediate"]
+        );
     }
 
     #[test]

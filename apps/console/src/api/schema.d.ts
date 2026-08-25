@@ -4968,8 +4968,27 @@ export interface components {
             /** @description Per-repository results, in a stable order. */
             repositories: components["schemas"]["RepositoryOutcomeDto"][];
         };
+        /** @description Invoke one Advisor consultation against an epic. */
+        InvokeAdvisorRequest: {
+            /** @description Exact active epic seat whose role is authorized by the pinned policy. */
+            caller_seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description The epic revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The profile revision to run under. */
+            profile: components["schemas"]["RevisionRefDto"];
+            /** @description What is being asked. */
+            question: string;
+            /**
+             * @description Optional ticket scope. It must belong to the epic in the route; absent
+             *     means the epic as a whole.
+             */
+            task_id?: string | null;
+        };
         /**
-         * @description Invoke one consultation against an epic.
+         * @description Invoke one Committee consultation against an epic.
          *
          *     A consultation names the pinned profile it runs under and the question it is
          *     asked. It does not name a model, a provider or a runtime: which seat answers
@@ -6163,10 +6182,22 @@ export interface components {
             /** @description The digest of the routed task set, dependencies and team selections. */
             route: string;
         };
+        /** @description One authenticated control-plane remediation authority. */
+        RemediationAuthorityDto: {
+            /**
+             * Format: int64
+             * @description Native filler generation that authenticated this action.
+             */
+            occupancy_generation: number;
+            /** @description Immutable logical control-plane seat. */
+            seat_binding_id: string;
+        };
         /** @description The two immutable authorities required before remediation integration. */
         RemediationAuthorizationDto: {
+            lsa_actor?: null | components["schemas"]["RemediationAuthorityDto"];
             /** @description LSA proposal evidence. */
             lsa_proposal: string;
+            tpm_actor?: null | components["schemas"]["RemediationAuthorityDto"];
             /** @description TPM routing evidence. */
             tpm_routing: string;
         };
@@ -10277,7 +10308,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["InvokeConsultationRequest"];
+                "application/json": components["schemas"]["InvokeAdvisorRequest"];
             };
         };
         responses: {

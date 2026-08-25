@@ -66,11 +66,12 @@ use kontor_api::applications::{
     CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
     CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
     DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
-    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeConsultationRequest, NeedsHumanDto,
-    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
-    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
-    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecoverConsultationSeatRequest,
-    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorizationDto,
+    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
+    InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest, ProfileCatalogDto,
+    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
+    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RecoverConsultationSeatRequest, RemediateCompletionRequest,
+    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
     RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto, RosterUpgradePreviewDto,
     RosterUpgradePreviewRequest, SettleConsultationRequest,
 };
@@ -204,8 +205,8 @@ use kontor_scheduler::model::{
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
     CompletionObservation, CompletionPhase, CompletionProfile, CompletionSignal, CompletionState,
-    CompletionTransition, IntegrationRecord, RemediationApproval, RemediationAuthorization,
-    RepositoryOutcome, SignalDelivery,
+    CompletionTransition, IntegrationRecord, RemediationApproval, RemediationAuthority,
+    RemediationAuthorization, RepositoryOutcome, SignalDelivery,
 };
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::{
@@ -9851,6 +9852,21 @@ impl Services {
                     "the remediation integration evidence has not been frozen for this round",
                 )
             })?;
+        let (Some(lsa_actor), Some(tpm_actor)) = (
+            remediation.authorization.lsa_actor.as_ref(),
+            remediation.authorization.tpm_actor.as_ref(),
+        ) else {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the remediation freeze has no identity-bound LSA and TPM authorities",
+            ));
+        };
+        if lsa_actor.seat_binding_id == tpm_actor.seat_binding_id {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "one seat principal cannot authorize both halves of a Committee re-review",
+            ));
+        }
         if remediation.integration.receipt != provenance.remediation_integration_receipt {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -9952,6 +9968,8 @@ impl Services {
                 "approvals": {
                     "lsa_proposal_hash": remediation.authorization.lsa_proposal,
                     "tpm_routing_hash": remediation.authorization.tpm_routing,
+                    "lsa_actor": remediation.authorization.lsa_actor,
+                    "tpm_actor": remediation.authorization.tpm_actor,
                 },
                 "integration": remediation.integration,
             },
@@ -10007,6 +10025,49 @@ impl Services {
                     "this epic's control plane holds no live seat for the required role",
                 )
             })
+    }
+
+    /// Prove that a scoped bearer is the current native occupancy of the
+    /// required epic leadership role. Logical SeatBinding identity and native
+    /// generation are checked independently so replacing either one fences the
+    /// old principal.
+    fn require_completion_authority(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        role_code: &str,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> Result<RemediationAuthority, ApiError> {
+        let current = self.epic_control_seat(project_id, epic_id, role_code)?;
+        if current != seat_binding_id {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the authenticated seat is not the epic's current required remediation authority",
+            ));
+        }
+        let current_generation = self
+            .state()?
+            .with_store(|store| {
+                store.hosted_topology_seat_occupancy_generation(project_id, seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the remediation authority has no active hosted native occupancy",
+                )
+            })?;
+        if occupancy_generation != current_generation {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the remediation authority credential belongs to a fenced native occupancy generation",
+            ));
+        }
+        Ok(RemediationAuthority {
+            seat_binding_id,
+            occupancy_generation,
+        })
     }
 
     /// The ticket contract one epic's tasks declare.
@@ -10132,6 +10193,18 @@ impl Services {
                     authorization: RemediationAuthorizationDto {
                         lsa_proposal: remediation.authorization.lsa_proposal.clone(),
                         tpm_routing: remediation.authorization.tpm_routing.clone(),
+                        lsa_actor: remediation.authorization.lsa_actor.as_ref().map(|actor| {
+                            RemediationAuthorityDto {
+                                seat_binding_id: actor.seat_binding_id,
+                                occupancy_generation: actor.occupancy_generation,
+                            }
+                        }),
+                        tpm_actor: remediation.authorization.tpm_actor.as_ref().map(|actor| {
+                            RemediationAuthorityDto {
+                                seat_binding_id: actor.seat_binding_id,
+                                occupancy_generation: actor.occupancy_generation,
+                            }
+                        }),
                     },
                     integration: integration_dto(&remediation.integration),
                 })
@@ -10468,7 +10541,9 @@ impl Services {
                     } else {
                         None
                     };
+                    let consumed_round = if historical { 1 } else { u32::from(round) };
                     if run.state == ConsultationRunState::Settled
+                        && run.round == consumed_round
                         && (run.result.as_ref() != Some(&reconstructed.result)
                             || run.result_hash.as_ref() != Some(&reconstructed.result_hash))
                     {
@@ -13867,7 +13942,7 @@ impl ApplicationOperations for Services {
                 let display_name =
                     self.seat_name(project_id, &control, &scope, &seat.role.role_code)?;
                 let prompt = BoundedText::parse(&format!(
-                    "Persistent {} seat for epic {}. Continue only work authorized through Kontor. Await or act on the bounded handoff supplied with this launch, then remain reusable under SeatBinding {}.",
+                    "Persistent {} seat for epic {}. Continue only work authorized through Kontor. Await or act on the bounded handoff supplied with this launch, then remain reusable under SeatBinding {}. Use the generation-fenced KONTOR_AUTH value only for this seat's supported identity-bound routes and never disclose it.",
                     seat.role.role_code.as_str(),
                     scope.epic.external_epic_key.as_str(),
                     seat_binding_id,
@@ -13882,6 +13957,11 @@ impl ApplicationOperations for Services {
                         cwd: cwd.clone(),
                         scope: scope.clone(),
                         prompt,
+                        credential: ConsultationCredential::new(
+                            state
+                                .credentials()
+                                .seat_credential_for_generation(seat_binding_id, 1),
+                        ),
                         model_rung: model_rung.clone(),
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
@@ -14046,13 +14126,31 @@ impl ApplicationOperations for Services {
             let display_name =
                 self.seat_name(project_id, &control, &scope, &plan.binding.role.role_code)?;
             let prompt = BoundedText::parse(&format!(
-                "Persistent {} seat for epic {}. This native session replaces archived predecessor {} under the same Kontor SeatBinding {}. Continue only bounded work authorized through Kontor.",
+                "Persistent {} seat for epic {}. This native session replaces archived predecessor {} under the same Kontor SeatBinding {}. Continue only bounded work authorized through Kontor. Use the generation-fenced KONTOR_AUTH value only for this seat's supported identity-bound routes and never disclose it.",
                 plan.binding.role.role_code.as_str(),
                 scope.epic.external_epic_key.as_str(),
                 plan.predecessor.native_identity.native_id.as_str(),
                 plan.binding.id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
+            let successor_occupancy_generation = state
+                .with_store(|store| {
+                    store.hosted_topology_seat_occupancy_generation(project_id, plan.binding.id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the hosted-seat predecessor has no active occupancy generation",
+                    )
+                })?
+                .checked_add(1)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the hosted-seat occupancy generation overflowed",
+                    )
+                })?;
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -14062,6 +14160,12 @@ impl ApplicationOperations for Services {
                     cwd,
                     scope,
                     prompt,
+                    credential: ConsultationCredential::new(
+                        state.credentials().seat_credential_for_generation(
+                            plan.binding.id,
+                            successor_occupancy_generation,
+                        ),
+                    ),
                     model_rung: plan.desired.clone(),
                     context_policy,
                     requested_at: kontor_api::now(),
@@ -14969,14 +15073,9 @@ impl ApplicationOperations for Services {
         key: &IdempotencyKey,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        request: &InvokeConsultationRequest,
+        request: &InvokeAdvisorRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
-        if request.re_review.is_some() {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "completion re-review provenance is accepted only by the Committee route",
-            ));
-        }
+        let request = InvokeConsultationRequest::from(request);
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "invoke_advisor_run",
@@ -15069,12 +15168,12 @@ impl ApplicationOperations for Services {
             let caller = self.authorize_consultation_caller(
                 project_id,
                 epic_id,
-                request,
+                &request,
                 &profile.allowed_scopes,
                 &profile.allowed_caller_roles,
             )?;
             self.freeze_advisor_run(
-                key, &intent, project_id, epic_id, request, &revision, &profile, &caller,
+                key, &intent, project_id, epic_id, &request, &revision, &profile, &caller,
             )?
         };
         let (_, profile) = self.advisor_profile(&run)?;
@@ -16604,6 +16703,8 @@ impl ApplicationOperations for Services {
         key: &IdempotencyKey,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        seat_binding_id: SeatBindingId,
+        seat_occupancy_generation: u64,
         request: &RemediateCompletionRequest,
     ) -> Result<CompletionOutcomeDto, ApiError> {
         let state = self.state()?;
@@ -16615,6 +16716,16 @@ impl ApplicationOperations for Services {
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
+        let actor = self.require_completion_authority(
+            project_id,
+            epic_id,
+            match &request.action {
+                RemediationActionDto::LsaProposal { .. } => MANDATORY_LEAD_ROLE,
+                RemediationActionDto::TpmRoute { .. } => MANDATORY_PROGRAM_ROLE,
+            },
+            seat_binding_id,
+            seat_occupancy_generation,
+        )?;
         // The canonical intent describes what the caller asked for, and nothing
         // the server looked up. That is what lets it be rebuilt on a retry
         // without first reaching the state the original call has since moved.
@@ -16627,6 +16738,8 @@ impl ApplicationOperations for Services {
                 "epic": epic_id.to_string(),
                 "round": round,
                 "proposal": proposal.as_str(),
+                "actor_seat_binding_id": actor.seat_binding_id,
+                "actor_occupancy_generation": actor.occupancy_generation,
             }))?,
             RemediationActionDto::TpmRoute { round, route } => self.intent(&serde_json::json!({
                 "schema_version": 1,
@@ -16634,6 +16747,8 @@ impl ApplicationOperations for Services {
                 "epic": epic_id.to_string(),
                 "round": round,
                 "route": route.as_str(),
+                "actor_seat_binding_id": actor.seat_binding_id,
+                "actor_occupancy_generation": actor.occupancy_generation,
             }))?,
         };
         // Every guard below is judged only when this is not a replay. A route
@@ -16707,7 +16822,6 @@ impl ApplicationOperations for Services {
                         "the proposal does not name the failed round's own evidence",
                     ));
                 }
-                let lsa = self.epic_control_seat(project_id, epic_id, MANDATORY_LEAD_ROLE)?;
                 self.state()?
                     .with_store(|store| {
                         store.insert_remediation_proposal(&StoredRemediationProposal {
@@ -16716,7 +16830,8 @@ impl ApplicationOperations for Services {
                             round: *round,
                             failed_round_evidence: failed_round_evidence.clone(),
                             proposal: proposal.clone(),
-                            lsa_seat_binding_id: lsa,
+                            lsa_seat_binding_id: actor.seat_binding_id,
+                            lsa_occupancy_generation: actor.occupancy_generation,
                             proposed_at: now,
                         })
                     })
@@ -16764,14 +16879,19 @@ impl ApplicationOperations for Services {
                 // plane. A proposal made by a seat that has since been replaced
                 // is not routable: the authority that approved the correction no
                 // longer exists.
-                let lsa = self.epic_control_seat(project_id, epic_id, MANDATORY_LEAD_ROLE)?;
-                if lsa != proposal.lsa_seat_binding_id {
+                let lsa_actor = self.require_completion_authority(
+                    project_id,
+                    epic_id,
+                    MANDATORY_LEAD_ROLE,
+                    proposal.lsa_seat_binding_id,
+                    proposal.lsa_occupancy_generation,
+                )?;
+                if lsa_actor.seat_binding_id == actor.seat_binding_id {
                     return Err(self.deny(
-                        ApiErrorCode::StaleBinding,
-                        "the LSA seat that proposed this correction has been replaced",
+                        ApiErrorCode::Forbidden,
+                        "one seat principal cannot satisfy both remediation authorities",
                     ));
                 }
-                self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
                 let signal = CompletionSignal {
                     id: intent.hash().clone(),
                     expected_revision: current.revision,
@@ -16781,6 +16901,8 @@ impl ApplicationOperations for Services {
                         authorization: RemediationAuthorization {
                             lsa_proposal: proposal.proposal.clone(),
                             tpm_routing: route.clone(),
+                            lsa_actor: Some(lsa_actor),
+                            tpm_actor: Some(actor),
                         },
                     }),
                 };

@@ -240,6 +240,8 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
     let authorization = RemediationAuthorization {
         lsa_proposal: digest("lsa-proposal"),
         tpm_routing: digest("tpm-routing"),
+        lsa_actor: None,
+        tpm_actor: None,
     };
     let (next, commands) = apply_and_restart(
         &compiled,

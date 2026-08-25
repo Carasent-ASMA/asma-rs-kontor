@@ -320,6 +320,7 @@ impl Modify for RealmBearer {
         crate::applications::PromotedSessionDto,
         crate::applications::RosterUpgradePreviewRequest,
         crate::applications::RosterUpgradePreviewDto,
+        crate::applications::InvokeAdvisorRequest,
         crate::applications::InvokeConsultationRequest,
         crate::applications::AdvisorRunDto,
         crate::applications::CommitteeRunDto,

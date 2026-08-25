@@ -1150,7 +1150,29 @@ pub struct RosterUpgradePreviewDto {
     pub preview_hash: ContentHash,
 }
 
-/// Invoke one consultation against an epic.
+/// Invoke one Advisor consultation against an epic.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvokeAdvisorRequest {
+    /// The profile revision to run under.
+    pub profile: RevisionRefDto,
+    /// What is being asked.
+    #[schema(value_type = String)]
+    pub question: BoundedText,
+    /// Exact active epic seat whose role is authorized by the pinned policy.
+    #[schema(value_type = String)]
+    pub caller_seat_binding_id: SeatBindingId,
+    /// Optional ticket scope. It must belong to the epic in the route; absent
+    /// means the epic as a whole.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    /// The epic revision the caller believes is current.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Invoke one Committee consultation against an epic.
 ///
 /// A consultation names the pinned profile it runs under and the question it is
 /// asked. It does not name a model, a provider or a runtime: which seat answers
@@ -1179,6 +1201,19 @@ pub struct InvokeConsultationRequest {
     /// `round = 2`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub re_review: Option<CommitteeReReviewProvenance>,
+}
+
+impl From<&InvokeAdvisorRequest> for InvokeConsultationRequest {
+    fn from(request: &InvokeAdvisorRequest) -> Self {
+        Self {
+            profile: request.profile.clone(),
+            question: request.question.clone(),
+            caller_seat_binding_id: request.caller_seat_binding_id,
+            task_id: request.task_id,
+            expected_revision: request.expected_revision,
+            re_review: None,
+        }
+    }
 }
 
 /// Immutable lineage that authorizes one clean Committee re-review for an epic
@@ -1687,6 +1722,16 @@ pub struct IntegrationRecordDto {
     pub repositories: Vec<RepositoryOutcomeDto>,
 }
 
+/// One authenticated control-plane remediation authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RemediationAuthorityDto {
+    /// Immutable logical control-plane seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Native filler generation that authenticated this action.
+    pub occupancy_generation: u64,
+}
+
 /// The two immutable authorities required before remediation integration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct RemediationAuthorizationDto {
@@ -1696,6 +1741,12 @@ pub struct RemediationAuthorizationDto {
     /// TPM routing evidence.
     #[schema(value_type = String)]
     pub tpm_routing: ContentHash,
+    /// LSA seat and native occupancy that authored the proposal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsa_actor: Option<RemediationAuthorityDto>,
+    /// TPM seat and native occupancy that authored the route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tpm_actor: Option<RemediationAuthorityDto>,
 }
 
 /// One completed, governed remediation and its frozen integration evidence.
@@ -5473,7 +5524,7 @@ pub trait ApplicationOperations: Send + Sync {
         key: &IdempotencyKey,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        request: &InvokeConsultationRequest,
+        request: &InvokeAdvisorRequest,
     ) -> Result<AdvisorRunDto, ApiError>;
     /// Read one durable Advisor run and its result.
     fn advisor_run(
@@ -5581,6 +5632,8 @@ pub trait ApplicationOperations: Send + Sync {
         key: &IdempotencyKey,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        seat_binding_id: SeatBindingId,
+        seat_occupancy_generation: u64,
         request: &RemediateCompletionRequest,
     ) -> Result<CompletionOutcomeDto, ApiError>;
 
@@ -7666,7 +7719,7 @@ pub async fn apply_advisor_profile(
         ("epic_id" = String, Path, description = "The epic"),
         ("Idempotency-Key" = String, Header, description = "The caller's stable key")
     ),
-    request_body = InvokeConsultationRequest,
+    request_body = InvokeAdvisorRequest,
     responses(
         (status = 200, body = AdvisorRunDto),
         (status = 401), (status = 403), (status = 404), (status = 409),
@@ -7678,7 +7731,7 @@ pub async fn invoke_advisor_run(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(request): Json<InvokeConsultationRequest>,
+    Json(request): Json<InvokeAdvisorRequest>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
@@ -8218,14 +8271,27 @@ pub async fn remediate_completion(
     headers: HeaderMap,
     Json(request): Json<RemediateCompletionRequest>,
 ) -> Result<Json<CompletionOutcomeDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    let seat_binding_id = caller.require_scoped_seat(&state)?;
+    let seat_occupancy_generation = caller.occupancy_generation().ok_or_else(|| {
+        state.refuse(
+            ApiErrorCode::Forbidden,
+            "the remediation authority credential has no occupancy generation",
+        )
+    })?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
             .applications()
-            .remediate_completion(&key, project_id, epic_id, &request)
+            .remediate_completion(
+                &key,
+                project_id,
+                epic_id,
+                seat_binding_id,
+                seat_occupancy_generation,
+                &request,
+            )
             .await?,
     ))
 }

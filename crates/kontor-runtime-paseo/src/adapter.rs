@@ -3952,25 +3952,47 @@ impl PaseoAdapter {
         let (native_id, created) = match recovered_id {
             Some(native_id) => (native_id, false),
             None => {
-                let command = PaseoCommand::agent_run(
+                crate::seat_mcp::compose_for_hosted_seat(
+                    self.config.seat_mcp.as_ref(),
+                    request.model_rung.provider.0.as_str(),
+                    std::path::Path::new(request.cwd.as_str()),
+                )
+                .map_err(|error| {
+                    tracing::warn!(%error, "hosted seat MCP composition failed");
+                    RuntimeError::LaunchNotAdmitted {
+                        rule: "hosted seat MCP composition failed in the ECP",
+                    }
+                })?;
+                let creation = PaseoRpc::hosted_seat_agent_create(
+                    self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
                     &request.model_rung,
-                    SeatAutonomy::Supervised,
                     request.display_name.as_str(),
                     &labels,
-                    None,
                     request.prompt.as_str(),
+                    request.credential.expose_secret(),
                 )?;
-                let native_id = match self.transport.run(&command).await {
-                    Ok(output) => {
-                        output
-                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
-                            .agent_id
-                    }
-                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                    Err(other) => return Err(other),
-                };
+                let frame = self.transport.request(&creation).await?;
+                let status: serde_json::Value =
+                    frame.resolve(&creation, "PaseoHostedSeatAgentCreated")?;
+                if status.get("status").and_then(serde_json::Value::as_str) != Some("agent_created")
+                {
+                    return Err(RuntimeError::Transport {
+                        rule: "runtime refused the hosted seat creation",
+                    });
+                }
+                let native_id = status
+                    .get("agent")
+                    .and_then(|agent| agent.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        RuntimeError::Domain(kontor_core::DomainError::invalid(
+                            "PaseoHostedSeatAgentCreated",
+                            "does not name the created agent",
+                        ))
+                    })?;
                 (native_id, true)
             }
         };

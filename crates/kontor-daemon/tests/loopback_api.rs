@@ -23511,7 +23511,17 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
 
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
-        &serde_json::json!({"expected_revision": 1}),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
     )
     .signed_as(world, "admin")
     .with_key("op06-materialize")
@@ -23533,6 +23543,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         )
         .expect("a seat binding id")
     };
+    let lsa = seat_of("LSA");
     let tpm = seat_of("TPM");
 
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
@@ -23698,14 +23709,129 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         })
         .expect("the failed round seeds");
 
-    let remediate = |body: serde_json::Value, key: &'static str| {
-        Call::post(
-            format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
-            &body,
-        )
-        .signed_as(world, "operator")
-        .with_key(key)
-    };
+    let remediate =
+        |body: serde_json::Value, key: &'static str, actor: SeatBindingId, generation: u64| {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+                &body,
+            )
+            .with_token(
+                world
+                    .daemon
+                    .state()
+                    .credentials()
+                    .seat_credential_for_generation(actor, generation),
+            )
+            .with_key(key)
+        };
+
+    let operator_impersonation = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+        &serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {
+                "action": "lsa_proposal", "round": 1,
+                "failed_round_evidence": findings.as_str(),
+                "proposal": ContentHash::of(b"operator-spoof").as_str()
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-operator-cannot-propose")
+    .send(world)
+    .await;
+    assert_eq!(
+        operator_impersonation.status, 403,
+        "{}",
+        operator_impersonation.body
+    );
+
+    let tpm_impersonates_lsa = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {
+                "action": "lsa_proposal", "round": 1,
+                "failed_round_evidence": findings.as_str(),
+                "proposal": ContentHash::of(b"tpm-spoof").as_str()
+            }
+        }),
+        "op06-tpm-cannot-propose",
+        tpm,
+        1,
+    )
+    .send(world)
+    .await;
+    assert_eq!(
+        tpm_impersonates_lsa.status, 403,
+        "{}",
+        tpm_impersonates_lsa.body
+    );
+
+    let lsa_predecessor = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_topology_seat(project_id, lsa))
+        .expect("the LSA occupancy reads")
+        .expect("the LSA is hosted");
+    let mut lsa_successor = lsa_predecessor.clone();
+    lsa_successor.native_identity.native_id =
+        ExternalId::parse("op06-lsa-successor").expect("a successor native id");
+    lsa_successor.provider_session_id =
+        Some(ExternalId::parse("op06-lsa-successor-session").expect("a provider session"));
+    lsa_successor.observed_at = at("2026-08-18T09:01:00Z");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.replace_hosted_topology_seat_route(
+                &lsa_predecessor,
+                &lsa_successor,
+                at("2026-08-18T09:01:00Z"),
+                "test the remediation authority generation fence",
+            )
+        })
+        .expect("the LSA occupancy is replaced");
+
+    let stale_predecessor = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+        &serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {
+                "action": "lsa_proposal", "round": 1,
+                "failed_round_evidence": findings.as_str(),
+                "proposal": ContentHash::of(b"fenced-predecessor").as_str()
+            }
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(lsa, 1),
+    )
+    .with_key("op06-fenced-lsa-predecessor")
+    .send(world)
+    .await;
+    assert_eq!(stale_predecessor.status, 409, "{}", stale_predecessor.body);
+    assert_eq!(stale_predecessor.code(), "stale_binding");
+
+    let foreign_seat = remediate(
+        serde_json::json!({
+            "expected_revision": awaiting_revision,
+            "action": {
+                "action": "lsa_proposal", "round": 1,
+                "failed_round_evidence": findings.as_str(),
+                "proposal": ContentHash::of(b"foreign-seat-spoof").as_str()
+            }
+        }),
+        "op06-foreign-seat-cannot-propose",
+        SeatBindingId::generate(),
+        1,
+    )
+    .send(world)
+    .await;
+    assert_eq!(foreign_seat.status, 403, "{}", foreign_seat.body);
 
     // Routing before anything was proposed launches nothing: both receipts have
     // to be durable, and only one authority has acted.
@@ -23715,6 +23841,8 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-1").as_str()}
         }),
         "op06-route-unproposed",
+        tpm,
+        1,
     )
     .send(world)
     .await;
@@ -23739,6 +23867,8 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             }
         }),
         "op06-propose-wrong",
+        lsa,
+        2,
     )
     .send(world)
     .await;
@@ -23752,7 +23882,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             "proposal": ContentHash::of(b"narrow-the-change").as_str()
         }
     });
-    let proposed = remediate(proposal_body.clone(), "op06-propose")
+    let proposed = remediate(proposal_body.clone(), "op06-propose", lsa, 2)
         .send(world)
         .await;
     assert_eq!(proposed.status, 200, "{}", proposed.body);
@@ -23771,7 +23901,9 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     );
 
     // Replay is the same receipt, and still no second proposal.
-    let proposed_again = remediate(proposal_body, "op06-propose").send(world).await;
+    let proposed_again = remediate(proposal_body, "op06-propose", lsa, 2)
+        .send(world)
+        .await;
     assert_eq!(proposed_again.status, 200, "{}", proposed_again.body);
     assert_eq!(proposed_again.json()["receipt"]["applied"], "unchanged");
 
@@ -23780,7 +23912,12 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         "expected_revision": awaiting_revision,
         "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-1").as_str()}
     });
-    let routed = remediate(route_body.clone(), "op06-route")
+    let lsa_cannot_route = remediate(route_body.clone(), "op06-lsa-cannot-route", lsa, 2)
+        .send(world)
+        .await;
+    assert_eq!(lsa_cannot_route.status, 403, "{}", lsa_cannot_route.body);
+
+    let routed = remediate(route_body.clone(), "op06-route", tpm, 1)
         .send(world)
         .await;
     assert_eq!(routed.status, 200, "{}", routed.body);
@@ -23795,7 +23932,9 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     );
 
     // Replay after the move: same key, same body, same receipt, no second round.
-    let routed_again = remediate(route_body, "op06-route").send(world).await;
+    let routed_again = remediate(route_body, "op06-route", tpm, 1)
+        .send(world)
+        .await;
     assert_eq!(routed_again.status, 200, "{}", routed_again.body);
     assert_eq!(routed_again.json()["receipt"]["applied"], "unchanged");
     assert_eq!(
@@ -23810,6 +23949,8 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-2").as_str()}
         }),
         "op06-route-stale",
+        tpm,
+        1,
     )
     .send(world)
     .await;
@@ -24300,7 +24441,13 @@ async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
                        "route": ContentHash::of(b"route").as_str()}
         }),
     )
-    .signed_as(&world, "operator")
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(SeatBindingId::generate(), 1),
+    )
     .with_key("op06-remediate-nothing")
     .send(&world)
     .await;
@@ -24345,7 +24492,17 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .to_owned();
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
-        &serde_json::json!({"expected_revision": 1}),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
     )
     .signed_as(world, "admin")
     .with_key("committee-control-seats")
@@ -24988,7 +25145,8 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
 
     // Recreate the exact durable shape written by the pre-v62 daemon: the
     // immutable remediation exists, but the source run was advanced in place to
-    // a mutable running round two and its round-one result was not retained.
+    // round two and later settled with a different round-two result. Its
+    // round-one result was not retained.
     // This direct SQL is test-only historical fixture construction, like the
     // other legacy-shape regressions in this suite; the product path never
     // performs it. The canonical documents reproduce the old settlement bytes
@@ -25030,6 +25188,19 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .expect("the historical remediation canonicalizes");
     let failed_result_hash = result_document.hash().as_str().to_owned();
     let remediation_hash = remediation_document.hash().as_str().to_owned();
+    let round_two_result = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "verdict": "compliant",
+        "evidence_hash": ContentHash::of(b"distinct legacy round-two evidence").as_str(),
+        "round": 2,
+        "finding_hashes": [],
+    }))
+    .expect("the distinct round-two result canonicalizes");
+    assert_ne!(
+        round_two_result.hash(),
+        result_document.hash(),
+        "the regression requires different current and consumed-round results"
+    );
     let legacy_revision = revision + 1;
     let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
     let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
@@ -25053,14 +25224,16 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     let advanced_in_place = connection
         .execute(
             "UPDATE consultation_runs
-             SET state = 'running', round = 2, revision = revision + 1,
-                 updated_at = ?4, settled_at = NULL
+             SET state = 'settled', round = 2, result = ?4, result_hash = ?5,
+                 revision = revision + 1, updated_at = ?6, settled_at = ?6
              WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
                AND revision = ?3 AND result IS NULL",
             rusqlite::params![
                 project,
                 run,
                 i64::try_from(revision).expect("the test revision fits SQLite"),
+                round_two_result.json(),
+                round_two_result.hash().as_str(),
                 "2026-08-25T20:24:23Z"
             ],
         )
@@ -25068,8 +25241,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     assert_eq!(advanced_in_place, 1);
     drop(connection);
 
-    // The failed run is now historical evidence. Its seats cannot append a
-    // second round, even with their still-valid generation-scoped credential.
+    // The failed run is now historical evidence. Its seats cannot append to
+    // the already-settled second round, even with their still-valid
+    // generation-scoped credential.
     let poisoned_old_run = Call::post(
         format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
         &serde_json::json!({
@@ -25150,6 +25324,22 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         advanced.json()["state"]["rounds"][0]["remediation_hash"],
         remediation_hash
     );
+    let legacy_after_ingest = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(
+        legacy_after_ingest.status, 200,
+        "{}",
+        legacy_after_ingest.body
+    );
+    assert_eq!(legacy_after_ingest.json()["round"], 2);
+    assert_eq!(legacy_after_ingest.json()["state"], "settled");
+    assert_eq!(
+        legacy_after_ingest.json()["result_hash"],
+        round_two_result.hash().as_str(),
+        "consuming historical round one must not compare with or rewrite the distinct round-two result"
+    );
     let failed_evidence = advanced.json()["state"]["rounds"][0]["evidence"]
         .as_str()
         .expect("the reconstructed evidence digest")
@@ -25170,7 +25360,16 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             }
         }),
     )
-    .signed_as(world, "operator")
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(
+                SeatBindingId::parse(&caller).expect("the LSA SeatBinding"),
+                1,
+            ),
+    )
     .with_key("committee-completion-proposal")
     .send(world)
     .await;
@@ -25187,7 +25386,16 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             }
         }),
     )
-    .signed_as(world, "operator")
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(
+                SeatBindingId::parse(&tpm).expect("the TPM SeatBinding"),
+                1,
+            ),
+    )
     .with_key("committee-completion-route")
     .send(world)
     .await;
@@ -25216,6 +25424,22 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     assert_eq!(integrated.status, 200, "{}", integrated.body);
     assert_eq!(integrated.json()["state"]["phase"]["phase"], "verdict");
     assert_eq!(integrated.json()["state"]["phase"]["round"], 2);
+    assert_eq!(
+        integrated.json()["state"]["remediations"][0]["authorization"]["lsa_actor"]["seat_binding_id"],
+        caller
+    );
+    assert_eq!(
+        integrated.json()["state"]["remediations"][0]["authorization"]["lsa_actor"]["occupancy_generation"],
+        1
+    );
+    assert_eq!(
+        integrated.json()["state"]["remediations"][0]["authorization"]["tpm_actor"]["seat_binding_id"],
+        tpm
+    );
+    assert_eq!(
+        integrated.json()["state"]["remediations"][0]["authorization"]["tpm_actor"]["occupancy_generation"],
+        1
+    );
     let completion_revision = integrated.json()["receipt"]["revision"]
         .as_u64()
         .expect("the post-remediation completion revision");

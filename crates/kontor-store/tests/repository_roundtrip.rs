@@ -7374,6 +7374,7 @@ fn a_second_remediation_proposal_for_one_round_is_refused() {
         failed_round_evidence: ContentHash::of(b"round-1-findings"),
         proposal: ContentHash::of(correction.as_bytes()),
         lsa_seat_binding_id: SeatBindingId::generate(),
+        lsa_occupancy_generation: 3,
         proposed_at: now(),
     };
 
@@ -7400,6 +7401,7 @@ fn a_second_remediation_proposal_for_one_round_is_refused() {
         ContentHash::of(b"narrow the change"),
         "the first proposal is the one a route will read"
     );
+    assert_eq!(stored.lsa_occupancy_generation, 3);
     assert!(
         fixture
             .store

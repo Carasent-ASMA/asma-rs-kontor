@@ -295,7 +295,7 @@ pub struct ConsultationLaunchRequest {
     /// Frozen prompt/context for this seat.
     pub prompt: BoundedText,
     /// Opaque seat-scoped API credential delivered as process environment.
-    pub credential: ConsultationCredential,
+    pub credential: ScopedSeatCredential,
     /// Exact provider/model/effort route.
     pub model_rung: ModelRung,
     /// Immutable context-window policy.
@@ -304,11 +304,11 @@ pub struct ConsultationLaunchRequest {
     pub requested_at: Timestamp,
 }
 
-/// A consultation seat credential whose debug form never exposes its value.
+/// A persistent seat credential whose debug form never exposes its value.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ConsultationCredential(String);
+pub struct ScopedSeatCredential(String);
 
-impl ConsultationCredential {
+impl ScopedSeatCredential {
     /// Wrap an already-minted scoped credential.
     #[must_use]
     pub fn new(value: String) -> Self {
@@ -322,9 +322,12 @@ impl ConsultationCredential {
     }
 }
 
-impl std::fmt::Debug for ConsultationCredential {
+/// Compatibility alias for consultation adapters.
+pub type ConsultationCredential = ScopedSeatCredential;
+
+impl std::fmt::Debug for ScopedSeatCredential {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ConsultationCredential([REDACTED])")
+        formatter.write_str("ScopedSeatCredential([REDACTED])")
     }
 }
 
@@ -382,6 +385,8 @@ pub struct HostedSeatLaunchRequest {
     pub scope: ExecutionScope,
     /// Initial leadership handoff.
     pub prompt: BoundedText,
+    /// Generation-fenced credential for seat-authored authority routes.
+    pub credential: ScopedSeatCredential,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
     /// Immutable context policy.

@@ -4961,11 +4961,17 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
 
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
-        .answering(&any_agent_run(), CLI_AGENT_STARTED)
         .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
         .answering_rpc("fetch_workspaces_request", workspace)
         .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({
+                "status": "agent_created",
+                "agent": {"id": AGENT_ID}
+            }),
+        )
         .answering_rpc("fetch_agent_request", agent);
     let plane = Plane::fresh(recorded);
     plane
@@ -4990,6 +4996,9 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
             cwd: root(),
             scope: epic_execution_scope(),
             prompt: text("continue epic leadership through Kontor"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "kontor-seat-v2.test.1.redacted".to_owned(),
+            ),
             model_rung: model_rung(),
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-16T09:10:00Z"),
@@ -4999,7 +5008,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
 
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
-    assert_eq!(plane.daemon.count("agent run"), 1);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
 }
 
 /// Claiming a hand-started session is metadata-only: the native id and provider

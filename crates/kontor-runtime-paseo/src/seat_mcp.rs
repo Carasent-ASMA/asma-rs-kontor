@@ -6,10 +6,10 @@
 //! whatever authority the operator's own console carries — measured live, that
 //! was kontor at *admin* tier plus two unrelated servers, ~18k tokens of tool
 //! schemas per turn. Composing the config into the seat's own working directory
-//! gives every Claude consultation seat exactly one kontor server at
-//! **operator** tier under the registry's narrow **consultation** serve profile,
-//! and nothing else from Kontor's side. The inherited seat credential, not the
-//! profile, remains the authority and supplies the consultation SeatBinding.
+//! gives every Claude seat exactly one kontor server at **operator** tier under
+//! a narrow serve profile: `consultation` for independent reviewers and
+//! `leadership` for persistent LSA/TPM seats. The inherited seat credential,
+//! not the profile, remains the authority and supplies the SeatBinding.
 //!
 //! Three files are touched, all local to the worktree and all kept out of the
 //! seat's own diff via `git rev-parse --git-path info/exclude` — a seat whose
@@ -84,8 +84,8 @@ impl SeatMcp {
     /// # Errors
     /// Any filesystem failure, an existing config file that is not JSON (it is
     /// refused rather than clobbered), or a cwd that is not a git worktree.
-    pub fn compose(&self, cwd: &Path) -> io::Result<()> {
-        write_mcp_json(cwd, &self.command, &self.state_root)?;
+    pub fn compose(&self, cwd: &Path, serve_profile: &str) -> io::Result<()> {
+        write_mcp_json(cwd, &self.command, &self.state_root, serve_profile)?;
         write_claude_settings(cwd)?;
         exclude_from_git(cwd)
     }
@@ -98,19 +98,42 @@ impl SeatMcp {
 /// As [`SeatMcp::compose`].
 pub fn compose_for_seat(seat: Option<&SeatMcp>, provider: &str, cwd: &Path) -> io::Result<()> {
     match seat {
-        Some(seat) if crate::client::built_in_provider(provider) == "claude" => seat.compose(cwd),
+        Some(seat) if crate::client::built_in_provider(provider) == "claude" => {
+            seat.compose(cwd, "consultation")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Compose the identity-bound leadership surface for a hosted LSA/TPM seat.
+/// It shares the same credential transport and provider boundary as
+/// consultation composition but presents only completion read/remediate tools.
+pub fn compose_for_hosted_seat(
+    seat: Option<&SeatMcp>,
+    provider: &str,
+    cwd: &Path,
+) -> io::Result<()> {
+    match seat {
+        Some(seat) if crate::client::built_in_provider(provider) == "claude" => {
+            seat.compose(cwd, "leadership")
+        }
         _ => Ok(()),
     }
 }
 
 /// Merge-write `<cwd>/.mcp.json`: overwrite only the `kontor` server entry.
-fn write_mcp_json(cwd: &Path, command: &str, state_root: &Path) -> io::Result<()> {
+fn write_mcp_json(
+    cwd: &Path,
+    command: &str,
+    state_root: &Path,
+    serve_profile: &str,
+) -> io::Result<()> {
     let kontor = serde_json::json!({
         "command": command,
         "args": [
             "--state-root", state_root.to_string_lossy(),
             "--credential-tier", "operator",
-            "--serve-profile", "consultation",
+            "--serve-profile", serve_profile,
         ],
     });
     merge_json(&cwd.join(".mcp.json"), |document| {
@@ -304,6 +327,32 @@ mod tests {
         );
     }
 
+    /// Persistent LSA/TPM seats receive the completion-only MCP surface while
+    /// using the same inherited scoped credential channel.
+    #[test]
+    fn hosted_leadership_composition_selects_the_completion_profile() {
+        let repo = repo();
+        compose_for_hosted_seat(Some(&seat("/realm/state")), "claude-personal", repo.path())
+            .expect("leadership composition");
+
+        let mcp: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(repo.path().join(".mcp.json")).expect("written"),
+        )
+        .expect(".mcp.json is JSON");
+        assert_eq!(
+            mcp["mcpServers"]["kontor"]["args"],
+            serde_json::json!([
+                "--state-root",
+                "/realm/state",
+                "--credential-tier",
+                "operator",
+                "--serve-profile",
+                "leadership"
+            ])
+        );
+        assert!(porcelain(repo.path()).is_empty());
+    }
+
     /// TEST-007: the kill switch and the provider boundary each write nothing.
     #[test]
     fn a_disabled_or_foreign_seat_writes_nothing() {
@@ -403,8 +452,10 @@ mod tests {
         let repo = repo();
         let cwd = repo.path();
         let seat = seat("/realm/state");
-        seat.compose(cwd).expect("first composition");
-        seat.compose(cwd).expect("second composition");
+        seat.compose(cwd, "consultation")
+            .expect("first composition");
+        seat.compose(cwd, "consultation")
+            .expect("second composition");
 
         let output = std::process::Command::new("git")
             .arg("-C")
@@ -436,7 +487,7 @@ mod tests {
         let cwd = repo.path();
         std::fs::write(cwd.join(".mcp.json"), "not json at all").expect("seeded");
         let error = seat("/realm/state")
-            .compose(cwd)
+            .compose(cwd, "consultation")
             .expect_err("a human's broken file is not ours to overwrite");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
@@ -451,7 +502,7 @@ mod tests {
     fn a_non_git_cwd_is_refused() {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         seat("/realm/state")
-            .compose(directory.path())
+            .compose(directory.path(), "consultation")
             .expect_err("no worktree, no composition");
     }
 }

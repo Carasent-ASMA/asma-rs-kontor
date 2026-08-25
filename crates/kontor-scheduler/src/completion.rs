@@ -408,6 +408,15 @@ pub struct CompletionRound {
     pub deliberation: Vec<DeliberationStep>,
 }
 
+/// One authenticated control-plane authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemediationAuthority {
+    /// Immutable logical control-plane seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Native filler generation that authenticated this action.
+    pub occupancy_generation: u64,
+}
+
 /// The two-authority remediation approval.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemediationAuthorization {
@@ -415,6 +424,13 @@ pub struct RemediationAuthorization {
     pub lsa_proposal: ContentHash,
     /// TPM next-round routing receipt.
     pub tpm_routing: ContentHash,
+    /// Identity-bound LSA approval. Optional only for decoding states published
+    /// before seat-scoped remediation credentials existed.
+    #[serde(default)]
+    pub lsa_actor: Option<RemediationAuthority>,
+    /// Identity-bound TPM routing authority.
+    #[serde(default)]
+    pub tpm_actor: Option<RemediationAuthority>,
 }
 
 /// One completed remediation round.

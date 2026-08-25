@@ -2910,6 +2910,38 @@ impl SqliteStore {
         .transpose()
     }
 
+    /// Read the current native occupancy generation of a persistent topology
+    /// seat. Hosted-seat history is append-only, so `history + 1` is a durable
+    /// generation fence without overloading the runtime daemon generation.
+    pub fn hosted_topology_seat_occupancy_generation(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<u64>> {
+        let generation = self
+            .connection
+            .query_row(
+                "SELECT 1 + (
+                     SELECT COUNT(*) FROM hosted_topology_seat_history h
+                     WHERE h.project_id = s.project_id
+                       AND h.seat_binding_id = s.seat_binding_id
+                 )
+                 FROM hosted_topology_seats s
+                 WHERE s.project_id = ?1 AND s.seat_binding_id = ?2",
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        generation
+            .map(|generation| {
+                u64::try_from(generation).map_err(|_| RepositoryError::Backend {
+                    detail: "a hosted-seat occupancy generation is invalid".to_owned(),
+                })
+            })
+            .transpose()
+    }
+
     /// Freeze the first exact native readback for one persistent topology seat.
     /// The same native agent and route may report a newer provider conversation
     /// handle after a supported runtime resume; that observation refreshes in
@@ -4629,8 +4661,8 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO epic_completion_remediation_proposals
                      (project_id, mini_project_id, round, failed_round_evidence, proposal,
-                      lsa_seat_binding_id, proposed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                      lsa_seat_binding_id, lsa_occupancy_generation, proposed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     proposal.project_id.to_string(),
                     proposal.mini_project_id.to_string(),
@@ -4638,6 +4670,7 @@ impl SqliteStore {
                     proposal.failed_round_evidence.as_str(),
                     proposal.proposal.as_str(),
                     proposal.lsa_seat_binding_id.to_string(),
+                    i64::try_from(proposal.lsa_occupancy_generation).unwrap_or(i64::MAX),
                     text(proposal.proposed_at),
                 ],
             )
@@ -4667,7 +4700,8 @@ impl SqliteStore {
     ) -> RepositoryResult<Option<StoredRemediationProposal>> {
         self.connection
             .query_row(
-                "SELECT failed_round_evidence, proposal, lsa_seat_binding_id, proposed_at
+                "SELECT failed_round_evidence, proposal, lsa_seat_binding_id,
+                        lsa_occupancy_generation, proposed_at
                  FROM epic_completion_remediation_proposals
                  WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
                 params![
@@ -4680,7 +4714,8 @@ impl SqliteStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 },
             )
@@ -4694,7 +4729,12 @@ impl SqliteStore {
                     failed_round_evidence: ContentHash::parse(&columns.0)?,
                     proposal: ContentHash::parse(&columns.1)?,
                     lsa_seat_binding_id: SeatBindingId::parse(&columns.2)?,
-                    proposed_at: read_timestamp(&columns.3)?,
+                    lsa_occupancy_generation: u64::try_from(columns.3).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "an LSA proposal occupancy generation is invalid".to_owned(),
+                        }
+                    })?,
+                    proposed_at: read_timestamp(&columns.4)?,
                 })
             })
             .transpose()

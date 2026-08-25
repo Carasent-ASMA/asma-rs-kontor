@@ -466,9 +466,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v64 freezes a failed Committee result without opening a
-    // mutable second round.
-    assert_eq!(SCHEMA_VERSION, 64);
+    // side effect. v65 fences remediation proposals to their authenticated
+    // hosted-seat occupancy generation.
+    assert_eq!(SCHEMA_VERSION, 65);
 }
 
 #[test]
@@ -571,6 +571,81 @@ fn v64_preserves_published_committee_remediation_and_its_immutability() {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("the migrated generation reads");
     assert_eq!(version, 64);
+}
+
+#[test]
+fn v65_backfills_published_proposals_and_fences_new_generations() {
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .execute_batch(
+            "CREATE TABLE epic_completion_remediation_proposals (
+                 project_id TEXT NOT NULL,
+                 mini_project_id TEXT NOT NULL,
+                 round INTEGER NOT NULL CHECK (round >= 1),
+                 failed_round_evidence TEXT NOT NULL,
+                 proposal TEXT NOT NULL,
+                 lsa_seat_binding_id TEXT NOT NULL,
+                 proposed_at TEXT NOT NULL,
+                 PRIMARY KEY (project_id, mini_project_id, round)
+             ) STRICT;
+             INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, round, failed_round_evidence,
+                  proposal, lsa_seat_binding_id, proposed_at)
+             VALUES ('project', 'epic', 1, 'evidence', 'proposal', 'lsa',
+                     '2026-08-25T20:00:00Z');",
+        )
+        .expect("the published proposal shape seeds");
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0065_remediation_proposal_seat_generation.sql"
+        ))
+        .expect("the supported v65 migration installs");
+
+    let generation: i64 = connection
+        .query_row(
+            "SELECT lsa_occupancy_generation
+             FROM epic_completion_remediation_proposals
+             WHERE project_id = 'project' AND mini_project_id = 'epic' AND round = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the published proposal survives");
+    assert_eq!(generation, 1, "legacy proposals belong to generation one");
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, round, failed_round_evidence,
+                  proposal, lsa_seat_binding_id, proposed_at,
+                  lsa_occupancy_generation)
+             VALUES ('project', 'epic', 2, 'evidence-2', 'proposal-2', 'lsa',
+                     '2026-08-25T20:01:00Z', 2)",
+            [],
+        )
+        .expect("a successor occupancy can author a proposal");
+    let invalid = connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, round, failed_round_evidence,
+                  proposal, lsa_seat_binding_id, proposed_at,
+                  lsa_occupancy_generation)
+             VALUES ('project', 'epic', 3, 'evidence-3', 'proposal-3', 'lsa',
+                     '2026-08-25T20:02:00Z', 0)",
+            [],
+        )
+        .expect_err("generation zero is not a seat occupancy");
+    assert!(
+        invalid
+            .to_string()
+            .contains("lsa_occupancy_generation >= 1"),
+        "the generation constraint refused for the wrong reason: {invalid}"
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the schema version reads"),
+        65
+    );
 }
 
 #[test]
