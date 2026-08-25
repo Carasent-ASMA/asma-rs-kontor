@@ -176,8 +176,23 @@ pub struct EpicApplication<'a> {
     pub definition: &'a WorkProfileSpec,
     /// The team revision the profile pins, when it prescribes one.
     pub team: Option<&'a TeamTemplateRevision>,
+    /// Where that team revision came from.
+    ///
+    /// Only the build's bundled bootstrap may reconcile an older immutable
+    /// revision already stored at the same identity. Registered packs remain
+    /// ordinary published input and may never adopt another pack's bytes.
+    pub team_source: TeamTemplateSource,
     /// When the application happened.
     pub applied_at: Timestamp,
+}
+
+/// Authority behind a team revision presented to graph application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamTemplateSource {
+    /// Compiled bootstrap/catalog data shipped by this build.
+    Bundled,
+    /// An operator-registered profile pack.
+    Registered,
 }
 
 /// One complete legacy backlog export resolved into the existing graph model.
@@ -1258,6 +1273,7 @@ impl SqliteStore {
         request: &kontor_core::repository::NewTaskWorkflow,
         definition: &WorkProfileSpec,
         team: Option<&TeamTemplateRevision>,
+        team_source: TeamTemplateSource,
     ) -> RepositoryResult<TaskWorkflowId> {
         request.snapshot.verify()?;
         let transaction = self.begin()?;
@@ -1282,6 +1298,7 @@ impl SqliteStore {
             profile: &request.snapshot,
             definition,
             team,
+            team_source,
             applied_at: request.created_at,
         };
         store_specifications(&transaction, &application)?;
@@ -1701,11 +1718,11 @@ fn ensure_project_exists(
 ///
 /// The two tables follow different contracts. A work profile is a *contract*:
 /// the same `(id, version)` may only ever name the bytes it was published
-/// with, so drift at an existing identity is refused. A team template is
-/// bootstrap data, exactly like a bundled consultation preset: the identity is
-/// insert-only and, once it exists, the stored bytes are authoritative even
-/// when a newer daemon ships different bytes under it — changed policy belongs
-/// in the next bundled version, appended through the normal insert path below.
+/// with, so drift at an existing identity is refused. Bundled team templates
+/// are bootstrap data, exactly like bundled consultation presets: the identity
+/// is insert-only and, once it exists, the stored bytes are authoritative even
+/// when a newer daemon ships different bytes under it. Registered packs do not
+/// get that reconciliation authority; they must still present identical bytes.
 fn store_specifications(
     transaction: &Transaction<'_>,
     request: &EpicApplication<'_>,
@@ -1769,12 +1786,17 @@ fn store_specifications(
         .optional()
         .map_err(backend)?;
     match stored {
+        Some(hash) if hash.as_str() == team.definition.hash().as_str() => Ok(()),
         // Bootstrap contract: the bundle is a lazy bootstrap source, not a
         // mutable source of truth. Once this immutable identity exists, the
         // stored bytes stay authoritative even if a later daemon ships
         // different bytes under it; changed policy belongs in the next bundled
         // version and is appended through the insert path below.
-        Some(_) => Ok(()),
+        Some(_) if request.team_source == TeamTemplateSource::Bundled => Ok(()),
+        Some(_) => Err(conflict(
+            "team template",
+            "a registered pack revision collides with different published content",
+        )),
         None => {
             let authority = crate::repository::to_json(&team.role_authority)?;
             transaction

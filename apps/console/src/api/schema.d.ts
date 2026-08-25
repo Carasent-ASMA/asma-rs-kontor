@@ -2919,6 +2919,13 @@ export interface components {
             /** @description The tasks, in the order they were stated. */
             tasks: components["schemas"]["AppliedTaskDto"][];
             team_template?: null | components["schemas"]["RevisionRefDto"];
+            /**
+             * @description Canonical hash of the exact stored team revision this project executes.
+             *
+             *     On first apply this is the bootstrapped candidate. On reapply after a
+             *     daemon upgrade it remains the historical immutable stored hash.
+             */
+            team_template_hash?: string | null;
             /** @description The work-profile revision frozen onto every task. */
             work_profile: components["schemas"]["RevisionRefDto"];
         };
@@ -5341,6 +5348,8 @@ export interface components {
             /** @description Every task, in request order. */
             tasks: components["schemas"]["PreviewEpicTaskDto"][];
             team_template?: null | components["schemas"]["RevisionRefDto"];
+            /** @description Canonical hash of the exact stored team revision apply would execute. */
+            team_template_hash?: string | null;
             /** @description The work-profile revision that would be frozen onto every task. */
             work_profile: components["schemas"]["RevisionRefDto"];
         };
@@ -6608,6 +6617,8 @@ export interface components {
             /** @description The task. */
             task_id: string;
             team_template?: null | components["schemas"]["RevisionRefDto"];
+            /** @description Canonical hash of the exact stored team revision the task executes. */
+            team_template_hash?: string | null;
             work_profile?: null | components["schemas"]["RevisionRefDto"];
         };
         /**
@@ -7135,12 +7146,26 @@ export interface components {
         };
         /** @description One selectable team template revision. */
         TeamTemplateCatalogDto: {
-            /** @description The digest of its canonical definition. */
+            /** @description Always `realm_bootstrap`; this row is discovery input, not project state. */
+            catalog_scope: string;
+            /**
+             * @description The digest of its canonical definition.
+             *
+             *     This is the realm bootstrap candidate's digest, not a claim about bytes
+             *     already stored for any project.
+             */
             definition_hash: string;
+            /**
+             * @description Always `project_stored_revision`: task launch resolves the immutable
+             *     revision held by the owning project.
+             */
+            execution_authority: string;
             /** @description Human name. */
             name: string;
             /** @description The role slots it seats, in declaration order. */
             slots: string[];
+            /** @description `bundled` or `registered`: where this bootstrap candidate came from. */
+            source: string;
             /** @description The template revision. */
             template: components["schemas"]["RevisionRefDto"];
         };

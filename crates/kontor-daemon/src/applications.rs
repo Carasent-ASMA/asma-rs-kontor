@@ -150,7 +150,7 @@ use kontor_core::spec::{
     IntakeResult, ModelChainPolicy, ModelRef, ModelRung, NodeProjectionCapability,
     ProjectSessionTopologySpec, ProviderRef, RequestedContextPolicy, RoleCatalogRevision,
     SeatAutonomy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
-    TeamRunSnapshot, TopologySnapshot, TriggerSpec,
+    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
     DerivedRunState, GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact,
@@ -212,7 +212,7 @@ use kontor_store::{
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
     JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem, NewRoleTurn,
     ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore, StoredConflict, StoredTeamDraft,
-    StoredTeamsProjection, TurnDispatch,
+    StoredTeamsProjection, TeamTemplateSource, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -276,6 +276,8 @@ struct PreparedJiraMaterialization {
 /// One validated epic request, ready for preview or apply under the same rules.
 struct PreparedEpic {
     bundle: ResolvedProfileBundle,
+    effective_team: Option<TeamTemplateRevision>,
+    team_source: TeamTemplateSource,
     execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
 }
@@ -810,8 +812,51 @@ impl Services {
     }
 
     fn bundle(&self, category: &str, at: Timestamp) -> Result<ResolvedProfileBundle, ApiError> {
+        self.bundle_with_team_source(category, at)
+            .map(|(bundle, _)| bundle)
+    }
+
+    /// Resolve a category and retain whether its team came from the build or
+    /// from operator-registered input. The store uses this authority fact to
+    /// fence the one supported built-in revision reconciliation from arbitrary
+    /// registered-pack identity collisions.
+    fn bundle_with_team_source(
+        &self,
+        category: &str,
+        at: Timestamp,
+    ) -> Result<(ResolvedProfileBundle, TeamTemplateSource), ApiError> {
         let (pack, category) = self.owning_pack(category)?;
-        resolve_profile(&pack, &category, at).map_err(|error| self.refuse_domain(&error))
+        let source = if self.pack.category(&category).is_some() {
+            TeamTemplateSource::Bundled
+        } else {
+            TeamTemplateSource::Registered
+        };
+        resolve_profile(&pack, &category, at)
+            .map(|bundle| (bundle, source))
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// The exact team bytes one project would execute for this candidate.
+    ///
+    /// Existing immutable bytes win; a candidate is the bootstrap answer only
+    /// while the identity is absent. Returning this alongside preview/apply is
+    /// what makes the project-scoped selection honest even though the realm
+    /// catalog advertises the currently shipped bootstrap candidate.
+    fn effective_team_template(
+        &self,
+        project_id: ProjectId,
+        candidate: Option<&TeamTemplateRevision>,
+    ) -> Result<Option<TeamTemplateRevision>, ApiError> {
+        let Some(candidate) = candidate else {
+            return Ok(None);
+        };
+        let stored = self
+            .state()?
+            .with_store(|store| {
+                store.get_team_template(project_id, candidate.template_id, candidate.version)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(Some(stored.unwrap_or_else(|| candidate.clone())))
     }
 
     /// Validate and type one epic request once for both preview and apply.
@@ -857,7 +902,9 @@ impl Services {
                 })?;
         }
 
-        let bundle = self.bundle(&request.work_profile_category, now)?;
+        let (bundle, team_source) =
+            self.bundle_with_team_source(&request.work_profile_category, now)?;
+        let effective_team = self.effective_team_template(project_id, bundle.team.as_ref())?;
         // A caller that pinned a team revision pinned it against a catalog read.
         // If the profile now pins another, the selection it authorized no longer
         // exists, and applying the current one would substitute a team closure it
@@ -952,6 +999,8 @@ impl Services {
 
         Ok(PreparedEpic {
             bundle,
+            effective_team,
+            team_source,
             execution_scope,
             tasks,
         })
@@ -1017,6 +1066,7 @@ impl Services {
         bundle: &ResolvedProfileBundle,
     ) -> Result<AppliedEpicDto, ApiError> {
         let state = self.state()?;
+        let effective_team = self.effective_team_template(project_id, bundle.team.as_ref())?;
         let epic = self.epic_row(project_id, epic_id)?;
         let execution_scope = state
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
@@ -1089,6 +1139,9 @@ impl Services {
                 id: team.template_id.to_string(),
                 version: team.version,
             }),
+            team_template_hash: effective_team
+                .as_ref()
+                .map(|team| team.definition.hash().as_str().to_owned()),
             // Sealed below, from the finished shape, exactly as the fresh apply
             // is. Reporting the resolved bundle's digest here is what made a
             // receipt-served replay of an unchanged graph disagree with the
@@ -10465,7 +10518,7 @@ impl ApplicationOperations for Services {
 
     fn team_templates(&self) -> Result<Vec<TeamTemplateCatalogDto>, ApiError> {
         let mut catalog = Vec::new();
-        for pack in &self.packs()? {
+        for (pack_index, pack) in self.packs()?.iter().enumerate() {
             for team in &pack.teams {
                 let revision = team
                     .to_revision()
@@ -10482,6 +10535,13 @@ impl ApplicationOperations for Services {
                         .map(|slot| slot.id.as_role_key().as_str().to_owned())
                         .collect(),
                     definition_hash: revision.definition.hash().as_str().to_owned(),
+                    source: if pack_index == 0 {
+                        "bundled".to_owned()
+                    } else {
+                        "registered".to_owned()
+                    },
+                    catalog_scope: "realm_bootstrap".to_owned(),
+                    execution_authority: "project_stored_revision".to_owned(),
                 });
             }
         }
@@ -16285,6 +16345,7 @@ impl ApplicationOperations for Services {
                 profile: &prepared.bundle.profile,
                 definition: &prepared.bundle.profile.definition,
                 team: prepared.bundle.team.as_ref(),
+                team_source: prepared.team_source,
                 applied_at: now,
             })
             .collect::<Vec<_>>();
@@ -16416,6 +16477,7 @@ impl ApplicationOperations for Services {
                 profile: &prepared.bundle.profile,
                 definition: &prepared.bundle.profile.definition,
                 team: prepared.bundle.team.as_ref(),
+                team_source: prepared.team_source,
                 applied_at: now,
             })
             .collect::<Vec<_>>();
@@ -16452,6 +16514,8 @@ impl ApplicationOperations for Services {
         let now = kontor_api::now();
         let PreparedEpic {
             bundle,
+            effective_team,
+            team_source,
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
@@ -16579,6 +16643,7 @@ impl ApplicationOperations for Services {
                     profile: &bundle.profile,
                     definition: &bundle.profile.definition,
                     team: bundle.team.as_ref(),
+                    team_source,
                     applied_at: now,
                 })?;
                 // Seeded once, when the epic first exists. Applying the same
@@ -16645,6 +16710,9 @@ impl ApplicationOperations for Services {
                 id: id.to_string(),
                 version,
             }),
+            team_template_hash: effective_team
+                .as_ref()
+                .map(|team| team.definition.hash().as_str().to_owned()),
             bundle_hash: String::new(),
             tasks: applied
                 .tasks
@@ -16684,6 +16752,8 @@ impl ApplicationOperations for Services {
         let now = kontor_api::now();
         let PreparedEpic {
             bundle,
+            effective_team,
+            team_source,
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
@@ -16697,6 +16767,7 @@ impl ApplicationOperations for Services {
                     profile: &bundle.profile,
                     definition: &bundle.profile.definition,
                     team: bundle.team.as_ref(),
+                    team_source,
                     applied_at: now,
                 })
             })
@@ -16721,6 +16792,9 @@ impl ApplicationOperations for Services {
                 id: id.to_string(),
                 version,
             }),
+            team_template_hash: effective_team
+                .as_ref()
+                .map(|team| team.definition.hash().as_str().to_owned()),
             tasks: preview
                 .tasks
                 .into_iter()
@@ -17903,7 +17977,8 @@ impl ApplicationOperations for Services {
                 "a profile correction names the category to pin",
             )
         })?;
-        let bundle = self.bundle(category, kontor_api::now())?;
+        let (bundle, team_source) = self.bundle_with_team_source(category, kontor_api::now())?;
+        let effective_team = self.effective_team_template(project_id, bundle.team.as_ref())?;
         let current = state
             .with_store(|store| store.get_active_task_workflow(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
@@ -17948,6 +18023,7 @@ impl ApplicationOperations for Services {
                         },
                         &bundle.profile.definition,
                         bundle.team.as_ref(),
+                        team_source,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -17964,6 +18040,9 @@ impl ApplicationOperations for Services {
                 id: team.template_id.to_string(),
                 version: team.version,
             }),
+            team_template_hash: effective_team
+                .as_ref()
+                .map(|team| team.definition.hash().as_str().to_owned()),
             account_profile_id: None,
             applied: if unchanged {
                 AppliedDto::Unchanged
@@ -18006,15 +18085,11 @@ impl ApplicationOperations for Services {
         // So the correction this operation can honestly make is to confirm the
         // caller's belief and refuse a mismatch — changing the team means changing
         // the profile, which is what `profile-selection` is for.
-        let pinned = workflow
-            .snapshot
-            .definition
-            .team_template
-            .as_ref()
-            .map(|pin| RevisionRefDto {
-                id: pin.template_id.to_string(),
-                version: pin.version,
-            });
+        let pinned_team = workflow.snapshot.definition.team_template.as_ref();
+        let pinned = pinned_team.map(|pin| RevisionRefDto {
+            id: pin.template_id.to_string(),
+            version: pin.version,
+        });
         let requested = request.team_template.as_ref().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -18056,6 +18131,22 @@ impl ApplicationOperations for Services {
                 version: workflow.snapshot.definition.version,
             }),
             team_template: pinned,
+            team_template_hash: pinned_team
+                .map(|pin| {
+                    state
+                        .with_store(|store| {
+                            store.get_team_template(project_id, pin.template_id, pin.version)
+                        })
+                        .map_err(|error| self.refuse(&error))?
+                        .map(|team| team.definition.hash().as_str().to_owned())
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "the task's pinned team template revision is not stored",
+                            )
+                        })
+                })
+                .transpose()?,
             account_profile_id: None,
             applied: AppliedDto::Unchanged,
             receipt_id: receipt.to_string(),
@@ -18156,6 +18247,7 @@ impl ApplicationOperations for Services {
             task_id,
             work_profile: None,
             team_template: None,
+            team_template_hash: None,
             account_profile_id: Some(account),
             applied: if stored == Applied::Created {
                 applied
@@ -19638,6 +19730,36 @@ impl ApplicationOperations for Services {
                 ApiErrorCode::RevisionConflict,
                 "this pack re-advertises a category the build already ships",
             ));
+        }
+
+        // Registration is also additive at the team-revision identity. A pack
+        // with a unique category could otherwise reuse a bundled (or earlier
+        // registered) `(template_id, version)` with different bytes, seed those
+        // bytes into a fresh project, and later make the supported bundled
+        // reconciliation preserve policy the build never published. Exact
+        // shared bytes are harmless reuse; different bytes are an identity
+        // collision and are refused before the pack becomes discoverable.
+        let published_packs = self.packs()?;
+        for candidate in &parsed.teams {
+            let candidate = candidate
+                .to_revision()
+                .map_err(|error| self.refuse_domain(&error))?;
+            for published in published_packs.iter().flat_map(|pack| &pack.teams) {
+                if published.template_id != candidate.template_id
+                    || published.version != candidate.version
+                {
+                    continue;
+                }
+                let published = published
+                    .to_revision()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                if published.definition.hash() != candidate.definition.hash() {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "this pack's team revision identity already names different published content",
+                    ));
+                }
+            }
         }
 
         // The key is bound to a *fingerprint of this logical operation*, not to

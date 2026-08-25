@@ -9690,6 +9690,70 @@ async fn a_registered_pack_widens_the_catalogue_and_an_epic_can_pin_its_profile(
         "the epic froze the registered profile: {}",
         applied.body
     );
+    let reapplied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Incident epic",
+            &category,
+            serde_json::json!([{"title": "Contain the incident"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("incident-epic-reapply")
+    .send(&world)
+    .await;
+    assert_eq!(reapplied.status, 200, "{}", reapplied.body);
+    assert_eq!(
+        reapplied.json()["applied"],
+        "unchanged",
+        "{}",
+        reapplied.body
+    );
+}
+
+/// A unique registered category cannot smuggle different policy bytes under a
+/// bundled team revision identity. Without this registration fence it could
+/// seed a fresh project first, after which the supported built-in reconciliation
+/// would preserve bytes the build never published.
+#[tokio::test]
+async fn a_registered_pack_cannot_collide_with_a_bundled_team_revision() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+
+    let mut pack: serde_json::Value =
+        serde_json::from_str(INCIDENT_PACK).expect("the fixture pack parses");
+    let bundled = bundled_team(None, at("2026-08-10T09:00:00Z"));
+    pack["teams"][0]["template_id"] = serde_json::json!(bundled.template_id.to_string());
+    pack["profiles"][0]["team_template"]["template_id"] =
+        serde_json::json!(bundled.template_id.to_string());
+
+    let refused = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("pack-register-team-collision")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict");
+
+    let listed = Call::get("/v1/catalog/packs")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert!(
+        !listed
+            .json()
+            .as_array()
+            .expect("packs")
+            .iter()
+            .any(|entry| entry["pack_id"] == "kontor-pilot-incident"),
+        "the colliding pack wrote no partial registration: {}",
+        listed.body
+    );
 }
 
 /// A registered pack may not redefine a category the build ships. Registration
@@ -16869,18 +16933,36 @@ async fn a_bundled_team_template_change_does_not_block_an_immutable_published_re
         "the preview still pins the published identity: {}",
         preview.body
     );
+    assert_eq!(
+        preview.json()["team_template_hash"],
+        historical_hash.as_str(),
+        "project preview must report the stored execution policy: {}",
+        preview.body
+    );
     let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
         .signed_as(&world, "admin")
         .with_key("drifted-epic")
         .send(&world)
         .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["team_template_hash"],
+        historical_hash.as_str(),
+        "apply must report the stored execution policy: {}",
+        applied.body
+    );
     let replayed = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
         .signed_as(&world, "admin")
         .with_key("drifted-epic")
         .send(&world)
         .await;
     assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["team_template_hash"],
+        historical_hash.as_str(),
+        "a replay must read back the same stored execution policy: {}",
+        replayed.body
+    );
 
     // The stored historical bytes are untouched and are the ones the read path
     // resolves — a team run freezes exactly this revision.
@@ -17258,9 +17340,10 @@ async fn a_started_team_run_freezes_the_stored_bytes_of_a_drifted_identity() {
         "the run pins the stored version"
     );
 
-    // The realm catalog remains the shipped-build advertisement: it names the
-    // current bundle's bytes for that identity, which is why the frozen run —
-    // not the catalog — is the authority a project actually executes against.
+    // The realm catalog remains the shipped-build bootstrap advertisement, but
+    // it says so unequivocally and identifies the project store as execution
+    // authority. A caller cannot mistake these current bytes for the historical
+    // policy the project-scoped preview/apply and frozen run report.
     let catalog = Call::get("/v1/catalog/team-templates")
         .signed_as(&world, "observer")
         .send(&world)
@@ -17281,6 +17364,17 @@ async fn a_started_team_run_freezes_the_stored_bytes_of_a_drifted_identity() {
         advertised["definition_hash"],
         current.definition.hash().as_str(),
         "the catalog advertises the current bundle: {}",
+        catalog.body
+    );
+    assert_eq!(advertised["source"], "bundled", "{}", catalog.body);
+    assert_eq!(
+        advertised["catalog_scope"], "realm_bootstrap",
+        "{}",
+        catalog.body
+    );
+    assert_eq!(
+        advertised["execution_authority"], "project_stored_revision",
+        "{}",
         catalog.body
     );
 }
