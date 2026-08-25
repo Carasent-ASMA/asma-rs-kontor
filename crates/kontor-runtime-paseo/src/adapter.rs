@@ -3222,10 +3222,10 @@ impl PaseoAdapter {
 
         // Compose the seat's worktree-local MCP config before anything is
         // spawned, so a Claude seat starts with exactly one kontor server at
-        // operator tier under the worker profile instead of whatever ambient
-        // harness config the machine carries. Loud on failure: a seat silently
-        // launched without its control-plane surface would fail later, further
-        // from the cause.
+        // operator tier under the consultation profile instead of whatever
+        // ambient harness config the machine carries. Loud on failure: a seat
+        // silently launched without its control-plane surface would fail later,
+        // further from the cause.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
