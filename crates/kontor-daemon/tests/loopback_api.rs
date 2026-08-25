@@ -23356,7 +23356,78 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "Judge launched before findings"
     );
 
-    let mut revision = invoked.json()["receipt"]["revision"]
+    // An admin may replace an exact idle native filler without changing the
+    // logical Committee seat or inventing a finding. Recovery advances the
+    // Committee revision, archives and launches exactly once, and a replay of
+    // the old compare-and-swap request performs no second runtime effect.
+    let predecessor_native = seats
+        .iter()
+        .find(|seat| seat["seat_binding_id"] == reviewer_ids[0])
+        .and_then(|seat| seat["observed_binding"]["native_id"].as_str())
+        .expect("the reviewer's exact predecessor")
+        .to_owned();
+    let recovery_body = serde_json::json!({
+        "expected_revision": invoked.json()["receipt"]["revision"],
+        "expected_native_id": predecessor_native.clone(),
+        "reason": "credential_propagation",
+    });
+    let recovered = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{run}/seats/{}/recover",
+            reviewer_ids[0]
+        ),
+        &recovery_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-reviewer-recovery")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["seat_binding_id"], reviewer_ids[0]);
+    assert_eq!(
+        recovered.json()["predecessor_native_id"],
+        predecessor_native
+    );
+    assert_ne!(
+        recovered.json()["successor_native_id"],
+        predecessor_native,
+        "the predecessor was not replaced: {}",
+        recovered.body
+    );
+    let recovery_calls = world.fake.calls();
+    assert!(
+        recovery_calls.contains(&AdapterCall::RetireConsultation(
+            SeatBindingId::parse(&reviewer_ids[0]).expect("the reviewer SeatBinding")
+        )),
+        "the exact predecessor was not retired: {recovery_calls:?}"
+    );
+    assert!(
+        recovery_calls.contains(&AdapterCall::LaunchConsultation(
+            SeatBindingId::parse(&reviewer_ids[0]).expect("the reviewer SeatBinding")
+        )),
+        "the successor was not launched: {recovery_calls:?}"
+    );
+    let calls_after_recovery = recovery_calls;
+    let replayed_recovery = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{run}/seats/{}/recover",
+            reviewer_ids[0]
+        ),
+        &recovery_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-reviewer-recovery")
+    .send(world)
+    .await;
+    assert_eq!(replayed_recovery.status, 200, "{}", replayed_recovery.body);
+    assert_eq!(replayed_recovery.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        world.fake.calls(),
+        calls_after_recovery,
+        "a recovery replay reached the runtime"
+    );
+
+    let mut revision = recovered.json()["receipt"]["revision"]
         .as_u64()
         .expect("run revision");
 
@@ -23685,6 +23756,12 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     assert_eq!(advanced.json()["state"]["phase"]["phase"], "closeout");
     assert_eq!(advanced.json()["state"]["rounds"][0]["verdict"], "pass");
 
+    let launches_before_replay = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::LaunchConsultation(_)))
+        .count();
     let replayed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke_body,
@@ -23703,7 +23780,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .iter()
             .filter(|call| matches!(call, AdapterCall::LaunchConsultation(_)))
             .count(),
-        4,
+        launches_before_replay,
         "a replay launched another native Committee seat"
     );
 

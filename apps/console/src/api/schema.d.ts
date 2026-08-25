@@ -705,6 +705,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace one idle Committee native filler while preserving its SeatBinding. */
+        post: operations["recover_consultation_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle": {
         parameters: {
             query?: never;
@@ -3546,12 +3563,22 @@ export interface components {
             /** @description Immutable terminal result, including needs-human recommendation/tried path. */
             result?: unknown;
             /**
+             * Format: int64
+             * @description Aggregate revision a recovery or findings write must name.
+             */
+            revision: number;
+            /**
              * Format: int32
              * @description One-based immutable round.
              */
             round: number;
             /** @description Every template-declared seat in stable slot order. */
             seats: components["schemas"]["ConsultationSeatDto"][];
+            /**
+             * Format: int64
+             * @description Projection cursor read with this revision.
+             */
+            snapshot_cursor: number;
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
             /** @description The pinned template it runs under. */
@@ -3871,6 +3898,26 @@ export interface components {
             /** @description Exact persistent SeatBinding. */
             seat_binding_id: string;
         };
+        /** @description Completed identity-preserving consultation seat recovery. */
+        ConsultationSeatRecoveryDto: {
+            /** @description Route frozen onto the successor. */
+            active_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Committee projection after recovery. */
+            committee: components["schemas"]["CommitteeRunDto"];
+            /** @description Archived native predecessor. */
+            predecessor_native_id: string;
+            /** @description Durable audited command receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Preserved logical SeatBinding. */
+            seat_binding_id: string;
+            /** @description Active native successor. */
+            successor_native_id: string;
+        };
+        /**
+         * @description Why a consultation native filler may be replaced.
+         * @enum {string}
+         */
+        ConsultationSeatRecoveryReasonDto: "credential_propagation" | "provider_unavailable";
         /**
          * @description The closed Committee verdict vocabulary.
          * @enum {string}
@@ -5964,6 +6011,18 @@ export interface components {
              *     provider offers *now*, and a merge would keep a window it has withdrawn.
              */
             windows?: components["schemas"]["QuotaWindowDto"][];
+        };
+        /** @description Exact compare-and-swap request for one consultation seat recovery. */
+        RecoverConsultationSeatRequest: {
+            /** @description Exact native predecessor shown by the Committee read. */
+            expected_native_id: string;
+            /**
+             * Format: int64
+             * @description Committee revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Supported recovery reason that selects the route policy. */
+            reason: components["schemas"]["ConsultationSeatRecoveryReasonDto"];
         };
         /**
          * @description One member the resolver removed, and why.
@@ -9285,6 +9344,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommitteeRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_consultation_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The consultation */
+                committee_run_id: string;
+                /** @description The preserved logical seat */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverConsultationSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsultationSeatRecoveryDto"];
                 };
             };
             401: {

@@ -4677,6 +4677,53 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Read one Committee run, its remediation, findings, and result.",
     },
     ToolSpec {
+        name: "kontor_consultation_seat_recover",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "committee_run_id",
+                Place::Path,
+                ArgType::CommitteeRunId,
+                "The consultation.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The logical consultation seat to preserve.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The Committee revision the caller read.",
+            ),
+            req(
+                "expected_native_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "The exact idle native predecessor to archive.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::Enum(&["credential_propagation", "provider_unavailable"]),
+                "The supported recovery policy.",
+            ),
+        ],
+        about: "Replace one idle consultation native filler while preserving its SeatBinding.",
+    },
+    ToolSpec {
         name: "kontor_committee_run_settle",
         tier: CallerTier::Operator,
         method: Method::Post,

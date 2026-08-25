@@ -187,6 +187,9 @@ closed_enum! {
         RecordCommitteeFindings => "record_committee_findings",
         /// Recompute and freeze one Committee's typed outcome.
         SettleCommitteeRun => "settle_committee_run",
+        /// Archive and replace one native consultation filler while preserving
+        /// its logical SeatBinding and immutable profile/template revision.
+        RecoverConsultationSeat => "recover_consultation_seat",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -548,7 +551,8 @@ impl CommandKind {
             | Self::SettleAdvisorRun
             | Self::InvokeCommitteeRun
             | Self::RecordCommitteeFindings
-            | Self::SettleCommitteeRun => witness(matches!(target, A::MiniProject)),
+            | Self::SettleCommitteeRun
+            | Self::RecoverConsultationSeat => witness(matches!(target, A::MiniProject)),
         }
     }
 

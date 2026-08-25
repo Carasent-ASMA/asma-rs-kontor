@@ -342,6 +342,29 @@ pub struct ConsultationLaunchOutcome {
     pub created: bool,
 }
 
+/// Retire the exact native filler of one consultation SeatBinding before a
+/// supported credential repair or provider-account failover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationSeatRetireRequest {
+    /// Logical consultation identity that must remain unchanged.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor read from the frozen consultation seat.
+    pub identity: NativeRuntimeIdentity,
+    /// Exact route that predecessor must still report.
+    pub model_rung: ModelRung,
+    /// Audited retirement instant.
+    pub requested_at: Timestamp,
+}
+
+/// Exact archive readback for a consultation predecessor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationSeatRetireOutcome {
+    /// Unchanged predecessor identity.
+    pub identity: NativeRuntimeIdentity,
+    /// When the runtime reports the predecessor archived.
+    pub archived_at: Timestamp,
+}
+
 /// Launch one persistent leadership seat in its already-prepared ECP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedSeatLaunchRequest {
@@ -669,6 +692,17 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Retire one idle consultation predecessor after exact identity, route and
+    /// SeatBinding correlation. This is not a generic consultation reaper.
+    async fn retire_consultation_seat(
+        &self,
+        _request: &ConsultationSeatRetireRequest,
+    ) -> RuntimeResult<ConsultationSeatRetireOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Retire,
         })
     }
 

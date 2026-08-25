@@ -56,11 +56,12 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
-    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatMessageOutcome,
-    HostedSeatMessageRequest, HostedSeatRetireOutcome, HostedSeatRetireRequest,
-    HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
-    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest, HostedSeatClaimOutcome,
+    HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatRetireOutcome, HostedSeatRetireRequest, HostedSeatTitleConflict, LaunchOutcome,
+    MessageAck, PermissionAck, RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter,
+    RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -3468,25 +3469,40 @@ impl PaseoAdapter {
                 });
             }
             [] => {
-                let command = PaseoCommand::consultation_run(
+                let creation = PaseoRpc::consultation_agent_create(
+                    self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
                     &request.model_rung,
                     request.display_name.as_str(),
                     &labels,
-                    None,
                     request.prompt.as_str(),
                     request.credential.expose_secret(),
                 )?;
-                let native_id = match self.transport.run(&command).await {
-                    Ok(output) => {
-                        output
-                            .parse::<PaseoCliAgentStarted>("PaseoCliAgentStarted")?
-                            .agent_id
-                    }
-                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                    Err(other) => return Err(other),
-                };
+                // A lost acknowledgement is confirmation-unknown. This call
+                // never launches a second process in response; a later replay
+                // begins with the exact-label census above and can adopt the
+                // one agent the daemon created, if there is one.
+                let frame = self.transport.request(&creation).await?;
+                let status: serde_json::Value =
+                    frame.resolve(&creation, "PaseoConsultationAgentCreated")?;
+                if status.get("status").and_then(serde_json::Value::as_str) != Some("agent_created")
+                {
+                    return Err(RuntimeError::Transport {
+                        rule: "runtime refused the consultation agent creation",
+                    });
+                }
+                let native_id = status
+                    .get("agent")
+                    .and_then(|agent| agent.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        RuntimeError::Domain(kontor_core::DomainError::invalid(
+                            "PaseoConsultationAgentCreated",
+                            "does not name the created agent",
+                        ))
+                    })?;
                 (native_id, true)
             }
             _ => return Err(RuntimeError::CorrelationFailed),
@@ -4155,6 +4171,67 @@ impl RuntimeAdapter for PaseoAdapter {
             .consultation_claims
             .remove(&request.seat_binding_id);
         outcome
+    }
+
+    async fn retire_consultation_seat(
+        &self,
+        request: &ConsultationSeatRetireRequest,
+    ) -> RuntimeResult<ConsultationSeatRetireOutcome> {
+        let declared = self.declared().await?;
+        preflight(&declared, &OperationContext::new(RuntimeCapability::Retire))?;
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the consultation predecessor belongs to another runtime",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let before = self.fetch_agent(native_id).await?;
+        let expected_seat = request.seat_binding_id.to_string();
+        if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || before.label(label::CONSULTATION_RUN).is_none()
+            || before.label(label::READ_ONLY) != Some("true")
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if before.is_archived() {
+            return Ok(ConsultationSeatRetireOutcome {
+                identity: request.identity.clone(),
+                archived_at: request.requested_at,
+            });
+        }
+        Self::verify_agent_route_with_mode(
+            &before,
+            &request.model_rung,
+            true,
+            SeatAutonomy::Advisory,
+        )?;
+        if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "consultation recovery requires an idle predecessor with no pending permission",
+            });
+        }
+        let output = self
+            .transport
+            .run(&PaseoCommand::agent_archive(native_id))
+            .await?;
+        let archived: PaseoCliArchived = output.parse("PaseoCliArchived")?;
+        if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let after = self.fetch_agent(native_id).await?;
+        if after.id != before.id
+            || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || !after.is_archived()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(ConsultationSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: request.requested_at,
+        })
     }
 
     async fn launch_hosted_seat(

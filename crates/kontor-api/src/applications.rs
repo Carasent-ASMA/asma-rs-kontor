@@ -1281,9 +1281,72 @@ pub struct CommitteeRunDto {
     /// Immutable terminal result, including needs-human recommendation/tried path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Aggregate revision a recovery or findings write must name.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// Projection cursor read with this revision.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
     /// The receipt it was committed under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<MutationReceiptDto>,
+}
+
+/// Why a consultation native filler may be replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsultationSeatRecoveryReasonDto {
+    /// Relaunch the same route because the scoped credential did not reach the
+    /// predecessor process.
+    CredentialPropagation,
+    /// Select another governed account/rung because the predecessor provider
+    /// could not begin the review.
+    ProviderUnavailable,
+}
+
+impl ConsultationSeatRecoveryReasonDto {
+    /// Stable storage and receipt vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CredentialPropagation => "credential_propagation",
+            Self::ProviderUnavailable => "provider_unavailable",
+        }
+    }
+}
+
+/// Exact compare-and-swap request for one consultation seat recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecoverConsultationSeatRequest {
+    /// Committee revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact native predecessor shown by the Committee read.
+    #[schema(value_type = String)]
+    pub expected_native_id: ExternalId,
+    /// Supported recovery reason that selects the route policy.
+    pub reason: ConsultationSeatRecoveryReasonDto,
+}
+
+/// Completed identity-preserving consultation seat recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ConsultationSeatRecoveryDto {
+    /// Committee projection after recovery.
+    pub committee: CommitteeRunDto,
+    /// Preserved logical SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Archived native predecessor.
+    #[schema(value_type = String)]
+    pub predecessor_native_id: ExternalId,
+    /// Active native successor.
+    #[schema(value_type = String)]
+    pub successor_native_id: ExternalId,
+    /// Route frozen onto the successor.
+    pub active_model_route: RuntimeModelRouteRequest,
+    /// Durable audited command receipt.
+    pub receipt: MutationReceiptDto,
 }
 
 /// The closed Committee verdict vocabulary.
@@ -5352,6 +5415,15 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
     ) -> Result<CommitteeRunDto, ApiError>;
+    /// Replace one idle Committee native filler without changing its logical seat.
+    async fn recover_consultation_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        request: &RecoverConsultationSeatRequest,
+    ) -> Result<ConsultationSeatRecoveryDto, ApiError>;
     /// Record one round of Committee findings.
     async fn record_committee_findings(
         &self,
@@ -7745,6 +7817,48 @@ pub async fn committee_run(
         state
             .applications()
             .committee_run(project_id, committee_run_id)?,
+    ))
+}
+
+/// Replace one idle Committee native filler while preserving its SeatBinding.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The consultation"),
+        ("seat_binding_id" = String, Path, description = "The preserved logical seat"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecoverConsultationSeatRequest,
+    responses(
+        (status = 200, body = ConsultationSeatRecoveryDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn recover_consultation_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id, seat_binding_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RecoverConsultationSeatRequest>,
+) -> Result<Json<ConsultationSeatRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_consultation_seat(
+                &key,
+                project_id,
+                committee_run_id,
+                seat_binding_id,
+                &request,
+            )
+            .await?,
     ))
 }
 
