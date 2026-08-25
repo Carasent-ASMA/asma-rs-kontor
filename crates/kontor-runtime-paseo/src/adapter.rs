@@ -3469,6 +3469,22 @@ impl PaseoAdapter {
                 });
             }
             [] => {
+                // Claude starts project MCP servers from its cwd. Compose the
+                // narrowed worker surface before the agent process exists so
+                // its `kontor-mcp` child inherits this consultation seat's
+                // already-scoped KONTOR_AUTH instead of the operator console's
+                // ambient MCP authority. The config contains no credential.
+                crate::seat_mcp::compose_for_seat(
+                    self.config.seat_mcp.as_ref(),
+                    request.model_rung.provider.0.as_str(),
+                    std::path::Path::new(request.cwd.as_str()),
+                )
+                .map_err(|error| {
+                    tracing::warn!(%error, "consultation seat MCP composition failed");
+                    RuntimeError::LaunchNotAdmitted {
+                        rule: "seat MCP composition failed in the consultation worktree",
+                    }
+                })?;
                 let creation = PaseoRpc::consultation_agent_create(
                     self.next_request_id(),
                     &workspace_id,

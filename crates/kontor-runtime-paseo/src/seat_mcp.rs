@@ -27,6 +27,8 @@
 //! the whole process — the daemon resolves it once at fleet composition and
 //! hands the adapter `None`. Non-Claude providers are a no-op in v1: only the
 //! Claude harness reads `.mcp.json` from its cwd (codex/opencode are follow-up).
+//! Account-qualified Claude provider ids such as `claude-work` and
+//! `claude-personal` are the same harness boundary and are composed too.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -94,7 +96,7 @@ impl SeatMcp {
 /// As [`SeatMcp::compose`].
 pub fn compose_for_seat(seat: Option<&SeatMcp>, provider: &str, cwd: &Path) -> io::Result<()> {
     match seat {
-        Some(seat) if provider == "claude" => seat.compose(cwd),
+        Some(seat) if crate::client::built_in_provider(provider) == "claude" => seat.compose(cwd),
         _ => Ok(()),
     }
 }
@@ -314,6 +316,40 @@ mod tests {
         assert!(
             !repo.path().join(".mcp.json").exists() && !repo.path().join(".claude").exists(),
             "nothing was written"
+        );
+    }
+
+    /// A provider id selects an account, while MCP composition belongs to the
+    /// harness. A Claude account alias must therefore receive the same local
+    /// MCP boundary as the built-in `claude` id.
+    #[test]
+    fn a_claude_account_alias_composes_the_same_seat_mcp_boundary() {
+        let repo = repo();
+        compose_for_seat(Some(&seat("/realm/state")), "claude-personal", repo.path())
+            .expect("a Claude account alias is still the Claude harness");
+
+        let mcp: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(repo.path().join(".mcp.json")).expect("written"),
+        )
+        .expect(".mcp.json is JSON");
+        assert_eq!(
+            mcp["mcpServers"]["kontor"]["args"],
+            serde_json::json!([
+                "--state-root",
+                "/realm/state",
+                "--credential-tier",
+                "operator",
+                "--serve-profile",
+                "worker"
+            ])
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(repo.path().join(".claude/settings.local.json"))
+                    .expect("written"),
+            )
+            .expect("settings are JSON")["enableAllProjectMcpServers"],
+            true
         );
     }
 

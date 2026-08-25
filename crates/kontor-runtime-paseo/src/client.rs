@@ -174,7 +174,7 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// A Paseo provider id matches `^[a-z][a-z0-9-]*$`, so a colon cannot appear in
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
-fn built_in_provider(provider: &str) -> &str {
+pub(crate) fn built_in_provider(provider: &str) -> &str {
     const BUILT_INS: [&str; 6] = ["claude", "codex", "copilot", "opencode", "pi", "omp"];
     for built_in in BUILT_INS {
         if provider == built_in {
