@@ -1,9 +1,10 @@
 # ASMA Kontor Architecture
 
-> **Status:** Current pre-1.0 repository contract
+> **Status:** Current pre-1.0 repository contract. Synchronized with the tree on
+> 2026-08-26.
 >
-> **Scope:** Authority boundaries, consistency model, technology choices and
-> extension rules for `asma-rs-kontor`.
+> **Scope:** Governing principles, authority boundaries, consistency model,
+> technology choices and extension rules for `asma-rs-kontor`.
 
 ## Purpose
 
@@ -11,7 +12,34 @@ Kontor is the durable project control plane above replaceable agent execution
 runtimes. It supervises work that may outlive one process, one model, one
 provider account or one orchestration product.
 
-It exists because execution and control have different lifecycles:
+It exists to serve two values, and every rule below is derived from one of them.
+
+**Autonomy** — the fleet runs the work without an operator driving each step,
+and runs it the way *this* operator would. That needs two halves:
+
+- **Deterministic rails.** The workflow — phases, gates, roles, teams, topology,
+  completion, consultation — is versioned data the kernel executes, not
+  behaviour a model improvises per session. Same inputs, same admission
+  decision, same refusal, on every restart and from every client. Rails are what
+  keep a fleet from inventing its own process: an agent cannot talk its way past
+  a rule in chat, because chat advances nothing.
+- **Captured personality.** What the operator decided, prefers and keeps
+  correcting becomes durable, approved, versioned memory, injected into every
+  seat's Context Pack deterministically — not re-explained each session and not
+  scraped from a transcript.
+
+Autonomy is never "the model decides". It is "the operator's decisions, made
+once, become the system's behaviour, always".
+
+**Delivery Quality** — the unit of value is a *completed* epic or ticket, and
+completion is defined, checked and independently verified rather than asserted.
+Delivered means production-ready, tested, reviewed by an authority that did not
+do the work, with regression risk actively reduced and evidence that outlives
+the runtime and the model. The sharpest consequence: **a fully green task graph
+does not complete an epic.** Only a compliant independent verdict plus complete
+closeout evidence does.
+
+Beyond those, it exists because execution and control have different lifecycles:
 
 - runtimes are best at native sessions, tools, permissions, transcripts and
   provider authentication;
@@ -37,11 +65,11 @@ Humans and agents
       |           |            |             |
       +----------- runtime adapter contract--+
                        |
-             Paseo | AO | Codex | future
+              Paseo  (ao | codex refused)
                        |
                 native sessions
 
-Separate supported commands: asma fleet | asma jira sync
+Native connectors inside the daemon: Jira | provider usage
 ```
 
 The daemon is the composition root. API, CLI, MCP and UI are clients of the
@@ -56,13 +84,19 @@ store.
 | Scheduler decisions, leases, policy verdicts and receipts | Kontor |
 | Desired runtime command and last observed native evidence | Kontor records |
 | Native process, session, transcript, tools and provider authentication | Selected runtime |
-| Provider capacity/cooldown mechanics | `asma fleet` |
-| External ticket workflow | Jira through `asma jira sync` |
-| AgentsRoom backlog/memory during the MVP | AgentsRoom |
+| Provider capacity, cooldown and quota headroom | Kontor's native provider connector |
+| External ticket workflow | Jira, through Kontor's native `kontor-jira` connector |
+| A project's backlog or memory before its cutover attestation | AgentsRoom, per `(project, subject)` |
 
-The core rule is **one writer per fact**. Kontor uses supported adapter or
-subprocess interfaces and never edits Paseo, AO, fleet, Jira or AgentsRoom
-internal stores.
+The core rule is **one writer per fact**. Kontor uses supported adapter or API
+interfaces and never edits Paseo, AO, Jira or AgentsRoom internal stores. No
+Kontor crate or process invokes the `asma` CLI.
+
+Write authority for a project's `memory` and its `backlog` is a fact about
+`(project_id, subject)`, not a realm-wide flag. A project created in Kontor is
+native and writable from its first instant; a project whose facts came from
+AgentsRoom stays read-only for that subject until its import and read-back
+attestation succeed. Both states can be true of one realm at once.
 
 ## Consistency model
 
@@ -107,22 +141,95 @@ may occupy a `(team_run_id, role_slot_id)` at a time. Admission is claimed
 atomically before the first native effect; replay and concurrent launch are
 refused. A replacement must cite and close the prior binding.
 
-For Paseo, one Jira epic maps to one project; each ticket maps to one PASE
-(Paseo Agent Session Environment), and its persistent role seats live inside
-that PASE. The Git worktree is separate checkout/isolation evidence, not the UI
-workspace identity.
+For Paseo, one Jira epic maps to one project. Inside it: one **ECP** (Epic
+Control Plane) workspace holding the epic's persistent `LSA` and `TPM` seats;
+one **TSW** (Ticket Session Workspace) per ticket holding that ticket's
+persistent role seats; and sibling read-only workspaces for consultations —
+`Advice · …` for one Advisor, **CSW** (Committee Session Workspace) for a
+Committee. The Git worktree is separate checkout/isolation evidence, not the
+workspace identity. `PASE` and `TSC` are historical spellings of TSW and CSW and
+survive only as read/import aliases.
 
 ## Deterministic scheduling and policy
 
 A model may recommend work but cannot write scheduler truth. Admission is a
 deterministic reduction over dependencies, serialization/module collisions,
 verified worktree leases, runtime freshness/capabilities, provider/account
-health, budgets, permissions, explicit execution authorization and optional
-calendar policy.
+health and quota headroom, budgets, permissions, and any active narrowing.
+
+Admission is **default-allow**. Ready work does not have to name an
+authorization: a grant only *narrows* — a start window, a concurrency bound, a
+selected task set — and a disarm is an explicit stop rather than a return to an
+unarmed default. Bounded autonomy that has to be granted per task is not
+autonomy; unbounded autonomy that cannot be narrowed or stopped is not safe.
+Arming to "enable" work is therefore a mistake: it can only make the admissible
+set smaller.
+
+Quota headroom has one deliberate status caveat. The account-before-rung
+resolver computes typed `Admit`, `Wait` and `NeedsHuman` outcomes, and launch
+honours `Admit`. The delivery launch boundary still has to return a model rung,
+however, so it currently drops the reset/escalation payload from `Wait` and
+`NeedsHuman` and preserves the adapter's typed provider-outage refusal path.
+Automatic pre-launch parking until the computed reset is not shipped; mid-run
+quota detection and successor handoff are separately open.
+
+The calendar dimension is implemented in `kontor-calendar` and is reached by no
+route and no tool, so every project currently resolves to `unrestricted`. That
+is stated rather than implied, because a tested crate nothing calls is a claim
+the product does not honour.
 
 Every refusal is explainable. Lowering an adaptive admission window stops new
 work but does not cancel already bounded work. Gate authority and recovery
 budgets come from immutable work-profile/team snapshots, not role-name guesses.
+
+## Completion is a machine, not a claim
+
+Guardrails stop unsafe work; they do not decide whether an epic is finished.
+That is a separate configurable machine and it is the core of Delivery Quality.
+
+**Advisors and Committees** are read-only consultations built from versioned
+specifications. An advisor produces one expert opinion in one seat; a committee
+produces a multi-member deliberation with a declared protocol, aggregation rule
+and verdict schema. Both freeze every semantic input — pinned policy, context,
+model rungs, scope — before any runtime effect, so a later configuration change
+cannot retroactively alter what a finding was based on. Neither can grant missing
+authority, approve destructive work, waive a gate or reset a rejection counter.
+Their output is evidence; the caller records whether it was accepted, partially
+accepted, rejected or superseded.
+
+The shipped preset is `independent_review@1`: two reviewers on deliberately
+contrasting providers plus a judge. Each reviewer records one finding, cannot see
+the other's, and must not wait for it. The judge explains the outcome the
+conjunctive rule already produced, including dissent — it cannot turn a failing
+conjunction into a passing one. A committee seat runs under the `consultation`
+serve profile, which reaches its own consultation aggregate and nothing else.
+
+**Epic completion** compiles a pinned profile into ordinary task, team, gate and
+receipt nodes — there is no second scheduler and no workflow language:
+
+```text
+Tickets -> Integration -> Verdict(n) -> [Remediation(n) -> Verdict(n+1)]* -> Closeout -> Done
+                              |                    |
+                              +--------------------+--> NeedsHuman
+```
+
+Closeout requires all six prerequisites — merge, release, version inventory,
+summary, notification, archive. `advance` is a pure, revision-checked state
+machine over observed evidence: no runtime, no clock, no filesystem, no external
+command. `NeedsHuman` is a real terminal reached by exhausted rounds, missing
+authority, unresolved disagreement or incomplete evidence — not a status an agent
+sets to make progress.
+
+Three rules learned in the field and now binding:
+
+1. **No waiver at completion.** A non-compliant aggregate verdict opens
+   remediation; a committee cannot waive it for itself.
+2. **Re-freeze after drift.** Product-code change after the evidence freeze
+   invalidates the part of the bundle it touches, including recorded mutation
+   anchors.
+3. **Remediation creates real work.** A finding becomes a tracked ticket with an
+   owner, and remediation authority is bound to a seat occupancy generation so a
+   replaced native filler cannot replay its predecessor's proposal.
 
 ## Technology decisions
 
@@ -137,7 +244,7 @@ budgets come from immutable work-profile/team snapshots, not role-name guesses.
 | Clap CLI + `rmcp` stdio server | Human and agent front doors over one operation/capability catalogue | Separate CLI and MCP business logic |
 | React + TypeScript + Tauri 2 | One responsive console with native local packaging and secure credential storage | A desktop-only UI or a second embedded scheduler |
 | Adapter contract | Replaceable execution planes with declared evidence grades/capabilities | Reimplementing provider sessions, terminals and auth |
-| `asma` subprocess delegation | Reuse fleet/Jira mechanisms and their existing ownership | Writing fleet/Jira stores or duplicating their clients |
+| Native Jira and provider connectors | Keep each external effect under one typed writer inside the daemon, with receipt-backed observe/apply/refetch semantics | Delegating control-plane effects to `asma` subprocesses or editing external stores |
 | Exact dependency pins + lockfiles | Reproducible pre-1.0 builds and auditable license/advisory state | Floating dependency resolution |
 | `MIT OR Apache-2.0` | Permissive reuse plus an explicit Apache patent grant | A custom source-available license |
 
@@ -145,6 +252,50 @@ Storage and runtime implementations are replaceable behind contracts. A new
 choice must first prove parity for transactions, migrations, receipts,
 reconciliation, backup and continuity; novelty alone is not a reason to move a
 control-plane boundary.
+
+## One vocabulary: registry, MCP and CLI
+
+The CLI and the MCP server expose the same operations at the same authorities
+with the same arguments, because the CLI command tree is **generated from
+`kontor_mcp::REGISTRY`**. Adding a tool adds a command; a command naming a route
+the registry does not have cannot be written. The only thing the CLI decides is
+spelling — `kontor_epic_apply` becomes `kontor epic-apply`, mechanically — and a
+drift test asserts the two lists are the same list.
+
+Each registry row is one tool: name, minimum caller tier, HTTP method, `/v1` path
+template, operation kind and argument schema. The JSON Schema a client is shown is
+derived from the same rows the dispatch path validates against, with
+`additionalProperties: false` on every tool.
+
+Authority is the credential and nothing else. A realm has three secrets; a process
+holds one and therefore *is* one seat. There is no per-call escalation argument
+and no per-role policy inside `kontor-mcp` — running at two authorities means
+running two servers.
+
+| Tier | Reaches |
+| --- | --- |
+| `observer` | Reads, including session content |
+| `operator` | Reads plus the work path: claim, settle, gate verdicts, session follow-up, intake, memory proposals, consultation settlement |
+| `admin` | Everything: project and account creation, epic apply, arming and disarming, selection correction, cutover attestation, gate waiver |
+
+Two refinements matter. A gate *waiver* is an authority-changing decision rather
+than an ordinary verdict, so `kontor_gate_record` demands `admin` when its verdict
+is `waived` — checked in the registry before the request exists and enforced again
+by the daemon. And admin is not a domain bypass: revisions, idempotency,
+admission, runtime capabilities, evaluator roles, evidence and closure gates are
+enforced against it exactly as against a worker's credential.
+
+A **serve profile** narrows presentation *and* the callable set within a tier, and
+can never widen it. Profiles are declared in the registry beside the tier
+declarations — deliberately not in a seat file, because a free-form tool list in
+configuration would be a second authority model that drifts. `worker` is the
+everyday delivery surface; `consultation` is an advisor or committee filler's
+minimum; `leadership` is completion read and remediation. An unknown profile name
+refuses to start. See [`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
+
+This is also the context-tax control: a seat is given the surface its role needs,
+not the whole registry, so it spends its context on the work rather than on tool
+schemas.
 
 ## Security model
 
@@ -186,16 +337,18 @@ The workspace is split by authority rather than by technical layer alone:
 - `kontor-runtime*`: replaceable native execution;
 - `kontor-context`, `kontor-accounts`, `kontor-teams`, `kontor-profiles`:
   immutable execution inputs;
-- `kontor-scheduler`, `kontor-policy`, `kontor-calendar`: admission and safety;
-- `kontor-integrations-asma`, `kontor-intake`: external boundaries;
+- `kontor-scheduler`, `kontor-policy`, `kontor-calendar`: admission, safety and
+  epic-completion compilation;
+- `kontor-jira`, `kontor-intake`: external boundaries — a native connector and
+  the durable event-intake seam;
 - `kontor-api`, `kontor-daemon`, `kontor-cli`, `kontor-mcp`: one public control
-  contract and its transports;
+  contract, one tool registry and its transports;
 - `apps/*`: projections over the public API, never independent truth.
 
 ## Explicit non-goals for the MVP
 
 - implementing an LLM, coding harness, terminal multiplexer or provider login;
-- replacing Paseo, Agent Orchestrator, Codex, AgentsRoom, Jira or `asma fleet`;
+- replacing Paseo, Agent Orchestrator, Codex, AgentsRoom or Jira;
 - storing a duplicate native transcript/token stream;
 - remote bind, multi-host workers, multi-user tenancy or realm federation;
 - automatic task decomposition with model-written scheduler state;
@@ -206,8 +359,9 @@ The workspace is split by authority rather than by technical layer alone:
 The repository contract above is intentionally concise. The full implementation
 baseline and active epic plan are maintained in the parent polyrepo:
 
-- [Kontor MVP control-plane architecture](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md)
-- [Kontor MVP implementation plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-08-08-20-12-plan-asma-kontor-mvp-control-plane.md)
+- [Kontor governing principles](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality in full, with the fourteen principles and their honest gaps
+- [Kontor control-plane architecture](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md)
+- [Kontor Operational MVP plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md)
 
 Those documents govern ASMA-specific rollout. This file governs the public
 repository boundary and must stay readable without the parent checkout.

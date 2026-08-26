@@ -5,15 +5,29 @@
 
 Kontor is a local-first control plane for durable, policy-governed work across
 AI-agent runtimes. It keeps the project plan, dependencies, work profiles,
-team/seat bindings, command receipts, evidence and external-workflow state in
-one place while Paseo, Agent Orchestrator, Codex and future adapters continue
-to own their native sessions and provider mechanics.
+team/seat bindings, command receipts, evidence, approved memory and
+external-workflow state in one place while Paseo and future adapters continue to
+own their native sessions and provider mechanics.
+
+It exists to serve two things:
+
+- **Autonomy** — work proceeds without an operator driving each step, on
+  deterministic rails the kernel executes from versioned data, carrying that
+  operator's own approved decisions forward as durable memory instead of
+  re-learning them every session.
+- **Delivery quality** — the unit of value is a *completed* piece of work.
+  Completion is defined, checked and independently verified: implemented,
+  tested, reviewed by an authority that did not do the work, integrated,
+  released and evidenced. **A fully green task graph does not complete an
+  epic**; only a compliant independent verdict plus complete closeout evidence
+  does.
 
 > [!CAUTION]
-> Kontor is pre-1.0 and under active MVP development. The current `master`
-> implements the core control plane and primary clients, but the full pilot,
-> backup/security close-out, calendar engine and source-event intake are not all
-> complete. Do not treat it as a production-ready autonomous scheduler yet.
+> Kontor is pre-1.0 and under active development. `master` runs real
+> multi-repository delivery daily, but some designed capabilities are
+> deliberately unreachable rather than half-built — see
+> [What is not built](#what-is-not-built). Nothing here invents behaviour it
+> cannot prove: an unfinished capability says "unsupported" or "unconfigured".
 
 ## Why does another orchestration project need to exist?
 
@@ -23,7 +37,7 @@ keeping a native conversation alive. Kontor does not rebuild that layer.
 
 The unsolved problem in a long-running ASMA mini-project is **durable control**:
 
-- Which task is actually ready, armed and safe to start?
+- Which task is actually ready and safe to start, and what is narrowing it?
 - Which work profile, team template, account and runtime were pinned?
 - Did a launch happen before a crash, or is retrying safe?
 - Is a missing runtime session failed, stale, orphaned or simply unreachable?
@@ -31,6 +45,7 @@ The unsolved problem in a long-running ASMA mini-project is **durable control**:
 - Is Jira aligned with the internal phase and gate evidence?
 - Can the same project continue through another runtime without inventing a
   second source of truth?
+- Is this epic *finished*, or merely green?
 
 An execution runtime cannot answer those questions authoritatively for every
 other runtime, and asking each orchestrator to grow a project database,
@@ -44,7 +59,7 @@ planes. Kontor is the deliberately small authority above them.
 | Effects | Durable intent, idempotency and confirmation receipts | The actual native effect |
 | Sessions | Binding, freshness and derived safe status | Process, transcript, tools and provider auth |
 | Recovery | Reconciliation and explicit uncertainty | Native inventory and inspection |
-| Integrations | Typed projections and delegated commands | Runtime-specific protocol |
+| Integrations | Typed projections and native connector commands | Runtime-specific protocol |
 
 See [Architecture](ARCHITECTURE.md) for the complete boundary and technology
 rationale.
@@ -61,22 +76,48 @@ The current repository includes:
   portable Context Packs and redacted handoffs;
 - a shared runtime contract with capability/trust grades, atomic launch
   admission, workspace binding, reconciliation and gap-safe session timelines;
-- adapters for Paseo, Agent Orchestrator and a narrow direct Codex fallback;
-- deterministic scheduling, collision-safe leases, guardrail evidence and
-  bounded parked-work recovery;
-- non-secret provider-account profiles plus delegated `asma fleet` and
-  `asma jira sync` integration boundaries;
+- a production Paseo adapter, plus hermetic Agent Orchestrator and direct-Codex
+  adapters that keep the shared contract honest without being composable in a
+  release build;
+- a generic, versioned **session topology** — epic control plane, ticket
+  workspaces, consultation workspaces — published per project rather than
+  hard-coded;
+- a deterministic **standard role catalogue** (56 roles across 9 segments) with
+  typed role-code seat selection and optional display labels;
+- **Project Core Teams**, quick ad-hoc sessions and preview/apply promotion of an
+  ad-hoc session into a real epic with a durable handoff;
+- read-only **Advisors** and **Committees** with frozen inputs, independent
+  findings, preserved dissent and typed aggregate verdicts;
+- configurable **epic Completion Profiles** that compile integration, independent
+  verdict, bounded remediation and six closeout receipts into ordinary task,
+  team and gate machinery;
+- deterministic default-allow scheduling, collision-safe leases, guardrail
+  evidence and bounded parked-work recovery;
+- native connectors for Jira and for live provider-quota observation, with
+  routing by admissible account and rung;
+- non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue exposed consistently through the `kontor` CLI and
-  stdio MCP server;
+- one capability catalogue — 146 tools — exposed through the stdio MCP server and
+  a `kontor` CLI *generated from the same registry*, with credential tiers and
+  narrow serve profiles;
 - a responsive React operator console and Tauri desktop shell.
 
-Still open in the MVP are the full disposable end-to-end proof, final
-backup/export/security hardening, calendar/holiday admission, durable
-source-event intake and epic close-out. The code and documentation should say
-“unsupported” or “unconfigured” for an unfinished capability rather than
-pretending it exists.
+### What is not built
+
+Stated plainly, because a README that implies a capability is worse than one that
+admits its absence:
+
+| Not built | Detail |
+| --- | --- |
+| Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
+| Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
+| Seat watchdog engine | `supervision.yml` is documented and validated and has no consumer yet. Absent configuration correctly invents no behaviour; present configuration also does nothing. |
+| Mid-run quota succession | A seat stopped by a provider usage limit is not yet detected, summarised and relaunched on the next admissible account. |
+| Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung and preserves the adapter's typed refusal path instead of parking until the computed reset. |
+| Automatic stale-evidence rejection | Post-freeze product drift that invalidates a completion bundle is currently caught by a reviewer, not by the state machine. |
+| Remote access and federation | Loopback only. Multi-realm switching, remote bind, pairing and TLS are unbuilt security designs, not hidden flags. |
+| AO and direct-Codex in production | `ao` and `codex` are a closed deferred list; a configuration naming either is refused rather than falling back to Paseo. |
 
 ## How this helps ASMA
 
@@ -89,10 +130,11 @@ rules:
 - safe parallel work only when module/worktree isolation is proven;
 - explicit provider-account selection without storing secrets in project data;
 - no false success when a runtime disappears or an event stream has a gap;
-- deterministic Jira field/status/ownership convergence through the existing
-  ASMA CLI rather than direct store writes;
+- deterministic Jira field/status/ownership convergence through a native
+  connector rather than direct store writes;
 - durable evidence that survives daemon, runtime and model changes;
-- the same realm-qualified facts for CLI, MCP, desktop and phone-width clients.
+- the same realm-qualified facts for CLI, MCP, desktop and phone-width clients;
+- an epic that cannot be declared finished on its own say-so.
 
 Kontor is designed for coding, research, architecture, UX/UI, QA, operations
 and incident work described by data. Those are profile packs, not hard-coded
@@ -103,29 +145,37 @@ branches in the scheduler.
 ```text
 CLI / MCP / responsive console / Tauri desktop
                     |
-          authenticated loopback API
+      authenticated loopback API  (/v1, bearer + tier)
                     |
               kontor-daemon
         +-----------+-----------+
         |           |           |
    domain/store  scheduler   policy/evidence
-        |           |           |
+        |           |        + completion
         +----- runtime contract-+
-               /      |      \
-           Paseo      AO     Codex
+                    |
+                  Paseo            (ao | codex refused)
               native agent sessions
 
-      delegated subprocess boundaries
-          asma fleet   asma jira sync
+        native connectors inside the daemon
+              Jira    provider usage
 ```
 
-Three rules shape the design:
+Six rules shape the design:
 
-1. **One writer per fact.** Kontor never edits another tool's internal store.
+1. **One writer per fact.** Kontor never edits another tool's internal store,
+   and never invokes the `asma` CLI.
 2. **Uncertainty is not completion.** Stale, divergent, unavailable and
    orphaned are visible states, never guessed terminal outcomes.
 3. **Intent precedes effects.** Runtime-changing commands are durably recorded
    before dispatch and confirmed through correlated evidence.
+4. **The workflow is data.** No core code branches on a profile id, a role name,
+   a topology kind or a work type. Adding a work type is publishing a spec.
+5. **Proposal is not authority.** A model may recommend anything and submit
+   evidence; only a deterministic evaluator reading a pinned snapshot writes
+   scheduler truth, gate verdicts or receipts.
+6. **A green graph is not a delivered epic.** Completion runs its pinned profile
+   to an independent verdict and six closeout receipts, or it does not complete.
 
 ## Try the local control plane
 
@@ -143,25 +193,42 @@ cargo build --workspace
 cargo run -p kontor-daemon -- --state-root /tmp/kontor-demo
 ```
 
-In another terminal, use the same state root. The CLI reads the daemon endpoint
-and the least-privileged local credential required for each operation:
+In another terminal, use the same state root. One command is one tool is one
+`/v1` operation: the command tree is generated from the MCP registry, so `kontor
+epic-apply` and the `kontor_epic_apply` tool are the same operation with the same
+arguments. The process holds exactly one credential tier and defaults to
+`observer`, so a command that mutates has to ask:
 
 ```sh
-cargo run -p kontor-cli -- --state-root /tmp/kontor-demo health
-cargo run -p kontor-cli -- --state-root /tmp/kontor-demo realm show
-cargo run -p kontor-cli -- --state-root /tmp/kontor-demo runtime list
-cargo run -p kontor-cli -- --help
+cargo run -p kontor-cli -- --help                                  # every tool, as a command
+cargo run -p kontor-cli -- --state-root /tmp/kontor-demo realm-get
+cargo run -p kontor-cli -- --state-root /tmp/kontor-demo projects-list
+cargo run -p kontor-cli -- --state-root /tmp/kontor-demo runtime-capabilities-list
+cargo run -p kontor-cli -- --state-root /tmp/kontor-demo --tier admin project-ensure \
+    --idempotency-key <key> --name demo --root-path /tmp/demo-repo
 ```
+
+`--state-root` has no default: it names the realm to act on and holds the
+credential file the CLI reads. `--base-url` is only needed when the realm is not
+on its default loopback port. Every write takes an `idempotency_key` you choose;
+repeating one returns the original receipt rather than recording a second command.
 
 A realm with no `runtimes.json` is valid for inspecting the control plane; its
 session operations report that no runtime is configured. Runtime configuration
 is intentionally explicit and remains local to the state root.
 
-Seat lifecycle behavior is configuration too. Copy the example
-[`supervision.yml`](config/examples/paseo-supervision.yml) into the state root
-to use notification-first completion with a bounded hang watchdog; see
-[Configuration](docs/CONFIGURATION.md). With no policy file, Kontor invents no
-timeout behavior.
+Reading and writing are also separate processes on the MCP side: a server runs at
+one credential tier and optionally one narrow serve profile, so a delivery seat
+is given the eighteen tools it works with rather than all 146. See
+[`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
+
+Seat lifecycle policy has a checked example
+[`supervision.yml`](config/examples/paseo-supervision.yml). Copying it into the
+state root makes the intended notification-first and bounded-watchdog policy
+available for validation and inspection, but **does not enable watchdog
+behavior yet**: the file has no consumer until `KON-OP-21` wires one. See
+[Configuration](docs/CONFIGURATION.md). With or without the policy file, the
+current daemon invents no timeout behavior.
 
 For frontend development:
 
@@ -179,14 +246,14 @@ interface” development shortcut.
 | --- | --- |
 | `crates/kontor-core` | Domain identifiers, lifecycle, specs and ticket policy |
 | `crates/kontor-store` | SQLite durability, migrations, events, receipts and queries |
-| `crates/kontor-runtime*` | Shared runtime contract and Paseo/AO/Codex adapters |
+| `crates/kontor-runtime*` | Shared runtime contract; production Paseo adapter; hermetic AO and Codex adapters |
 | `crates/kontor-context` | Context Pack resolution, redaction and handoff |
 | `crates/kontor-accounts` | Non-secret account profiles and launch routing |
 | `crates/kontor-teams`, `kontor-profiles` | Versioned teams, seats, workflows and seed packs |
-| `crates/kontor-scheduler`, `kontor-policy`, `kontor-calendar` | Admission, leases, guardrails and time policy |
-| `crates/kontor-integrations-asma`, `kontor-intake` | Delegated ASMA integrations and event intake |
+| `crates/kontor-scheduler`, `kontor-policy`, `kontor-calendar` | Admission, leases, guardrails, epic-completion compilation and (unexposed) time policy |
+| `crates/kontor-jira`, `kontor-intake` | Native Jira connector and durable event intake |
 | `crates/kontor-api`, `kontor-daemon` | Authenticated loopback contract and composition root |
-| `crates/kontor-cli`, `kontor-mcp` | Human and agent control surfaces over one operation catalogue |
+| `crates/kontor-cli`, `kontor-mcp` | One tool registry; the MCP server serves it and the CLI is generated from it |
 | `apps/console`, `apps/desktop` | Responsive console and Tauri shell |
 | `tests/contract`, `tests/e2e` | Cross-adapter contracts and full-system proof |
 
@@ -223,10 +290,15 @@ the Apache-2.0 option provides an explicit patent grant. See
 [NOTICE](NOTICE), [Provenance](PROVENANCE.md) and
 [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-## The acceptance proof (KON-MVP-18)
+## The Foundation acceptance proof (KON-MVP-18)
+
+> This proof accepted the Foundation control plane and **passed**; the retained
+> bundle is the record. It is kept as a regression contract rather than as the
+> current acceptance boundary — delivered work is now accepted by an epic
+> Completion Profile, not by this test.
 
 One command runs the whole disposable mini-project proof and writes the evidence
-bundle that accepts or rejects the MVP:
+bundle that accepted the Foundation MVP:
 
 ```sh
 cargo test -p kontor-tests-e2e --test pilot -- --nocapture
@@ -274,8 +346,8 @@ harness works".
 
 ## Dependency policy (CON-007)
 
-Paseo, Agent Orchestrator, Codex and the `asma` CLI are separate installations;
-their code and licenses are not included here. Public release remains subject
+Paseo, Agent Orchestrator and Codex are separate installations; their code and
+licenses are not included here. Public release remains subject
 to the reviews listed in [Provenance](PROVENANCE.md).
 
 ## Backup, restore, export and security
@@ -309,9 +381,15 @@ policy, scheduling, reconciliation and evidence above them.
 
 ### Does Kontor replace AgentsRoom or Jira?
 
-No. AgentsRoom remains the interim backlog/knowledge surface during the MVP,
-and Jira remains the external workflow system. Kontor owns its internal facts
-and delegates supported synchronization instead of editing either store.
+Jira remains the external workflow system; Kontor converges to it through a
+native connector and never edits its store.
+
+AgentsRoom is being replaced per project, per subject. Write authority for a
+project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a
+project created in Kontor is native and writable immediately, while a project
+whose facts came from AgentsRoom stays read-only for that subject until its
+import and read-back attestation succeed. After attestation, AgentsRoom is
+legacy read-only for that subject. Both states can be true of one realm at once.
 
 ### Does Kontor store agent transcripts or credentials?
 
@@ -321,9 +399,17 @@ non-secret metadata and credential references, never secret values.
 
 ### Is Kontor a cloud service or multi-user server?
 
-Not in the MVP. One daemon owns one local realm and binds loopback only. Remote
-access, realm federation, multi-host workers and native mobile pairing require
-separate security and identity decisions.
+No. One daemon owns one local realm and binds loopback only. Remote access, realm
+federation, multi-host workers and native mobile pairing require separate
+security and identity decisions and are unbuilt.
+
+### Who decides an epic is finished?
+
+Not the seats that did the work, and not a green task graph. The epic's pinned
+Completion Profile runs integration, then an independent read-only committee whose
+members review frozen evidence without seeing each other's findings, then bounded
+remediation if that verdict is non-compliant, then six closeout receipts. A
+non-compliant verdict is not waived, and a committee cannot waive it for itself.
 
 ### How do I add another runtime?
 
@@ -331,9 +417,9 @@ Implement the shared `RuntimeAdapter`, declare only capabilities the runtime
 can prove, add recorded contract fixtures, and pass the common consistency and
 mutation tests. See [Architecture](ARCHITECTURE.md#runtime-extension-contract).
 
-### Where is the detailed MVP design?
+### Where is the detailed design?
 
-The concise repository contract is [Architecture](ARCHITECTURE.md). The full
-ASMA implementation design and active plan live in the parent `asma-modules`
-documentation for epic `ASMA-7744`; links are collected at the end of that
-document.
+The concise repository contract is [Architecture](ARCHITECTURE.md), which is
+readable without the parent checkout. The governing principles, the full
+implementation baseline and the active plans live in the parent `asma-modules`
+documentation; links are collected at the end of `ARCHITECTURE.md`.

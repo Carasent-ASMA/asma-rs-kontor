@@ -1,10 +1,12 @@
 # Provider quota routing: durable state behind the rung walk
 
-Status: v48's rung walk landed 2026-08-21. **Schema v51 extends it to concurrent
-windows, a credit balance and account-before-rung resolution (2026-08-22, this
-branch), after master's v49 command-execution-mode and v50 live quota poller;**
-the remaining open items are listed under *Still open*.
-Date: 2026-08-21, extended 2026-08-22
+Status: **Synchronized with `origin/master` 2026-08-26 (database schema v66).**
+The v48 quota state, v50 live poller and v51 concurrent-window,
+credit-balance, account-before-rung and governed-pin work are shipped.
+Consultation launches now use the same headroom walk. Launch-time
+`Wait`/`NeedsHuman` actuation and mid-run quota succession are not shipped; the
+remaining gaps are listed under *Still open*.
+Date: 2026-08-21, extended 2026-08-22, synchronized 2026-08-26
 
 Ticket: **KON-OP-13 / ASMA-7882** owns this. The fleet-mechanics plan
 (`_docs/ai-orchestration/plans/2026-08-05-02-37-plan-agent-fleet-mechanics-layer.md`)
@@ -34,8 +36,8 @@ route behind it. The rung ladder was **not** inert.
 
 What it consults is the gap. `PaseoAdapter::provider_available` reads
 `PaseoAdapterConfig.unavailable_providers` -- a `#[serde(default)]` field on the
-runtime settings document, resolved once when the adapter is composed
-(`crates/kontor-daemon/src/runtimes.rs:211-216`, `:491`). So the pre-existing
+runtime settings document, resolved once when the daemon composes the adapter.
+So the pre-existing
 operator lever was: edit the settings file, restart the daemon. That set
 
 * needs a restart to change,
@@ -62,8 +64,9 @@ out whatever the settings say.
   realm that has never recorded a state -- which is every realm before the first
   collector run.
 * **`all`, not `any`.** One exhausted account does not exhaust a provider another
-  account can still serve. The realm holds one account profile today so the two
-  coincide, but `any` becomes wrong the moment a second is registered.
+  account can still serve. At the v48 checkpoint the measured realm held one
+  account profile, so the two coincided, but `any` became wrong as soon as a
+  second was registered.
 
 The `exhausted`/`drained` split is a table CHECK rather than a convention: an
 exhausted allowance must carry a reset instant and nothing else may. A plan
@@ -88,8 +91,10 @@ than by drift.
   plan allowance recovers on a clock; a credit balance recovers on money.
   `Drained` must **never** be requeued on a timer — retrying a dead OpenRouter
   key every five minutes forever is a new failure mode, not a fallback.
-- **Handoff is fully automatic, with receipts.** The 3am save is the point. Every
-  hop writes a command receipt and a `parent_agent_run_id` link.
+- **Automatic handoff with receipts is the required outcome, not current
+  behavior.** The 3am save is the point. Every future hop must write a command
+  receipt and a `parent_agent_run_id` link; `KON-OP-21` owns the missing
+  mid-run detection, redacted handoff and successor launch.
 - **Seat titles reuse the existing suffix segment**, e.g.
   `ARCHITECT · ASMA-7854 · R1/work`. The account appears as its profile *label*,
   never as the account email — this codebase deliberately keeps provider identity
@@ -102,22 +107,23 @@ than by drift.
 
 ## Design
 
-### What "account" means here — and the upstream blocker
+### What "account" means here — historical blocker and shipped resolution
 
 Two facts found while implementing, both of which narrow the design:
 
-**`harness` is the runtime family, not the provider.** An `AccountProfile`'s
+**At the pre-v51 checkpoint, `harness` was the runtime family rather than the
+provider selector.** An `AccountProfile`'s
 `harness` is a `RuntimeKindKey` such as `paseo.agent` — not `codex` or `claude`.
-The live realm holds exactly one profile (`Igor · Local Paseo`, `paseo.agent`,
+The measured realm then held exactly one profile (`Igor · Local Paseo`, `paseo.agent`,
 enabled) and all 108 runtime bindings are `paseo.agent`. So under Paseo one
 account profile serves *every* provider, and a rung advance from Codex to Claude
 does **not** change the account. That is good news for the mechanism: the pin
 contract in `admit_pinned_launch` — "the pin is the run's, not the request's",
-`LaunchRefusal::PinMismatch` (`crates/kontor-accounts/src/launch.rs:276-282`) —
+`LaunchRefusal::PinMismatch` in `kontor-accounts::launch` —
 is untouched by a rung advance, so the advance is implementable inside one run.
 
-**Kontor cannot currently address an individual Codex login.** The two Codex
-accounts live as separate `CODEX_HOME` directories under
+**At that checkpoint Kontor could not address an individual Codex login.** The
+two Codex accounts lived as separate `CODEX_HOME` directories under
 `~/.agentsroom/codex-profiles/cxp-*/auth.json`, which is AgentsRoom's mechanism.
 But `paseo agent run` as Kontor drives it takes `--workspace --cwd --provider
 --model --mode --thinking --title --label` and a positional prompt, and nothing
@@ -125,12 +131,12 @@ else (`crates/kontor-runtime-paseo/src/client.rs:220-251`); Paseo's own
 `create_agent` API exposes no account or profile parameter either. The adapter
 that *does* implement per-account isolation properly —
 `kontor-runtime-codex`, which clears and re-resolves `CODEX_HOME` per run — is in
-`DEFERRED_FAMILIES` (`crates/kontor-daemon/src/runtimes.rs:61`) and cannot be
+the daemon's `DEFERRED_FAMILIES` list and cannot be
 composed by this build.
 
-So per-login rotation ("try the work Codex account, then the personal one") is
-**blocked upstream**, not merely unbuilt here. It needs either an account
-selector on Paseo's agent-run surface or the Codex family lifted out of
+So per-login rotation ("try the work Codex account, then the personal one") was
+**blocked upstream**, not merely unbuilt in that increment. It needed either an
+account selector on Paseo's agent-run surface or the Codex family lifted out of
 `DEFERRED_FAMILIES`.
 
 > **Superseded 2026-08-22 (v51).** The account selector was already in that flag
@@ -139,11 +145,11 @@ selector on Paseo's agent-run surface or the Codex family lifted out of
 > declaration* below. The paragraph above is kept because its reasoning is what
 > the declaration answers.
 
-Until the declaration is made, availability is scoped
-`(account_profile_id, provider)` rather than per account: with one profile
-serving every provider, `AvailabilityOverride` — which is per account — cannot
-express "Codex is out, Claude is fine", which is precisely the state the incident
-left the realm in.
+When a deployment does not make that declaration, Kontor cannot attest a
+per-account pin and refuses to claim one. A qualified Paseo deployment declares
+one addressable provider alias per account; availability and headroom remain
+scoped to `(account_profile_id, provider)` and launch reads the selected provider
+alias back before accepting the pin.
 
 The good news is that this does not block the fix that matters. Codex exhausted →
 run the seat on Claude is a `--provider`/`--model` change that Kontor fully
@@ -153,11 +159,9 @@ controls, and it alone would have kept work moving on 2026-08-21.
 
 | Event | Mechanism | Reachable today |
 | --- | --- | --- |
-| `rung1 x work` -> `rung1 x personal` | `FailoverRequest` / `FailoverReason::AccountExhausted` | **yes as of v51**, where the deployment declares `provider_selects_account` and one alias per login |
-| `rung1` -> `rung2` | the chain walk, now reading stored state | yes |
-
-`FailoverReason::AccountExhausted` (`crates/kontor-accounts/src/launch.rs`) was
-built for the first and still has no caller anywhere in cli, api or daemon.
+| New launch: `rung1 x work` -> `rung1 x personal` | account-before-rung resolver plus a declared provider alias per account | **yes**, when `provider_selects_account` is configured and read back |
+| New launch: `rung1` -> `rung2` | the same headroom walk | **yes** |
+| Running seat: exhausted account -> successor | runtime refusal detection, redacted handoff and successor-run path | **no** — `KON-OP-21`; `FailoverReason::AccountExhausted` still has no production caller |
 
 ### Reuse, do not add
 
@@ -168,11 +172,10 @@ judgement with an expiry -- which is the credit-top-up lever for `Drained`. They
 are keyed on the account alone, which is why they could not carry this state, but
 nothing here duplicates them.
 
-Account isolation is likewise done: the Codex adapter clears `CODEX_HOME` before
-every launch so an ambient home cannot be inherited by a run pinned to another
-account, resolves the home only through the account's approved alias, and
-requires a non-secret marker file inside it. What is absent is only the
-*selector* between two isolated homes -- see the blocker above.
+The production Paseo path isolates accounts through one declared provider alias
+and credential home per account, then attests the provider id by readback. The
+hermetic direct-Codex adapter's `CODEX_HOME` isolation remains useful contract
+evidence but is not production-composed; the selector is no longer the blocker.
 
 ## What landed
 
@@ -192,14 +195,14 @@ requires a non-secret marker file inside it. What is absent is only the
   version short and `verify_applied` refused the open. It is now a skip-set over
   `MIGRATIONS`, which cannot fall behind.
 
-## Knowingly not fixed
+## Resolved after v51: consultation routing
 
-**Advisor and Committee consultation seats still take `rungs.first()` with no
-fallback at all** -- `profile.models.rungs.first()` and
-`slot.models.rungs.first()` in `crates/kontor-daemon/src/applications.rs`. Same
-defect, different chain source: consultations carry their own `models` rather
-than a template slot's `model_chain`, so there is no shared root to fix once.
-They were left out to keep this change to the path the outage actually took.
+Advisor and Committee seats formerly took `rungs.first()` and ignored the rest
+of their declared chain. Current `origin/master` routes both through
+`freeze_consultation_model_rung`, which applies the same account-before-rung
+headroom resolver used by delivery launches. Consultation launches still share
+the launch-time `Wait` / `NeedsHuman` actuation gap documented below; they no
+longer ignore fallback rungs.
 
 ## What schema v51 added (2026-08-22)
 
@@ -249,11 +252,13 @@ makes a four-rung chain reach its fourth rung — the previous selection took th
 first clear rung and otherwise fell back to the frozen primary, so rungs three
 and four were decoration.
 
-Thresholds are declared per window kind, and a rung whose accounts are all
-blocked is *waited for* rather than descended around when the blocking window
-returns inside the declared short horizon. Total exhaustion parks until the
-earliest reset; a human is reached only past the escalation horizon, carrying an
-`OP-REQ-036` recommendation and the walk itself as the deliberation path.
+Thresholds are declared per window kind. The resolver returns `Wait` rather
+than descending when every account on a rung is blocked and the blocking window
+returns inside the declared short horizon. At total exhaustion it computes the
+earliest reset or a `NeedsHuman` escalation with an `OP-REQ-036` recommendation
+and the walk itself as the deliberation path. The delivery launch boundary does
+not yet actuate either outcome into an automatic park or escalation; see *Still
+open*.
 
 Every threshold gates the admission of a **new** seat. `Placement` has no variant
 that can name a running seat, so "pre-empt the seat using the quota" is not a
@@ -309,10 +314,24 @@ a stored `ExecutionAuthorization` now reports the bounds it was granted under.
 
 ## Still open
 
+### Enact launch-time `Wait` and `NeedsHuman`
+
+`kontor_scheduler::headroom::resolve` returns a typed `Placement::Wait` with a
+reset instant or `Placement::NeedsHuman` with an escalation payload. The current
+delivery launch function must return a `ModelRung`; on those two outcomes it
+drops the payload and preserves the adapter's typed provider-outage refusal
+path. The resolver is truthful, but the launch path does not yet park the work
+until reset or persist the escalation it computed.
+
+Acceptance: a launch-time `Wait` parks without dispatch and wakes at the stored
+reset; `NeedsHuman` persists the exact deliberation path and recommendation;
+restart/replay reproduces either outcome without inventing a rung or a second
+launch.
+
 ### Vendor and model tables
 
-Replace the hardcoded catalog at
-`crates/kontor-daemon/src/applications.rs:4883-4947`, whose own provenance
+Replace the hardcoded catalog in
+`Applications::model_catalog`, whose own provenance
 already reads `"state": "fixture/needs-verification"`.
 
 ```
@@ -371,7 +390,7 @@ Produce `SeatObservation` from the adapter (gap 3), adding
 `quota_exhausted: Option<LimitState>` and a `WakeReason::QuotaExhausted`. On that
 wake, rotate the account first and descend a rung second.
 
-`replace_seat` (`crates/kontor-daemon/src/applications.rs:9444-9560`) already
+The daemon's `replace_seat` application command already
 does the rest: it retires the predecessor, requires `TerminalOutcome::Cancelled`
 with `TerminalEvidenceSource::RuntimeObservation` — a quota-dead session
 qualifies, being runtime-observed — links `parent_agent_run_id`, bounds hops by
@@ -385,7 +404,7 @@ Two hazards to get right:
   `allow_duplicate_seat: false` is enforced by policy *validation*, not by
   construction, so it will not save you. Derive the key from
   `(predecessor_agent_run_id, binding_generation)`; a double fire then replays
-  the original receipt through the existing branch at `applications.rs:9514`.
+  the original receipt through `replace_seat`'s existing replay branch.
 - **The successor budget is shared.** `max_successor_depth` also bounds
   hang-recovery replacements, so a team that spent its depth on hangs cannot fall
   back on quota. Keeping one budget is defensible — a seat replaced three times
@@ -417,23 +436,23 @@ builder chain had simply not been checked against it.
 ## Also worth knowing
 
 The policy's own KON-OP-13 amendment (2026-08-16) settled two things the v48
-implementation did not honour. **Both are honoured as of v51** — see *What schema
-v51 added* above; the description below is kept for the reasoning:
+implementation did not honour. **Both resolver decisions are honoured as of
+v51** — see *What schema v51 added* above. The description below is retained as
+the rationale, not as current gap status:
 
 * **Account before rung.** "A second account on the same rung costs nothing while
   descending costs quality, so `codex:team` is tried before dropping off
-  `codex:prolite`'s rung." That is the design recorded above, and it is blocked
-  upstream on Paseo exposing an account selector.
+  `codex:prolite`'s rung." Those were the historical aliases; a declared Paseo
+  provider alias per account (`codex-work`, `codex-personal`) is the shipped
+  selector.
 * **Wait rather than descend when the reset is near.** "Step 4's descent is
   skipped entirely when the blocking window resets inside the declared short
-  horizon: waiting beats shipping worse work." The walk here descends
-  immediately. Honouring this needs the short horizon as configuration and a
-  scheduler that can hold a seat rather than route it — genuinely open work, and
-  it is the difference between routing around an outage and routing around a
-  five-minute blip.
+  horizon: waiting beats shipping worse work." The resolver makes that choice;
+  the launch boundary still needs the actuation work described under *Still
+  open* so it can hold the seat instead of merely preserving a refusal.
 
 The policy also records the one provider fact KON-OP-13 still has to establish:
-whether `codex:team` exposes its own rate-limit readings from its own effective
-home or shares `codex:prolite`'s. Account-before-rung resolution depends on the
-answer, and the per-account grain of `provider_quota_states` is built to hold
-either.
+whether `codex-work` exposes its own rate-limit readings from its own effective
+home or shares `codex-personal`'s. The practical value of account-before-rung
+resolution depends on the answer, though its correctness does not; the
+per-account grain of `provider_quota_states` is built to hold either.

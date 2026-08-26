@@ -6,13 +6,21 @@
 > **Scope:** `_tools/asma-rs-kontor` Rust workspace at `origin/master` commit `559c70f1f478d416e1dc28c4d4b9d8e2be72a45c`
 > **Summary:** In-depth static and behavioral audit of Kontor's 240k-line Rust workspace: size legitimacy, DRY/YAGNI/SOLID, file and function size, MCP-tool count, dependency health, panic/unsafe posture, automated quality gates, and a prioritized remediation program.
 
+> **Current-status note (2026-08-26):** this is deliberately a point-in-time
+> audit of the commit named above, not a live inventory. Its 127-tool / 16-worker
+> measurements remain evidence for that snapshot; current `origin/master` has
+> 146 registry tools and an 18-tool worker profile. The context-tax plan this
+> audit once linked was never committed. Current surface guidance lives in
+> [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md) and
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md).
+
 ---
 
 ## When to Load
 
 **Load this document when:**
 
-- Deciding whether Kontor's Rust size or 127-tool MCP surface is justified.
+- Reviewing why the audited commit's Rust size or 127-tool MCP surface was judged as it was; use current source or the repository contract for today's inventory.
 - Planning maintainability work in `kontor-daemon`, `kontor-store`, `kontor-api`, `kontor-runtime`, or `kontor-mcp`.
 - Adding a new capability, API operation, MCP tool, runtime-adapter method, or large orchestration workflow.
 - Setting Rust file/function-size, duplication, coverage, mutation, or dependency-quality gates.
@@ -331,7 +339,11 @@ The registry uses one declarative row per operation and one dispatcher. Contract
 
 The worker serve profile now exposes exactly 16 tools, and both listing and calling enforce the profile. This materially fixes the ordinary delivery-seat context problem. Full operator/admin surfaces remain broad, but they serve control-plane roles rather than workers.
 
-The existing [MCP context-tax reduction plan](../../../../_docs/ai-orchestration/plans/2026-08-19-19-45-plan-kontor-mcp-context-tax-reduction.md) has already identified a safe post-fence consolidation: merge ten preview/apply pairs using `dry_run` and consolidate ten catalog list operations, reducing the surface by about 19 tools after ASMA-7869 permits it.
+At audit time, an MCP context-tax reduction plan was discussed but never
+committed. Its proposed command consolidation is therefore not an authoritative
+follow-on. The shipped control is registry-owned serve profiles, documented in
+[`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md); any future consolidation
+needs its own accepted plan and current registry evidence.
 
 **Verdict:** The current semantic count is defensible, the worker context surface is well controlled, and immediate arbitrary deletion is not warranted. Continue with role-specific profiles and the planned consolidation. Require each new tool to name its consumer, tier/profile, API parity evidence, and why an existing command cannot carry the operation.
 
