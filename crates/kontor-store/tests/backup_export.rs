@@ -29,9 +29,9 @@ use kontor_core::id::{
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    CredentialReference, CredentialReferenceKind, NewAccountProfile, NewAgentRun, NewLocalCommand,
-    NewProject, NewRuntimeEvent, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    ProjectRepository, RunRepository, SpecRepository, TicketRepository,
+    CommandRepository, CredentialReference, CredentialReferenceKind, NewAccountProfile,
+    NewAgentRun, NewLocalCommand, NewProject, NewRuntimeEvent, NewTask, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink, ProjectRepository, RunRepository, SpecRepository, TicketRepository,
 };
 use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamRunSnapshot};
 use kontor_core::state::TaskState;
@@ -318,6 +318,11 @@ fn seed_profile_selection_outcomes(
             team_source: TeamTemplateSource::Bundled,
         })
         .expect("K selects P1");
+    seeded
+        .store
+        .complete_local_command(&first_command.idempotency_key, at("2026-08-10T09:01:01Z"))
+        .expect("K is confirmed")
+        .expect("K has a receipt");
 
     let mut second_definition = first_bundle.profile.definition.clone();
     second_definition.version =
@@ -365,7 +370,134 @@ fn seed_profile_selection_outcomes(
             team_source: TeamTemplateSource::Registered,
         })
         .expect("K2 selects P2");
+    seeded
+        .store
+        .complete_local_command(&second_command.idempotency_key, at("2026-08-10T09:02:01Z"))
+        .expect("K2 is confirmed")
+        .expect("K2 has a receipt");
     [first, second]
+}
+
+fn seed_teamless_profile_selection_outcome(
+    seeded: &Seeded,
+) -> kontor_store::StoredProfileSelectionOutcome {
+    let instant = at("2026-08-10T09:03:00Z");
+    let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let entry = pack
+        .manifest
+        .iter()
+        .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+        .expect("the pack seeds at least one category");
+    let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, instant)
+        .expect("the profile resolves");
+    let mut definition = bundle.profile.definition;
+    definition.version =
+        SpecVersion::parse(definition.version.get() + 2).expect("the third profile version");
+    definition.team_template = None;
+    let snapshot =
+        ResolvedWorkProfileSnapshot::resolve(&definition, instant).expect("the profile resolves");
+    let command = NewLocalCommand {
+        project_id: seeded.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse("backup-profile-selection-k3").expect("a valid key"),
+        kind: CommandKind::SelectTaskProfile,
+        target: AggregateRef::Task {
+            task_id: seeded.task,
+        },
+        target_revision: AggregateRevision::INITIAL,
+        intent: document(&serde_json::json!({
+            "schema_version": 1,
+            "marker": "profile-selection-p3-teamless",
+        })),
+        created_at: instant,
+    };
+    let workflow = NewTaskWorkflow {
+        id: TaskWorkflowId::generate(),
+        project_id: seeded.project,
+        task_id: seeded.task,
+        snapshot,
+        current_phase: definition.entry_phase.clone(),
+        created_at: instant,
+    };
+    let outcome = seeded
+        .store
+        .apply_profile_selection(&ProfileSelection {
+            command: &command,
+            workflow: &workflow,
+            definition: &definition,
+            team: None,
+            team_source: TeamTemplateSource::Registered,
+        })
+        .expect("K3 selects a teamless P3");
+    seeded
+        .store
+        .complete_local_command(&command.idempotency_key, at("2026-08-10T09:03:01Z"))
+        .expect("K3 is confirmed")
+        .expect("K3 has a receipt");
+    outcome
+}
+
+fn seed_unchanged_p2_selection(seeded: &Seeded) -> kontor_store::StoredProfileSelectionOutcome {
+    let instant = at("2026-08-10T09:04:00Z");
+    let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let entry = pack
+        .manifest
+        .iter()
+        .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+        .expect("the pack seeds at least one category");
+    let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, instant)
+        .expect("the profile resolves");
+    let mut definition = bundle.profile.definition;
+    definition.version =
+        SpecVersion::parse(definition.version.get() + 1).expect("the P2 profile version");
+    let mut team = bundle.team.expect("the profile pins a team");
+    team.version = SpecVersion::parse(team.version.get() + 1).expect("the P2 team version");
+    definition
+        .team_template
+        .as_mut()
+        .expect("the profile pins a team")
+        .version = team.version;
+    let snapshot =
+        ResolvedWorkProfileSnapshot::resolve(&definition, instant).expect("the profile resolves");
+    let command = NewLocalCommand {
+        project_id: seeded.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse("backup-profile-selection-k4").expect("a valid key"),
+        kind: CommandKind::SelectTaskProfile,
+        target: AggregateRef::Task {
+            task_id: seeded.task,
+        },
+        target_revision: AggregateRevision::INITIAL,
+        intent: document(&serde_json::json!({
+            "schema_version": 1,
+            "marker": "profile-selection-p2-unchanged",
+        })),
+        created_at: instant,
+    };
+    let workflow = NewTaskWorkflow {
+        id: TaskWorkflowId::generate(),
+        project_id: seeded.project,
+        task_id: seeded.task,
+        snapshot,
+        current_phase: definition.entry_phase.clone(),
+        created_at: instant,
+    };
+    let outcome = seeded
+        .store
+        .apply_profile_selection(&ProfileSelection {
+            command: &command,
+            workflow: &workflow,
+            definition: &definition,
+            team: Some(&team),
+            team_source: TeamTemplateSource::Registered,
+        })
+        .expect("K4 re-selects P2");
+    seeded
+        .store
+        .complete_local_command(&command.idempotency_key, at("2026-08-10T09:04:01Z"))
+        .expect("K4 is confirmed")
+        .expect("K4 has a receipt");
+    outcome
 }
 
 #[test]
@@ -770,6 +902,46 @@ fn profile_selection_outcomes_round_trip_as_exact_non_executable_lineage() {
 }
 
 #[test]
+fn an_unchanged_selection_preserves_the_older_created_workflow_binding() {
+    let source = seed();
+    let [_, created_p2] = seed_profile_selection_outcomes(&source);
+    let unchanged = seed_unchanged_p2_selection(&source);
+    assert_eq!(unchanged.applied.as_str(), "unchanged");
+    assert_eq!(unchanged.workflow_id, created_p2.workflow_id);
+    assert_ne!(unchanged.receipt_id, created_p2.receipt_id);
+
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z")).expect("the export");
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let destination = SqliteStore::open(&database).expect("the destination migrates");
+    let into = ProjectId::generate();
+    destination
+        .create_project(&NewProject {
+            id: into,
+            name: name("Unchanged outcome destination"),
+            root_path: name("/tmp/kontor-unchanged-outcome"),
+            created_at: at("2026-08-11T09:00:00Z"),
+        })
+        .expect("the destination project exists");
+    let report = import_export(
+        &destination,
+        &export,
+        &ImportPlan::redacted_import_into(into),
+        at("2026-08-11T10:00:00Z"),
+    )
+    .expect("the created and unchanged bindings import");
+    let lineage = destination
+        .imported_profile_selection_outcomes(&report.import_id.to_string())
+        .expect("the exact lineage reads back");
+    let row = lineage
+        .iter()
+        .find(|row| row.source_receipt_id == unchanged.receipt_id.to_string())
+        .expect("the unchanged outcome survives");
+    assert_eq!(row.source_workflow_id, created_p2.workflow_id.to_string());
+    assert_eq!(row.applied, "unchanged");
+}
+
+#[test]
 fn an_import_refuses_an_outcome_that_does_not_match_its_source_policy() {
     let source = seed();
     seed_profile_selection_outcomes(&source);
@@ -802,6 +974,329 @@ fn an_import_refuses_an_outcome_that_does_not_match_its_source_policy() {
     .expect_err("mismatched outcome lineage is refused before any write");
     assert!(matches!(refused, BackupError::Verification { .. }));
     assert!(destination.import_receipts().expect("readable").is_empty());
+}
+
+#[test]
+fn profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding() {
+    let source = seed();
+    seed_profile_selection_outcomes(&source);
+    seed_teamless_profile_selection_outcome(&source);
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z")).expect("the export");
+    let base = serde_json::to_value(export).expect("the export serializes");
+    let outcomes = base["records"]["profile_selection_outcomes"]
+        .as_array()
+        .expect("outcomes are an array");
+    let p1 = outcomes
+        .iter()
+        .position(|row| row["profile_version"].as_i64() == Some(1))
+        .expect("P1 is exported");
+    let p2 = outcomes
+        .iter()
+        .position(|row| row["profile_version"].as_i64() == Some(2))
+        .expect("P2 is exported");
+    let p3 = outcomes
+        .iter()
+        .position(|row| row["profile_version"].as_i64() == Some(3))
+        .expect("teamless P3 is exported");
+    let p2_team = [
+        outcomes[p2]["team_template_id"].clone(),
+        outcomes[p2]["team_template_version"].clone(),
+        outcomes[p2]["team_template_hash"].clone(),
+    ];
+    let p1_team = [
+        outcomes[p1]["team_template_id"].clone(),
+        outcomes[p1]["team_template_version"].clone(),
+        outcomes[p1]["team_template_hash"].clone(),
+    ];
+
+    let mut mutations: Vec<(&str, serde_json::Value)> = Vec::new();
+
+    let mut swapped = base.clone();
+    for (field, value) in [
+        ("team_template_id", p2_team[0].clone()),
+        ("team_template_version", p2_team[1].clone()),
+        ("team_template_hash", p2_team[2].clone()),
+    ] {
+        swapped["records"]["profile_selection_outcomes"][p1][field] = value;
+    }
+    mutations.push(("K team v1 swapped to K2 team v2", swapped));
+
+    let mut nulled = base.clone();
+    for field in [
+        "team_template_id",
+        "team_template_version",
+        "team_template_hash",
+    ] {
+        nulled["records"]["profile_selection_outcomes"][p1][field] = serde_json::Value::Null;
+    }
+    mutations.push(("required team removed", nulled));
+
+    let mut added = base.clone();
+    for (field, value) in [
+        ("team_template_id", p1_team[0].clone()),
+        ("team_template_version", p1_team[1].clone()),
+        ("team_template_hash", p1_team[2].clone()),
+    ] {
+        added["records"]["profile_selection_outcomes"][p3][field] = value;
+    }
+    mutations.push(("team added to a teamless profile", added));
+
+    let mut forged_pair = base.clone();
+    let profiles = forged_pair["records"]["work_profiles"]
+        .as_array()
+        .expect("profiles are an array");
+    let profile1 = profiles
+        .iter()
+        .position(|row| row["version"].as_i64() == Some(1))
+        .expect("P1 row exists");
+    let profile2 = profiles
+        .iter()
+        .position(|row| row["version"].as_i64() == Some(2))
+        .expect("P2 row exists");
+    let p2_definition = profiles[profile2]["definition"].clone();
+    let p2_hash = profiles[profile2]["definition_hash"].clone();
+    forged_pair["records"]["work_profiles"][profile1]["definition"] = p2_definition;
+    forged_pair["records"]["work_profiles"][profile1]["definition_hash"] = p2_hash.clone();
+    forged_pair["records"]["profile_selection_outcomes"][p1]["profile_hash"] = p2_hash;
+    for (field, value) in [
+        ("team_template_id", p2_team[0].clone()),
+        ("team_template_version", p2_team[1].clone()),
+        ("team_template_hash", p2_team[2].clone()),
+    ] {
+        forged_pair["records"]["profile_selection_outcomes"][p1][field] = value;
+    }
+    mutations.push(("paired outcome and profile rows forged", forged_pair));
+
+    let mut broken_team = base.clone();
+    let team_id = p1_team[0].as_str().expect("the team id is text");
+    let team_version = p1_team[1].as_i64().expect("the team version is numeric");
+    let team_row = broken_team["records"]["team_templates"]
+        .as_array()
+        .expect("teams are an array")
+        .iter()
+        .position(|row| {
+            row["template_id"].as_str() == Some(team_id)
+                && row["version"].as_i64() == Some(team_version)
+        })
+        .expect("the pinned team row exists");
+    broken_team["records"]["team_templates"][team_row]["definition"] = serde_json::json!("{}");
+    mutations.push(("team canonical bytes do not match its hash", broken_team));
+
+    let mut wrong_applied = base.clone();
+    wrong_applied["records"]["profile_selection_outcomes"][p1]["applied"] =
+        serde_json::json!("unchanged");
+    mutations.push(("created workflow relabelled unchanged", wrong_applied));
+
+    for (label, mut document) in mutations {
+        rehash_records(&mut document);
+        let export = KontorExportV1::parse(&serde_json::to_vec(&document).expect("bytes"))
+            .unwrap_or_else(|error| panic!("{label} must pass document hashing: {error:?}"));
+        let home = TempDir::new().expect("a temporary directory");
+        let database = home.path().join("kontor.db");
+        let destination = SqliteStore::open(&database).expect("the destination migrates");
+        let into = ProjectId::generate();
+        destination
+            .create_project(&NewProject {
+                id: into,
+                name: name("Mutation destination"),
+                root_path: name("/tmp/kontor-mutation-destination"),
+                created_at: at("2026-08-11T09:00:00Z"),
+            })
+            .expect("the destination project exists");
+        let refused = match import_export(
+            &destination,
+            &export,
+            &ImportPlan::redacted_import_into(into),
+            at("2026-08-11T10:00:00Z"),
+        ) {
+            Ok(_) => panic!("{label} must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                refused,
+                BackupError::Verification { .. } | BackupError::Domain(_)
+            ),
+            "{label} must fail as source verification, got {refused:?}"
+        );
+        assert_eq!(count(&database, "work_profiles"), 0, "{label}");
+        assert_eq!(count(&database, "import_receipts"), 0, "{label}");
+    }
+}
+
+#[test]
+fn profile_selection_receipt_must_be_confirmed_local_effect_evidence() {
+    let source = seed();
+    seed_profile_selection_outcomes(&source);
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z")).expect("the export");
+    let base = serde_json::to_value(export).expect("the export serializes");
+    let receipt_id = base["records"]["profile_selection_outcomes"][0]["receipt_id"]
+        .as_str()
+        .expect("the receipt id is text")
+        .to_owned();
+    let receipt = base["records"]["command_receipts"]
+        .as_array()
+        .expect("receipts are an array")
+        .iter()
+        .position(|row| row["id"].as_str() == Some(&receipt_id))
+        .expect("the source receipt exists");
+    for (field, value) in [
+        ("execution_mode", serde_json::json!("dispatch")),
+        ("state", serde_json::json!("intent_persisted")),
+        ("result_ref", serde_json::Value::Null),
+    ] {
+        let mut document = base.clone();
+        document["records"]["command_receipts"][receipt][field] = value;
+        if field == "execution_mode" {
+            let unsettled = document["continuity_summary"]["unsettled_command_receipts"]
+                .as_u64()
+                .expect("the unsettled count is numeric");
+            document["continuity_summary"]["unsettled_command_receipts"] =
+                serde_json::json!(unsettled + 1);
+        }
+        rehash_records(&mut document);
+        let export = KontorExportV1::parse(&serde_json::to_vec(&document).expect("bytes"))
+            .expect("the internally hashed mutation parses");
+        let home = TempDir::new().expect("a temporary directory");
+        let database = home.path().join("kontor.db");
+        let destination = SqliteStore::open(&database).expect("the destination migrates");
+        let into = ProjectId::generate();
+        destination
+            .create_project(&NewProject {
+                id: into,
+                name: name("Receipt mutation destination"),
+                root_path: name("/tmp/kontor-receipt-mutation"),
+                created_at: at("2026-08-11T09:00:00Z"),
+            })
+            .expect("the destination project exists");
+        assert!(
+            import_export(
+                &destination,
+                &export,
+                &ImportPlan::redacted_import_into(into),
+                at("2026-08-11T10:00:00Z"),
+            )
+            .is_err(),
+            "mutating {field} must break the effect binding"
+        );
+        assert_eq!(count(&database, "work_profiles"), 0);
+    }
+}
+
+#[test]
+fn export_generations_are_closed_over_the_fields_and_summaries_they_define() {
+    let source = seed();
+    seed_profile_selection_outcomes(&source);
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z")).expect("the export");
+    let base = serde_json::to_value(export).expect("the export serializes");
+
+    let mut legacy_with_v3_rows = base.clone();
+    legacy_with_v3_rows["schema_version"] = serde_json::json!(2);
+    legacy_with_v3_rows["database_schema_version"] = serde_json::json!(61);
+    assert!(
+        KontorExportV1::parse(
+            &serde_json::to_vec(&legacy_with_v3_rows).expect("legacy mutation bytes")
+        )
+        .is_err(),
+        "v2 cannot carry v3 outcome rows"
+    );
+
+    let mut unknown = base.clone();
+    unknown["unknown_generation_field"] = serde_json::json!(true);
+    assert!(
+        KontorExportV1::parse(&serde_json::to_vec(&unknown).expect("unknown-field bytes")).is_err(),
+        "same-generation unknown fields are not ignored"
+    );
+
+    let mut continuity = base;
+    continuity["continuity_summary"]["record_counts"]["profile_selection_outcomes"] =
+        serde_json::json!(0);
+    assert!(
+        KontorExportV1::parse(&serde_json::to_vec(&continuity).expect("continuity bytes")).is_err(),
+        "v3 continuity must disclose every outcome"
+    );
+}
+
+#[test]
+fn import_preflight_and_transaction_leave_no_orphan_specification() {
+    let source = seed();
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z")).expect("the export");
+    let mut duplicate = serde_json::to_value(&export).expect("the export serializes");
+    let repeated = duplicate["records"]["work_profiles"][0].clone();
+    duplicate["records"]["work_profiles"]
+        .as_array_mut()
+        .expect("profiles are an array")
+        .push(repeated);
+    let profile_count = duplicate["records"]["work_profiles"]
+        .as_array()
+        .expect("profiles are an array")
+        .len();
+    duplicate["continuity_summary"]["record_counts"]["work_profiles"] =
+        serde_json::json!(profile_count);
+    rehash_records(&mut duplicate);
+    let duplicate =
+        KontorExportV1::parse(&serde_json::to_vec(&duplicate).expect("duplicate bytes"))
+            .expect("the duplicate is structurally a v3 document");
+
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let destination = SqliteStore::open(&database).expect("the destination migrates");
+    let into = ProjectId::generate();
+    destination
+        .create_project(&NewProject {
+            id: into,
+            name: name("Atomic destination"),
+            root_path: name("/tmp/kontor-atomic-destination"),
+            created_at: at("2026-08-11T09:00:00Z"),
+        })
+        .expect("the destination project exists");
+    assert!(
+        import_export(
+            &destination,
+            &duplicate,
+            &ImportPlan::redacted_import_into(into),
+            at("2026-08-11T10:00:00Z"),
+        )
+        .is_err(),
+        "a duplicate source identity is refused before materialization"
+    );
+    for table in [
+        "work_profiles",
+        "team_templates",
+        "import_receipts",
+        "imported_records",
+    ] {
+        assert_eq!(count(&database, table), 0, "`{table}` remains untouched");
+    }
+
+    plant(
+        &database,
+        "CREATE TRIGGER test_refuse_imported_lineage
+         BEFORE INSERT ON imported_records
+         BEGIN SELECT RAISE(ABORT, 'test late lineage failure'); END;",
+    );
+    assert!(
+        import_export(
+            &destination,
+            &export,
+            &ImportPlan::redacted_import_into(into),
+            at("2026-08-11T10:01:00Z"),
+        )
+        .is_err(),
+        "a late lineage write failure rolls the whole import back"
+    );
+    for table in [
+        "work_profiles",
+        "team_templates",
+        "import_receipts",
+        "imported_records",
+    ] {
+        assert_eq!(
+            count(&database, table),
+            0,
+            "`{table}` rolls back atomically"
+        );
+    }
 }
 
 #[test]

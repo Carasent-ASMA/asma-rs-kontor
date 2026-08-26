@@ -114,6 +114,7 @@ pub struct ContinuitySummary {
 /// reader can see what the document claims about itself before it reads the
 /// state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KontorExportV1 {
     /// The export generation. A later one is refused rather than misread.
     pub schema_version: u32,
@@ -175,6 +176,13 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove profile-selection outcome completeness",
+            });
+        }
+        if self.schema_version < EXPORT_SCHEMA_VERSION
+            && !self.records.profile_selection_outcomes.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries profile-selection outcomes it did not define",
             });
         }
         if ContentHash::of(&self.canonical_records_bytes()?) != self.records_hash {
@@ -473,6 +481,7 @@ macro_rules! exported_tables {
         $(
             #[doc = concat!("One exported row of `", $table, "`.")]
             #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+            #[serde(deny_unknown_fields)]
             pub struct $row {
                 $(
                     $(#[$column_attribute])*
@@ -516,6 +525,7 @@ macro_rules! exported_tables {
         /// evidence about that work — so a reader meets a record's owner before
         /// it meets the record.
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
         pub struct ExportedRecords {
             $(
                 $(#[$field_attribute])*

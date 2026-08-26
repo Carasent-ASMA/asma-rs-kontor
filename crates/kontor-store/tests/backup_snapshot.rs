@@ -26,7 +26,7 @@ use kontor_core::id::{
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    NewLocalCommand, NewProject, NewTask, NewTaskWorkflow, ProjectRepository,
+    CommandRepository, NewLocalCommand, NewProject, NewTask, NewTaskWorkflow, ProjectRepository,
 };
 use kontor_core::spec::ResolvedWorkProfileSnapshot;
 use kontor_core::state::TaskState;
@@ -151,7 +151,7 @@ fn selection_snapshot_fixture(
             snapshot,
             created_at: instant,
         };
-        store
+        let outcome = store
             .apply_profile_selection(&ProfileSelection {
                 command: &command,
                 workflow: &workflow,
@@ -159,7 +159,12 @@ fn selection_snapshot_fixture(
                 team: None,
                 team_source: TeamTemplateSource::Registered,
             })
-            .expect("the selection is stored atomically")
+            .expect("the selection is stored atomically");
+        store
+            .complete_local_command(&command.idempotency_key, instant)
+            .expect("the local receipt completes")
+            .expect("the receipt exists");
+        outcome
     };
     let first = apply(
         "snapshot-profile-selection-k",

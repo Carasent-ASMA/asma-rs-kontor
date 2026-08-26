@@ -35,13 +35,13 @@ use kontor_core::id::{
     parse_utc_timestamp,
 };
 use kontor_core::receipt::AggregateRef;
-use kontor_core::repository::{ProjectRepository, RepositoryError, SpecRepository};
+use kontor_core::repository::{ProjectRepository, RepositoryError};
 use kontor_core::spec::{
     PersonaScenarioSpec, ResolvedWorkProfileSnapshot, TeamTemplateRevision, TriggerSpec,
     WorkProfileSpec,
 };
 use kontor_core::ticket::{ExternalWorkflowSpec, TicketFieldSpec};
-use rusqlite::params;
+use rusqlite::{Transaction, params};
 use uuid::Uuid;
 
 use crate::SqliteStore;
@@ -168,20 +168,30 @@ pub fn import_export(
     // 2. Lineage first, and for every record: an import that materializes
     //    nothing still has to be able to say what it saw.
     let lineage = export.records.lineage()?;
+    let mut identities = std::collections::BTreeSet::new();
+    if lineage
+        .iter()
+        .any(|record| !identities.insert((record.kind, record.identity.clone())))
+    {
+        return Err(BackupError::Verification {
+            detail: "an export repeats a source record identity",
+        });
+    }
     let mut dispositions: Vec<(RecordLineage, Disposition)> = lineage
         .into_iter()
         .map(|record| (record, Disposition::Recorded))
         .collect();
 
-    // 3. Materialize the versioned specifications, in dependency order. Each one
-    //    is re-validated through this build's own domain types and
-    //    re-canonicalized; a document that does not reproduce its source digest
-    //    is refused rather than written.
-    materialize(store, export, destination, &mut dispositions)?;
-
-    // 4. The destination's own receipt, and the lineage under it.
+    // 3. Materialization and provenance are one write, in dependency order.
+    //    Each specification is re-validated and re-canonicalized before its
+    //    insert. No specification may become live before the destination
+    //    receipt that explains it, and a late uniqueness/FK failure rolls every
+    //    inserted specification back.
     let import_id = kontor_core::id::generate_uuid_v7();
-    record_import(store, export, plan, now, import_id, &dispositions)?;
+    let transaction = store.begin()?;
+    materialize(&transaction, export, destination, now, &mut dispositions)?;
+    record_import(&transaction, export, plan, now, import_id, &dispositions)?;
+    transaction.commit().map_err(map_sql)?;
 
     let count = |wanted: &dyn Fn(Disposition) -> bool| -> u64 {
         dispositions
@@ -217,14 +227,15 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
         CommandReceiptId::parse(&row.receipt_id)?;
         let task_id = TaskId::parse(&row.task_id)?;
         TaskWorkflowId::parse(&row.workflow_id)?;
-        WorkProfileKey::parse(&row.profile_key)?;
-        SpecVersion::parse(u32::try_from(row.profile_version).map_err(|_| {
-            BackupError::Verification {
-                detail: "an exported profile selection has an invalid profile version",
-            }
-        })?)?;
-        ContentHash::parse(&row.profile_hash)?;
-        parse_utc_timestamp(&row.recorded_at)?;
+        let profile_key = WorkProfileKey::parse(&row.profile_key)?;
+        let profile_version =
+            SpecVersion::parse(u32::try_from(row.profile_version).map_err(|_| {
+                BackupError::Verification {
+                    detail: "an exported profile selection has an invalid profile version",
+                }
+            })?)?;
+        let profile_hash = ContentHash::parse(&row.profile_hash)?;
+        let recorded_at = parse_utc_timestamp(&row.recorded_at)?;
         if !matches!(row.applied.as_str(), "created" | "unchanged") {
             return Err(BackupError::Verification {
                 detail: "an exported profile selection has an invalid applied outcome",
@@ -243,13 +254,13 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
         ) {
             (None, None, None) => None,
             (Some(id), Some(version), Some(hash)) => {
-                TeamTemplateId::parse(id)?;
-                SpecVersion::parse(u32::try_from(version).map_err(|_| {
+                let id = TeamTemplateId::parse(id)?;
+                let version = SpecVersion::parse(u32::try_from(version).map_err(|_| {
                     BackupError::Verification {
                         detail: "an exported profile selection has an invalid team version",
                     }
                 })?)?;
-                ContentHash::parse(hash)?;
+                let hash = ContentHash::parse(hash)?;
                 Some((id, version, hash))
             }
             _ => {
@@ -259,50 +270,91 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
             }
         };
 
-        let receipt_matches = records.command_receipts.iter().any(|receipt| {
-            receipt.project_id == row.project_id
-                && receipt.id == row.receipt_id
-                && receipt.kind == "select_task_profile"
-                && receipt.created_at == row.recorded_at
-                && serde_json::from_str::<AggregateRef>(&receipt.target)
-                    .is_ok_and(|target| target == (AggregateRef::Task { task_id }))
-        });
-        let workflow_matches = records.task_workflows.iter().any(|workflow| {
-            let snapshot_matches = ContentHash::parse(&workflow.snapshot_hash)
-                .and_then(|hash| CanonicalDocument::from_stored(&workflow.snapshot, &hash))
-                .and_then(|document| document.deserialize::<ResolvedWorkProfileSnapshot>())
-                .is_ok_and(|snapshot| {
-                    snapshot.verify().is_ok()
-                        && snapshot.definition.id.as_str() == row.profile_key
-                        && i64::from(snapshot.definition.version.get()) == row.profile_version
-                        && snapshot.definition_hash.as_str() == row.profile_hash
-                });
-            workflow.project_id == row.project_id
-                && workflow.id == row.workflow_id
-                && workflow.task_id == row.task_id
-                && workflow.profile_key == row.profile_key
-                && workflow.profile_version == row.profile_version
-                && snapshot_matches
+        let Some(receipt) = records
+            .command_receipts
+            .iter()
+            .find(|receipt| receipt.project_id == row.project_id && receipt.id == row.receipt_id)
+        else {
+            return Err(invalid_selection_lineage());
+        };
+        let receipt_matches = receipt.kind == "select_task_profile"
+            && receipt.execution_mode == "local"
+            && receipt.state == "confirmed"
+            && receipt.result_ref.as_deref() == Some(receipt.intent_hash.as_str())
+            && receipt.created_at == row.recorded_at
+            && serde_json::from_str::<AggregateRef>(&receipt.target)
+                .is_ok_and(|target| target == (AggregateRef::Task { task_id }))
+            && !records.command_outbox.iter().any(|outbox| {
+                outbox.project_id == row.project_id && outbox.receipt_id == row.receipt_id
+            });
+
+        let Some(profile_row) = records.work_profiles.iter().find(|profile| {
+            profile.project_id == row.project_id
+                && profile.profile_key == row.profile_key
+                && profile.version == row.profile_version
+        }) else {
+            return Err(invalid_selection_lineage());
+        };
+        let (profile, stored_profile_hash) =
+            stored::<WorkProfileSpec>(&profile_row.definition, &profile_row.definition_hash)?;
+        let canonical_profile = profile.canonicalize()?;
+        let profile_matches = profile.id == profile_key
+            && profile.version == profile_version
+            && stored_profile_hash == profile_hash
+            && canonical_profile.hash() == &profile_hash
+            && canonical_profile.json() == profile_row.definition;
+
+        let Some(workflow) = records.task_workflows.iter().find(|workflow| {
+            workflow.project_id == row.project_id && workflow.id == row.workflow_id
+        }) else {
+            return Err(invalid_selection_lineage());
+        };
+        let snapshot_hash = ContentHash::parse(&workflow.snapshot_hash)?;
+        let snapshot_document = CanonicalDocument::from_stored(&workflow.snapshot, &snapshot_hash)?;
+        let snapshot = snapshot_document.deserialize::<ResolvedWorkProfileSnapshot>()?;
+        snapshot.verify()?;
+        let workflow_created_at = parse_utc_timestamp(&workflow.created_at)?;
+        let applied_matches = match row.applied.as_str() {
+            "created" => workflow_created_at == recorded_at,
+            "unchanged" => workflow_created_at < recorded_at,
+            _ => false,
+        };
+        let workflow_matches = workflow.task_id == row.task_id
+            && workflow.profile_key == row.profile_key
+            && workflow.profile_version == row.profile_version
+            && snapshot.definition == profile
+            && snapshot.definition_hash == profile_hash
+            && applied_matches;
+
+        let snapshot_team_matches = match (snapshot.definition.team_template, team.as_ref()) {
+            (None, None) => true,
+            (Some(pin), Some((id, version, _))) => {
+                pin.template_id == *id && pin.version == *version
+            }
+            _ => false,
+        };
+        let team_matches = team.as_ref().is_none_or(|(id, version, hash)| {
+            records.team_templates.iter().any(|template| {
+                if template.project_id != row.project_id
+                    || template.template_id != id.to_string()
+                    || template.version != i64::from(version.get())
+                    || template.definition_hash != hash.as_str()
+                {
+                    return false;
+                }
+                CanonicalDocument::from_stored(&template.definition, hash).is_ok()
+            })
         });
         let task_matches = records
             .tasks
             .iter()
             .any(|task| task.project_id == row.project_id && task.id == row.task_id);
-        let profile_matches = records.work_profiles.iter().any(|profile| {
-            profile.project_id == row.project_id
-                && profile.profile_key == row.profile_key
-                && profile.version == row.profile_version
-                && profile.definition_hash == row.profile_hash
-        });
-        let team_matches = team.is_none_or(|(id, version, hash)| {
-            records.team_templates.iter().any(|template| {
-                template.project_id == row.project_id
-                    && &template.template_id == id
-                    && template.version == version
-                    && &template.definition_hash == hash
-            })
-        });
-        if !(receipt_matches && workflow_matches && task_matches && profile_matches && team_matches)
+        if !(receipt_matches
+            && workflow_matches
+            && task_matches
+            && profile_matches
+            && snapshot_team_matches
+            && team_matches)
         {
             return Err(BackupError::Verification {
                 detail: "an exported profile selection does not match its source lineage",
@@ -312,22 +364,18 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
     Ok(())
 }
 
-/// Insert one specification and classify the outcome.
-///
-/// A primary-key conflict is `already_present` rather than a failure: the
-/// destination's own revision of a specification is never overwritten by an
-/// import, and re-running an interrupted import must converge rather than
-/// refuse.
-fn classify(outcome: Result<ContentHash, RepositoryError>, source: &ContentHash) -> Disposition {
+const fn invalid_selection_lineage() -> BackupError {
+    BackupError::Verification {
+        detail: "an exported profile selection does not match its source lineage",
+    }
+}
+
+/// Classify one targeted `INSERT .. ON CONFLICT(primary-key) DO NOTHING`.
+fn inserted(outcome: rusqlite::Result<usize>) -> Disposition {
     match outcome {
-        Ok(hash) if &hash == source => Disposition::Materialized,
-        // The destination re-canonicalized the same specification to different
-        // bytes. That is this build disagreeing with the source about what the
-        // document *means*, and taking it anyway is how a silently different
-        // specification ends up pinned to real work.
-        Ok(_) => Disposition::Refused("destination_digest_differs"),
-        Err(RepositoryError::Conflict { .. }) => Disposition::AlreadyPresent,
-        Err(_) => Disposition::Refused("destination_refused"),
+        Ok(1) => Disposition::Materialized,
+        Ok(0) => Disposition::AlreadyPresent,
+        Ok(_) | Err(_) => Disposition::Refused("destination_refused"),
     }
 }
 
@@ -347,17 +395,36 @@ fn stored<T: for<'de> serde::Deserialize<'de>>(
 /// before the triggers that pin them — so a specification's references already
 /// exist when it lands.
 fn materialize(
-    store: &SqliteStore,
+    transaction: &Transaction<'_>,
     export: &KontorExportV1,
     destination: ProjectId,
+    now: Timestamp,
     dispositions: &mut [(RecordLineage, Disposition)],
 ) -> Result<(), BackupError> {
     let records = &export.records;
+    let created_at = format_utc_timestamp(now);
 
     for row in &records.calendar_profiles {
         let identity = format!("{}/{}", row.profile_id, row.version);
         let outcome = match stored::<CalendarProfileSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => classify(store.insert_calendar_profile(&spec), &digest),
+            Ok((spec, digest)) => match spec.canonicalize() {
+                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
+                    "INSERT INTO calendar_profiles
+                         (profile_id, version, name, definition, definition_hash, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(profile_id, version) DO NOTHING",
+                    params![
+                        spec.profile_id.to_string(),
+                        i64::from(spec.version.get()),
+                        spec.name.as_str(),
+                        document.json(),
+                        document.hash().as_str(),
+                        created_at,
+                    ],
+                )),
+                Ok(_) => Disposition::Refused("destination_digest_differs"),
+                Err(_) => Disposition::Refused("source_document_invalid"),
+            },
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "calendar_profiles", &identity, outcome);
@@ -366,7 +433,24 @@ fn materialize(
     for row in &records.work_profiles {
         let identity = format!("{}/{}/{}", row.project_id, row.profile_key, row.version);
         let outcome = match stored::<WorkProfileSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => classify(store.insert_work_profile(destination, &spec), &digest),
+            Ok((spec, digest)) => match spec.canonicalize() {
+                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
+                    "INSERT INTO work_profiles
+                         (project_id, profile_key, version, definition, definition_hash, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(project_id, profile_key, version) DO NOTHING",
+                    params![
+                        destination.to_string(),
+                        spec.id.as_str(),
+                        i64::from(spec.version.get()),
+                        document.json(),
+                        document.hash().as_str(),
+                        created_at,
+                    ],
+                )),
+                Ok(_) => Disposition::Refused("destination_digest_differs"),
+                Err(_) => Disposition::Refused("source_document_invalid"),
+            },
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "work_profiles", &identity, outcome);
@@ -374,16 +458,34 @@ fn materialize(
 
     for row in &records.team_templates {
         let identity = format!("{}/{}/{}", row.project_id, row.template_id, row.version);
-        let outcome = materialize_team_template(store, destination, row);
+        let outcome = materialize_team_template(transaction, destination, now, row);
         set(dispositions, "team_templates", &identity, outcome);
     }
 
     for row in &records.persona_scenarios {
         let identity = format!("{}/{}/{}", row.project_id, row.scenario_id, row.version);
         let outcome = match stored::<PersonaScenarioSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => {
-                classify(store.insert_persona_scenario(destination, &spec), &digest)
-            }
+            Ok((spec, digest)) => match spec.canonicalize() {
+                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
+                    "INSERT INTO persona_scenarios
+                         (project_id, scenario_id, version, persona_key, gate_key, definition,
+                          definition_hash, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT(project_id, scenario_id, version) DO NOTHING",
+                    params![
+                        destination.to_string(),
+                        spec.scenario_id.to_string(),
+                        i64::from(spec.version.get()),
+                        spec.persona.as_str(),
+                        spec.gate_under_test.as_str(),
+                        document.json(),
+                        document.hash().as_str(),
+                        created_at,
+                    ],
+                )),
+                Ok(_) => Disposition::Refused("destination_digest_differs"),
+                Err(_) => Disposition::Refused("source_document_invalid"),
+            },
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "persona_scenarios", &identity, outcome);
@@ -395,9 +497,28 @@ fn materialize(
             row.project_id, row.connector, row.external_project, row.issue_type, row.version
         );
         let outcome = match stored::<TicketFieldSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => {
-                classify(store.insert_ticket_field_spec(destination, &spec), &digest)
-            }
+            Ok((spec, digest)) => match spec.canonicalize() {
+                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
+                    "INSERT INTO ticket_field_specs
+                         (project_id, connector, external_project, issue_type, version,
+                          definition, definition_hash, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT(project_id, connector, external_project, issue_type, version)
+                     DO NOTHING",
+                    params![
+                        destination.to_string(),
+                        spec.connector.as_str(),
+                        spec.project.as_str(),
+                        spec.issue_type.as_str(),
+                        i64::from(spec.version.get()),
+                        document.json(),
+                        document.hash().as_str(),
+                        created_at,
+                    ],
+                )),
+                Ok(_) => Disposition::Refused("destination_digest_differs"),
+                Err(_) => Disposition::Refused("source_document_invalid"),
+            },
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "ticket_field_specs", &identity, outcome);
@@ -409,10 +530,31 @@ fn materialize(
             row.project_id, row.connector, row.external_project, row.issue_type, row.version
         );
         let outcome = match stored::<ExternalWorkflowSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => classify(
-                store.insert_external_workflow_spec(destination, &spec),
-                &digest,
-            ),
+            Ok((spec, digest)) => match spec.canonicalize() {
+                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
+                    "INSERT INTO external_workflow_specs
+                         (project_id, connector, external_project, issue_type, version,
+                          work_profile_key, work_profile_version, definition, definition_hash,
+                          created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(project_id, connector, external_project, issue_type, version)
+                     DO NOTHING",
+                    params![
+                        destination.to_string(),
+                        spec.connector.as_str(),
+                        spec.project.as_str(),
+                        spec.issue_type.as_str(),
+                        i64::from(spec.version.get()),
+                        spec.work_profile.as_ref().map(WorkProfileKey::as_str),
+                        spec.work_profile_version.map(|version| i64::from(version.get())),
+                        document.json(),
+                        document.hash().as_str(),
+                        created_at,
+                    ],
+                )),
+                Ok(_) => Disposition::Refused("destination_digest_differs"),
+                Err(_) => Disposition::Refused("source_document_invalid"),
+            },
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "external_workflow_specs", &identity, outcome);
@@ -421,7 +563,43 @@ fn materialize(
     for row in &records.trigger_specs {
         let identity = format!("{}/{}/{}", row.project_id, row.trigger_key, row.version);
         let outcome = match stored::<TriggerSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => classify(store.insert_trigger_spec(destination, &spec), &digest),
+            Ok((spec, digest)) => match spec.canonicalize() {
+                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
+                    "INSERT INTO trigger_specs
+                         (project_id, trigger_key, version, source_kind, source_connection,
+                          work_profile_key, work_profile_version, team_template_id,
+                          team_template_version, context_template, context_version,
+                          calendar_profile_id, calendar_version, definition, definition_hash,
+                          created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                             ?15, ?16)
+                     ON CONFLICT(project_id, trigger_key, version) DO NOTHING",
+                    params![
+                        destination.to_string(),
+                        spec.id.as_str(),
+                        i64::from(spec.version.get()),
+                        spec.source_kind.as_str(),
+                        spec.source_connection.as_str(),
+                        spec.work_profile.as_str(),
+                        i64::from(spec.work_profile_version.get()),
+                        spec.team_template.template_id.to_string(),
+                        i64::from(spec.team_template.version.get()),
+                        spec.context_template.template.as_str(),
+                        i64::from(spec.context_template.version.get()),
+                        spec.calendar_policy
+                            .as_ref()
+                            .map(|policy| policy.profile_id.to_string()),
+                        spec.calendar_policy
+                            .as_ref()
+                            .map(|policy| i64::from(policy.version.get())),
+                        document.json(),
+                        document.hash().as_str(),
+                        created_at,
+                    ],
+                )),
+                Ok(_) => Disposition::Refused("destination_digest_differs"),
+                Err(_) => Disposition::Refused("source_document_invalid"),
+            },
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "trigger_specs", &identity, outcome);
@@ -433,8 +611,9 @@ fn materialize(
 /// A team template is the one specification whose row carries fields beside its
 /// document, so it is rebuilt rather than deserialized whole.
 fn materialize_team_template(
-    store: &SqliteStore,
+    transaction: &Transaction<'_>,
     destination: ProjectId,
+    now: Timestamp,
     row: &crate::backup::export::TeamTemplatesRow,
 ) -> Disposition {
     let Ok(digest) = ContentHash::parse(&row.definition_hash) else {
@@ -465,7 +644,26 @@ fn materialize_team_template(
         definition,
         role_authority,
     };
-    classify(store.insert_team_template(destination, &revision), &digest)
+    let Ok(authority) = serde_json::to_string(&revision.role_authority) else {
+        return Disposition::Refused("source_document_invalid");
+    };
+    inserted(transaction.execute(
+        "INSERT INTO team_templates
+             (project_id, template_id, version, name, definition, definition_hash,
+              role_authority, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(project_id, template_id, version) DO NOTHING",
+        params![
+            destination.to_string(),
+            revision.template_id.to_string(),
+            i64::from(revision.version.get()),
+            revision.name.as_str(),
+            revision.definition.json(),
+            digest.as_str(),
+            authority,
+            format_utc_timestamp(now),
+        ],
+    ))
 }
 
 /// Record what happened to one source record, by kind and source identity.
@@ -489,7 +687,7 @@ fn set(
 /// One transaction on purpose: an import receipt whose lineage is half written
 /// would claim a provenance it cannot show.
 fn record_import(
-    store: &SqliteStore,
+    transaction: &Transaction<'_>,
     export: &KontorExportV1,
     plan: &ImportPlan,
     now: Timestamp,
@@ -500,7 +698,6 @@ fn record_import(
         .iter()
         .filter(|(_, disposition)| matches!(disposition, Disposition::Materialized))
         .count();
-    let transaction = store.begin()?;
     transaction
         .execute(
             "INSERT INTO import_receipts
@@ -579,7 +776,6 @@ fn record_import(
             )
             .map_err(map_sql)?;
     }
-    transaction.commit().map_err(map_sql)?;
     Ok(())
 }
 
