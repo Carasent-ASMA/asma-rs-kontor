@@ -2742,7 +2742,17 @@ pub struct TeamTemplateCatalogDto {
     /// The role slots it seats, in declaration order.
     pub slots: Vec<String>,
     /// The digest of its canonical definition.
+    ///
+    /// This is the realm bootstrap candidate's digest, not a claim about bytes
+    /// already stored for any project.
     pub definition_hash: String,
+    /// `bundled` or `registered`: where this bootstrap candidate came from.
+    pub source: String,
+    /// Always `realm_bootstrap`; this row is discovery input, not project state.
+    pub catalog_scope: String,
+    /// Always `project_stored_revision`: task launch resolves the immutable
+    /// revision held by the owning project.
+    pub execution_authority: String,
 }
 
 /// The realm-qualified model catalog consumed by the Teams editor.
@@ -3327,6 +3337,11 @@ pub struct AppliedEpicDto {
     pub work_profile: RevisionRefDto,
     /// The team revision the profile pins, when it prescribes one.
     pub team_template: Option<RevisionRefDto>,
+    /// Canonical hash of the exact stored team revision this project executes.
+    ///
+    /// On first apply this is the bootstrapped candidate. On reapply after a
+    /// daemon upgrade it remains the historical immutable stored hash.
+    pub team_template_hash: Option<String>,
     /// A stable digest of the graph this call applied.
     ///
     /// It covers the *content* — the epic and its revision, the pinned profile
@@ -3388,6 +3403,8 @@ pub struct PreviewEpicDto {
     pub work_profile: RevisionRefDto,
     /// The team revision the profile pins, when it prescribes one.
     pub team_template: Option<RevisionRefDto>,
+    /// Canonical hash of the exact stored team revision apply would execute.
+    pub team_template_hash: Option<String>,
     /// Every task, in request order.
     pub tasks: Vec<PreviewEpicTaskDto>,
 }
@@ -4069,6 +4086,8 @@ pub struct SelectionDto {
     pub work_profile: Option<RevisionRefDto>,
     /// The team revision that profile pins.
     pub team_template: Option<RevisionRefDto>,
+    /// Canonical hash of the exact stored team revision the task executes.
+    pub team_template_hash: Option<String>,
     /// The provider-account profile now pinned.
     #[schema(value_type = Option<String>)]
     pub account_profile_id: Option<AccountProfileId>,

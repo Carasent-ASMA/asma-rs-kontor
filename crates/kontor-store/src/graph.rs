@@ -35,11 +35,13 @@ use kontor_core::id::{
     ContentHash, ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId, ModuleKey,
     ProjectId, RoleSlotId, RoleTurnId, RuntimeBindingId, SpecVersion, StatusConflictId, TaskId,
     TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp,
+    WorkProfileKey,
 };
 use kontor_core::naming::AiShortName;
+use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    MiniProject, Project, RepositoryError, RepositoryResult, Task, TicketLink,
-    validate_dependency_graph,
+    MiniProject, NewLocalCommand, NewTaskWorkflow, Project, RepositoryError, RepositoryResult,
+    Task, TicketLink, validate_dependency_graph,
 };
 use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec};
 use kontor_core::state::{ImportedTaskState, TaskState};
@@ -176,8 +178,42 @@ pub struct EpicApplication<'a> {
     pub definition: &'a WorkProfileSpec,
     /// The team revision the profile pins, when it prescribes one.
     pub team: Option<&'a TeamTemplateRevision>,
+    /// Where that team revision came from.
+    ///
+    /// Only the build's bundled bootstrap may reconcile an older immutable
+    /// revision already stored at the same identity. Registered packs remain
+    /// ordinary published input and may never adopt another pack's bytes.
+    pub team_source: TeamTemplateSource,
     /// When the application happened.
     pub applied_at: Timestamp,
+}
+
+/// Authority behind a team revision presented to graph application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamTemplateSource {
+    /// Compiled bootstrap/catalog data shipped by this build.
+    Bundled,
+    /// An operator-registered profile pack.
+    Registered,
+}
+
+/// One profile-selection command and the exact policy it intends to freeze.
+///
+/// The store applies the local receipt, workflow replacement and immutable
+/// result binding in one transaction. That makes a retry a read of the
+/// historical result rather than another resolution of mutable catalog state.
+#[derive(Debug)]
+pub struct ProfileSelection<'a> {
+    /// Durable local command identity.
+    pub command: &'a NewLocalCommand,
+    /// Workflow to create when this policy is not already active.
+    pub workflow: &'a NewTaskWorkflow,
+    /// Published work-profile revision.
+    pub definition: &'a WorkProfileSpec,
+    /// Published team revision pinned by the profile, when any.
+    pub team: Option<&'a TeamTemplateRevision>,
+    /// Authority behind the presented team revision.
+    pub team_source: TeamTemplateSource,
 }
 
 /// One complete legacy backlog export resolved into the existing graph model.
@@ -302,6 +338,25 @@ pub struct AppliedEpic {
     pub team: Option<(TeamTemplateId, SpecVersion)>,
     /// The tasks, in the order they were stated.
     pub tasks: Vec<AppliedTask>,
+}
+
+/// The immutable historical result bound to one profile-selection receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProfileSelectionOutcome {
+    /// Receipt whose exact result this row preserves.
+    pub receipt_id: CommandReceiptId,
+    /// Task the selection targeted.
+    pub task_id: TaskId,
+    /// Exact workflow the receipt selected, active or historical now.
+    pub workflow_id: TaskWorkflowId,
+    /// Exact stored work-profile revision and canonical hash.
+    pub profile: (WorkProfileKey, SpecVersion, ContentHash),
+    /// Exact stored team-template revision and canonical hash, when pinned.
+    pub team: Option<(TeamTemplateId, SpecVersion, ContentHash)>,
+    /// Whether the original call created a workflow or found the same one.
+    pub applied: Applied,
+    /// When the atomic selection was recorded.
+    pub recorded_at: Timestamp,
 }
 
 /// One recorded reconciliation conflict, as a reader is told about it.
@@ -1258,6 +1313,7 @@ impl SqliteStore {
         request: &kontor_core::repository::NewTaskWorkflow,
         definition: &WorkProfileSpec,
         team: Option<&TeamTemplateRevision>,
+        team_source: TeamTemplateSource,
     ) -> RepositoryResult<TaskWorkflowId> {
         request.snapshot.verify()?;
         let transaction = self.begin()?;
@@ -1282,6 +1338,7 @@ impl SqliteStore {
             profile: &request.snapshot,
             definition,
             team,
+            team_source,
             applied_at: request.created_at,
         };
         store_specifications(&transaction, &application)?;
@@ -1314,6 +1371,242 @@ impl SqliteStore {
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(request.id)
+    }
+
+    /// Apply one profile-selection receipt and its exact workflow result in one
+    /// transaction.
+    ///
+    /// A later selection may deactivate the workflow this call chose, but it
+    /// cannot change the immutable outcome bound to this receipt. Replays
+    /// therefore return the original policy rather than whichever workflow is
+    /// active when the retry arrives.
+    ///
+    /// # Errors
+    /// Refuses cross-project/mismatched inputs, missing tasks, published
+    /// revision drift and an idempotency replay whose historical outcome is not
+    /// available (which is the safe answer for receipts created before schema
+    /// v62).
+    pub fn apply_profile_selection(
+        &self,
+        request: &ProfileSelection<'_>,
+    ) -> RepositoryResult<StoredProfileSelectionOutcome> {
+        let project_id = request.command.project_id;
+        let task_id = request.workflow.task_id;
+        if request.workflow.project_id != project_id
+            || request.command.kind != CommandKind::SelectTaskProfile
+            || request.command.target != (AggregateRef::Task { task_id })
+        {
+            return Err(RepositoryError::CrossProject {
+                subject: "profile selection",
+            });
+        }
+        request.workflow.snapshot.verify()?;
+        if request.workflow.snapshot.definition != *request.definition {
+            return Err(conflict(
+                "profile selection",
+                "the workflow snapshot does not match the presented work-profile revision",
+            ));
+        }
+        if request.workflow.current_phase != request.definition.entry_phase
+            || request.workflow.created_at != request.command.created_at
+        {
+            return Err(conflict(
+                "profile selection",
+                "the workflow start does not match the command's resolved policy and instant",
+            ));
+        }
+        match (request.definition.team_template, request.team) {
+            (None, None) => {}
+            (Some(pin), Some(team))
+                if pin.template_id == team.template_id && pin.version == team.version => {}
+            _ => {
+                return Err(conflict(
+                    "profile selection",
+                    "the presented team revision does not match the work-profile pin",
+                ));
+            }
+        }
+
+        let transaction = self.begin()?;
+        if let Some(existing) =
+            crate::commands::intent::insert_local_command(&transaction, request.command)?
+        {
+            return read_profile_selection_outcome(&transaction, project_id, existing.id)?.ok_or(
+                RepositoryError::Conflict {
+                    subject: "profile selection outcome",
+                    rule: "the durable receipt predates exact selection-outcome binding",
+                },
+            );
+        }
+
+        let known: Option<i64> = transaction
+            .query_row(
+                "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(revision) = known else {
+            return Err(RepositoryError::NotFound { subject: "task" });
+        };
+        revision_of(revision)?.expect("task", request.command.target_revision)?;
+
+        let application = EpicApplication {
+            project_id,
+            name: ExternalName::parse("selection").map_err(RepositoryError::Domain)?,
+            execution_scope: None,
+            tasks: &[],
+            profile: &request.workflow.snapshot,
+            definition: request.definition,
+            team: request.team,
+            team_source: request.team_source,
+            applied_at: request.command.created_at,
+        };
+        store_specifications(&transaction, &application)?;
+
+        let active: Option<(String, String, i64)> = transaction
+            .query_row(
+                "SELECT id, profile_key, profile_version FROM task_workflows
+                 WHERE project_id = ?1 AND task_id = ?2 AND active = 1",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let unchanged = match active.as_ref() {
+            Some((_, key, version)) => {
+                key == request.definition.id.as_str()
+                    && read_version(*version)? == request.definition.version
+            }
+            None => false,
+        };
+        let (workflow_id, applied) = if unchanged {
+            let workflow_id = TaskWorkflowId::parse(
+                &active.expect("unchanged means an active workflow exists").0,
+            )?;
+            let (workflow, _) =
+                crate::repository::load_workflow(&transaction, project_id, workflow_id)?;
+            if workflow.snapshot.definition_hash != request.workflow.snapshot.definition_hash {
+                return Err(conflict(
+                    "task workflow",
+                    "the active workflow has different published work-profile content",
+                ));
+            }
+            (workflow_id, Applied::Unchanged)
+        } else {
+            transaction
+                .execute(
+                    "UPDATE task_workflows SET active = 0
+                     WHERE project_id = ?1 AND task_id = ?2 AND active = 1",
+                    params![project_id.to_string(), task_id.to_string()],
+                )
+                .map_err(backend)?;
+            let document =
+                kontor_core::id::CanonicalDocument::from_serializable(&request.workflow.snapshot)?;
+            transaction
+                .execute(
+                    "INSERT INTO task_workflows
+                         (id, project_id, task_id, profile_key, profile_version, snapshot,
+                          snapshot_hash, current_phase, active, revision, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, ?9)",
+                    params![
+                        request.workflow.id.to_string(),
+                        project_id.to_string(),
+                        task_id.to_string(),
+                        request.definition.id.as_str(),
+                        version_column(request.definition.version),
+                        document.json(),
+                        document.hash().as_str(),
+                        request.workflow.current_phase.as_str(),
+                        text(request.workflow.created_at)
+                    ],
+                )
+                .map_err(backend)?;
+            (request.workflow.id, Applied::Created)
+        };
+
+        let profile_hash: String = transaction
+            .query_row(
+                "SELECT definition_hash FROM work_profiles
+                 WHERE project_id = ?1 AND profile_key = ?2 AND version = ?3",
+                params![
+                    project_id.to_string(),
+                    request.definition.id.as_str(),
+                    version_column(request.definition.version)
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let team = request
+            .definition
+            .team_template
+            .map(|pin| -> RepositoryResult<_> {
+                let hash: String = transaction
+                    .query_row(
+                        "SELECT definition_hash FROM team_templates
+                         WHERE project_id = ?1 AND template_id = ?2 AND version = ?3",
+                        params![
+                            project_id.to_string(),
+                            pin.template_id.to_string(),
+                            version_column(pin.version)
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                Ok((pin.template_id, pin.version, ContentHash::parse(&hash)?))
+            })
+            .transpose()?;
+        let outcome = StoredProfileSelectionOutcome {
+            receipt_id: request.command.receipt_id,
+            task_id,
+            workflow_id,
+            profile: (
+                request.definition.id.clone(),
+                request.definition.version,
+                ContentHash::parse(&profile_hash)?,
+            ),
+            team,
+            applied,
+            recorded_at: request.command.created_at,
+        };
+        transaction
+            .execute(
+                "INSERT INTO profile_selection_outcomes
+                     (project_id, receipt_id, task_id, workflow_id, profile_key,
+                      profile_version, profile_hash, team_template_id,
+                      team_template_version, team_template_hash, applied, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    project_id.to_string(),
+                    outcome.receipt_id.to_string(),
+                    task_id.to_string(),
+                    workflow_id.to_string(),
+                    outcome.profile.0.as_str(),
+                    version_column(outcome.profile.1),
+                    outcome.profile.2.as_str(),
+                    outcome.team.as_ref().map(|team| team.0.to_string()),
+                    outcome.team.as_ref().map(|team| version_column(team.1)),
+                    outcome.team.as_ref().map(|team| team.2.as_str()),
+                    outcome.applied.as_str(),
+                    text(outcome.recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(outcome)
+    }
+
+    /// Read the exact historical result of one profile-selection receipt.
+    ///
+    /// # Errors
+    /// Backend or stored-domain failures only.
+    pub fn get_profile_selection_outcome(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<StoredProfileSelectionOutcome>> {
+        read_profile_selection_outcome(&self.connection, project_id, receipt_id)
     }
 
     /// Pin, or re-pin, the provider account a task will run under.
@@ -1479,6 +1772,100 @@ impl SqliteStore {
 // ---------------------------------------------------------------------------
 // Row readers
 // ---------------------------------------------------------------------------
+
+fn read_profile_selection_outcome(
+    connection: &Connection,
+    project_id: ProjectId,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<Option<StoredProfileSelectionOutcome>> {
+    type Row = (
+        String,
+        String,
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        String,
+        String,
+    );
+    let row: Option<Row> = connection
+        .query_row(
+            "SELECT task_id, workflow_id, profile_key, profile_version, profile_hash,
+                    team_template_id, team_template_version, team_template_hash,
+                    applied, recorded_at
+             FROM profile_selection_outcomes
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![project_id.to_string(), receipt_id.to_string()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((
+        task_id,
+        workflow_id,
+        profile_key,
+        profile_version,
+        profile_hash,
+        team_template_id,
+        team_template_version,
+        team_template_hash,
+        applied,
+        recorded_at,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let team = match (team_template_id, team_template_version, team_template_hash) {
+        (None, None, None) => None,
+        (Some(id), Some(version), Some(hash)) => Some((
+            TeamTemplateId::parse(&id)?,
+            read_version(version)?,
+            ContentHash::parse(&hash)?,
+        )),
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "stored profile selection has an incomplete team-template pin".to_owned(),
+            });
+        }
+    };
+    let applied = match applied.as_str() {
+        "created" => Applied::Created,
+        "unchanged" => Applied::Unchanged,
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "stored profile selection has an invalid applied result".to_owned(),
+            });
+        }
+    };
+    Ok(Some(StoredProfileSelectionOutcome {
+        receipt_id,
+        task_id: TaskId::parse(&task_id)?,
+        workflow_id: TaskWorkflowId::parse(&workflow_id)?,
+        profile: (
+            WorkProfileKey::parse(&profile_key)?,
+            read_version(profile_version)?,
+            ContentHash::parse(&profile_hash)?,
+        ),
+        team,
+        applied,
+        recorded_at: read_timestamp(&recorded_at)?,
+    }))
+}
 
 fn read_mini_project(row: &rusqlite::Row<'_>) -> RepositoryResult<MiniProject> {
     Ok(MiniProject {
@@ -1699,10 +2086,13 @@ fn ensure_project_exists(
 
 /// Store the profile and team revisions the epic pins, if they are not stored.
 ///
-/// Both tables are insert-only, so a revision that is already there is left
-/// alone and one that differs at the same `(id, version)` is refused by the
-/// unique index — which is the drift check this needs and could not do better
-/// itself.
+/// The two tables follow different contracts. A work profile is a *contract*:
+/// the same `(id, version)` may only ever name the bytes it was published
+/// with, so drift at an existing identity is refused. Bundled team templates
+/// are bootstrap data, exactly like bundled consultation presets: the identity
+/// is insert-only and, once it exists, the stored bytes are authoritative even
+/// when a newer daemon ships different bytes under it. Registered packs do not
+/// get that reconciliation authority; they must still present identical bytes.
 fn store_specifications(
     transaction: &Transaction<'_>,
     request: &EpicApplication<'_>,
@@ -1767,9 +2157,15 @@ fn store_specifications(
         .map_err(backend)?;
     match stored {
         Some(hash) if hash.as_str() == team.definition.hash().as_str() => Ok(()),
+        // Bootstrap contract: the bundle is a lazy bootstrap source, not a
+        // mutable source of truth. Once this immutable identity exists, the
+        // stored bytes stay authoritative even if a later daemon ships
+        // different bytes under it; changed policy belongs in the next bundled
+        // version and is appended through the insert path below.
+        Some(_) if request.team_source == TeamTemplateSource::Bundled => Ok(()),
         Some(_) => Err(conflict(
             "team template",
-            "that revision is already stored with different content",
+            "a registered pack revision collides with different published content",
         )),
         None => {
             let authority = crate::repository::to_json(&team.role_authority)?;

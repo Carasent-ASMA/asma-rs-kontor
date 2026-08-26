@@ -8984,6 +8984,13 @@
               }
             ]
           },
+          "team_template_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical hash of the exact stored team revision this project executes.\n\nOn first apply this is the bootstrapped candidate. On reapply after a\ndaemon upgrade it remains the historical immutable stored hash."
+          },
           "work_profile": {
             "$ref": "#/components/schemas/RevisionRefDto",
             "description": "The work-profile revision frozen onto every task."
@@ -14178,6 +14185,13 @@
               }
             ]
           },
+          "team_template_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical hash of the exact stored team revision apply would execute."
+          },
           "work_profile": {
             "$ref": "#/components/schemas/RevisionRefDto",
             "description": "The work-profile revision that would be frozen onto every task."
@@ -16774,6 +16788,13 @@
               }
             ]
           },
+          "team_template_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical hash of the exact stored team revision the task executes."
+          },
           "work_profile": {
             "oneOf": [
               {
@@ -17877,12 +17898,23 @@
           "template",
           "name",
           "slots",
-          "definition_hash"
+          "definition_hash",
+          "source",
+          "catalog_scope",
+          "execution_authority"
         ],
         "properties": {
+          "catalog_scope": {
+            "type": "string",
+            "description": "Always `realm_bootstrap`; this row is discovery input, not project state."
+          },
           "definition_hash": {
             "type": "string",
-            "description": "The digest of its canonical definition."
+            "description": "The digest of its canonical definition.\n\nThis is the realm bootstrap candidate's digest, not a claim about bytes\nalready stored for any project."
+          },
+          "execution_authority": {
+            "type": "string",
+            "description": "Always `project_stored_revision`: task launch resolves the immutable\nrevision held by the owning project."
           },
           "name": {
             "type": "string",
@@ -17894,6 +17926,10 @@
               "type": "string"
             },
             "description": "The role slots it seats, in declaration order."
+          },
+          "source": {
+            "type": "string",
+            "description": "`bundled` or `registered`: where this bootstrap candidate came from."
           },
           "template": {
             "$ref": "#/components/schemas/RevisionRefDto",

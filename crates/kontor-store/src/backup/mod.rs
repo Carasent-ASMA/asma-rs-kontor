@@ -42,7 +42,10 @@ pub use export::{
     ContinuitySummary, EXPORT_SCHEMA_VERSION, ExportedRecords, KontorExportV1, RecordCounts,
     RecordLineage, RedactionSummary, export_realm,
 };
-pub use import::{ImportPlan, ImportReceiptRow, ImportReport, ImportedRecordRow, import_export};
+pub use import::{
+    ImportPlan, ImportReceiptRow, ImportReport, ImportedProfileSelectionOutcomeRow,
+    ImportedRecordRow, import_export,
+};
 pub use manifest::{MANIFEST_FORMAT_VERSION, SnapshotManifest};
 pub use restore::{RestorePlan, restore_snapshot};
 pub use retention::{RETAINED_SNAPSHOTS, RetainedSnapshot, list_snapshots, prune_snapshots};

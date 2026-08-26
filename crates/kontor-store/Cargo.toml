@@ -28,6 +28,11 @@ kontor-scheduler = { path = "../kontor-scheduler", version = "=0.2.0" }
 # a window, a holiday or an override means is not, and re-deriving it here would
 # be the second resolver the whole design exists to avoid.
 kontor-calendar = { path = "../kontor-calendar", version = "=0.2.0" }
+# Backup import re-admits a published team-template envelope through the same
+# parser that published and launched templates use. Re-implementing that
+# envelope/slot/authority proof in the store would create a weaker second
+# validator at the trust boundary.
+kontor-teams = { path = "../kontor-teams", version = "=0.2.0" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

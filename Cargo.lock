@@ -3359,6 +3359,7 @@ dependencies = [
  "kontor-profiles",
  "kontor-runtime",
  "kontor-scheduler",
+ "kontor-teams",
  "rusqlite",
  "serde",
  "serde_json",

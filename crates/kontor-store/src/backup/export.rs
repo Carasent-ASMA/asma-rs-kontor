@@ -45,8 +45,14 @@ use crate::SqliteStore;
 use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
-/// The export generation this build writes and is willing to read.
-pub const EXPORT_SCHEMA_VERSION: u32 = 2;
+/// The export generation this build writes.
+pub const EXPORT_SCHEMA_VERSION: u32 = 3;
+
+/// The oldest export generation this build can read without inventing state.
+const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
+
+/// Database generation that first persisted exact profile-selection outcomes.
+const PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION: i64 = 62;
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -108,6 +114,7 @@ pub struct ContinuitySummary {
 /// reader can see what the document claims about itself before it reads the
 /// state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KontorExportV1 {
     /// The export generation. A later one is refused rather than misread.
     pub schema_version: u32,
@@ -156,15 +163,38 @@ impl KontorExportV1 {
     /// declared digest, and [`BackupError::UnsupportedExportVersion`] when the
     /// document is not this generation.
     pub fn verify(&self) -> Result<(), BackupError> {
-        if self.schema_version != EXPORT_SCHEMA_VERSION {
+        if !(MIN_SUPPORTED_EXPORT_SCHEMA_VERSION..=EXPORT_SCHEMA_VERSION)
+            .contains(&self.schema_version)
+        {
             return Err(BackupError::UnsupportedExportVersion {
                 found: self.schema_version,
                 expected: EXPORT_SCHEMA_VERSION,
             });
         }
+        if self.schema_version < EXPORT_SCHEMA_VERSION
+            && self.database_schema_version >= PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove profile-selection outcome completeness",
+            });
+        }
+        if self.schema_version < EXPORT_SCHEMA_VERSION
+            && !self.records.profile_selection_outcomes.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries profile-selection outcomes it did not define",
+            });
+        }
         if ContentHash::of(&self.canonical_records_bytes()?) != self.records_hash {
             return Err(BackupError::Verification {
                 detail: "the export's records do not hash to its declared digest",
+            });
+        }
+        if self.schema_version == EXPORT_SCHEMA_VERSION
+            && self.continuity_summary != self.records.continuity()
+        {
+            return Err(BackupError::Verification {
+                detail: "the export's continuity summary does not match its records",
             });
         }
         Ok(())
@@ -192,7 +222,7 @@ impl KontorExportV1 {
                 detail: "the export does not declare a schema version",
             })?;
         let found = u32::try_from(found).unwrap_or(u32::MAX);
-        if found != EXPORT_SCHEMA_VERSION {
+        if !(MIN_SUPPORTED_EXPORT_SCHEMA_VERSION..=EXPORT_SCHEMA_VERSION).contains(&found) {
             return Err(BackupError::UnsupportedExportVersion {
                 found,
                 expected: EXPORT_SCHEMA_VERSION,
@@ -324,6 +354,18 @@ fn redaction_summary() -> RedactionSummary {
             "hosted_topology_seats",
             "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
         ),
+        (
+            "import_receipts",
+            "destination-local import authority is not forwarded; a later import mints its own receipt",
+        ),
+        (
+            "imported_records",
+            "destination-local import lineage is not forwarded as source authority",
+        ),
+        (
+            "imported_profile_selection_outcomes",
+            "destination-local exact selection lineage is preserved by snapshot and readback, but is not forwarded as live source authority",
+        ),
     ];
     let excluded_columns = [
         (
@@ -431,6 +473,7 @@ fn read_table<T: ExportRow>(connection: &Connection) -> Result<Vec<T>, BackupErr
 /// edit here rather than a consequence of a migration elsewhere.
 macro_rules! exported_tables {
     ($(
+        $(#[$field_attribute:meta])*
         $field:ident : $row:ident from $table:literal key($($key:ident),+ ) {
             $($(#[$column_attribute:meta])* $column:ident : $type:ty,)+
         }
@@ -438,6 +481,7 @@ macro_rules! exported_tables {
         $(
             #[doc = concat!("One exported row of `", $table, "`.")]
             #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+            #[serde(deny_unknown_fields)]
             pub struct $row {
                 $(
                     $(#[$column_attribute])*
@@ -481,8 +525,10 @@ macro_rules! exported_tables {
         /// evidence about that work — so a reader meets a record's owner before
         /// it meets the record.
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
         pub struct ExportedRecords {
             $(
+                $(#[$field_attribute])*
                 #[doc = concat!("Every exported row of `", $table, "`.")]
                 pub $field: Vec<$row>,
             )+
@@ -1056,6 +1102,21 @@ exported_tables! {
         created_at: String,
         updated_at: String,
         execution_mode: String,
+    }
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    profile_selection_outcomes: ProfileSelectionOutcomesRow from "profile_selection_outcomes" key(project_id, receipt_id) {
+        project_id: String,
+        receipt_id: String,
+        task_id: String,
+        workflow_id: String,
+        profile_key: String,
+        profile_version: i64,
+        profile_hash: String,
+        team_template_id: Option<String>,
+        team_template_version: Option<i64>,
+        team_template_hash: Option<String>,
+        applied: String,
+        recorded_at: String,
     }
     command_receipt_transitions: CommandReceiptTransitionsRow from "command_receipt_transitions" key(project_id, receipt_id, sequence) {
         project_id: String,
