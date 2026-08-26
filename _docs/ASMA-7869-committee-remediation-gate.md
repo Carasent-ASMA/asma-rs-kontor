@@ -1,120 +1,178 @@
-# Committee remediation gate — exact second-patch boundary (ASMA-7869)
+# Committee failure remediation and clean re-review contract (ASMA-7869)
 
-> **Status:** Plan of record for the follow-on PR. PR 1 (`fix/ASMA-7869-completion-historical-committee-round`)
-> ships the read path that unblocks the live 503; this branch carries the exact
-> patch boundary for the behavior change that prevents the failure from
-> recurring and gives ASMA-8001 a clean re-review. Not code — the boundary the
-> next PR must implement.
-> **Author:** ASMA-7869 implementer
-> **Flag:** LSA — this is the second half of the live-epic recovery; PR 1 alone
-> takes the completion to `awaiting_lsa` → `remediating`, and then stalls at
-> `Verdict(2)` because the live run's round-two findings are frozen
-> non_compliant (immutable, not deletable, seat replacement cannot fix them).
+> **Status:** Architecture boundary for the non-destructive historical-round
+> implementation in PR #123. PR #123 supersedes the obsolete PR #120 path;
+> the published-revision preservation work in PR #122 is a prerequisite.
+> This document is not a waiver, a finding or verdict fabrication path, an
+> immutable-row repair procedure, or permission to reuse a poisoned run.
+>
+> **Delivery order:** merge and deploy PR #122, merge this corrected boundary,
+> then rebase, renumber, regenerate, revalidate, independently review, and merge
+> PR #123.
 
-## Why the current auto-dispatch is wrong
+## Problem
 
-`settle_committee_run` (crates/kontor-daemon/src/applications.rs, `settle` arm)
-records only a recommendation/tried_path, then immediately calls
-`store.remediate_committee_run` — which advances the run to round two and
-`dispatch_committee_round_two` — which messages the same native seats to
-re-review. In ASMA-8001 this launched round two before CAT-12 existed:
-reviewer-b durably recorded non_compliant for round two, and because
-`committee_findings` is immutable and the aggregation is conjunctive, the
-round-two verdict of that run can never become compliant. Replacing native
-seats changes nothing; the frozen finding is the verdict.
+A failed Committee decision is durable evidence. Advancing that same run to an
+internal second round before governed remediation is complete can permanently
+poison it: immutable non-compliant findings from the premature round cannot be
+removed, overwritten, or made compliant by replacing their native seat
+fillers. Completion therefore needs a non-destructive way to ingest the failed
+decision, require independently authorized remediation, and consume only a
+separate clean re-review.
 
-Required supported behavior (from the live-epic operator brief):
+Legacy runs that already advanced are also evidence. Recovery must reconstruct
+their failed round without changing the run, confusing a settled internal
+round-two result with round one, or choosing a convenient hash from a different
+round.
 
-1. A failed review must not dispatch re-review until the governed remediation
-   is durably completed/frozen.
-2. Existing immutable premature findings/runs remain untouched.
-3. There is an identity-safe way to launch a clean re-review after completion
-   remediation, bound to the correct completion round, so ASMA-8001 can finish
-   without waiving or fabricating a finding.
-4. Replay/crash safety, template matching, and conjunctive settlement are
-   preserved; current settled-compliant behavior remains.
+## Contract invariants
 
-## Design (smallest robust)
+### 1. A terminal failure freezes; it does not mutate into its re-review
 
-One durable binding plus one settle change; the completion machine is the
-remediation gate it was already designed to be.
+When a Committee decision settles non-compliant, Kontor freezes both the
+failed result and its remediation document on the source run. The source run
+does not advance to another internal round and does not dispatch a re-review.
+Its findings, result, remediation, receipts, and provenance remain immutable.
 
-### 1. Non-compliant settle stores its result and does not advance
+Historical runs that already advanced are handled by the legacy reconstruction
+path below; the new path never converts a terminal failed run into its own
+review successor.
 
-In `settle_committee_run`, the `outcome == NonCompliant` branch with
-`run.round < template.round_limit` must:
+### 2. Legacy reconstruction is exact and round-scoped
 
-- write the immutable remediation row exactly as today (same document shape,
-  same `failed_result_hash`), and
-- persist the frozen result via `store.advance_consultation_run(...,
-  ConsultationRunState::Settled, Some((&result, result_document.hash())))` —
-  the same call the compliant branch already makes.
+Kontor leaves an already-advanced legacy run untouched and reconstructs the
+exact failed round-one settlement from its durable round-one findings and
+remediation evidence. If that run also has a settled internal round-two result,
+that result belongs to round two: it is not compared with, substituted for, or
+rewritten as the reconstructed round-one result.
 
-It must NOT call `store.remediate_committee_run` (no internal round advance)
-and NOT call `dispatch_committee_round_two`. The run ends `settled` at its
-internal round with a durable non-compliant result; completion consumes it
-through the existing settled path (and the PR-1 historical path stays as the
-read path for runs that already advanced — the live run).
+Reconstruction fails closed when the evidence cannot identify one exact
+conjunctive settlement. It never edits findings, results, remediation rows, or
+the consultation run.
 
-Consequence: `remediate_committee_run` and `dispatch_committee_round_two`
-become legacy-only (the internal round-two machine is replaced by fresh runs).
-Keep them for historical runs that are already mid-advance; the follow-on may
-remove the dispatch call sites only.
+### 3. Completion owns immutable failed-round and remediation evidence
 
-### 2. Fresh re-review bound to a completion round
+The completion state records a `CompletionRound` containing the failed
+Committee run, its evidence hash, its result hash, and its remediation hash.
+Ingesting that evidence moves the completion from `Verdict(1)` to
+`AwaitRemediation(1)` (exposed as `awaiting_lsa`) without changing the source
+Committee run.
 
-Migration `crates/kontor-store/migrations/0060_committee_completion_round.sql`:
+The failed-round record is the durable basis for both remediation commands and
+the later clean re-review. A different run, round, evidence document, result,
+or remediation document cannot be silently substituted.
 
-```sql
-ALTER TABLE consultation_runs ADD COLUMN completion_round INTEGER
-    NULL CHECK (completion_round IS NULL OR completion_round BETWEEN 1 AND 2);
-PRAGMA user_version = 60;
-```
+### 4. Remediation requires two distinct, current, seat-scoped authorities
 
-- `invoke_committee_run` accepts an optional `completion_round` (epic scope
-  only). It is frozen with the run (add to `StoredConsultationRun`, the
-  migration-0036 frozen-input trigger list, `freeze_committee_run`, the
-  `invoke` intent document, and `consultation_run_id`/row readers).
-- Uniqueness: refuse a second run bound to the same `(project, mini_project,
-  completion_round)` — the completion machine must never have to choose.
-- `observe_completion` Verdict(round): match a settled run by
-  `run.completion_round == Some(round)` first; fall back to the existing
-  `run.round == round` legacy match, then the PR-1 historical path. Template
-  matching stays name-only (PR 1).
+The LSA proposal and TPM route are different durable commands:
 
-### 3. ASMA-8001 recovery flow (after both PRs land)
+- the proposal must be authored by the current ECP LSA `SeatBinding` using the
+  bearer for its current occupancy generation;
+- the route must be authored by the current ECP TPM `SeatBinding` using the
+  bearer for its current occupancy generation; and
+- the two bindings must be distinct.
 
-1. Completion `Verdict(1)` ingests the historical failed round (PR 1) →
-   `awaiting_lsa` → LSA proposes, TPM routes → `remediating(1)`.
-2. The remediation TeamRun performs the governed remediation (CAT-12 +
-   waivers) and lands; TPM advances completion with the integration evidence →
-   `Verdict(2)`.
-3. TPM invokes a **fresh** Committee run (`committee-runs:invoke` with
-   `completion_round: 2`, current template revision). New run id, new seats,
-   new CSW — nothing about the stuck run is touched.
-4. Fresh reviewers review the post-remediation state; conjunctive
-   compliant → settle compliant → completion `Verdict(2)` consumes it →
-   `closeout`. The stuck run stays as immutable evidence of round one's
-   failure and the premature round-two review.
+Realm-operator authority, a wrong role, a foreign-project seat, a stale
+occupancy generation, or one seat binding attempting both halves is rejected.
+Recording the LSA proposal alone does not move completion. The TPM route moves
+`AwaitRemediation(1)` to `Remediating(1)`. The governed integration evidence
+then moves completion to `Verdict(2)`.
 
-## Test boundary (must land with the follow-on)
+Each command is claimed atomically with its receipt, effect, compare-and-swap
+transition, and scheduler wake. Exact replay returns the original result;
+conflicting replay or an unclaimed effect fails closed.
 
-- Update `a_seeded_committee_runs_and_settles_instead_of_returning_503`:
-  non-compliant settle now answers `settled` with a non-compliant `result` and
-  the remediation row, and does NOT open round two (no `LaunchConsultation` /
-  `MessageConsultation` for the round-two dispatch). The round-two part of
-  that test moves to a fresh run bound to `completion_round: 2`.
-- New: a fresh run invoked with `completion_round: 2` settling compliant is
-  consumed by completion `Verdict(2)` → `closeout`, while the legacy run at
-  internal round 2 is ignored for that round.
-- New: invoking a second run for the same `completion_round` conflicts.
-- New: settle at `round == round_limit` non-compliant still escalates to
-  `needs_human` (unchanged).
-- Existing PR-1 tests must stay green unchanged (historical path for the
-  already-advanced live shape).
+### 5. Re-review is a separate, provenance-fenced Committee run
+
+After remediation integration is frozen, the authorized caller invokes a new
+Committee run with a canonical `re_review` provenance document naming:
+
+- the failed completion round and completion revision;
+- the failed Committee run and failed result hash;
+- the governed remediation hash; and
+- the remediation integration receipt digest.
+
+Kontor reconstructs and validates this evidence itself, verifies that it
+matches the completion freeze and pinned Committee template, and freezes the
+server-derived evidence with the new run before any native seat placement.
+The new run has its own identity, seats, findings, Judge settlement, and
+receipts; the failed source remains unchanged.
+
+Only one new run may claim a canonical completion freeze. Exact idempotent
+replay returns the original run. A concurrent or differently keyed duplicate
+conflicts before launch, so duplicate reviewers are not placed.
+
+### 6. `Verdict(2)` consumes only the matching clean settlement
+
+Completion at `Verdict(2)` accepts exactly one settled Committee run whose
+frozen re-review provenance matches the completion's failed-round,
+remediation, and integration evidence. The failed source run, a legacy
+internal round two, or any other poisoned or unlinked run is excluded.
+
+The ordinary pinned-template rules still apply. Every required reviewer
+finding must be durable and the Judge must settle the run. For the conjunctive
+Independent Review profile, all required reviewers and the Judge must be
+compliant; missing evidence or a non-compliant required seat cannot be waived
+by the re-review path.
+
+## Persistence boundary
+
+PR #123 currently carries three append-only persistence changes for:
+
+1. durable Committee remediation-round evidence;
+2. generation-scoped LSA remediation-proposal authority; and
+3. atomic remediation command claims plus unique clean re-review provenance.
+
+PR #122 is deployed at schema 63 and owns
+`0062_profile_selection_outcomes.sql` plus
+`0063_imported_profile_selection_outcomes.sql`. After this boundary lands, PR
+#123 must be rebased and its three branch-local migrations renumbered
+append-only to 0064, 0065, and 0066. Every generated schema/OpenAPI/console
+artifact must then be regenerated and checked. No deployed migration may be
+renamed or rewritten.
+
+The previous proposal to add a mutable `completion_round` selector to an
+existing consultation run is not this contract. Completion linkage is frozen
+as canonical provenance on a distinct re-review run.
+
+## Required regression evidence
+
+The implementation is not releasable without focused and broad evidence for
+all of the following:
+
+- a new non-compliant source run becomes terminal with frozen result and
+  remediation evidence and emits no round-two placement or messaging;
+- both running and settled legacy advanced-run shapes reconstruct the exact
+  failed round-one result, while a settled internal round-two hash remains
+  scoped to round two and is neither compared nor rewritten;
+- `CompletionRound` records the exact source run/evidence/result/remediation
+  hashes and enters `AwaitRemediation`;
+- current-generation, distinct ECP LSA/TPM seats succeed, while operator,
+  wrong-role, foreign-project, stale-generation, and same-seat attempts fail;
+- proposal, route, effects, receipts, state transition, and wake are atomic,
+  replay-safe, and crash-recoverable;
+- the server validates and freezes canonical clean re-review provenance before
+  native placement, and concurrent duplicate keys yield one run, one conflict,
+  and no duplicate seat launch;
+- only the matching settled clean run can satisfy `Verdict(2)`; the failed
+  source and any poisoned legacy round are excluded;
+- reviewer cardinality, immutable findings, Judge settlement, template
+  matching, result hashes, and conjunctive aggregation remain exact; and
+- store migrations, schema snapshots, generated API/CLI/MCP surfaces, daemon
+  loopback coverage, formatting, linting, and the broad workspace suite pass on
+  the exact reviewed commit after the final rebase and migration renumbering.
 
 ## Explicitly out of scope
 
-- No change to `committee_findings` / `committee_remediations` immutability.
-- No waiver or fabricated verdict path anywhere.
-- No deletion of the live stuck run or its rows.
+- no waiver, fabricated finding, fabricated Judge verdict, or authority
+  substitution;
+- no manual edit, deletion, withdrawal, or replacement of immutable Committee
+  findings, results, remediation rows, receipts, template revisions, or source
+  runs;
+- no cleanup of historical runs as a condition of completion;
+- no reuse of a poisoned run as the clean re-review;
+- no credential disclosure or operator credential standing in for an LSA,
+  TPM, reviewer, or Judge seat;
+- no ASMA-8001 product-code change in these control-plane PRs; and
+- no modification, deletion, retirement, or garbage collection of preserved
+  CAT-11 local artifacts.
