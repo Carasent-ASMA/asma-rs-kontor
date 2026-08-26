@@ -265,6 +265,301 @@ fn read_consultation_run(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemediationCommandAction {
+    LsaProposal,
+    TpmRoute,
+}
+
+impl RemediationCommandAction {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::LsaProposal => "lsa_proposal",
+            Self::TpmRoute => "tpm_route",
+        }
+    }
+}
+
+fn remediation_command_request<'a>(
+    store: &SqliteStore,
+    envelope: &'a ReceiptEnvelope<NewLocalCommand>,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+) -> RepositoryResult<&'a NewLocalCommand> {
+    let request = envelope.peek(store.realm_id())?;
+    if request.project_id != project_id
+        || request.kind != CommandKind::RemediateCompletion
+        || request.target != (AggregateRef::MiniProject { mini_project_id })
+    {
+        return Err(conflict(
+            "completion remediation command",
+            "the receipt authority does not name this epic remediation",
+        ));
+    }
+    Ok(request)
+}
+
+fn remediation_claim(
+    transaction: &Transaction<'_>,
+    request: &NewLocalCommand,
+    mini_project_id: MiniProjectId,
+    round: u8,
+    action: RemediationCommandAction,
+    effect_revision: Option<AggregateRevision>,
+) -> RepositoryResult<bool> {
+    let stored: Option<(String, String, Option<i64>)> = transaction
+        .query_row(
+            "SELECT idempotency_key, intent_hash, effect_revision
+               FROM epic_completion_remediation_command_claims
+              WHERE project_id = ?1 AND mini_project_id = ?2
+                AND round = ?3 AND action = ?4",
+            params![
+                request.project_id.to_string(),
+                mini_project_id.to_string(),
+                i64::from(round),
+                action.as_str(),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let effect_revision =
+        effect_revision.map(|revision| i64::try_from(revision.get()).unwrap_or(i64::MAX));
+    if let Some((key, intent_hash, stored_effect_revision)) = stored {
+        if key != request.idempotency_key.as_str()
+            || intent_hash != request.intent.hash().as_str()
+            || stored_effect_revision != effect_revision
+        {
+            return Err(conflict(
+                "completion remediation command claim",
+                "this remediation action is already bound to a different key, intent, or effect revision",
+            ));
+        }
+        return Ok(true);
+    }
+    transaction
+        .execute(
+            "INSERT INTO epic_completion_remediation_command_claims
+                 (project_id, mini_project_id, round, action, idempotency_key,
+                  intent_hash, effect_revision, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                request.project_id.to_string(),
+                mini_project_id.to_string(),
+                i64::from(round),
+                action.as_str(),
+                request.idempotency_key.as_str(),
+                request.intent.hash().as_str(),
+                effect_revision,
+                text(request.created_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(false)
+}
+
+fn local_command_receipt(
+    transaction: &Transaction<'_>,
+    key: &IdempotencyKey,
+) -> RepositoryResult<CommandReceipt> {
+    transaction
+        .query_row(
+            &format!("SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE idempotency_key = ?1"),
+            params![key.as_str()],
+            |row| Ok(crate::commands::receipts::read_receipt_row(row)),
+        )
+        .map_err(backend)?
+}
+
+fn remediation_proposal_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+    round: u8,
+) -> RepositoryResult<Option<StoredRemediationProposal>> {
+    transaction
+        .query_row(
+            "SELECT failed_round_evidence, proposal, lsa_seat_binding_id,
+                    lsa_occupancy_generation, proposed_at
+               FROM epic_completion_remediation_proposals
+              WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
+            params![
+                project_id.to_string(),
+                mini_project_id.to_string(),
+                i64::from(round),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?
+        .map(|columns| {
+            Ok(StoredRemediationProposal {
+                project_id,
+                mini_project_id,
+                round,
+                failed_round_evidence: ContentHash::parse(&columns.0)?,
+                proposal: ContentHash::parse(&columns.1)?,
+                lsa_seat_binding_id: SeatBindingId::parse(&columns.2)?,
+                lsa_occupancy_generation: u64::try_from(columns.3).map_err(|_| {
+                    RepositoryError::Backend {
+                        detail: "an LSA proposal occupancy generation is invalid".to_owned(),
+                    }
+                })?,
+                proposed_at: read_timestamp(&columns.4)?,
+            })
+        })
+        .transpose()
+}
+
+fn same_remediation_proposal(
+    stored: &StoredRemediationProposal,
+    requested: &StoredRemediationProposal,
+) -> bool {
+    stored.project_id == requested.project_id
+        && stored.mini_project_id == requested.mini_project_id
+        && stored.round == requested.round
+        && stored.failed_round_evidence == requested.failed_round_evidence
+        && stored.proposal == requested.proposal
+        && stored.lsa_seat_binding_id == requested.lsa_seat_binding_id
+        && stored.lsa_occupancy_generation == requested.lsa_occupancy_generation
+}
+
+fn insert_remediation_proposal_in(
+    transaction: &Transaction<'_>,
+    proposal: &StoredRemediationProposal,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, round, failed_round_evidence, proposal,
+                  lsa_seat_binding_id, lsa_occupancy_generation, proposed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                proposal.project_id.to_string(),
+                proposal.mini_project_id.to_string(),
+                i64::from(proposal.round),
+                proposal.failed_round_evidence.as_str(),
+                proposal.proposal.as_str(),
+                proposal.lsa_seat_binding_id.to_string(),
+                i64::try_from(proposal.lsa_occupancy_generation).unwrap_or(i64::MAX),
+                text(proposal.proposed_at),
+            ],
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(failure, _)
+                if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                conflict(
+                    "remediation proposal",
+                    "one failed round has one bounded proposal",
+                )
+            }
+            other => backend(other),
+        })?;
+    Ok(())
+}
+
+fn epic_completion_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+) -> RepositoryResult<Option<StoredEpicCompletion>> {
+    transaction
+        .query_row(
+            "SELECT profile_id, profile_version, definition_hash, state, revision, updated_at
+               FROM epic_completion
+              WHERE project_id = ?1 AND mini_project_id = ?2",
+            params![project_id.to_string(), mini_project_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?
+        .map(|columns| {
+            Ok(StoredEpicCompletion {
+                project_id,
+                mini_project_id,
+                profile_id: ExternalName::parse(&columns.0)?,
+                profile_version: read_version(columns.1)?,
+                definition_hash: ContentHash::parse(&columns.2)?,
+                state: serde_json::from_str(&columns.3).map_err(|error| {
+                    RepositoryError::Backend {
+                        detail: format!("a stored completion state is unreadable: {error}"),
+                    }
+                })?,
+                revision: AggregateRevision::parse(u64::try_from(columns.4).unwrap_or_default())?,
+                updated_at: read_timestamp(&columns.5)?,
+            })
+        })
+        .transpose()
+}
+
+fn ensure_completion_wake_in(
+    transaction: &Transaction<'_>,
+    wake: &StoredCompletionWake,
+) -> RepositoryResult<()> {
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT receipt FROM epic_completion_wakes
+              WHERE project_id = ?1 AND mini_project_id = ?2
+                AND completion_revision = ?3 AND reason = ?4 AND seat_binding_id = ?5",
+            params![
+                wake.project_id.to_string(),
+                wake.mini_project_id.to_string(),
+                i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                wake.reason.as_str(),
+                wake.seat_binding_id.to_string(),
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some(receipt) = existing {
+        if receipt != wake.receipt.as_str() {
+            return Err(conflict(
+                "completion wake intent",
+                "the existing wake names different durable evidence",
+            ));
+        }
+        return Ok(());
+    }
+    transaction
+        .execute(
+            "INSERT INTO epic_completion_wakes
+                 (project_id, mini_project_id, completion_revision, reason, seat_binding_id,
+                  receipt, appended_at, acknowledged_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                wake.project_id.to_string(),
+                wake.mini_project_id.to_string(),
+                i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                wake.reason.as_str(),
+                wake.seat_binding_id.to_string(),
+                wake.receipt.as_str(),
+                text(wake.appended_at),
+                wake.acknowledged_at.map(text),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
 type ConsultationSeatColumns = (
     String,
     Option<String>,
@@ -1820,6 +2115,49 @@ impl SqliteStore {
             )
             .map_err(backend)?;
 
+        if let Some(provenance) = run
+            .context
+            .get("re_review")
+            .filter(|value| !value.is_null())
+        {
+            if run.id.family() != ConsultationFamily::Committee {
+                return Err(conflict(
+                    "consultation re-review provenance",
+                    "only a Committee run may claim completion re-review lineage",
+                ));
+            }
+            let provenance = CanonicalDocument::from_serializable(&serde_json::json!({
+                "schema_version": 1,
+                "re_review": provenance,
+            }))?;
+            transaction
+                .execute(
+                    "INSERT INTO committee_re_review_claims
+                         (project_id, mini_project_id, provenance, provenance_hash,
+                          committee_run_id, claimed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        run.project_id.to_string(),
+                        run.mini_project_id.to_string(),
+                        provenance.json(),
+                        provenance.hash().as_str(),
+                        run.id.as_text(),
+                        text(run.created_at),
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        conflict(
+                            "Committee re-review provenance",
+                            "this completion freeze already has one clean Committee re-review",
+                        )
+                    }
+                    other => backend(other),
+                })?;
+        }
+
         for (seat, binding) in seats {
             if seat.run_id != run.id
                 || binding.id != seat.seat_binding_id
@@ -2910,6 +3248,38 @@ impl SqliteStore {
         .transpose()
     }
 
+    /// Read the current native occupancy generation of a persistent topology
+    /// seat. Hosted-seat history is append-only, so `history + 1` is a durable
+    /// generation fence without overloading the runtime daemon generation.
+    pub fn hosted_topology_seat_occupancy_generation(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<u64>> {
+        let generation = self
+            .connection
+            .query_row(
+                "SELECT 1 + (
+                     SELECT COUNT(*) FROM hosted_topology_seat_history h
+                     WHERE h.project_id = s.project_id
+                       AND h.seat_binding_id = s.seat_binding_id
+                 )
+                 FROM hosted_topology_seats s
+                 WHERE s.project_id = ?1 AND s.seat_binding_id = ?2",
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        generation
+            .map(|generation| {
+                u64::try_from(generation).map_err(|_| RepositoryError::Backend {
+                    detail: "a hosted-seat occupancy generation is invalid".to_owned(),
+                })
+            })
+            .transpose()
+    }
+
     /// Freeze the first exact native readback for one persistent topology seat.
     /// The same native agent and route may report a newer provider conversation
     /// handle after a supported runtime resume; that observation refreshes in
@@ -3633,30 +4003,49 @@ impl SqliteStore {
             })
     }
 
-    /// Record the single bounded Committee remediation and open round two.
+    /// Record one bounded Committee remediation and terminally settle its
+    /// failed round. A re-review is a separate Committee run; this transition
+    /// never mutates the failed run into a new mutable round.
     #[allow(clippy::too_many_arguments)]
     pub fn remediate_committee_run(
         &self,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
         expected_revision: AggregateRevision,
+        from_round: u32,
         recommendation: &BoundedText,
         tried_path: &BoundedText,
         document: &serde_json::Value,
         document_hash: &ContentHash,
+        failed_result: &serde_json::Value,
+        failed_result_hash: &ContentHash,
         recorded_at: Timestamp,
     ) -> RepositoryResult<StoredConsultationRun> {
         let encoded = canonical_json(document, "Committee remediation")?;
+        if ContentHash::of(encoded.as_bytes()) != *document_hash {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee remediation",
+                rule: "the remediation bytes do not match their stored hash",
+            });
+        }
+        let failed_result_encoded = canonical_json(failed_result, "Committee result")?;
+        if ContentHash::of(failed_result_encoded.as_bytes()) != *failed_result_hash {
+            return Err(RepositoryError::Conflict {
+                subject: "Committee result",
+                rule: "the failed result bytes do not match their stored hash",
+            });
+        }
         let transaction = self.begin()?;
         transaction
             .execute(
                 "INSERT INTO committee_remediations
                      (committee_run_id, project_id, from_round, recommendation,
                       tried_path, document, document_hash, recorded_at)
-                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     committee_run_id.to_string(),
                     project_id.to_string(),
+                    i64::from(from_round),
                     recommendation.as_str(),
                     tried_path.as_str(),
                     encoded,
@@ -3668,22 +4057,25 @@ impl SqliteStore {
         let changed = transaction
             .execute(
                 "UPDATE consultation_runs
-                 SET state = 'running', round = 2, revision = revision + 1,
-                     updated_at = ?4, settled_at = NULL
+                 SET state = 'settled', result = ?4, result_hash = ?5,
+                     revision = revision + 1, updated_at = ?6, settled_at = ?6
                  WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
-                   AND round = 1 AND state = 'awaiting_judge' AND revision = ?3",
+                   AND round = ?7 AND state = 'awaiting_judge' AND revision = ?3",
                 params![
                     project_id.to_string(),
                     committee_run_id.to_string(),
                     i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    failed_result_encoded,
+                    failed_result_hash.as_str(),
                     text(recorded_at),
+                    i64::from(from_round),
                 ],
             )
             .map_err(backend)?;
         if changed != 1 {
             return Err(RepositoryError::Conflict {
                 subject: "Committee remediation",
-                rule: "only a settled-evidence round one may open round two",
+                rule: "only the expected awaiting-judge round may be terminally settled",
             });
         }
         transaction.commit().map_err(backend)?;
@@ -3693,27 +4085,44 @@ impl SqliteStore {
             })
     }
 
-    /// Read the immutable remediation document, when round two was opened.
+    /// Read the immutable remediation document, when one was recorded.
     pub fn get_committee_remediation(
         &self,
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
     ) -> RepositoryResult<Option<serde_json::Value>> {
+        Ok(self
+            .get_committee_remediation_with_hash(project_id, committee_run_id)?
+            .map(|(document, _)| document))
+    }
+
+    /// Read the immutable remediation and prove its stored bytes match the
+    /// stored digest before exposing either to a caller.
+    pub fn get_committee_remediation_with_hash(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+    ) -> RepositoryResult<Option<(serde_json::Value, ContentHash)>> {
         let encoded = self
             .connection
             .query_row(
-                "SELECT document FROM committee_remediations
+                "SELECT document, document_hash FROM committee_remediations
                  WHERE project_id = ?1 AND committee_run_id = ?2",
                 params![project_id.to_string(), committee_run_id.to_string()],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(backend)?;
         encoded
-            .map(|document| {
-                serde_json::from_str(&document).map_err(|error| RepositoryError::Backend {
-                    detail: format!("a Committee remediation could not be decoded: {error}"),
-                })
+            .map(|(document, hash)| {
+                let hash = ContentHash::parse(&hash)?;
+                let canonical = CanonicalDocument::from_stored(&document, &hash)?;
+                let value = serde_json::from_str(canonical.json()).map_err(|error| {
+                    RepositoryError::Backend {
+                        detail: format!("a Committee remediation could not be decoded: {error}"),
+                    }
+                })?;
+                Ok((value, hash))
             })
             .transpose()
     }
@@ -4576,44 +4985,229 @@ impl SqliteStore {
         Ok(keys)
     }
 
-    /// Record one epic LSA remediation proposal for a failed round.
+    /// Check a proposal's existing replay authority before semantic validation.
+    ///
+    /// This ordering matters for a used key whose caller changes only the failed
+    /// evidence hash: it is a conflicting command, not a fresh malformed
+    /// proposal. `false` means no claim exists and ordinary validation may
+    /// continue.
     ///
     /// # Errors
-    /// Returns [`RepositoryError::Conflict`] when a proposal already stands for
-    /// that round. Replacing it would change the bounded correction the TPM is
-    /// about to route, after the round it answers was already fixed.
-    pub fn insert_remediation_proposal(
+    /// Returns [`RepositoryError::Conflict`] for reused authority, a poisoned
+    /// partial effect or a proposal already owned by different content.
+    pub fn check_remediation_proposal_claim(
         &self,
-        proposal: &StoredRemediationProposal,
-    ) -> RepositoryResult<()> {
-        self.connection
-            .execute(
-                "INSERT INTO epic_completion_remediation_proposals
-                     (project_id, mini_project_id, round, failed_round_evidence, proposal,
-                      lsa_seat_binding_id, proposed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        round: u8,
+        effect_revision: AggregateRevision,
+    ) -> RepositoryResult<bool> {
+        let request = remediation_command_request(self, envelope, project_id, mini_project_id)?;
+        let transaction = self.begin()?;
+        let stored: Option<(String, String, Option<i64>)> = transaction
+            .query_row(
+                "SELECT idempotency_key, intent_hash, effect_revision
+                   FROM epic_completion_remediation_command_claims
+                  WHERE project_id = ?1 AND mini_project_id = ?2
+                    AND round = ?3 AND action = 'lsa_proposal'",
                 params![
-                    proposal.project_id.to_string(),
-                    proposal.mini_project_id.to_string(),
-                    i64::from(proposal.round),
-                    proposal.failed_round_evidence.as_str(),
-                    proposal.proposal.as_str(),
-                    proposal.lsa_seat_binding_id.to_string(),
-                    text(proposal.proposed_at),
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    i64::from(round),
                 ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .map_err(|error| match error {
-                rusqlite::Error::SqliteFailure(failure, _)
-                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    RepositoryError::Conflict {
-                        subject: "remediation proposal",
-                        rule: "one failed round has one bounded proposal",
-                    }
-                }
-                other => backend(other),
+            .optional()
+            .map_err(backend)?;
+        let Some((key, intent_hash, stored_effect_revision)) = stored else {
+            return Ok(false);
+        };
+        if key != request.idempotency_key.as_str()
+            || intent_hash != request.intent.hash().as_str()
+            || stored_effect_revision
+                != Some(i64::try_from(effect_revision.get()).unwrap_or(i64::MAX))
+        {
+            return Err(conflict(
+                "completion remediation command claim",
+                "this LSA proposal is already bound to a different key, intent, or effect revision",
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Atomically bind and record one LSA proposal with its local command
+    /// receipt. An exact claim plus proposal without a receipt is recovered by
+    /// materializing the missing receipt without duplicating the proposal.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] for reused authority, a poisoned
+    /// partial effect or a proposal already owned by different content.
+    pub fn commit_remediation_proposal(
+        &self,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+        proposal: &StoredRemediationProposal,
+        effect_revision: AggregateRevision,
+        permit_create: bool,
+    ) -> RepositoryResult<(CommandReceipt, Applied)> {
+        let request = remediation_command_request(
+            self,
+            envelope,
+            proposal.project_id,
+            proposal.mini_project_id,
+        )?;
+        let transaction = self.begin()?;
+        let claim_existed = remediation_claim(
+            &transaction,
+            request,
+            proposal.mini_project_id,
+            proposal.round,
+            RemediationCommandAction::LsaProposal,
+            Some(effect_revision),
+        )?;
+        let receipt = crate::commands::intent::insert_local_command(&transaction, request)?;
+        let stored = remediation_proposal_in(
+            &transaction,
+            proposal.project_id,
+            proposal.mini_project_id,
+            proposal.round,
+        )?;
+        let applied = match (claim_existed, stored) {
+            (true, Some(stored)) if same_remediation_proposal(&stored, proposal) => {
+                Applied::Unchanged
+            }
+            (true, _) => {
+                return Err(conflict(
+                    "completion remediation command",
+                    "the replay claim has no exact durable LSA proposal effect",
+                ));
+            }
+            (false, None) if permit_create && receipt.is_none() => {
+                insert_remediation_proposal_in(&transaction, proposal)?;
+                Applied::Created
+            }
+            (false, _) => {
+                return Err(conflict(
+                    "completion remediation command",
+                    "a new proposal cannot claim an existing effect, receipt, or closed phase",
+                ));
+            }
+        };
+        let receipt = match receipt {
+            Some(receipt) => receipt,
+            None => local_command_receipt(&transaction, &request.idempotency_key)?,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok((receipt, applied))
+    }
+
+    /// Atomically move completion into remediation, append its TPM wake and
+    /// record the exact command receipt.
+    ///
+    /// When `effect_already_present` is true, recovery is allowed only for an
+    /// existing matching command claim and an exact stored completion state at
+    /// the claimed effect revision. This is the former effect-without-receipt
+    /// crash boundary; a current caller cannot mint replay authority for an
+    /// unrelated projection.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] for stale state, mismatched replay
+    /// authority, missing effect or a wake that names different evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_remediation_route(
+        &self,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+        round: u8,
+        next: &StoredEpicCompletion,
+        expected_revision: AggregateRevision,
+        effect_revision: AggregateRevision,
+        wake: &StoredCompletionWake,
+        effect_already_present: bool,
+    ) -> RepositoryResult<(StoredEpicCompletion, CommandReceipt, Applied)> {
+        let request =
+            remediation_command_request(self, envelope, next.project_id, next.mini_project_id)?;
+        if wake.project_id != next.project_id
+            || wake.mini_project_id != next.mini_project_id
+            || wake.completion_revision != effect_revision
+        {
+            return Err(conflict(
+                "completion remediation route",
+                "the completion effect and TPM wake do not describe one revision",
+            ));
+        }
+        let transaction = self.begin()?;
+        let claim_existed = remediation_claim(
+            &transaction,
+            request,
+            next.mini_project_id,
+            round,
+            RemediationCommandAction::TpmRoute,
+            Some(effect_revision),
+        )?;
+        let receipt = crate::commands::intent::insert_local_command(&transaction, request)?;
+        let current = epic_completion_in(&transaction, next.project_id, next.mini_project_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "epic completion",
             })?;
-        Ok(())
+        let applied = if claim_existed {
+            if receipt.is_none()
+                && (!effect_already_present
+                    || current.revision != effect_revision
+                    || current.state != next.state)
+            {
+                return Err(conflict(
+                    "completion remediation command",
+                    "the replay claim has no exact durable TPM route effect",
+                ));
+            }
+            Applied::Unchanged
+        } else {
+            if effect_already_present || receipt.is_some() {
+                return Err(conflict(
+                    "completion remediation command",
+                    "a new TPM route cannot claim an existing effect or receipt",
+                ));
+            }
+            if current.revision != expected_revision {
+                return Err(conflict(
+                    "epic completion",
+                    "the completion run moved since the caller read it",
+                ));
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE epic_completion
+                        SET state = ?3, revision = ?4, updated_at = ?5
+                      WHERE project_id = ?1 AND mini_project_id = ?2 AND revision = ?6",
+                    params![
+                        next.project_id.to_string(),
+                        next.mini_project_id.to_string(),
+                        next.state.to_string(),
+                        i64::try_from(next.revision.get()).unwrap_or(i64::MAX),
+                        text(next.updated_at),
+                        i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    ],
+                )
+                .map_err(backend)?;
+            if changed != 1 {
+                return Err(conflict(
+                    "epic completion",
+                    "the completion run moved since the caller read it",
+                ));
+            }
+            Applied::Created
+        };
+        ensure_completion_wake_in(&transaction, wake)?;
+        let receipt = match receipt {
+            Some(receipt) => receipt,
+            None => local_command_receipt(&transaction, &request.idempotency_key)?,
+        };
+        let stored = epic_completion_in(&transaction, next.project_id, next.mini_project_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "epic completion",
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok((stored, receipt, applied))
     }
 
     /// Read the proposal standing for one epic's failed round.
@@ -4628,7 +5222,8 @@ impl SqliteStore {
     ) -> RepositoryResult<Option<StoredRemediationProposal>> {
         self.connection
             .query_row(
-                "SELECT failed_round_evidence, proposal, lsa_seat_binding_id, proposed_at
+                "SELECT failed_round_evidence, proposal, lsa_seat_binding_id,
+                        lsa_occupancy_generation, proposed_at
                  FROM epic_completion_remediation_proposals
                  WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
                 params![
@@ -4641,7 +5236,8 @@ impl SqliteStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 },
             )
@@ -4655,7 +5251,12 @@ impl SqliteStore {
                     failed_round_evidence: ContentHash::parse(&columns.0)?,
                     proposal: ContentHash::parse(&columns.1)?,
                     lsa_seat_binding_id: SeatBindingId::parse(&columns.2)?,
-                    proposed_at: read_timestamp(&columns.3)?,
+                    lsa_occupancy_generation: u64::try_from(columns.3).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "an LSA proposal occupancy generation is invalid".to_owned(),
+                        }
+                    })?,
+                    proposed_at: read_timestamp(&columns.4)?,
                 })
             })
             .transpose()

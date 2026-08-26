@@ -52,7 +52,7 @@ pub use adapter::{
     ConsultationMessageRequest, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
     HostedSeatClaimRequest, HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    RuntimeAdapter, RuntimeError, RuntimeResult, ScopedSeatCredential,
 };
 pub use admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,

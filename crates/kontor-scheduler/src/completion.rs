@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use kontor_core::id::{AggregateRevision, ContentHash, ExternalName, SeatBindingId, SpecVersion};
+use kontor_core::id::{
+    AggregateRevision, CommitteeRunId, ContentHash, ExternalName, SeatBindingId, SpecVersion,
+};
 use kontor_core::open_question::OpenQuestionSummary;
 use kontor_core::{DomainError, DomainResult};
 use kontor_policy::{
@@ -392,8 +394,27 @@ pub struct CompletionRound {
     pub verdict: CommitteeVerdict,
     /// Durable finding/evidence digest.
     pub evidence: ContentHash,
+    /// The exact repository-backed Committee run, when one supplied this
+    /// observation. Optional keeps pre-lineage completion snapshots readable.
+    #[serde(default)]
+    pub committee_run_id: Option<CommitteeRunId>,
+    /// Hash of the immutable Committee result document.
+    #[serde(default)]
+    pub result_hash: Option<ContentHash>,
+    /// Hash of the durable remediation document that follows a failed round.
+    #[serde(default)]
+    pub remediation_hash: Option<ContentHash>,
     /// Roles and consultation path used by the round.
     pub deliberation: Vec<DeliberationStep>,
+}
+
+/// One authenticated control-plane authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemediationAuthority {
+    /// Immutable logical control-plane seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Native filler generation that authenticated this action.
+    pub occupancy_generation: u64,
 }
 
 /// The two-authority remediation approval.
@@ -403,6 +424,13 @@ pub struct RemediationAuthorization {
     pub lsa_proposal: ContentHash,
     /// TPM next-round routing receipt.
     pub tpm_routing: ContentHash,
+    /// Identity-bound LSA approval. Optional only for decoding states published
+    /// before seat-scoped remediation credentials existed.
+    #[serde(default)]
+    pub lsa_actor: Option<RemediationAuthority>,
+    /// Identity-bound TPM routing authority.
+    #[serde(default)]
+    pub tpm_actor: Option<RemediationAuthority>,
 }
 
 /// One completed remediation round.
@@ -519,6 +547,16 @@ pub enum CompletionObservation {
         verdict: CommitteeVerdict,
         /// Finding/evidence digest delivered to the LSA on failure.
         evidence: ContentHash,
+        /// Exact Committee identity and immutable result lineage, when the
+        /// observation came from the repository-backed Committee service.
+        #[serde(default)]
+        committee_run_id: Option<CommitteeRunId>,
+        /// Hash of the immutable result document, distinct from `evidence`.
+        #[serde(default)]
+        result_hash: Option<ContentHash>,
+        /// Hash of the durable remediation document, when one is present.
+        #[serde(default)]
+        remediation_hash: Option<ContentHash>,
         /// Roles/consultations that produced the verdict.
         deliberation: Vec<DeliberationStep>,
     },
@@ -691,6 +729,9 @@ pub fn advance(
                 round,
                 verdict,
                 evidence,
+                committee_run_id,
+                result_hash,
+                remediation_hash,
                 deliberation,
             },
             CompletionPhase::Verdict(expected_round),
@@ -705,6 +746,9 @@ pub fn advance(
                 round: *round,
                 verdict: *verdict,
                 evidence: evidence.clone(),
+                committee_run_id: *committee_run_id,
+                result_hash: result_hash.clone(),
+                remediation_hash: remediation_hash.clone(),
                 deliberation: deliberation.clone(),
             });
             match verdict {

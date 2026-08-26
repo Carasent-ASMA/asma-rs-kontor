@@ -912,6 +912,59 @@ impl PaseoRpc {
         credential: &str,
     ) -> RuntimeResult<Self> {
         let mode = consultation_permission_mode(model_rung.provider.0.as_str())?;
+        Self::scoped_seat_agent_create(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            prompt,
+            credential,
+            mode,
+        )
+    }
+
+    /// `create_agent_request` for one persistent hosted leadership seat. The
+    /// credential uses the same secret-only frame channel as consultation
+    /// credentials, while the seat retains its supervised provider mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hosted_seat_agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+    ) -> RuntimeResult<Self> {
+        let mode = paseo_mode(model_rung.provider.0.as_str(), SeatAutonomy::Supervised)?;
+        Self::scoped_seat_agent_create(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            prompt,
+            credential,
+            mode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scoped_seat_agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+        mode: Option<&str>,
+    ) -> RuntimeResult<Self> {
         let mut config = serde_json::json!({
             "provider": model_rung.provider.0,
             "cwd": canonical_cwd,
@@ -1949,6 +2002,28 @@ mod tests {
             consultation_permission_mode("opencode"),
             Err(RuntimeError::PermissionModeUnsupported { .. })
         ));
+    }
+
+    #[test]
+    fn hosted_leadership_uses_supervised_mode_and_the_same_secret_only_frame() {
+        let request = PaseoRpc::hosted_seat_agent_create(
+            "request-1".to_owned(),
+            "wks_1",
+            "/w/epic",
+            &route("claude-personal", "claude-opus-5", None),
+            "LSA",
+            &labels(),
+            "continue governed leadership",
+            "leadership-seat-secret",
+        )
+        .expect("a hosted Claude account route");
+        assert_eq!(request.message["config"]["modeId"], "auto");
+        assert!(request.message.get("env").is_none());
+        assert!(!format!("{request:?}").contains("leadership-seat-secret"));
+        assert_eq!(
+            request.envelope()["message"]["env"]["KONTOR_AUTH"],
+            "leadership-seat-secret"
+        );
     }
 
     /// Every launch states the authority it runs under, and the three intents

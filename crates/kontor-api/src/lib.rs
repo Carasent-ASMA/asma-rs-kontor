@@ -46,7 +46,7 @@ pub mod openapi;
 pub mod sessions;
 pub mod state;
 
-use crate::auth::ConsultationSeatSubject;
+use crate::auth::ScopedSeatSubject;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::middleware::Next;
@@ -77,7 +77,7 @@ pub fn now() -> Timestamp {
 /// handler cannot be reached without one. Extracting it is infallible for that
 /// reason; the fallible part already happened, before any handler ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Caller(pub CallerCapability, Option<ConsultationSeatSubject>);
+pub struct Caller(pub CallerCapability, Option<ScopedSeatSubject>);
 
 impl Caller {
     /// Refuse a caller whose tier does not reach `required`.
@@ -101,35 +101,56 @@ impl Caller {
         ))
     }
 
-    /// The consultation SeatBinding authenticated by the bearer, when this is
-    /// a seat-scoped credential rather than a shared Realm credential.
+    /// The persistent SeatBinding authenticated by a scoped bearer.
     #[must_use]
-    pub const fn consultation_seat(self) -> Option<SeatBindingId> {
+    pub const fn seat(self) -> Option<SeatBindingId> {
         match self.1 {
             Some(subject) => Some(subject.seat_binding_id),
             None => None,
         }
     }
 
-    /// Occupancy generation authenticated by a seat-scoped bearer.
+    /// Occupancy generation authenticated by a scoped bearer.
     #[must_use]
-    pub const fn consultation_occupancy_generation(self) -> Option<u64> {
+    pub const fn occupancy_generation(self) -> Option<u64> {
         match self.1 {
             Some(subject) => Some(subject.occupancy_generation),
             None => None,
         }
     }
 
-    /// Require the exact consultation-seat subject carried by a scoped bearer.
+    /// Require the exact persistent-seat subject carried by a scoped bearer.
     ///
-    /// This is deliberately separate from [`Self::require`]: a consultation
-    /// seat is read-only everywhere except the submission routes that call this
-    /// method explicitly. It never inherits the Realm operator secret's broad
-    /// authority merely because that secret signs the scoped credential.
+    /// This is deliberately separate from [`Self::require`]: a scoped seat has
+    /// no Realm-wide authority and reaches only seat-authored routes that call
+    /// this method explicitly. It never inherits the Realm operator secret's
+    /// broad authority merely because that secret signs the scoped credential.
     ///
     /// # Errors
     /// Returns [`ApiErrorCode::Forbidden`] for a shared Realm credential or any
-    /// caller that did not authenticate as one consultation seat.
+    /// caller that did not authenticate as one persistent seat.
+    pub fn require_scoped_seat(self, state: &ApiState) -> Result<SeatBindingId, ApiError> {
+        self.seat().ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::Forbidden,
+                "this route requires the acting persistent seat's scoped credential",
+            )
+        })
+    }
+
+    /// Compatibility projection for consultation submission routes.
+    #[must_use]
+    pub const fn consultation_seat(self) -> Option<SeatBindingId> {
+        self.seat()
+    }
+
+    /// Compatibility occupancy projection for consultation routes.
+    #[must_use]
+    pub const fn consultation_occupancy_generation(self) -> Option<u64> {
+        self.occupancy_generation()
+    }
+
+    /// Compatibility guard retaining the consultation-specific refusal.
     pub fn require_consultation_seat(self, state: &ApiState) -> Result<SeatBindingId, ApiError> {
         self.consultation_seat().ok_or_else(|| {
             state.refuse(
@@ -198,7 +219,7 @@ async fn authenticate(
     })?;
     let caller = if let Some(authority) = state.credentials().authority(presented) {
         Caller(authority, None)
-    } else if let Some(subject) = state.credentials().consultation_subject(presented) {
+    } else if let Some(subject) = state.credentials().seat_subject(presented) {
         // The capability value is only a storage placeholder: `Caller::require`
         // denies every seat-scoped caller before checking it. Submission routes
         // opt in through `require_consultation_seat`, so the bearer cannot read

@@ -63,9 +63,9 @@ pub use completion::{
     CompletionEdgeCondition, CompletionNode, CompletionNodeKey, CompletionNodeKind,
     CompletionObservation, CompletionPhase, CompletionProfile, CompletionProfileRef,
     CompletionRound, CompletionSignal, CompletionState, CompletionTransition, IntegrationRecord,
-    PollingFallback, RemediationApproval, RemediationAuthorization, RemediationRecord,
-    RepositoryOutcome, SignalDelivery, advance, blockers, compile, operational_default,
-    outstanding, start,
+    PollingFallback, RemediationApproval, RemediationAuthority, RemediationAuthorization,
+    RemediationRecord, RepositoryOutcome, SignalDelivery, advance, blockers, compile,
+    operational_default, outstanding, start,
 };
 pub use headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass, WaitReason, resolve};
 pub use model::{

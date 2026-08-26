@@ -31,14 +31,17 @@ use kontor_core::id::{ContentHash, SeatBindingId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
-/// Authenticated consultation-seat subject, fenced to one native occupancy.
+/// Authenticated persistent-seat subject, fenced to one native occupancy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConsultationSeatSubject {
+pub struct ScopedSeatSubject {
     /// Immutable logical seat identity.
     pub seat_binding_id: SeatBindingId,
     /// Monotonic filler generation carried by this bearer.
     pub occupancy_generation: u64,
 }
+
+/// Compatibility alias for existing consultation-only call sites.
+pub type ConsultationSeatSubject = ScopedSeatSubject;
 
 closed_enum! {
     /// How much of the control plane one caller may reach.
@@ -146,7 +149,7 @@ impl RealmCredentials {
         granted
     }
 
-    /// Mint a bearer credential scoped to one consultation seat.
+    /// Mint a bearer credential scoped to one persistent seat.
     ///
     /// The credential is derived from the Realm's operator secret and the
     /// durable SeatBinding id, but it does not inherit that secret's Realm-wide
@@ -156,7 +159,7 @@ impl RealmCredentials {
     /// raw Realm secret never leaves this type; only the scoped credential is
     /// handed to the native seat.
     #[must_use]
-    pub fn consultation_seat_credential(&self, seat_binding_id: SeatBindingId) -> String {
+    pub fn seat_credential(&self, seat_binding_id: SeatBindingId) -> String {
         let held = self
             .secrets
             .read()
@@ -175,7 +178,7 @@ impl RealmCredentials {
     /// occupancy generation. Fencing the generation invalidates every bearer
     /// inherited by the predecessor without rotating Realm credentials.
     #[must_use]
-    pub fn consultation_seat_credential_for_generation(
+    pub fn seat_credential_for_generation(
         &self,
         seat_binding_id: SeatBindingId,
         occupancy_generation: u64,
@@ -207,8 +210,8 @@ impl RealmCredentials {
     /// route can therefore require a consultation seat rather than accepting a
     /// shared operator credential plus a caller-supplied identity.
     #[must_use]
-    pub fn consultation_seat(&self, presented: &str) -> Option<SeatBindingId> {
-        self.consultation_subject(presented)
+    pub fn seat(&self, presented: &str) -> Option<SeatBindingId> {
+        self.seat_subject(presented)
             .map(|subject| subject.seat_binding_id)
     }
 
@@ -216,7 +219,7 @@ impl RealmCredentials {
     /// generation one so already-running seats survive the schema upgrade; the
     /// first replacement increments the stored generation and fences them.
     #[must_use]
-    pub fn consultation_subject(&self, presented: &str) -> Option<ConsultationSeatSubject> {
+    pub fn seat_subject(&self, presented: &str) -> Option<ScopedSeatSubject> {
         if let Some(rest) = presented.strip_prefix("kontor-seat-v2.") {
             let mut parts = rest.split('.');
             let binding = parts.next()?;
@@ -226,11 +229,10 @@ impl RealmCredentials {
                 return None;
             }
             let seat_binding_id = SeatBindingId::parse(binding).ok()?;
-            let expected =
-                self.consultation_seat_credential_for_generation(seat_binding_id, generation);
+            let expected = self.seat_credential_for_generation(seat_binding_id, generation);
             let expected_signature = expected.rsplit_once('.')?.1;
             return constant_time_eq(expected_signature.as_bytes(), signature.as_bytes())
-                .then_some(ConsultationSeatSubject {
+                .then_some(ScopedSeatSubject {
                     seat_binding_id,
                     occupancy_generation: generation,
                 });
@@ -238,14 +240,44 @@ impl RealmCredentials {
         let rest = presented.strip_prefix("kontor-seat-v1.")?;
         let (binding, signature) = rest.split_once('.')?;
         let seat_binding_id = SeatBindingId::parse(binding).ok()?;
-        let expected = self.consultation_seat_credential(seat_binding_id);
+        let expected = self.seat_credential(seat_binding_id);
         let expected_signature = expected.rsplit_once('.')?.1;
         constant_time_eq(expected_signature.as_bytes(), signature.as_bytes()).then_some(
-            ConsultationSeatSubject {
+            ScopedSeatSubject {
                 seat_binding_id,
                 occupancy_generation: 1,
             },
         )
+    }
+
+    /// Backward-compatible spelling for consultation call sites. The bearer is
+    /// deliberately generic now: persistent leadership seats use the same
+    /// fenced subject without inheriting Realm authority.
+    #[must_use]
+    pub fn consultation_seat_credential(&self, seat_binding_id: SeatBindingId) -> String {
+        self.seat_credential(seat_binding_id)
+    }
+
+    /// Backward-compatible generation-fenced consultation spelling.
+    #[must_use]
+    pub fn consultation_seat_credential_for_generation(
+        &self,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> String {
+        self.seat_credential_for_generation(seat_binding_id, occupancy_generation)
+    }
+
+    /// Backward-compatible consultation identity projection.
+    #[must_use]
+    pub fn consultation_seat(&self, presented: &str) -> Option<SeatBindingId> {
+        self.seat(presented)
+    }
+
+    /// Backward-compatible consultation subject projection.
+    #[must_use]
+    pub fn consultation_subject(&self, presented: &str) -> Option<ScopedSeatSubject> {
+        self.seat_subject(presented)
     }
 
     /// Swap in a whole new generation of secrets.

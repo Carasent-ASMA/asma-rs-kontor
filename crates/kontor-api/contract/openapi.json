@@ -2791,7 +2791,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InvokeConsultationRequest"
+                "$ref": "#/components/schemas/InvokeAdvisorRequest"
               }
             }
           },
@@ -10275,6 +10275,49 @@
           }
         }
       },
+      "CommitteeReReviewProvenance": {
+        "type": "object",
+        "description": "Immutable lineage that authorizes one clean Committee re-review for an epic\ncompletion. Every identity and digest is checked against the completion and\nthe original failed Committee run before any native seat is launched.",
+        "required": [
+          "completion_round",
+          "completion_revision",
+          "failed_committee_run_id",
+          "failed_result_hash",
+          "remediation_hash",
+          "remediation_integration_receipt"
+        ],
+        "properties": {
+          "completion_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The completion revision after the remediation evidence freeze.",
+            "minimum": 0
+          },
+          "completion_round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Completion round whose failed result is being remediated.",
+            "minimum": 0
+          },
+          "failed_committee_run_id": {
+            "type": "string",
+            "description": "The original Committee run that produced the failed result."
+          },
+          "failed_result_hash": {
+            "type": "string",
+            "description": "Hash of the exact failed result document, not its evidence digest."
+          },
+          "remediation_hash": {
+            "type": "string",
+            "description": "Hash of the immutable Committee remediation document."
+          },
+          "remediation_integration_receipt": {
+            "type": "string",
+            "description": "Frozen integration-evidence content digest from the completion's\n`IntegrationRecord.receipt` (not a command receipt or UUID)."
+          }
+        },
+        "additionalProperties": false
+      },
       "CommitteeRunDto": {
         "type": "object",
         "description": "One Committee consultation.",
@@ -10343,8 +10386,22 @@
           "remediation": {
             "description": "Immutable recommendation and tried path that authorized round two."
           },
+          "remediation_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of the immutable remediation document."
+          },
           "result": {
             "description": "Immutable terminal result, including needs-human recommendation/tried path."
+          },
+          "result_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of the immutable terminal result document."
           },
           "revision": {
             "type": "integer",
@@ -10976,6 +11033,13 @@
           "deliberation"
         ],
         "properties": {
+          "committee_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact Committee run that produced this round."
+          },
           "deliberation": {
             "type": "array",
             "items": {
@@ -10986,6 +11050,20 @@
           "evidence": {
             "type": "string",
             "description": "The immutable finding/evidence digest."
+          },
+          "remediation_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of the durable remediation that follows this failed round."
+          },
+          "result_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of the immutable result document, when the round came from the\nrepository-backed Committee service."
           },
           "round": {
             "type": "integer",
@@ -11010,6 +11088,7 @@
           "blockers",
           "integrations",
           "rounds",
+          "remediations",
           "closeout",
           "wakes",
           "revision",
@@ -11060,6 +11139,13 @@
           "realm_id": {
             "type": "string",
             "description": "The Realm it was read in."
+          },
+          "remediations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemediationRecordDto"
+            },
+            "description": "Completed governed remediations, oldest first."
           },
           "revision": {
             "type": "integer",
@@ -13268,9 +13354,47 @@
           }
         }
       },
+      "InvokeAdvisorRequest": {
+        "type": "object",
+        "description": "Invoke one Advisor consultation against an epic.",
+        "required": [
+          "profile",
+          "question",
+          "caller_seat_binding_id",
+          "expected_revision"
+        ],
+        "properties": {
+          "caller_seat_binding_id": {
+            "type": "string",
+            "description": "Exact active epic seat whose role is authorized by the pinned policy."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller believes is current.",
+            "minimum": 0
+          },
+          "profile": {
+            "$ref": "#/components/schemas/RevisionRefDto",
+            "description": "The profile revision to run under."
+          },
+          "question": {
+            "type": "string",
+            "description": "What is being asked."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional ticket scope. It must belong to the epic in the route; absent\nmeans the epic as a whole."
+          }
+        },
+        "additionalProperties": false
+      },
       "InvokeConsultationRequest": {
         "type": "object",
-        "description": "Invoke one consultation against an epic.\n\nA consultation names the pinned profile it runs under and the question it is\nasked. It does not name a model, a provider or a runtime: which seat answers\nis the realm's routing decision, not the caller's.",
+        "description": "Invoke one Committee consultation against an epic.\n\nA consultation names the pinned profile it runs under and the question it is\nasked. It does not name a model, a provider or a runtime: which seat answers\nis the realm's routing decision, not the caller's.",
         "required": [
           "profile",
           "question",
@@ -13295,6 +13419,17 @@
           "question": {
             "type": "string",
             "description": "What is being asked."
+          },
+          "re_review": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommitteeReReviewProvenance",
+                "description": "Provenance for a clean completion re-review. A re-review is a new\nCommittee run, never a mutable reuse of whichever run currently says\n`round = 2`."
+              }
+            ]
           },
           "task_id": {
             "type": [
@@ -15733,6 +15868,91 @@
           }
         ],
         "description": "One of the two remediation authorities, as a closed tagged action.\n\nRemediation takes two distinct seats acting in order, so the request names\nwhich one is acting rather than carrying a free-text reason. A single\nuntyped `reason` could not express the rule the pinned policy enforces: the\nLSA proposes the bounded correction and the TPM routes it, and neither\nreceipt alone may launch a round."
+      },
+      "RemediationAuthorityDto": {
+        "type": "object",
+        "description": "One authenticated control-plane remediation authority.",
+        "required": [
+          "seat_binding_id",
+          "occupancy_generation"
+        ],
+        "properties": {
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Native filler generation that authenticated this action.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Immutable logical control-plane seat."
+          }
+        }
+      },
+      "RemediationAuthorizationDto": {
+        "type": "object",
+        "description": "The two immutable authorities required before remediation integration.",
+        "required": [
+          "lsa_proposal",
+          "tpm_routing"
+        ],
+        "properties": {
+          "lsa_actor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RemediationAuthorityDto",
+                "description": "LSA seat and native occupancy that authored the proposal."
+              }
+            ]
+          },
+          "lsa_proposal": {
+            "type": "string",
+            "description": "LSA proposal evidence."
+          },
+          "tpm_actor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RemediationAuthorityDto",
+                "description": "TPM seat and native occupancy that authored the route."
+              }
+            ]
+          },
+          "tpm_routing": {
+            "type": "string",
+            "description": "TPM routing evidence."
+          }
+        }
+      },
+      "RemediationRecordDto": {
+        "type": "object",
+        "description": "One completed, governed remediation and its frozen integration evidence.",
+        "required": [
+          "round",
+          "authorization",
+          "integration"
+        ],
+        "properties": {
+          "authorization": {
+            "$ref": "#/components/schemas/RemediationAuthorizationDto",
+            "description": "The two-authority approval."
+          },
+          "integration": {
+            "$ref": "#/components/schemas/IntegrationRecordDto",
+            "description": "Integration result; `receipt` is a frozen content digest."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Failed completion round this remediation follows.",
+            "minimum": 0
+          }
+        }
       },
       "ReplaceSeatRequest": {
         "type": "object",

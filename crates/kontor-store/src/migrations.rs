@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 63;
+pub const SCHEMA_VERSION: i64 = 66;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -253,6 +253,16 @@ const MIGRATIONS: &[&str] = &[
     // Schema v63. Imported profile-selection results retain their exact source
     // policy and row hash as destination-owned, non-executable lineage.
     include_str!("../migrations/0063_imported_profile_selection_outcomes.sql"),
+    // Schema v64. Remediation freezes a failed result instead of opening a
+    // mutable second round, and its source round is safe for either round.
+    include_str!("../migrations/0064_committee_remediation_rounds.sql"),
+    // Schema v65. LSA proposals bind to the authenticated hosted-seat native
+    // occupancy so a replaced filler's credential is fenced durably.
+    include_str!("../migrations/0065_remediation_proposal_seat_generation.sql"),
+    // Schema v66. Remediation effects are atomically bound to their exact
+    // command replay authority, and clean Committee re-reviews claim canonical
+    // provenance inside the run-freeze transaction.
+    include_str!("../migrations/0066_remediation_command_claims.sql"),
 ];
 
 const _: () = assert!(

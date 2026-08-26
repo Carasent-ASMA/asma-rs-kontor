@@ -211,6 +211,9 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
                 round: 1,
                 verdict: CommitteeVerdict::Fail,
                 evidence: digest("failed-finding-1"),
+                committee_run_id: None,
+                result_hash: None,
+                remediation_hash: None,
                 deliberation: deliberation(1, "failed"),
             },
         ),
@@ -237,6 +240,8 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
     let authorization = RemediationAuthorization {
         lsa_proposal: digest("lsa-proposal"),
         tpm_routing: digest("tpm-routing"),
+        lsa_actor: None,
+        tpm_actor: None,
     };
     let (next, commands) = apply_and_restart(
         &compiled,
@@ -286,6 +291,9 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
                 round: 2,
                 verdict: CommitteeVerdict::Fail,
                 evidence: digest("failed-finding-2"),
+                committee_run_id: None,
+                result_hash: None,
+                remediation_hash: None,
                 deliberation: deliberation(2, "failed"),
             },
         ),
@@ -310,6 +318,9 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
                 round: 2,
                 verdict: CommitteeVerdict::Pass,
                 evidence: digest("passed-finding-2"),
+                committee_run_id: None,
+                result_hash: None,
+                remediation_hash: None,
                 deliberation: deliberation(2, "passed"),
             },
         ),
@@ -488,6 +499,9 @@ fn at_closeout() -> (CompiledCompletion, CompletionState, SeatBindingId) {
             round: 1,
             verdict: CommitteeVerdict::Pass,
             evidence: digest("finding"),
+            committee_run_id: None,
+            result_hash: None,
+            remediation_hash: None,
             deliberation: deliberation(1, "passed"),
         },
     );

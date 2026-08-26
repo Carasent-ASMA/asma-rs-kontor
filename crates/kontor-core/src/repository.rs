@@ -654,6 +654,8 @@ pub struct StoredRemediationProposal {
     pub proposal: ContentHash,
     /// The exact seat that proposed.
     pub lsa_seat_binding_id: SeatBindingId,
+    /// Native occupancy generation that authenticated the proposal.
+    pub lsa_occupancy_generation: u64,
     /// Proposal instant.
     pub proposed_at: Timestamp,
 }
