@@ -21,16 +21,25 @@ use std::path::{Path, PathBuf};
 
 use kontor_core::authority::{AuthoritySubject, SubjectOrigin};
 use kontor_core::id::{
-    AggregateRevision, ExternalName, ProjectId, RealmId, Timestamp, parse_utc_timestamp,
+    AggregateRevision, CommandReceiptId, ExternalName, IdempotencyKey, ProjectId, RealmId,
+    SpecVersion, TaskId, TaskWorkflowId, Timestamp, parse_utc_timestamp,
 };
-use kontor_core::repository::{NewProject, ProjectRepository};
+use kontor_core::receipt::{AggregateRef, CommandKind};
+use kontor_core::repository::{
+    NewLocalCommand, NewProject, NewTask, NewTaskWorkflow, ProjectRepository,
+};
+use kontor_core::spec::ResolvedWorkProfileSnapshot;
+use kontor_core::state::TaskState;
 use kontor_store::authority::SubjectOrigins;
 use kontor_store::backup::{
     BackupError, RETAINED_SNAPSHOTS, SnapshotManifest, create_snapshot, list_snapshots,
     prune_snapshots, restore_snapshot,
 };
 use kontor_store::memory::{AgentsRoomExport, LegacyMemoryEntry, MemoryProvenance};
-use kontor_store::{ProjectEnsure, SCHEMA_VERSION, SqliteStore};
+use kontor_store::{
+    ProfileSelection, ProjectEnsure, SCHEMA_VERSION, SqliteStore, StoredProfileSelectionOutcome,
+    TeamTemplateSource,
+};
 use tempfile::TempDir;
 
 fn at(text: &str) -> Timestamp {
@@ -83,6 +92,124 @@ fn memory_document(text: &str) -> kontor_core::id::CanonicalDocument {
         &serde_json::json!({"schema_version": 1, "text": text}),
     )
     .expect("canonical memory")
+}
+
+fn selection_snapshot_fixture(
+    store: &SqliteStore,
+    project: ProjectId,
+) -> [StoredProfileSelectionOutcome; 2] {
+    let task = TaskId::generate();
+    store
+        .create_task(&NewTask {
+            id: task,
+            project_id: project,
+            mini_project_id: None,
+            title: name("Snapshot selection task"),
+            module: None,
+            state: TaskState::Ready,
+            created_at: at("2026-08-10T09:00:00Z"),
+        })
+        .expect("the task is created");
+    let pack = kontor_profiles::seeds::bundled_pack().expect("the bundled pack loads");
+    let entry = pack
+        .manifest
+        .iter()
+        .find(|entry| entry.availability == kontor_profiles::pack::PackAvailability::Seeded)
+        .expect("the pack seeds at least one category");
+    let bundle =
+        kontor_profiles::pack::resolve_profile(&pack, &entry.category, at("2026-08-10T09:01:00Z"))
+            .expect("the profile resolves");
+    let mut first_definition = bundle.profile.definition;
+    first_definition.team_template = None;
+
+    let apply = |key: &str,
+                 marker: &str,
+                 definition: &kontor_core::spec::WorkProfileSpec,
+                 instant: Timestamp|
+     -> StoredProfileSelectionOutcome {
+        let snapshot = ResolvedWorkProfileSnapshot::resolve(definition, instant)
+            .expect("the profile resolves");
+        let command = NewLocalCommand {
+            project_id: project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse(key).expect("a valid key"),
+            kind: CommandKind::SelectTaskProfile,
+            target: AggregateRef::Task { task_id: task },
+            target_revision: AggregateRevision::INITIAL,
+            intent: kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "marker": marker,
+            }))
+            .expect("a canonical intent"),
+            created_at: instant,
+        };
+        let workflow = NewTaskWorkflow {
+            id: TaskWorkflowId::generate(),
+            project_id: project,
+            task_id: task,
+            current_phase: definition.entry_phase.clone(),
+            snapshot,
+            created_at: instant,
+        };
+        store
+            .apply_profile_selection(&ProfileSelection {
+                command: &command,
+                workflow: &workflow,
+                definition,
+                team: None,
+                team_source: TeamTemplateSource::Registered,
+            })
+            .expect("the selection is stored atomically")
+    };
+    let first = apply(
+        "snapshot-profile-selection-k",
+        "snapshot-profile-selection-p1",
+        &first_definition,
+        at("2026-08-10T09:01:00Z"),
+    );
+    let mut second_definition = first_definition;
+    second_definition.version =
+        SpecVersion::parse(second_definition.version.get() + 1).expect("the next version");
+    let second = apply(
+        "snapshot-profile-selection-k2",
+        "snapshot-profile-selection-p2",
+        &second_definition,
+        at("2026-08-10T09:02:00Z"),
+    );
+    [first, second]
+}
+
+#[test]
+fn snapshot_preserves_exact_k_and_k2_profile_selection_bindings() {
+    let home = TempDir::new().expect("a temporary directory");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("the database migrates");
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: name("Selection snapshot project"),
+            root_path: name("/tmp/kontor-selection-snapshot"),
+            created_at: at("2026-08-10T09:00:00Z"),
+        })
+        .expect("the project is created");
+    let expected = selection_snapshot_fixture(&store, project);
+
+    let outcome = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-08-10T10:00:00Z"),
+    )
+    .expect("the snapshot is published");
+    assert_eq!(outcome.manifest.database_schema_version, 63);
+    let restored = SqliteStore::open(&outcome.snapshot).expect("the snapshot reopens");
+    for expected in expected {
+        let actual = restored
+            .get_profile_selection_outcome(project, expected.receipt_id)
+            .expect("the outcome reads")
+            .expect("the exact binding survives");
+        assert_eq!(actual, expected);
+    }
 }
 
 #[test]

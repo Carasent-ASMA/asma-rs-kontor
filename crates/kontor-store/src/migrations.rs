@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 62;
+pub const SCHEMA_VERSION: i64 = 63;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -250,6 +250,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v62. The exact immutable workflow/policy result of a profile
     // selection is committed with its local command receipt and effect.
     include_str!("../migrations/0062_profile_selection_outcomes.sql"),
+    // Schema v63. Imported profile-selection results retain their exact source
+    // policy and row hash as destination-owned, non-executable lineage.
+    include_str!("../migrations/0063_imported_profile_selection_outcomes.sql"),
 ];
 
 const _: () = assert!(

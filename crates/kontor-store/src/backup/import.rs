@@ -30,11 +30,16 @@
 
 use kontor_core::calendar::CalendarProfileSpec;
 use kontor_core::id::{
-    CanonicalDocument, ContentHash, ExternalName, ProjectId, SpecVersion, TeamTemplateId,
-    Timestamp, format_utc_timestamp,
+    CanonicalDocument, CommandReceiptId, ContentHash, ExternalName, ProjectId, SpecVersion, TaskId,
+    TaskWorkflowId, TeamTemplateId, Timestamp, WorkProfileKey, format_utc_timestamp,
+    parse_utc_timestamp,
 };
+use kontor_core::receipt::AggregateRef;
 use kontor_core::repository::{ProjectRepository, RepositoryError, SpecRepository};
-use kontor_core::spec::{PersonaScenarioSpec, TeamTemplateRevision, TriggerSpec, WorkProfileSpec};
+use kontor_core::spec::{
+    PersonaScenarioSpec, ResolvedWorkProfileSnapshot, TeamTemplateRevision, TriggerSpec,
+    WorkProfileSpec,
+};
 use kontor_core::ticket::{ExternalWorkflowSpec, TicketFieldSpec};
 use rusqlite::params;
 use uuid::Uuid;
@@ -158,6 +163,7 @@ pub fn import_export(
             subject: "destination project",
         }));
     }
+    validate_profile_selection_outcomes(export)?;
 
     // 2. Lineage first, and for every record: an import that materializes
     //    nothing still has to be able to say what it saw.
@@ -194,6 +200,116 @@ pub fn import_export(
         refused: count(&|d| matches!(d, Disposition::Refused(_))),
         reconciliation_required: true,
     })
+}
+
+/// Verify every exported selection result against the exact source records it
+/// claims to bind.
+///
+/// An import never makes those records live, but it must not preserve a
+/// self-consistent hash over a fabricated relationship. The typed identifiers,
+/// closed outcome vocabulary and source receipt/workflow/specification rows are
+/// all checked before the destination transaction begins.
+fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), BackupError> {
+    let records = &export.records;
+    let mut identities = std::collections::BTreeSet::new();
+    for row in &records.profile_selection_outcomes {
+        ProjectId::parse(&row.project_id)?;
+        CommandReceiptId::parse(&row.receipt_id)?;
+        let task_id = TaskId::parse(&row.task_id)?;
+        TaskWorkflowId::parse(&row.workflow_id)?;
+        WorkProfileKey::parse(&row.profile_key)?;
+        SpecVersion::parse(u32::try_from(row.profile_version).map_err(|_| {
+            BackupError::Verification {
+                detail: "an exported profile selection has an invalid profile version",
+            }
+        })?)?;
+        ContentHash::parse(&row.profile_hash)?;
+        parse_utc_timestamp(&row.recorded_at)?;
+        if !matches!(row.applied.as_str(), "created" | "unchanged") {
+            return Err(BackupError::Verification {
+                detail: "an exported profile selection has an invalid applied outcome",
+            });
+        }
+        if !identities.insert((&row.project_id, &row.receipt_id)) {
+            return Err(BackupError::Verification {
+                detail: "an export repeats a profile selection outcome identity",
+            });
+        }
+
+        let team = match (
+            &row.team_template_id,
+            row.team_template_version,
+            &row.team_template_hash,
+        ) {
+            (None, None, None) => None,
+            (Some(id), Some(version), Some(hash)) => {
+                TeamTemplateId::parse(id)?;
+                SpecVersion::parse(u32::try_from(version).map_err(|_| {
+                    BackupError::Verification {
+                        detail: "an exported profile selection has an invalid team version",
+                    }
+                })?)?;
+                ContentHash::parse(hash)?;
+                Some((id, version, hash))
+            }
+            _ => {
+                return Err(BackupError::Verification {
+                    detail: "an exported profile selection has a partial team binding",
+                });
+            }
+        };
+
+        let receipt_matches = records.command_receipts.iter().any(|receipt| {
+            receipt.project_id == row.project_id
+                && receipt.id == row.receipt_id
+                && receipt.kind == "select_task_profile"
+                && receipt.created_at == row.recorded_at
+                && serde_json::from_str::<AggregateRef>(&receipt.target)
+                    .is_ok_and(|target| target == (AggregateRef::Task { task_id }))
+        });
+        let workflow_matches = records.task_workflows.iter().any(|workflow| {
+            let snapshot_matches = ContentHash::parse(&workflow.snapshot_hash)
+                .and_then(|hash| CanonicalDocument::from_stored(&workflow.snapshot, &hash))
+                .and_then(|document| document.deserialize::<ResolvedWorkProfileSnapshot>())
+                .is_ok_and(|snapshot| {
+                    snapshot.verify().is_ok()
+                        && snapshot.definition.id.as_str() == row.profile_key
+                        && i64::from(snapshot.definition.version.get()) == row.profile_version
+                        && snapshot.definition_hash.as_str() == row.profile_hash
+                });
+            workflow.project_id == row.project_id
+                && workflow.id == row.workflow_id
+                && workflow.task_id == row.task_id
+                && workflow.profile_key == row.profile_key
+                && workflow.profile_version == row.profile_version
+                && snapshot_matches
+        });
+        let task_matches = records
+            .tasks
+            .iter()
+            .any(|task| task.project_id == row.project_id && task.id == row.task_id);
+        let profile_matches = records.work_profiles.iter().any(|profile| {
+            profile.project_id == row.project_id
+                && profile.profile_key == row.profile_key
+                && profile.version == row.profile_version
+                && profile.definition_hash == row.profile_hash
+        });
+        let team_matches = team.is_none_or(|(id, version, hash)| {
+            records.team_templates.iter().any(|template| {
+                template.project_id == row.project_id
+                    && &template.template_id == id
+                    && template.version == version
+                    && &template.definition_hash == hash
+            })
+        });
+        if !(receipt_matches && workflow_matches && task_matches && profile_matches && team_matches)
+        {
+            return Err(BackupError::Verification {
+                detail: "an exported profile selection does not match its source lineage",
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Insert one specification and classify the outcome.
@@ -424,6 +540,45 @@ fn record_import(
             )
             .map_err(map_sql)?;
     }
+    for row in &export.records.profile_selection_outcomes {
+        let identity = format!("{}/{}", row.project_id, row.receipt_id);
+        let source_hash = dispositions
+            .iter()
+            .find(|(record, _)| {
+                record.kind == "profile_selection_outcomes" && record.identity == identity
+            })
+            .map(|(record, _)| record.hash.as_str())
+            .ok_or(BackupError::Verification {
+                detail: "an exported profile selection has no lineage digest",
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO imported_profile_selection_outcomes
+                     (project_id, import_id, source_project_id, source_receipt_id, source_task_id,
+                      source_workflow_id, profile_key, profile_version, profile_hash,
+                      team_template_id, team_template_version, team_template_hash, applied,
+                      source_recorded_at, source_record_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    plan.destination_project().to_string(),
+                    import_id.as_hyphenated().to_string(),
+                    row.project_id,
+                    row.receipt_id,
+                    row.task_id,
+                    row.workflow_id,
+                    row.profile_key,
+                    row.profile_version,
+                    row.profile_hash,
+                    row.team_template_id,
+                    row.team_template_version,
+                    row.team_template_hash,
+                    row.applied,
+                    row.recorded_at,
+                    source_hash,
+                ],
+            )
+            .map_err(map_sql)?;
+    }
     transaction.commit().map_err(map_sql)?;
     Ok(())
 }
@@ -496,6 +651,49 @@ impl SqliteStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|source| BackupError::Store(source.into()))
     }
+
+    /// Exact profile-selection outcomes preserved as non-executable lineage
+    /// under one destination import receipt.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Store`] when the table cannot be read.
+    pub fn imported_profile_selection_outcomes(
+        &self,
+        import_id: &str,
+    ) -> Result<Vec<ImportedProfileSelectionOutcomeRow>, BackupError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT source_project_id, source_receipt_id, source_task_id,
+                        source_workflow_id, profile_key, profile_version, profile_hash,
+                        team_template_id, team_template_version, team_template_hash, applied,
+                        source_recorded_at, source_record_hash
+                 FROM imported_profile_selection_outcomes WHERE import_id = ?1
+                 ORDER BY source_project_id, source_receipt_id",
+            )
+            .map_err(|source| BackupError::Store(source.into()))?;
+        let rows = statement
+            .query_map(params![import_id], |row| {
+                Ok(ImportedProfileSelectionOutcomeRow {
+                    source_project_id: row.get(0)?,
+                    source_receipt_id: row.get(1)?,
+                    source_task_id: row.get(2)?,
+                    source_workflow_id: row.get(3)?,
+                    profile_key: row.get(4)?,
+                    profile_version: row.get(5)?,
+                    profile_hash: row.get(6)?,
+                    team_template_id: row.get(7)?,
+                    team_template_version: row.get(8)?,
+                    team_template_hash: row.get(9)?,
+                    applied: row.get(10)?,
+                    source_recorded_at: row.get(11)?,
+                    source_record_hash: row.get(12)?,
+                })
+            })
+            .map_err(|source| BackupError::Store(source.into()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|source| BackupError::Store(source.into()))
+    }
 }
 
 /// One stored import receipt, as text.
@@ -536,4 +734,36 @@ pub struct ImportedRecordRow {
     pub disposition: String,
     /// Why, for a refusal.
     pub reason_code: Option<String>,
+}
+
+/// One exact imported profile-selection result kept as source-referenced
+/// lineage, never as a live command or workflow effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedProfileSelectionOutcomeRow {
+    /// Source project reference.
+    pub source_project_id: String,
+    /// Source command receipt reference.
+    pub source_receipt_id: String,
+    /// Source task reference.
+    pub source_task_id: String,
+    /// Source workflow reference.
+    pub source_workflow_id: String,
+    /// Exact source profile key.
+    pub profile_key: String,
+    /// Exact source profile version.
+    pub profile_version: i64,
+    /// Exact source profile hash.
+    pub profile_hash: String,
+    /// Exact source team id, when pinned.
+    pub team_template_id: Option<String>,
+    /// Exact source team version, when pinned.
+    pub team_template_version: Option<i64>,
+    /// Exact source team hash, when pinned.
+    pub team_template_hash: Option<String>,
+    /// Whether the source selection created or reused its workflow.
+    pub applied: String,
+    /// Source instant.
+    pub source_recorded_at: String,
+    /// Canonical hash of the complete exported source row.
+    pub source_record_hash: String,
 }
