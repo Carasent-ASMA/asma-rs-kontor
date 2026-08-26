@@ -328,6 +328,20 @@ reset; `NeedsHuman` persists the exact deliberation path and recommendation;
 restart/replay reproduces either outcome without inventing a rung or a second
 launch.
 
+### Enact launch-time `Wait` and `NeedsHuman`
+
+`kontor_scheduler::headroom::resolve` returns a typed `Placement::Wait` with a
+reset instant or `Placement::NeedsHuman` with an escalation payload. The current
+delivery launch function must return a `ModelRung`; on those two outcomes it
+drops the payload and preserves the adapter's typed provider-outage refusal
+path. The resolver is truthful, but the launch path does not yet park the work
+until reset or persist the escalation it computed.
+
+Acceptance: a launch-time `Wait` parks without dispatch and wakes at the stored
+reset; `NeedsHuman` persists the exact deliberation path and recommendation;
+restart/replay reproduces either outcome without inventing a rung or a second
+launch.
+
 ### Vendor and model tables
 
 Replace the hardcoded catalog in
