@@ -42,8 +42,8 @@ use kontor_core::repository::{
     AccountProfileUpdate, CalendarRepository, CommandRepository, ConnectorSpecSelector,
     CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository,
     NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeReevaluation,
-    NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
+    NewLocalCommand, NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent,
+    NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
     ProjectRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RunClosure,
     RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository, StoredCompletionProfile,
     StoredCompletionWake, StoredEpicCompletion, StoredRemediationProposal, TaskTransitionRequest,
@@ -65,7 +65,7 @@ use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
     StatusConflictKind, StatusSelector,
 };
-use kontor_store::SqliteStore;
+use kontor_store::{Applied, SqliteStore};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -98,7 +98,9 @@ const CENSUS_TABLES: &[&str] = &[
     "command_outbox",
     "command_receipts",
     "command_targets",
+    "committee_re_review_claims",
     "context_packs",
+    "epic_completion_remediation_command_claims",
     "execution_authorization_tasks",
     "execution_authorizations",
     "external_comments",
@@ -7367,24 +7369,80 @@ fn a_replayed_completion_wake_reuses_its_intent_instead_of_adding_a_second() {
 fn a_second_remediation_proposal_for_one_round_is_refused() {
     let fixture = fixture();
     let epic = MiniProjectId::generate();
+    fixture
+        .store
+        .create_mini_project(&NewMiniProject {
+            id: epic,
+            project_id: fixture.project,
+            name: name("Remediation epic"),
+            created_at: now(),
+        })
+        .expect("the epic exists");
+    let lsa_seat = SeatBindingId::generate();
     let proposal = |correction: &str| StoredRemediationProposal {
         project_id: fixture.project,
         mini_project_id: epic,
         round: 1,
         failed_round_evidence: ContentHash::of(b"round-1-findings"),
         proposal: ContentHash::of(correction.as_bytes()),
-        lsa_seat_binding_id: SeatBindingId::generate(),
+        lsa_seat_binding_id: lsa_seat,
         lsa_occupancy_generation: 3,
         proposed_at: now(),
     };
+    let command = |key: &str, correction: &str| {
+        let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "completion_remediate_propose",
+            "failed_round_evidence": ContentHash::of(b"round-1-findings").as_str(),
+            "proposal": ContentHash::of(correction.as_bytes()).as_str(),
+        }))
+        .expect("the proposal intent canonicalizes");
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewLocalCommand {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: IdempotencyKey::parse(key).expect("a valid key"),
+                kind: CommandKind::RemediateCompletion,
+                target: AggregateRef::MiniProject {
+                    mini_project_id: epic,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent,
+                created_at: now(),
+            },
+        )
+    };
 
-    fixture
+    let first = fixture
         .store
-        .insert_remediation_proposal(&proposal("narrow the change"))
+        .commit_remediation_proposal(
+            &command("proposal-one", "narrow the change"),
+            &proposal("narrow the change"),
+            AggregateRevision::INITIAL,
+            true,
+        )
         .expect("the proposal records");
+    assert_eq!(first.1, Applied::Created);
+    let replay = fixture
+        .store
+        .commit_remediation_proposal(
+            &command("proposal-one", "narrow the change"),
+            &proposal("narrow the change"),
+            AggregateRevision::INITIAL,
+            false,
+        )
+        .expect("the exact command replays");
+    assert_eq!(replay.0.id, first.0.id);
+    assert_eq!(replay.1, Applied::Unchanged);
     let second = fixture
         .store
-        .insert_remediation_proposal(&proposal("something else entirely"))
+        .commit_remediation_proposal(
+            &command("proposal-two", "something else entirely"),
+            &proposal("something else entirely"),
+            AggregateRevision::INITIAL,
+            true,
+        )
         .expect_err("one round has one proposal");
     assert!(
         matches!(second, RepositoryError::Conflict { .. }),
@@ -7409,5 +7467,499 @@ fn a_second_remediation_proposal_for_one_round_is_refused() {
             .expect("readable")
             .is_none(),
         "an unproposed round has nothing to route"
+    );
+}
+
+/// Recovery may materialize a missing receipt only when an immutable claim
+/// proves the exact key and intent and the proposal effect already matches.
+#[test]
+fn an_exact_orphaned_proposal_claim_recovers_once_and_rejects_impostors() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    fixture
+        .store
+        .create_mini_project(&NewMiniProject {
+            id: epic,
+            project_id: fixture.project,
+            name: name("Proposal recovery epic"),
+            created_at: now(),
+        })
+        .expect("the epic exists");
+    let seat = SeatBindingId::generate();
+    let proposal = StoredRemediationProposal {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        round: 1,
+        failed_round_evidence: ContentHash::of(b"failed-round"),
+        proposal: ContentHash::of(b"bounded correction"),
+        lsa_seat_binding_id: seat,
+        lsa_occupancy_generation: 2,
+        proposed_at: now(),
+    };
+    let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "completion_remediate_propose",
+        "failed_round_evidence": proposal.failed_round_evidence.as_str(),
+        "proposal": proposal.proposal.as_str(),
+        "actor": seat,
+        "generation": 2,
+    }))
+    .expect("the intent canonicalizes");
+    let key = IdempotencyKey::parse("proposal-fault-boundary").expect("a valid key");
+    let command = |key: IdempotencyKey, intent: CanonicalDocument| {
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewLocalCommand {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key,
+                kind: CommandKind::RemediateCompletion,
+                target: AggregateRef::MiniProject {
+                    mini_project_id: epic,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent,
+                created_at: now(),
+            },
+        )
+    };
+
+    // Reproduce the old boundary: replay authority and exact effect committed,
+    // but the local receipt did not. The production path now writes all three
+    // rows together; this direct seed exists only to prove restart recovery.
+    let connection = Connection::open(&fixture.path).expect("the database reopens");
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_command_claims
+                 (project_id, mini_project_id, round, action, idempotency_key,
+                  intent_hash, effect_revision, claimed_at)
+             VALUES (?1, ?2, 1, 'lsa_proposal', ?3, ?4, 1, ?5)",
+            rusqlite::params![
+                fixture.project.to_string(),
+                epic.to_string(),
+                key.as_str(),
+                intent.hash().as_str(),
+                "2026-08-26T09:00:00Z",
+            ],
+        )
+        .expect("the exact replay claim is seeded");
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, round, failed_round_evidence, proposal,
+                  lsa_seat_binding_id, lsa_occupancy_generation, proposed_at)
+             VALUES (?1, ?2, 1, ?3, ?4, ?5, 2, ?6)",
+            rusqlite::params![
+                fixture.project.to_string(),
+                epic.to_string(),
+                proposal.failed_round_evidence.as_str(),
+                proposal.proposal.as_str(),
+                seat.to_string(),
+                "2026-08-26T09:00:00Z",
+            ],
+        )
+        .expect("the exact proposal effect is seeded");
+    drop(connection);
+
+    let recovered = fixture
+        .store
+        .commit_remediation_proposal(
+            &command(key.clone(), intent.clone()),
+            &proposal,
+            AggregateRevision::INITIAL,
+            false,
+        )
+        .expect("the exact retry materializes its receipt");
+    assert_eq!(recovered.1, Applied::Unchanged);
+    let replayed = fixture
+        .store
+        .commit_remediation_proposal(
+            &command(key.clone(), intent.clone()),
+            &proposal,
+            AggregateRevision::INITIAL,
+            false,
+        )
+        .expect("the recovered command replays");
+    assert_eq!(replayed.0.id, recovered.0.id);
+    assert_eq!(replayed.1, Applied::Unchanged);
+
+    let changed_intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "completion_remediate_propose",
+        "failed_round_evidence": ContentHash::of(b"different evidence").as_str(),
+        "proposal": proposal.proposal.as_str(),
+        "actor": seat,
+        "generation": 2,
+    }))
+    .expect("the changed intent canonicalizes");
+    assert!(matches!(
+        fixture.store.commit_remediation_proposal(
+            &command(key, changed_intent),
+            &proposal,
+            AggregateRevision::INITIAL,
+            false,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+    assert!(matches!(
+        fixture.store.commit_remediation_proposal(
+            &command(
+                IdempotencyKey::parse("proposal-impostor-key").expect("a valid key"),
+                intent,
+            ),
+            &proposal,
+            AggregateRevision::INITIAL,
+            true,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+}
+
+/// A route whose state effect survived but whose receipt did not is recovered
+/// only through its exact immutable claim; wake and receipt are repaired in the
+/// same transaction without applying the completion transition twice.
+#[test]
+fn an_exact_orphaned_route_effect_recovers_receipt_and_wake_once() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    fixture
+        .store
+        .create_mini_project(&NewMiniProject {
+            id: epic,
+            project_id: fixture.project,
+            name: name("Route recovery epic"),
+            created_at: now(),
+        })
+        .expect("the epic exists");
+    let completion = |revision: u64, phase: &str| StoredEpicCompletion {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        profile_id: name("operational_default"),
+        profile_version: SpecVersion::parse(1).expect("a version"),
+        definition_hash: ContentHash::of(b"operational_default@1"),
+        state: serde_json::json!({"phase": phase, "revision": revision}),
+        revision: AggregateRevision::parse(revision).expect("a revision"),
+        updated_at: now(),
+    };
+    fixture
+        .store
+        .create_epic_completion(&completion(1, "await_remediation"))
+        .expect("the completion starts");
+    let next = completion(2, "remediating");
+    let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "completion_remediate_route",
+        "round": 1,
+        "route": ContentHash::of(b"route").as_str(),
+    }))
+    .expect("the route intent canonicalizes");
+    let key = IdempotencyKey::parse("route-fault-boundary").expect("a valid key");
+    let command = |key: IdempotencyKey, intent: CanonicalDocument| {
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewLocalCommand {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key,
+                kind: CommandKind::RemediateCompletion,
+                target: AggregateRef::MiniProject {
+                    mini_project_id: epic,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent,
+                created_at: now(),
+            },
+        )
+    };
+    let connection = Connection::open(&fixture.path).expect("the database reopens");
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_command_claims
+                 (project_id, mini_project_id, round, action, idempotency_key,
+                  intent_hash, effect_revision, claimed_at)
+             VALUES (?1, ?2, 1, 'tpm_route', ?3, ?4, 2, ?5)",
+            rusqlite::params![
+                fixture.project.to_string(),
+                epic.to_string(),
+                key.as_str(),
+                intent.hash().as_str(),
+                "2026-08-26T09:05:00Z",
+            ],
+        )
+        .expect("the exact route claim is seeded");
+    connection
+        .execute(
+            "UPDATE epic_completion SET state = ?3, revision = 2, updated_at = ?4
+              WHERE project_id = ?1 AND mini_project_id = ?2 AND revision = 1",
+            rusqlite::params![
+                fixture.project.to_string(),
+                epic.to_string(),
+                next.state.to_string(),
+                "2026-08-26T09:05:00Z",
+            ],
+        )
+        .expect("the route effect is seeded");
+    drop(connection);
+    let wake = StoredCompletionWake {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        completion_revision: AggregateRevision::parse(2).expect("a revision"),
+        reason: name("remediation_routed"),
+        seat_binding_id: SeatBindingId::generate(),
+        receipt: next.definition_hash.clone(),
+        appended_at: now(),
+        acknowledged_at: None,
+    };
+
+    let recovered = fixture
+        .store
+        .commit_remediation_route(
+            &command(key.clone(), intent.clone()),
+            1,
+            &next,
+            AggregateRevision::INITIAL,
+            AggregateRevision::parse(2).expect("a revision"),
+            &wake,
+            true,
+        )
+        .expect("the exact route retry recovers");
+    assert_eq!(recovered.0.state, next.state);
+    assert_eq!(recovered.0.revision, next.revision);
+    assert_eq!(recovered.2, Applied::Unchanged);
+    let replayed = fixture
+        .store
+        .commit_remediation_route(
+            &command(key.clone(), intent.clone()),
+            1,
+            &next,
+            AggregateRevision::INITIAL,
+            AggregateRevision::parse(2).expect("a revision"),
+            &wake,
+            true,
+        )
+        .expect("the recovered route replays");
+    assert_eq!(replayed.1.id, recovered.1.id);
+    assert_eq!(replayed.2, Applied::Unchanged);
+    assert_eq!(
+        fixture
+            .store
+            .list_completion_wakes(fixture.project, epic)
+            .expect("the wake reads")
+            .len(),
+        1,
+        "recovery and replay share one wake"
+    );
+
+    let different = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "completion_remediate_route",
+        "round": 1,
+        "route": ContentHash::of(b"different route").as_str(),
+    }))
+    .expect("the changed route canonicalizes");
+    assert!(matches!(
+        fixture.store.commit_remediation_route(
+            &command(key, different),
+            1,
+            &next,
+            AggregateRevision::INITIAL,
+            AggregateRevision::parse(2).expect("a revision"),
+            &wake,
+            true,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+    assert!(matches!(
+        fixture.store.commit_remediation_route(
+            &command(
+                IdempotencyKey::parse("route-impostor-key").expect("a valid key"),
+                intent,
+            ),
+            1,
+            &next,
+            AggregateRevision::INITIAL,
+            AggregateRevision::parse(2).expect("a revision"),
+            &wake,
+            true,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+}
+
+/// A durable effect is not replay authority by itself. Without the immutable
+/// command claim written by the atomic path, recovery fails closed and rolls
+/// back the tentative receipt, claim and wake rows.
+#[test]
+fn orphaned_remediation_effects_without_claims_cannot_be_adopted() {
+    let fixture = fixture();
+    let proposal_epic = MiniProjectId::generate();
+    fixture
+        .store
+        .create_mini_project(&NewMiniProject {
+            id: proposal_epic,
+            project_id: fixture.project,
+            name: name("Unclaimed proposal epic"),
+            created_at: now(),
+        })
+        .expect("the proposal epic exists");
+    let proposal = StoredRemediationProposal {
+        project_id: fixture.project,
+        mini_project_id: proposal_epic,
+        round: 1,
+        failed_round_evidence: ContentHash::of(b"failed-round"),
+        proposal: ContentHash::of(b"unclaimed correction"),
+        lsa_seat_binding_id: SeatBindingId::generate(),
+        lsa_occupancy_generation: 4,
+        proposed_at: now(),
+    };
+    let proposal_intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "completion_remediate_propose",
+        "failed_round_evidence": proposal.failed_round_evidence.as_str(),
+        "proposal": proposal.proposal.as_str(),
+        "actor": proposal.lsa_seat_binding_id,
+        "generation": 4,
+    }))
+    .expect("the proposal intent canonicalizes");
+    let proposal_key = IdempotencyKey::parse("unclaimed-proposal-effect").expect("a valid key");
+    let proposal_command = ReceiptEnvelope::new(
+        fixture.store.realm(),
+        NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: proposal_key.clone(),
+            kind: CommandKind::RemediateCompletion,
+            target: AggregateRef::MiniProject {
+                mini_project_id: proposal_epic,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: proposal_intent,
+            created_at: now(),
+        },
+    );
+    let connection = Connection::open(&fixture.path).expect("the database reopens");
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, round, failed_round_evidence, proposal,
+                  lsa_seat_binding_id, lsa_occupancy_generation, proposed_at)
+             VALUES (?1, ?2, 1, ?3, ?4, ?5, 4, ?6)",
+            rusqlite::params![
+                fixture.project.to_string(),
+                proposal_epic.to_string(),
+                proposal.failed_round_evidence.as_str(),
+                proposal.proposal.as_str(),
+                proposal.lsa_seat_binding_id.to_string(),
+                "2026-08-26T09:10:00Z",
+            ],
+        )
+        .expect("the unclaimed proposal effect is seeded");
+    drop(connection);
+    assert!(matches!(
+        fixture.store.commit_remediation_proposal(
+            &proposal_command,
+            &proposal,
+            AggregateRevision::INITIAL,
+            false,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+
+    let route_epic = MiniProjectId::generate();
+    fixture
+        .store
+        .create_mini_project(&NewMiniProject {
+            id: route_epic,
+            project_id: fixture.project,
+            name: name("Unclaimed route epic"),
+            created_at: now(),
+        })
+        .expect("the route epic exists");
+    let routed = StoredEpicCompletion {
+        project_id: fixture.project,
+        mini_project_id: route_epic,
+        profile_id: name("operational_default"),
+        profile_version: SpecVersion::parse(1).expect("a version"),
+        definition_hash: ContentHash::of(b"operational_default@1"),
+        state: serde_json::json!({"phase": "remediating", "revision": 2}),
+        revision: AggregateRevision::parse(2).expect("a revision"),
+        updated_at: now(),
+    };
+    fixture
+        .store
+        .create_epic_completion(&routed)
+        .expect("the unclaimed route effect is seeded");
+    let route_intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "completion_remediate_route",
+        "round": 1,
+        "route": ContentHash::of(b"unclaimed route").as_str(),
+    }))
+    .expect("the route intent canonicalizes");
+    let route_key = IdempotencyKey::parse("unclaimed-route-effect").expect("a valid key");
+    let route_command = ReceiptEnvelope::new(
+        fixture.store.realm(),
+        NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: route_key.clone(),
+            kind: CommandKind::RemediateCompletion,
+            target: AggregateRef::MiniProject {
+                mini_project_id: route_epic,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: route_intent,
+            created_at: now(),
+        },
+    );
+    let wake = StoredCompletionWake {
+        project_id: fixture.project,
+        mini_project_id: route_epic,
+        completion_revision: routed.revision,
+        reason: name("remediation_routed"),
+        seat_binding_id: SeatBindingId::generate(),
+        receipt: routed.definition_hash.clone(),
+        appended_at: now(),
+        acknowledged_at: None,
+    };
+    assert!(matches!(
+        fixture.store.commit_remediation_route(
+            &route_command,
+            1,
+            &routed,
+            AggregateRevision::INITIAL,
+            routed.revision,
+            &wake,
+            true,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+
+    let connection = Connection::open(&fixture.path).expect("the database reopens");
+    for key in [&proposal_key, &route_key] {
+        let receipts: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM command_receipts WHERE idempotency_key = ?1",
+                [key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("receipt count reads");
+        let claims: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM epic_completion_remediation_command_claims
+                  WHERE idempotency_key = ?1",
+                [key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("claim count reads");
+        assert_eq!((receipts, claims), (0, 0));
+    }
+    assert!(
+        fixture
+            .store
+            .list_completion_wakes(fixture.project, route_epic)
+            .expect("the wakes read")
+            .is_empty(),
+        "the rejected recovery cannot leave a wake"
     );
 }

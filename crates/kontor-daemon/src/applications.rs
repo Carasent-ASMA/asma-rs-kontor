@@ -657,6 +657,22 @@ impl Services {
         ApiError::from_repository(self.realm_id, error)
     }
 
+    fn refuse_remediation_command(&self, error: &RepositoryError) -> ApiError {
+        if matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "completion remediation command claim",
+                ..
+            }
+        ) {
+            return self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the remediation action is already bound to a different key or intent",
+            );
+        }
+        self.refuse(error)
+    }
+
     fn refuse_authority(&self, error: &AuthorityError) -> ApiError {
         match error {
             AuthorityError::RevisionConflict { current, .. } => self
@@ -16731,12 +16747,15 @@ impl ApplicationOperations for Services {
         // without first reaching the state the original call has since moved.
         let intent = match &request.action {
             RemediationActionDto::LsaProposal {
-                round, proposal, ..
+                round,
+                failed_round_evidence,
+                proposal,
             } => self.intent(&serde_json::json!({
                 "schema_version": 1,
                 "operation": "completion_remediate_propose",
                 "epic": epic_id.to_string(),
                 "round": round,
+                "failed_round_evidence": failed_round_evidence.as_str(),
                 "proposal": proposal.as_str(),
                 "actor_seat_binding_id": actor.seat_binding_id,
                 "actor_occupancy_generation": actor.occupancy_generation,
@@ -16751,45 +16770,23 @@ impl ApplicationOperations for Services {
                 "actor_occupancy_generation": actor.occupancy_generation,
             }))?,
         };
-        // Every guard below is judged only when this is not a replay. A route
-        // that already committed left the run in `remediation`, so its retry
-        // presents both a stale revision and a phase that is no longer awaiting
-        // one — and refusing it on either would make a lost acknowledgement
-        // unrecoverable, which is the whole point of the key.
-        if self.replayed(key, &intent, Some(&target))?.is_some() {
-            let receipt_id = self.record(
-                key,
+        let command = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewLocalCommand {
                 project_id,
-                CommandKind::RemediateCompletion,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RemediateCompletion,
                 target,
-                epic.revision,
-                &intent,
-            )?;
-            return Ok(CompletionOutcomeDto {
-                state: self.completion_dto(&stored, &compiled)?,
-                receipt: MutationReceiptDto {
-                    realm_id: state.realm_id(),
-                    receipt_id: receipt_id.to_string(),
-                    applied: AppliedDto::Unchanged,
-                    revision: stored.revision,
-                    snapshot_cursor: self.cursor()?,
-                },
-            });
-        }
-        if current.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the completion run moved since the caller read it",
-                )
-                .with_revision(Some(current.revision)));
-        }
-        let CompletionPhase::AwaitRemediation(awaiting) = current.phase else {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "this completion is not waiting for a remediation authority",
-            ));
-        };
+                target_revision: epic.revision,
+                intent: intent.clone(),
+                created_at: now,
+            },
+        );
+        // A persisted receipt judges command identity before every semantic
+        // guard, but does not itself authorize replay: the atomic repository
+        // path below still proves the matching claim and effect.
+        let _ = self.replayed(key, &intent, Some(&target))?;
 
         match &request.action {
             RemediationActionDto::LsaProposal {
@@ -16797,15 +16794,27 @@ impl ApplicationOperations for Services {
                 failed_round_evidence,
                 proposal,
             } => {
-                if *round != awaiting {
-                    return Err(self.deny(
-                        ApiErrorCode::InvalidRequest,
-                        "the proposal names a round this completion is not waiting on",
-                    ));
-                }
+                // A used proposal slot judges its exact command identity before
+                // semantic evidence. Otherwise changing only the evidence hash
+                // under the same key would be reported as a fresh bad proposal
+                // instead of the idempotency conflict it is.
+                self.state()?
+                    .with_store(|store| {
+                        store.check_remediation_proposal_claim(
+                            &command,
+                            project_id,
+                            epic_id,
+                            *round,
+                            request.expected_revision,
+                        )
+                    })
+                    .map_err(|error| self.refuse_remediation_command(&error))?;
                 // The proposal must answer the round's own immutable evidence.
                 // Without this a proposal filed against the right round number
-                // could carry another round's findings and still be routed.
+                // could carry another round's findings and still be routed. It
+                // is part of the canonical intent too, so changing only this
+                // field under a used key is an idempotency conflict rather than
+                // a replay that returns before the evidence is checked.
                 let failed = current
                     .rounds
                     .iter()
@@ -16822,28 +16831,29 @@ impl ApplicationOperations for Services {
                         "the proposal does not name the failed round's own evidence",
                     ));
                 }
-                self.state()?
+                let permit_create = current.revision == request.expected_revision
+                    && current.phase == CompletionPhase::AwaitRemediation(*round);
+                let (receipt, applied) = self
+                    .state()?
                     .with_store(|store| {
-                        store.insert_remediation_proposal(&StoredRemediationProposal {
-                            project_id,
-                            mini_project_id: epic_id,
-                            round: *round,
-                            failed_round_evidence: failed_round_evidence.clone(),
-                            proposal: proposal.clone(),
-                            lsa_seat_binding_id: actor.seat_binding_id,
-                            lsa_occupancy_generation: actor.occupancy_generation,
-                            proposed_at: now,
-                        })
+                        store.commit_remediation_proposal(
+                            &command,
+                            &StoredRemediationProposal {
+                                project_id,
+                                mini_project_id: epic_id,
+                                round: *round,
+                                failed_round_evidence: failed_round_evidence.clone(),
+                                proposal: proposal.clone(),
+                                lsa_seat_binding_id: actor.seat_binding_id,
+                                lsa_occupancy_generation: actor.occupancy_generation,
+                                proposed_at: now,
+                            },
+                            request.expected_revision,
+                            permit_create,
+                        )
                     })
-                    .map_err(|error| self.refuse(&error))?;
-                let receipt_id = self.record(
-                    key,
-                    project_id,
-                    CommandKind::RemediateCompletion,
-                    target,
-                    epic.revision,
-                    &intent,
-                )?;
+                    .map_err(|error| self.refuse_remediation_command(&error))?;
+                state.signals().appended();
                 // The phase does not move on a proposal alone: no remediation
                 // launches until the TPM has routed it, so the run stays where it
                 // is and the recorded proposal is the only thing that changed.
@@ -16851,20 +16861,18 @@ impl ApplicationOperations for Services {
                     state: self.completion_dto(&stored, &compiled)?,
                     receipt: MutationReceiptDto {
                         realm_id: state.realm_id(),
-                        receipt_id: receipt_id.to_string(),
-                        applied: AppliedDto::Created,
+                        receipt_id: receipt.id.to_string(),
+                        applied: if applied == Applied::Created {
+                            AppliedDto::Created
+                        } else {
+                            AppliedDto::Unchanged
+                        },
                         revision: stored.revision,
                         snapshot_cursor: self.cursor()?,
                     },
                 })
             }
             RemediationActionDto::TpmRoute { round, route } => {
-                if *round != awaiting {
-                    return Err(self.deny(
-                        ApiErrorCode::InvalidRequest,
-                        "the route names a round this completion is not waiting on",
-                    ));
-                }
                 let proposal = self
                     .state()?
                     .with_store(|store| store.get_remediation_proposal(project_id, epic_id, *round))
@@ -16892,41 +16900,107 @@ impl ApplicationOperations for Services {
                         "one seat principal cannot satisfy both remediation authorities",
                     ));
                 }
+                let authorization = RemediationAuthorization {
+                    lsa_proposal: proposal.proposal.clone(),
+                    tpm_routing: route.clone(),
+                    lsa_actor: Some(lsa_actor),
+                    tpm_actor: Some(actor.clone()),
+                };
+                let effect_revision = request
+                    .expected_revision
+                    .next()
+                    .map_err(|error| self.refuse_domain(&error))?;
                 let signal = CompletionSignal {
                     id: intent.hash().clone(),
-                    expected_revision: current.revision,
+                    expected_revision: request.expected_revision,
                     delivery: SignalDelivery::Callback,
                     observation: CompletionObservation::RemediationApproved(RemediationApproval {
                         round: *round,
-                        authorization: RemediationAuthorization {
-                            lsa_proposal: proposal.proposal.clone(),
-                            tpm_routing: route.clone(),
-                            lsa_actor: Some(lsa_actor),
-                            tpm_actor: Some(actor),
-                        },
+                        authorization: authorization.clone(),
                     }),
                 };
-                let transition = kontor_scheduler::advance(&compiled, &current, &signal)
-                    .map_err(|error| self.refuse_domain(&error))?;
-                let next =
-                    self.commit_completion(&stored, &transition, "remediation_routed", now)?;
-                let receipt_id = self.record(
-                    key,
+                let exact_effect = current.handled_signals.contains(intent.hash())
+                    && current.revision >= effect_revision
+                    && (current.pending_remediation.as_ref() == Some(&authorization)
+                        || current.remediations.iter().any(|record| {
+                            record.round == *round && record.authorization == authorization
+                        }));
+                let (next, effect_already_present) = if current.revision
+                    == request.expected_revision
+                    && current.phase == CompletionPhase::AwaitRemediation(*round)
+                {
+                    let transition = kontor_scheduler::advance(&compiled, &current, &signal)
+                        .map_err(|error| self.refuse_domain(&error))?;
+                    let next = StoredEpicCompletion {
+                        state: serde_json::to_value(&transition.state).map_err(|_| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "the completion state does not serialize",
+                            )
+                        })?,
+                        revision: transition.state.revision,
+                        updated_at: now,
+                        ..stored.clone()
+                    };
+                    (next, false)
+                } else if exact_effect {
+                    (stored.clone(), true)
+                } else if current.revision != request.expected_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the completion run moved since the caller read it",
+                        )
+                        .with_revision(Some(current.revision)));
+                } else {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "this completion is not waiting for that remediation route",
+                    ));
+                };
+                let live_tpm =
+                    self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
+                if current.tpm_seat_id != live_tpm || actor.seat_binding_id != live_tpm {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "this epic's TPM seat was replaced since completion started",
+                    ));
+                }
+                let wake = StoredCompletionWake {
                     project_id,
-                    CommandKind::RemediateCompletion,
-                    target,
-                    epic.revision,
-                    &intent,
-                )?;
+                    mini_project_id: epic_id,
+                    completion_revision: effect_revision,
+                    reason: ExternalName::parse("remediation_routed")
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    seat_binding_id: live_tpm,
+                    receipt: stored.definition_hash.clone(),
+                    appended_at: now,
+                    acknowledged_at: None,
+                };
+                let (next, receipt, applied) = self
+                    .state()?
+                    .with_store(|store| {
+                        store.commit_remediation_route(
+                            &command,
+                            *round,
+                            &next,
+                            request.expected_revision,
+                            effect_revision,
+                            &wake,
+                            effect_already_present,
+                        )
+                    })
+                    .map_err(|error| self.refuse_remediation_command(&error))?;
+                state.signals().appended();
                 Ok(CompletionOutcomeDto {
                     state: self.completion_dto(&next, &compiled)?,
                     receipt: MutationReceiptDto {
                         realm_id: state.realm_id(),
-                        receipt_id: receipt_id.to_string(),
-                        applied: if transition.replayed {
-                            AppliedDto::Unchanged
-                        } else {
+                        receipt_id: receipt.id.to_string(),
+                        applied: if applied == Applied::Created {
                             AppliedDto::Created
+                        } else {
+                            AppliedDto::Unchanged
                         },
                         revision: next.revision,
                         snapshot_cursor: self.cursor()?,

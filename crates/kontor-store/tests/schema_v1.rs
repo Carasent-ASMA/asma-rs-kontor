@@ -51,6 +51,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "consultation_seat_recovery_attempts",
     "committee_findings",
     "committee_remediations",
+    "committee_re_review_claims",
     "advisor_advice_artifacts",
     "context_packs",
     "core_team_revisions",
@@ -58,6 +59,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // completion run per epic, and the TPM wake outbox.
     "completion_profile_revisions",
     "epic_completion",
+    "epic_completion_remediation_command_claims",
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
     "epic_native_name_tokens",
@@ -466,9 +468,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v65 fences remediation proposals to their authenticated
-    // hosted-seat occupancy generation.
-    assert_eq!(SCHEMA_VERSION, 65);
+    // side effect. v66 binds remediation effects to their exact replay
+    // authority and makes clean re-review provenance unique in storage.
+    assert_eq!(SCHEMA_VERSION, 66);
 }
 
 #[test]
@@ -645,6 +647,136 @@ fn v65_backfills_published_proposals_and_fences_new_generations() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("the schema version reads"),
         65
+    );
+}
+
+#[test]
+fn v66_claims_remediation_commands_and_re_review_provenance_immutably() {
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys enable");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (
+                 id TEXT NOT NULL,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 PRIMARY KEY (project_id, id)
+             ) STRICT;
+             CREATE TABLE consultation_runs (
+                 run_id TEXT NOT NULL PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 UNIQUE (project_id, run_id)
+             ) STRICT;
+             INSERT INTO projects VALUES ('0193f000-0000-7000-8000-000000000001');
+             INSERT INTO mini_projects VALUES (
+                 '0193f000-0000-7000-8000-000000000002',
+                 '0193f000-0000-7000-8000-000000000001'
+             );
+             INSERT INTO consultation_runs VALUES
+                 ('0193f000-0000-7000-8000-000000000003',
+                  '0193f000-0000-7000-8000-000000000001'),
+                 ('0193f000-0000-7000-8000-000000000004',
+                  '0193f000-0000-7000-8000-000000000001');",
+        )
+        .expect("the parent identities seed");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0066_remediation_command_claims.sql"
+        ))
+        .expect("the supported v66 migration installs");
+
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_command_claims
+                 (project_id, mini_project_id, round, action, idempotency_key,
+                  intent_hash, effect_revision, claimed_at)
+             VALUES (?1, ?2, 1, 'lsa_proposal', 'proposal-key', ?3, 3, ?4)",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000001",
+                "0193f000-0000-7000-8000-000000000002",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "2026-08-26T10:00:00Z",
+            ],
+        )
+        .expect("the remediation command claim records");
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO epic_completion_remediation_command_claims
+                     (project_id, mini_project_id, round, action, idempotency_key,
+                      intent_hash, effect_revision, claimed_at)
+                 VALUES (?1, ?2, 1, 'lsa_proposal', 'different-key', ?3, 3, ?4)",
+                rusqlite::params![
+                    "0193f000-0000-7000-8000-000000000001",
+                    "0193f000-0000-7000-8000-000000000002",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "2026-08-26T10:00:01Z",
+                ],
+            )
+            .is_err(),
+        "one remediation action cannot acquire a second replay authority"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE epic_completion_remediation_command_claims
+                    SET intent_hash = ?1",
+                ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+            )
+            .is_err(),
+        "the command claim is immutable"
+    );
+
+    let provenance = r#"{"completion_revision":7,"completion_round":1}"#;
+    let provenance_hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    connection
+        .execute(
+            "INSERT INTO committee_re_review_claims
+                 (project_id, mini_project_id, provenance, provenance_hash,
+                  committee_run_id, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000001",
+                "0193f000-0000-7000-8000-000000000002",
+                provenance,
+                provenance_hash,
+                "0193f000-0000-7000-8000-000000000003",
+                "2026-08-26T10:01:00Z",
+            ],
+        )
+        .expect("the first re-review claims its provenance");
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO committee_re_review_claims
+                     (project_id, mini_project_id, provenance, provenance_hash,
+                      committee_run_id, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    "0193f000-0000-7000-8000-000000000001",
+                    "0193f000-0000-7000-8000-000000000002",
+                    provenance,
+                    provenance_hash,
+                    "0193f000-0000-7000-8000-000000000004",
+                    "2026-08-26T10:01:01Z",
+                ],
+            )
+            .is_err(),
+        "distinct invoke keys cannot freeze the same normalized provenance twice"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM committee_re_review_claims", [])
+            .is_err(),
+        "a provenance claim cannot be withdrawn"
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the schema version reads"),
+        66
     );
 }
 
@@ -3285,6 +3417,24 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
             &["project_id", "mini_project_id"],
             "mini_projects",
             &["project_id", "id"],
+        ),
+        (
+            "epic_completion_remediation_command_claims",
+            &["project_id", "mini_project_id"],
+            "mini_projects",
+            &["project_id", "id"],
+        ),
+        (
+            "committee_re_review_claims",
+            &["project_id", "mini_project_id"],
+            "mini_projects",
+            &["project_id", "id"],
+        ),
+        (
+            "committee_re_review_claims",
+            &["project_id", "committee_run_id"],
+            "consultation_runs",
+            &["project_id", "run_id"],
         ),
         (
             "task_dependencies",

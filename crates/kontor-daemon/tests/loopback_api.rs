@@ -23900,6 +23900,18 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         proposed.body
     );
 
+    // Failed-round evidence is part of the command identity. A used key with
+    // the same proposal but changed/invalid evidence is a conflicting command,
+    // not a replay that returns before evidence validation.
+    let mut changed_evidence = proposal_body.clone();
+    changed_evidence["action"]["failed_round_evidence"] =
+        serde_json::json!(ContentHash::of(b"changed-under-used-key").as_str());
+    let changed_evidence = remediate(changed_evidence, "op06-propose", lsa, 2)
+        .send(world)
+        .await;
+    assert_eq!(changed_evidence.status, 409, "{}", changed_evidence.body);
+    assert_eq!(changed_evidence.code(), "idempotency_conflict");
+
     // Replay is the same receipt, and still no second proposal.
     let proposed_again = remediate(proposal_body, "op06-propose", lsa, 2)
         .send(world)
@@ -25585,14 +25597,38 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "expected_revision": epic_read.json()["revision"],
         "re_review": re_review,
     });
-    let re_review_invoked = Call::post(
+    // Two distinct keys race the same normalized provenance. The storage claim
+    // is inside the run/topology/seat freeze transaction: exactly one run wins,
+    // and the loser rolls back before native placement.
+    let first_re_review = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &re_review_body,
     )
     .signed_as(world, "operator")
     .with_key("committee-clean-re-review")
-    .send(world)
-    .await;
+    .send(world);
+    let second_re_review = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &re_review_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-clean-re-review-concurrent")
+    .send(world);
+    let (first_re_review, second_re_review) = tokio::join!(first_re_review, second_re_review);
+    let (re_review_invoked, duplicate_re_review, winning_re_review_key) =
+        if first_re_review.status == 200 {
+            (
+                first_re_review,
+                second_re_review,
+                "committee-clean-re-review",
+            )
+        } else {
+            (
+                second_re_review,
+                first_re_review,
+                "committee-clean-re-review-concurrent",
+            )
+        };
     assert_eq!(re_review_invoked.status, 200, "{}", re_review_invoked.body);
     assert_eq!(re_review_invoked.json()["round"], 2);
     assert_ne!(re_review_invoked.json()["committee_run_id"], run);
@@ -25602,14 +25638,6 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .iter()
         .filter(|call| matches!(call, AdapterCall::LaunchConsultation(_)))
         .count();
-    let duplicate_re_review = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
-        &re_review_body,
-    )
-    .signed_as(world, "operator")
-    .with_key("committee-clean-re-review-duplicate-key")
-    .send(world)
-    .await;
     assert_eq!(
         duplicate_re_review.status, 409,
         "{}",
@@ -25629,6 +25657,31 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .as_str()
         .expect("the clean re-review run")
         .to_owned();
+    let replayed_re_review = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &re_review_body,
+    )
+    .signed_as(world, "operator")
+    .with_key(winning_re_review_key)
+    .send(world)
+    .await;
+    assert_eq!(
+        replayed_re_review.status, 200,
+        "{}",
+        replayed_re_review.body
+    );
+    assert_eq!(replayed_re_review.json()["committee_run_id"], re_review_run);
+    assert_eq!(replayed_re_review.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::LaunchConsultation(_)))
+            .count(),
+        launches_after_clean_invoke,
+        "an exact clean re-review replay launched another native seat"
+    );
     let frozen_re_review = world.daemon.state().with_store(|store| {
         store
             .get_consultation_run(
