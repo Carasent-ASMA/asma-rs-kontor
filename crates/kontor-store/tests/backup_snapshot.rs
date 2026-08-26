@@ -206,7 +206,7 @@ fn snapshot_preserves_exact_k_and_k2_profile_selection_bindings() {
         at("2026-08-10T10:00:00Z"),
     )
     .expect("the snapshot is published");
-    assert_eq!(outcome.manifest.database_schema_version, 63);
+    assert_eq!(outcome.manifest.database_schema_version, SCHEMA_VERSION);
     let restored = SqliteStore::open(&outcome.snapshot).expect("the snapshot reopens");
     for expected in expected {
         let actual = restored
