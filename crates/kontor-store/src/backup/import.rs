@@ -37,8 +37,8 @@ use kontor_core::id::{
 use kontor_core::receipt::AggregateRef;
 use kontor_core::repository::{ProjectRepository, RepositoryError};
 use kontor_core::spec::{
-    PersonaScenarioSpec, ResolvedWorkProfileSnapshot, TeamTemplateRevision, TriggerSpec,
-    WorkProfileSpec,
+    PersonaScenarioSpec, ResolvedWorkProfileSnapshot, RoleAuthority, TeamTemplateRevision,
+    TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::ticket::{ExternalWorkflowSpec, TicketFieldSpec};
 use rusqlite::{Transaction, params};
@@ -277,10 +277,25 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
         else {
             return Err(invalid_selection_lineage());
         };
+        let intent_hash = ContentHash::parse(&receipt.intent_hash)?;
+        let intent = CanonicalDocument::from_stored(&receipt.intent, &intent_hash)?;
+        let confirmed_at = parse_utc_timestamp(&receipt.updated_at)?;
+        let confirmed_transition = records
+            .command_receipt_transitions
+            .iter()
+            .any(|transition| {
+                transition.project_id == row.project_id
+                    && transition.receipt_id == row.receipt_id
+                    && transition.state == "confirmed"
+                    && transition.correlation.is_none()
+                    && transition.native_identity.is_none()
+                    && transition.evidence_ref.as_deref() == Some(intent.hash().as_str())
+                    && parse_utc_timestamp(&transition.recorded_at).ok() == Some(confirmed_at)
+            });
         let receipt_matches = receipt.kind == "select_task_profile"
             && receipt.execution_mode == "local"
             && receipt.state == "confirmed"
-            && receipt.result_ref.as_deref() == Some(receipt.intent_hash.as_str())
+            && receipt.result_ref.as_deref() == Some(intent.hash().as_str())
             && receipt.created_at == row.recorded_at
             && serde_json::from_str::<AggregateRef>(&receipt.target)
                 .is_ok_and(|target| target == (AggregateRef::Task { task_id }))
@@ -295,12 +310,9 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
         }) else {
             return Err(invalid_selection_lineage());
         };
-        let (profile, stored_profile_hash) =
-            stored::<WorkProfileSpec>(&profile_row.definition, &profile_row.definition_hash)?;
-        let canonical_profile = profile.canonicalize()?;
+        let (profile, canonical_profile) = read_work_profile(profile_row)?;
         let profile_matches = profile.id == profile_key
             && profile.version == profile_version
-            && stored_profile_hash == profile_hash
             && canonical_profile.hash() == &profile_hash
             && canonical_profile.json() == profile_row.definition;
 
@@ -342,7 +354,11 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
                 {
                     return false;
                 }
-                CanonicalDocument::from_stored(&template.definition, hash).is_ok()
+                read_team_template(template).is_ok_and(|revision| {
+                    revision.template_id == *id
+                        && revision.version == *version
+                        && revision.definition.hash() == hash
+                })
             })
         });
         let task_matches = records
@@ -350,6 +366,7 @@ fn validate_profile_selection_outcomes(export: &KontorExportV1) -> Result<(), Ba
             .iter()
             .any(|task| task.project_id == row.project_id && task.id == row.task_id);
         if !(receipt_matches
+            && confirmed_transition
             && workflow_matches
             && task_matches
             && profile_matches
@@ -387,6 +404,72 @@ fn stored<T: for<'de> serde::Deserialize<'de>>(
     let digest = ContentHash::parse(hash)?;
     let document = CanonicalDocument::from_stored(definition, &digest)?;
     Ok((document.deserialize::<T>()?, digest))
+}
+
+/// Read one work-profile row as the canonical domain revision it claims to be.
+///
+/// The table repeats identity/version outside the definition. Both copies must
+/// agree, and the typed specification must reproduce the exact bytes/digest.
+/// The name is owned by those canonical definition bytes rather than by a
+/// second envelope column.
+fn read_work_profile(
+    row: &crate::backup::export::WorkProfilesRow,
+) -> Result<(WorkProfileSpec, CanonicalDocument), BackupError> {
+    let key = WorkProfileKey::parse(&row.profile_key)?;
+    let version =
+        SpecVersion::parse(
+            u32::try_from(row.version).map_err(|_| BackupError::Verification {
+                detail: "an exported work profile has an invalid version",
+            })?,
+        )?;
+    let digest = ContentHash::parse(&row.definition_hash)?;
+    let stored = CanonicalDocument::from_stored(&row.definition, &digest)?;
+    let profile = stored.deserialize::<WorkProfileSpec>()?;
+    let canonical = profile.canonicalize()?;
+    if profile.id != key
+        || profile.version != version
+        || canonical.hash() != &digest
+        || canonical.json() != row.definition
+    {
+        return Err(BackupError::Verification {
+            detail: "an exported work-profile envelope disagrees with its canonical definition",
+        });
+    }
+    Ok((profile, canonical))
+}
+
+/// Read one team-template row through the publisher/runtime envelope parser.
+fn read_team_template(
+    row: &crate::backup::export::TeamTemplatesRow,
+) -> Result<TeamTemplateRevision, BackupError> {
+    let template_id = TeamTemplateId::parse(&row.template_id)?;
+    let version =
+        SpecVersion::parse(
+            u32::try_from(row.version).map_err(|_| BackupError::Verification {
+                detail: "an exported team template has an invalid version",
+            })?,
+        )?;
+    let name = ExternalName::parse(&row.name)?;
+    let digest = ContentHash::parse(&row.definition_hash)?;
+    let definition = CanonicalDocument::from_stored(&row.definition, &digest)?;
+    let role_authority: Vec<RoleAuthority> =
+        serde_json::from_str(&row.role_authority).map_err(|_| BackupError::Verification {
+            detail: "an exported team template has invalid role authority",
+        })?;
+    if serde_json::to_string(&role_authority).ok().as_deref() != Some(row.role_authority.as_str()) {
+        return Err(BackupError::Verification {
+            detail: "an exported team template has non-canonical role authority",
+        });
+    }
+    let revision = TeamTemplateRevision {
+        template_id,
+        version,
+        name,
+        definition,
+        role_authority,
+    };
+    kontor_teams::spec::TeamTemplateSpec::from_revision(&revision)?;
+    Ok(revision)
 }
 
 /// Materialize every versioned specification the export carries.
@@ -432,25 +515,21 @@ fn materialize(
 
     for row in &records.work_profiles {
         let identity = format!("{}/{}/{}", row.project_id, row.profile_key, row.version);
-        let outcome = match stored::<WorkProfileSpec>(&row.definition, &row.definition_hash) {
-            Ok((spec, digest)) => match spec.canonicalize() {
-                Ok(document) if document.hash() == &digest => inserted(transaction.execute(
-                    "INSERT INTO work_profiles
+        let outcome = match read_work_profile(row) {
+            Ok((spec, document)) => inserted(transaction.execute(
+                "INSERT INTO work_profiles
                          (project_id, profile_key, version, definition, definition_hash, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(project_id, profile_key, version) DO NOTHING",
-                    params![
-                        destination.to_string(),
-                        spec.id.as_str(),
-                        i64::from(spec.version.get()),
-                        document.json(),
-                        document.hash().as_str(),
-                        created_at,
-                    ],
-                )),
-                Ok(_) => Disposition::Refused("destination_digest_differs"),
-                Err(_) => Disposition::Refused("source_document_invalid"),
-            },
+                params![
+                    destination.to_string(),
+                    spec.id.as_str(),
+                    i64::from(spec.version.get()),
+                    document.json(),
+                    document.hash().as_str(),
+                    created_at,
+                ],
+            )),
             Err(_) => Disposition::Refused("source_document_invalid"),
         };
         set(dispositions, "work_profiles", &identity, outcome);
@@ -616,34 +695,10 @@ fn materialize_team_template(
     now: Timestamp,
     row: &crate::backup::export::TeamTemplatesRow,
 ) -> Disposition {
-    let Ok(digest) = ContentHash::parse(&row.definition_hash) else {
+    let Ok(revision) = read_team_template(row) else {
         return Disposition::Refused("source_document_invalid");
     };
-    let Ok(definition) = CanonicalDocument::from_stored(&row.definition, &digest) else {
-        return Disposition::Refused("source_document_invalid");
-    };
-    let Ok(template_id) = TeamTemplateId::parse(&row.template_id) else {
-        return Disposition::Refused("source_document_invalid");
-    };
-    let Ok(version) = u32::try_from(row.version)
-        .map_err(|_| ())
-        .and_then(|value| SpecVersion::parse(value).map_err(|_| ()))
-    else {
-        return Disposition::Refused("source_document_invalid");
-    };
-    let Ok(name) = ExternalName::parse(&row.name) else {
-        return Disposition::Refused("source_document_invalid");
-    };
-    let Ok(role_authority) = serde_json::from_str(&row.role_authority) else {
-        return Disposition::Refused("source_document_invalid");
-    };
-    let revision = TeamTemplateRevision {
-        template_id,
-        version,
-        name,
-        definition,
-        role_authority,
-    };
+    let digest = revision.definition.hash();
     let Ok(authority) = serde_json::to_string(&revision.role_authority) else {
         return Disposition::Refused("source_document_invalid");
     };

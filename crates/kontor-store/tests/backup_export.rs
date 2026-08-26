@@ -327,9 +327,13 @@ fn seed_profile_selection_outcomes(
     let mut second_definition = first_bundle.profile.definition.clone();
     second_definition.version =
         SpecVersion::parse(second_definition.version.get() + 1).expect("the next profile version");
-    let mut second_team = first_team.clone();
-    second_team.version =
-        SpecVersion::parse(second_team.version.get() + 1).expect("the next team version");
+    let mut second_team_spec = kontor_teams::spec::TeamTemplateSpec::from_revision(&first_team)
+        .expect("the first team envelope is valid");
+    second_team_spec.version =
+        SpecVersion::parse(second_team_spec.version.get() + 1).expect("the next team version");
+    let second_team = second_team_spec
+        .to_revision()
+        .expect("the second team envelope is valid");
     second_definition
         .team_template
         .as_mut()
@@ -450,8 +454,14 @@ fn seed_unchanged_p2_selection(seeded: &Seeded) -> kontor_store::StoredProfileSe
     let mut definition = bundle.profile.definition;
     definition.version =
         SpecVersion::parse(definition.version.get() + 1).expect("the P2 profile version");
-    let mut team = bundle.team.expect("the profile pins a team");
-    team.version = SpecVersion::parse(team.version.get() + 1).expect("the P2 team version");
+    let original_team = bundle.team.expect("the profile pins a team");
+    let mut team_spec = kontor_teams::spec::TeamTemplateSpec::from_revision(&original_team)
+        .expect("the original team envelope is valid");
+    team_spec.version =
+        SpecVersion::parse(team_spec.version.get() + 1).expect("the P2 team version");
+    let team = team_spec
+        .to_revision()
+        .expect("the P2 team envelope is valid");
     definition
         .team_template
         .as_mut()
@@ -1080,7 +1090,88 @@ fn profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding()
         })
         .expect("the pinned team row exists");
     broken_team["records"]["team_templates"][team_row]["definition"] = serde_json::json!("{}");
-    mutations.push(("team canonical bytes do not match its hash", broken_team));
+    let empty_hash = ContentHash::of(b"{}").to_string();
+    broken_team["records"]["team_templates"][team_row]["definition_hash"] =
+        serde_json::json!(empty_hash.clone());
+    broken_team["records"]["profile_selection_outcomes"][p1]["team_template_hash"] =
+        broken_team["records"]["team_templates"][team_row]["definition_hash"].clone();
+    mutations.push(("canonical empty team definition", broken_team));
+
+    let mut forged_team_name = base.clone();
+    forged_team_name["records"]["team_templates"][team_row]["name"] =
+        serde_json::json!("Forged team name");
+    mutations.push((
+        "team envelope name disagrees with definition",
+        forged_team_name,
+    ));
+
+    let mut forged_team_authority = base.clone();
+    forged_team_authority["records"]["team_templates"][team_row]["role_authority"] =
+        serde_json::json!("[]");
+    mutations.push((
+        "team envelope authority disagrees with definition",
+        forged_team_authority,
+    ));
+
+    let mut forged_team_slots = base.clone();
+    let mut team_definition: serde_json::Value = serde_json::from_str(
+        forged_team_slots["records"]["team_templates"][team_row]["definition"]
+            .as_str()
+            .expect("the team definition is text"),
+    )
+    .expect("the team definition is JSON");
+    team_definition["slots"] = serde_json::json!([]);
+    let team_document = document(&team_definition);
+    forged_team_slots["records"]["team_templates"][team_row]["definition"] =
+        serde_json::json!(team_document.json());
+    forged_team_slots["records"]["team_templates"][team_row]["definition_hash"] =
+        serde_json::json!(team_document.hash().to_string());
+    forged_team_slots["records"]["profile_selection_outcomes"][p1]["team_template_hash"] =
+        serde_json::json!(team_document.hash().to_string());
+    mutations.push(("team definition carries invalid slots", forged_team_slots));
+
+    let mut forged_profile_key = base.clone();
+    forged_profile_key["records"]["work_profiles"][profile1]["profile_key"] =
+        serde_json::json!("forged-profile-key");
+    mutations.push((
+        "work-profile envelope key disagrees with definition",
+        forged_profile_key,
+    ));
+
+    let mut forged_profile_version = base.clone();
+    forged_profile_version["records"]["work_profiles"][profile1]["version"] = serde_json::json!(99);
+    mutations.push((
+        "work-profile envelope version disagrees with definition",
+        forged_profile_version,
+    ));
+
+    let mut forged_profile_name = base.clone();
+    let mut profile_definition: serde_json::Value = serde_json::from_str(
+        forged_profile_name["records"]["work_profiles"][profile1]["definition"]
+            .as_str()
+            .expect("the profile definition is text"),
+    )
+    .expect("the profile definition is JSON");
+    profile_definition["name"] = serde_json::json!("Forged profile name");
+    let profile_document = document(&profile_definition);
+    forged_profile_name["records"]["work_profiles"][profile1]["definition"] =
+        serde_json::json!(profile_document.json());
+    forged_profile_name["records"]["work_profiles"][profile1]["definition_hash"] =
+        serde_json::json!(profile_document.hash().to_string());
+    forged_profile_name["records"]["profile_selection_outcomes"][p1]["profile_hash"] =
+        serde_json::json!(profile_document.hash().to_string());
+    mutations.push((
+        "work-profile canonical name disagrees with frozen workflow",
+        forged_profile_name,
+    ));
+
+    let mut empty_profile = base.clone();
+    empty_profile["records"]["work_profiles"][profile1]["definition"] = serde_json::json!("{}");
+    empty_profile["records"]["work_profiles"][profile1]["definition_hash"] =
+        serde_json::json!(empty_hash);
+    empty_profile["records"]["profile_selection_outcomes"][p1]["profile_hash"] =
+        empty_profile["records"]["work_profiles"][profile1]["definition_hash"].clone();
+    mutations.push(("canonical empty work-profile definition", empty_profile));
 
     let mut wrong_applied = base.clone();
     wrong_applied["records"]["profile_selection_outcomes"][p1]["applied"] =
@@ -1119,8 +1210,14 @@ fn profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding()
             ),
             "{label} must fail as source verification, got {refused:?}"
         );
-        assert_eq!(count(&database, "work_profiles"), 0, "{label}");
-        assert_eq!(count(&database, "import_receipts"), 0, "{label}");
+        for table in [
+            "work_profiles",
+            "team_templates",
+            "import_receipts",
+            "imported_records",
+        ] {
+            assert_eq!(count(&database, table), 0, "{label}: `{table}`");
+        }
     }
 }
 
@@ -1140,6 +1237,7 @@ fn profile_selection_receipt_must_be_confirmed_local_effect_evidence() {
         .iter()
         .position(|row| row["id"].as_str() == Some(&receipt_id))
         .expect("the source receipt exists");
+    let mut mutations = Vec::new();
     for (field, value) in [
         ("execution_mode", serde_json::json!("dispatch")),
         ("state", serde_json::json!("intent_persisted")),
@@ -1154,6 +1252,35 @@ fn profile_selection_receipt_must_be_confirmed_local_effect_evidence() {
             document["continuity_summary"]["unsettled_command_receipts"] =
                 serde_json::json!(unsettled + 1);
         }
+        mutations.push((field, document));
+    }
+
+    let mut forged_claims = base.clone();
+    let forged_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    forged_claims["records"]["command_receipts"][receipt]["intent_hash"] =
+        serde_json::json!(forged_hash);
+    forged_claims["records"]["command_receipts"][receipt]["result_ref"] =
+        serde_json::json!(forged_hash);
+    mutations.push(("intent_hash_and_result_ref", forged_claims));
+
+    let mut forged_intent = base.clone();
+    let mut intent_value: serde_json::Value = serde_json::from_str(
+        forged_intent["records"]["command_receipts"][receipt]["intent"]
+            .as_str()
+            .expect("the intent is text"),
+    )
+    .expect("the intent is JSON");
+    intent_value["reason"] = serde_json::json!("a forged but internally canonical reason");
+    let intent_document = document(&intent_value);
+    forged_intent["records"]["command_receipts"][receipt]["intent"] =
+        serde_json::json!(intent_document.json());
+    forged_intent["records"]["command_receipts"][receipt]["intent_hash"] =
+        serde_json::json!(intent_document.hash().to_string());
+    forged_intent["records"]["command_receipts"][receipt]["result_ref"] =
+        serde_json::json!(intent_document.hash().to_string());
+    mutations.push(("intent_bytes_hash_and_result_ref", forged_intent));
+
+    for (field, mut document) in mutations {
         rehash_records(&mut document);
         let export = KontorExportV1::parse(&serde_json::to_vec(&document).expect("bytes"))
             .expect("the internally hashed mutation parses");
@@ -1179,7 +1306,14 @@ fn profile_selection_receipt_must_be_confirmed_local_effect_evidence() {
             .is_err(),
             "mutating {field} must break the effect binding"
         );
-        assert_eq!(count(&database, "work_profiles"), 0);
+        for table in [
+            "work_profiles",
+            "team_templates",
+            "import_receipts",
+            "imported_records",
+        ] {
+            assert_eq!(count(&database, table), 0, "{field}: `{table}`");
+        }
     }
 }
 
