@@ -37,11 +37,11 @@ startup, before a client exists.
   would mistake for authority when only the credential enforces anything. What a
   seat *may* name is a **serve profile** — `--serve-profile worker` — because a
   profile is declared in the registry next to the tiers, not in the seat file.
-  A profile narrows presentation only, always within the credential tier, and is
-  enforced at call time as well as in the tool list: a tool the profile excludes
-  is refused even when the tier would allow it, so the list and the callable set
-  are the same set. A profile can never widen a tier, and an unknown profile name
-  refuses to start. Free-form lists remain banned.
+  A profile narrows presentation **and the callable set**, always within the
+  credential tier: a tool the profile excludes is refused even when the tier
+  would allow it, so the list and the callable set remain identical. A profile
+  can never widen a tier, and an unknown profile name refuses to start.
+  Free-form lists remain banned.
 
 ## Why the worker is not the Lead
 

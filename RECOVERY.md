@@ -85,7 +85,10 @@ binding. Nothing is dispatched before that completes.
 kontor-daemon --state-root ~/.kontor/realm export --out realm-export.json
 ```
 
-`KontorExportV1` carries `schema_version`, `source_realm_id`, `exported_at`,
+The Rust envelope type remains named `KontorExportV1`, but the current wire
+generation is **3** and this build reads generations **2 through 3**; the
+`schema_version` field, not the Rust type name, is the compatibility authority.
+The document carries `source_realm_id`, `exported_at`,
 `database_schema_version`, a `redaction_summary`, a `continuity_summary`, the
 `records_hash` and the `records` themselves.
 
@@ -130,7 +133,11 @@ What an import does:
   workflow specs, trigger specs), each re-validated through this build's own
   domain types and re-canonicalized. A document that does not reproduce its
   source digest is refused, not trusted. A specification the destination already
-  has at that version is left alone.
+  has at that version is left alone;
+* validates generation-3 profile-selection outcomes against their source
+  receipt, task, workflow and immutable specification rows, then records their
+  exact hash-bound lineage under the destination's import receipt. They are
+  non-executable history and never become destination authority.
 
 What an import never does: write a source command, status-transition or dispatch
 receipt into the destination's own receipt tables; recreate a live lease, an
@@ -173,5 +180,5 @@ cannot widen what a line may contain.
 | `the database failed verification` | the source or copy failed an integrity check, or is truncated/not a database | restore the newest verified snapshot into a *fresh* state root and compare before replacing anything |
 | `the destination is initialized as realm …` | the snapshot belongs to another realm | this is a redacted import, not a restore |
 | `the document carries material that may not be exported` | a canary matched a stored document | inspect the named path; the value is deliberately not echoed |
-| `export schema version N is not one this build reads` | the document came from a newer Kontor | export again from the source with this build, or upgrade |
+| `export schema version N is not one this build reads` | the document is outside this build's supported generation range (currently 2–3) | export again from a compatible source or upgrade the reader |
 | scheduling stays shut after a restore | reconciliation has not completed | check the runtime fleet; a census that did not finish proves nothing, so the barrier stays shut on purpose |
