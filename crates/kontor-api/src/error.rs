@@ -109,6 +109,14 @@ closed_enum! {
         PlacementBlocked => "placement_blocked",
         /// A dependency could not be reached. A fact about the channel only.
         Unavailable => "unavailable",
+        /// The provider rejected the exact configured account credential while
+        /// answering its fixed usage endpoint.
+        ProviderUnauthorized => "provider_unauthorized",
+        /// The fixed provider usage endpoint could not be reached successfully.
+        ProviderUnreachable => "provider_unreachable",
+        /// The exact account or successful provider response is not supported
+        /// by this build's closed usage-reader set.
+        ProviderUnsupported => "provider_unsupported",
         /// The addressed thing does not exist in this Realm.
         NotFound => "not_found",
         /// The request itself is malformed: a missing header, an unparseable
@@ -156,7 +164,11 @@ impl ApiErrorCode {
             // what a spent ceiling is, and it is the status a client already
             // knows to back off and retry on.
             Self::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
-            Self::ReconciliationPending | Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ReconciliationPending | Self::Unavailable | Self::ProviderUnreachable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            Self::ProviderUnauthorized => StatusCode::BAD_GATEWAY,
+            Self::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
 
@@ -200,6 +212,15 @@ impl ApiErrorCode {
             Self::HandoffUnsettled => "settle the outstanding turn before terminalizing the run",
             Self::PlacementBlocked => "resolve where the work belongs in the topology, then retry",
             Self::Unavailable => "retry once the dependency answers; nothing was changed",
+            Self::ProviderUnauthorized => {
+                "reauthenticate the exact configured provider account, then retry"
+            }
+            Self::ProviderUnreachable => {
+                "retry after the provider usage endpoint is reachable; nothing was changed"
+            }
+            Self::ProviderUnsupported => {
+                "use an enabled config-home account and provider response supported by this build"
+            }
             Self::NotFound => "check the identifier against a read of this realm",
             Self::InvalidRequest => "correct the request and send it again",
         }

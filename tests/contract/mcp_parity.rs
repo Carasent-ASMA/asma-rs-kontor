@@ -542,7 +542,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        146,
+        147,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        145,
+        146,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -560,7 +560,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        147,
+        148,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -790,6 +790,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // their choosing by declaring the others exhausted.
         ("kontor_provider_quota_states_list", CallerTier::Observer),
         ("kontor_provider_quota_record", CallerTier::Admin),
+        ("kontor_provider_quota_probe", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

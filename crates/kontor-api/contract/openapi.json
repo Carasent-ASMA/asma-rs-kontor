@@ -5219,6 +5219,87 @@
         }
       }
     },
+    "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/quota:probe": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Probe one exact configured account through the daemon-owned credential seam.",
+        "operationId": "probe_provider_quota",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_profile_id",
+            "in": "path",
+            "description": "The exact configured account",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeProviderQuotaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUsageObservationDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "502": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend": {
       "post": {
         "tags": [
@@ -14411,6 +14492,20 @@
           }
         }
       },
+      "ProbeProviderQuotaRequest": {
+        "type": "object",
+        "description": "Select one exact provider route of the addressed configured account.\n\nThe value can only select an alias already frozen on the account profile; it\ncannot choose an endpoint, credential or home.",
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "The exact selectable provider route to refresh."
+          }
+        },
+        "additionalProperties": false
+      },
       "ProfileApplyRequest": {
         "type": "object",
         "description": "Publish one revalidated definition as an immutable revision.",
@@ -15255,6 +15350,59 @@
               "$ref": "#/components/schemas/QuotaWindowDto"
             },
             "description": "Every concurrent window observed on this pair, ordered by kind."
+          }
+        }
+      },
+      "ProviderUsageObservationDto": {
+        "type": "object",
+        "description": "One immutable, redacted successful provider-usage observation.",
+        "required": [
+          "observation_id",
+          "account_profile_id",
+          "provider",
+          "evidence_hash",
+          "state",
+          "windows",
+          "observed_at"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The exact configured account that answered."
+          },
+          "evidence_hash": {
+            "type": "string",
+            "description": "Digest of provider evidence. Raw provider output is never retained."
+          },
+          "observation_id": {
+            "type": "string",
+            "description": "The immutable freshness evidence row."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "Freshness instant of this successful provider report."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The exact selectable provider route this reading applies to."
+          },
+          "resets_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reset instant derived for an exhausted response."
+          },
+          "state": {
+            "type": "string",
+            "description": "State derived from the successful response."
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaWindowDto"
+            },
+            "description": "Concurrent windows derived from the successful response."
           }
         }
       },

@@ -40,16 +40,17 @@ use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::consultation::{ConsultationFamily, ConsultationRunId};
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey,
-    ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
-    IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion,
-    TaskId, TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
+    AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
+    CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
+    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode,
+    SeatBindingId, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp,
+    TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
-    CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject, NewObservation,
-    NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun,
-    NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
+    CapacityRepository, CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
     SourceDisposition, SpecRepository, StoredConsultationProfileRevision, StoredEpicCompletion,
     StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository,
     WorkflowRepository,
@@ -26570,6 +26571,146 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
     .send(&world)
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
+}
+
+/// The exact-account probe is an operational read with a durable success side
+/// effect: observers cannot cause it, an account cannot cross project scope,
+/// and every typed preflight failure leaves both evidence and projection empty.
+#[tokio::test]
+async fn a_provider_quota_probe_is_operator_fenced_exact_and_atomic_on_failure() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let first = ensure_project(
+        &world,
+        "quota-probe-first",
+        "Quota probe first",
+        "/tmp/kontor-quota-probe-first",
+    )
+    .await;
+    let first_project = first.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let second = ensure_project(
+        &world,
+        "quota-probe-second",
+        "Quota probe second",
+        "/tmp/kontor-quota-probe-second",
+    )
+    .await;
+    let second_project = second.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let account = Call::post(
+        format!("/v1/projects/{first_project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Claude Work",
+            "harness": "fake.runtime",
+            "credential_alias": "claude-work",
+            "selectable_providers": ["claude-work"],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("quota-probe-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let exact_uri =
+        format!("/v1/projects/{first_project}/provider-account-profiles/{account_id}/quota:probe");
+    let body = serde_json::json!({"provider": "claude-work"});
+
+    let observer = Call::post(&exact_uri, &body)
+        .signed_as(&world, "observer")
+        .with_key("quota-probe-observer")
+        .send(&world)
+        .await;
+    assert_eq!(observer.status, 403, "{}", observer.body);
+
+    let cross_project = Call::post(
+        format!("/v1/projects/{second_project}/provider-account-profiles/{account_id}/quota:probe"),
+        &body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("quota-probe-cross-project")
+    .send(&world)
+    .await;
+    assert_eq!(cross_project.status, 404, "{}", cross_project.body);
+
+    let wrong_route = Call::post(
+        &exact_uri,
+        &serde_json::json!({"provider": "claude-personal"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("quota-probe-wrong-route")
+    .send(&world)
+    .await;
+    assert_eq!(wrong_route.status, 422, "{}", wrong_route.body);
+    assert_eq!(wrong_route.code(), "provider_unsupported");
+
+    let unpinned = Call::post(
+        format!("/v1/projects/{first_project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Unpinned Claude",
+            "harness": "fake.runtime",
+            "credential_alias": "claude-unpinned",
+            "selectable_providers": [],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("quota-probe-unpinned-account")
+    .send(&world)
+    .await;
+    assert_eq!(unpinned.status, 200, "{}", unpinned.body);
+    let unpinned_id = unpinned.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let unpinned_route = Call::post(
+        format!("/v1/projects/{first_project}/provider-account-profiles/{unpinned_id}/quota:probe"),
+        &body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("quota-probe-unpinned-route")
+    .send(&world)
+    .await;
+    assert_eq!(unpinned_route.status, 422, "{}", unpinned_route.body);
+    assert_eq!(unpinned_route.code(), "provider_unsupported");
+
+    // The black-box realm has no approved provider home, so the exact route is
+    // supported by the API but not by this deployment's credential resolver.
+    let unsupported = Call::post(&exact_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("quota-probe-no-home")
+        .send(&world)
+        .await;
+    assert_eq!(unsupported.status, 422, "{}", unsupported.body);
+    assert_eq!(unsupported.code(), "provider_unsupported");
+
+    let project_id = ProjectId::parse(&first_project).expect("a project id");
+    let account_profile_id = AccountProfileId::parse(&account_id).expect("an account id");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_provider_quota_states(project_id)
+                .expect("quota states are readable")
+                .is_empty(),
+            "typed probe failures cannot create a mutable quota projection"
+        );
+        assert!(
+            store
+                .latest_provider_usage_observation(project_id, account_profile_id, "claude-work",)
+                .expect("usage evidence is readable")
+                .is_none(),
+            "typed probe failures cannot create immutable success evidence"
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------

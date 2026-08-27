@@ -285,6 +285,7 @@ pub struct Daemon {
     state: ApiState,
     config: DaemonConfig,
     supervision: Option<SupervisionPolicy>,
+    usage_poller: usage::UsagePoller,
     /// Held for its `Drop`. The claim on the state root lasts exactly as long as
     /// this value does.
     lock: StateRootLock,
@@ -346,11 +347,13 @@ impl Daemon {
             .clone()
             .map_or_else(|| kontor_jira::JiraConnectors::read(&config.state_root), Ok)
             .map_err(|source| StartupError::Connector { source })?;
+        let usage_poller = usage::UsagePoller::discover(&config.state_root);
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
             jira,
             config.state_root.join("runtime-roots"),
+            usage_poller.clone(),
         )
         .map_err(|source| StartupError::Applications { source })?;
 
@@ -381,6 +384,7 @@ impl Daemon {
             state,
             config,
             supervision,
+            usage_poller,
             lock,
         })
     }
@@ -430,6 +434,12 @@ impl Daemon {
     #[must_use]
     pub const fn config(&self) -> &DaemonConfig {
         &self.config
+    }
+
+    /// The provider-usage poller composed from this daemon's approved homes.
+    #[must_use]
+    pub fn usage_poller(&self) -> usage::UsagePoller {
+        self.usage_poller.clone()
     }
 
     /// The versioned seat-supervision policy loaded from this Realm, if any.

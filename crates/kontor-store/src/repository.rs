@@ -27,11 +27,11 @@ use kontor_core::id::{
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
     ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
     IntakeReceiptId, MiniProjectId, ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey,
-    ProjectId, QuickSessionId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
-    WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    ProjectId, ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleCode,
+    RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
+    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
+    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
@@ -53,19 +53,20 @@ use kontor_core::repository::{
     NewCapacityObservation, NewCommandIntent, NewConsultationRecoveryAttempt, NewGateEvaluation,
     NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
     NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
-    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
-    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, RealmEventPage, RealmRepository,
-    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
-    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
-    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
+    ProviderUsageObservation, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
+    RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
+    RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition,
+    SourceEventIngest, SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration,
+    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -6635,6 +6636,9 @@ const PROVIDER_QUOTA_STATE_COLUMNS: &str = "project_id, account_profile_id, prov
 /// it are byte-identical.
 const PROVIDER_QUOTA_WINDOW_COLUMNS: &str = "kind, resets_at, used_percent";
 
+const PROVIDER_USAGE_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, provider, \
+    evidence_hash, state, resets_at, windows, observed_at";
+
 /// Read one header row. `windows` is filled by the caller, which holds the
 /// connection the set has to be read through.
 fn read_provider_quota_state(row: &Row<'_>) -> RepositoryResult<ProviderQuotaState> {
@@ -6727,6 +6731,199 @@ fn attach_provider_quota_windows(
         state.windows.push(read_provider_quota_window(row)?);
     }
     Ok(())
+}
+
+fn read_provider_usage_observation(row: &Row<'_>) -> RepositoryResult<ProviderUsageObservation> {
+    let resets_at: Option<String> = row.get(6).map_err(backend)?;
+    let windows: String = row.get(7).map_err(backend)?;
+    let windows = serde_json::from_str(&windows).map_err(|_| RepositoryError::Conflict {
+        subject: "provider usage observation",
+        rule: "the stored window document is not readable",
+    })?;
+    Ok(ProviderUsageObservation {
+        id: ProviderUsageObservationId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+        account_profile_id: AccountProfileId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+        provider: row.get(3).map_err(backend)?,
+        evidence_hash: ContentHash::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+        state: ProviderQuotaKind::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+        resets_at: resets_at.as_deref().map(read_timestamp).transpose()?,
+        windows,
+        observed_at: read_timestamp(&row.get::<_, String>(8).map_err(backend)?)?,
+    })
+}
+
+fn validate_provider_quota_state(request: &NewProviderQuotaState) -> RepositoryResult<()> {
+    let paired = match request.state {
+        ProviderQuotaKind::Exhausted => request.resets_at.is_some(),
+        _ => request.resets_at.is_none(),
+    };
+    if !paired {
+        return Err(RepositoryError::Domain(DomainError::invalid(
+            "ProviderQuotaState",
+            "only an exhausted allowance carries a reset instant, and it must carry one",
+        )));
+    }
+    if let Some(credit) = request.credit
+        && credit.remaining.currency != credit.reserve.currency
+    {
+        return Err(RepositoryError::Domain(DomainError::invalid(
+            "CreditBalance",
+            "a balance and its reserve must be in one currency; they are never converted",
+        )));
+    }
+    let mut kinds: Vec<QuotaWindowKind> =
+        request.windows.iter().map(|window| window.kind).collect();
+    kinds.sort_unstable();
+    if kinds.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(RepositoryError::Domain(DomainError::invalid(
+            "ProviderQuotaState",
+            "one window kind may be observed only once per account and provider",
+        )));
+    }
+    if request
+        .windows
+        .iter()
+        .any(|window| window.used_percent > 100)
+    {
+        return Err(RepositoryError::Domain(DomainError::invalid(
+            "QuotaWindow",
+            "a consumption share must be a percentage",
+        )));
+    }
+    Ok(())
+}
+
+fn set_provider_quota_state_in(
+    transaction: &Transaction<'_>,
+    request: &NewProviderQuotaState,
+) -> RepositoryResult<ProviderQuotaState> {
+    validate_provider_quota_state(request)?;
+    if read_account_profile_in(transaction, request.project_id, request.account_profile_id)?
+        .is_none()
+    {
+        return Err(RepositoryError::NotFound {
+            subject: "account profile",
+        });
+    }
+    let current: Option<RepositoryResult<ProviderQuotaState>> = transaction
+        .query_row(
+            &format!(
+                "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                 WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
+            ),
+            params![
+                request.project_id.to_string(),
+                request.account_profile_id.to_string(),
+                request.provider.as_str(),
+            ],
+            |row| Ok(read_provider_quota_state(row)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let current = current.transpose()?;
+    let next = match &current {
+        Some(existing) => {
+            existing
+                .revision
+                .expect("provider quota state", request.expected_revision)?;
+            existing.revision.next()?
+        }
+        None => {
+            AggregateRevision::INITIAL.expect("provider quota state", request.expected_revision)?;
+            AggregateRevision::INITIAL
+        }
+    };
+    let credit = request
+        .credit
+        .map(|credit| -> RepositoryResult<(i64, i64, String)> {
+            let (remaining, currency) = money_columns(credit.remaining)?;
+            let (reserve, _) = money_columns(credit.reserve)?;
+            Ok((remaining, reserve, currency))
+        })
+        .transpose()?;
+    let credit_remaining = credit.as_ref().map(|(remaining, _, _)| *remaining);
+    let credit_reserve = credit.as_ref().map(|(_, reserve, _)| *reserve);
+    let credit_currency = credit.map(|(_, _, currency)| currency);
+    transaction
+        .execute(
+            "INSERT INTO provider_quota_states
+                 (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
+                  source, observed_at, revision, updated_at, credit_minor_units,
+                  credit_reserve_minor_units, credit_currency)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT (project_id, account_profile_id, provider) DO UPDATE SET
+                 state = excluded.state,
+                 resets_at = excluded.resets_at,
+                 evidence_hash = excluded.evidence_hash,
+                 source = excluded.source,
+                 observed_at = excluded.observed_at,
+                 revision = excluded.revision,
+                 updated_at = excluded.updated_at,
+                 credit_minor_units = excluded.credit_minor_units,
+                 credit_reserve_minor_units = excluded.credit_reserve_minor_units,
+                 credit_currency = excluded.credit_currency",
+            params![
+                request.project_id.to_string(),
+                request.account_profile_id.to_string(),
+                request.provider.as_str(),
+                request.state.as_str(),
+                request.resets_at.map(text),
+                request.evidence_hash.as_str(),
+                request.source.as_str(),
+                text(request.observed_at),
+                revision_column(next)?,
+                text(request.updated_at),
+                credit_remaining,
+                credit_reserve,
+                credit_currency,
+            ],
+        )
+        .map_err(backend)?;
+    transaction
+        .execute(
+            "DELETE FROM provider_quota_windows
+             WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3",
+            params![
+                request.project_id.to_string(),
+                request.account_profile_id.to_string(),
+                request.provider.as_str(),
+            ],
+        )
+        .map_err(backend)?;
+    for window in &request.windows {
+        transaction
+            .execute(
+                "INSERT INTO provider_quota_windows
+                     (project_id, account_profile_id, provider, kind, resets_at, used_percent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    request.project_id.to_string(),
+                    request.account_profile_id.to_string(),
+                    request.provider.as_str(),
+                    window.kind.as_str(),
+                    text(window.resets_at),
+                    i64::from(window.used_percent),
+                ],
+            )
+            .map_err(backend)?;
+    }
+    let mut stored = transaction
+        .query_row(
+            &format!(
+                "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                 WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
+            ),
+            params![
+                request.project_id.to_string(),
+                request.account_profile_id.to_string(),
+                request.provider.as_str(),
+            ],
+            |row| Ok(read_provider_quota_state(row)),
+        )
+        .map_err(backend)??;
+    attach_provider_quota_windows(transaction, &mut stored)?;
+    Ok(stored)
 }
 
 fn read_capacity_observation(row: &Row<'_>) -> RepositoryResult<CapacityObservation> {
@@ -6959,184 +7156,8 @@ impl CapacityRepository for SqliteStore {
         &self,
         request: &NewProviderQuotaState,
     ) -> RepositoryResult<ProviderQuotaState> {
-        // The pairing the database also enforces. Checked here too so a caller
-        // gets a typed refusal naming the rule rather than a CHECK violation
-        // surfacing as an opaque backend error.
-        let paired = match request.state {
-            ProviderQuotaKind::Exhausted => request.resets_at.is_some(),
-            _ => request.resets_at.is_none(),
-        };
-        if !paired {
-            return Err(RepositoryError::Domain(DomainError::invalid(
-                "ProviderQuotaState",
-                "only an exhausted allowance carries a reset instant, and it must carry one",
-            )));
-        }
-        // One currency, two amounts — the schema's own rule, checked here so a
-        // caller gets a typed refusal naming it instead of a CHECK violation
-        // arriving as an opaque backend error. Rescaling is never the answer: a
-        // rate is a fact about a market at an instant, and a scheduling decision
-        // taken through one would move with the market rather than the account.
-        if let Some(credit) = request.credit
-            && credit.remaining.currency != credit.reserve.currency
-        {
-            return Err(RepositoryError::Domain(DomainError::invalid(
-                "CreditBalance",
-                "a balance and its reserve must be in one currency; they are never converted",
-            )));
-        }
-        // Two windows of one kind is not a richer reading, it is two readings
-        // one of which is stale. The primary key refuses the second write; this
-        // refuses the ambiguous request before it becomes one.
-        let mut kinds: Vec<QuotaWindowKind> = request.windows.iter().map(|w| w.kind).collect();
-        kinds.sort_unstable();
-        let duplicated = kinds.windows(2).any(|pair| pair[0] == pair[1]);
-        if duplicated {
-            return Err(RepositoryError::Domain(DomainError::invalid(
-                "ProviderQuotaState",
-                "one window kind may be observed only once per account and provider",
-            )));
-        }
-        if request.windows.iter().any(|w| w.used_percent > 100) {
-            return Err(RepositoryError::Domain(DomainError::invalid(
-                "QuotaWindow",
-                "a consumption share must be a percentage",
-            )));
-        }
         let transaction = self.begin()?;
-        if read_account_profile_in(&transaction, request.project_id, request.account_profile_id)?
-            .is_none()
-        {
-            return Err(RepositoryError::NotFound {
-                subject: "account profile",
-            });
-        }
-        let current: Option<RepositoryResult<ProviderQuotaState>> = transaction
-            .query_row(
-                &format!(
-                    "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
-                     WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
-                ),
-                params![
-                    request.project_id.to_string(),
-                    request.account_profile_id.to_string(),
-                    request.provider.as_str(),
-                ],
-                |row| Ok(read_provider_quota_state(row)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let current = current.transpose()?;
-        // Same first-write rule as an availability override, for the same
-        // reason: revision one is how "I read it as absent" is stated, and
-        // accepting any revision there would make it unsayable.
-        let next = match &current {
-            Some(existing) => {
-                existing
-                    .revision
-                    .expect("provider quota state", request.expected_revision)?;
-                existing.revision.next()?
-            }
-            None => {
-                AggregateRevision::INITIAL
-                    .expect("provider quota state", request.expected_revision)?;
-                AggregateRevision::INITIAL
-            }
-        };
-        // Reuses `money_columns`, so a balance is stored exactly the way every
-        // other monetary amount in this schema is.
-        let credit = request
-            .credit
-            .map(|credit| -> RepositoryResult<(i64, i64, String)> {
-                let (remaining, currency) = money_columns(credit.remaining)?;
-                let (reserve, _) = money_columns(credit.reserve)?;
-                Ok((remaining, reserve, currency))
-            })
-            .transpose()?;
-        let credit_remaining = credit.as_ref().map(|(remaining, _, _)| *remaining);
-        let credit_reserve = credit.as_ref().map(|(_, reserve, _)| *reserve);
-        let credit_currency = credit.map(|(_, _, currency)| currency);
-        transaction
-            .execute(
-                "INSERT INTO provider_quota_states
-                     (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
-                      source, observed_at, revision, updated_at, credit_minor_units,
-                      credit_reserve_minor_units, credit_currency)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                 ON CONFLICT (project_id, account_profile_id, provider) DO UPDATE SET
-                     state = excluded.state,
-                     resets_at = excluded.resets_at,
-                     evidence_hash = excluded.evidence_hash,
-                     source = excluded.source,
-                     observed_at = excluded.observed_at,
-                     revision = excluded.revision,
-                     updated_at = excluded.updated_at,
-                     credit_minor_units = excluded.credit_minor_units,
-                     credit_reserve_minor_units = excluded.credit_reserve_minor_units,
-                     credit_currency = excluded.credit_currency",
-                params![
-                    request.project_id.to_string(),
-                    request.account_profile_id.to_string(),
-                    request.provider.as_str(),
-                    request.state.as_str(),
-                    request.resets_at.map(text),
-                    request.evidence_hash.as_str(),
-                    request.source.as_str(),
-                    text(request.observed_at),
-                    revision_column(next)?,
-                    text(request.updated_at),
-                    credit_remaining,
-                    credit_reserve,
-                    credit_currency,
-                ],
-            )
-            .map_err(backend)?;
-        // The window set is replaced wholesale, never merged. A collector reports
-        // what a provider holds *now*; a merge would keep a window the provider
-        // has stopped offering and let a scheduler route on it forever.
-        transaction
-            .execute(
-                "DELETE FROM provider_quota_windows
-                 WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3",
-                params![
-                    request.project_id.to_string(),
-                    request.account_profile_id.to_string(),
-                    request.provider.as_str(),
-                ],
-            )
-            .map_err(backend)?;
-        for window in &request.windows {
-            transaction
-                .execute(
-                    "INSERT INTO provider_quota_windows
-                         (project_id, account_profile_id, provider, kind, resets_at, used_percent)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        request.project_id.to_string(),
-                        request.account_profile_id.to_string(),
-                        request.provider.as_str(),
-                        window.kind.as_str(),
-                        text(window.resets_at),
-                        i64::from(window.used_percent),
-                    ],
-                )
-                .map_err(backend)?;
-        }
-        let mut stored = transaction
-            .query_row(
-                &format!(
-                    "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
-                     WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
-                ),
-                params![
-                    request.project_id.to_string(),
-                    request.account_profile_id.to_string(),
-                    request.provider.as_str(),
-                ],
-                |row| Ok(read_provider_quota_state(row)),
-            )
-            .map_err(backend)??;
-        attach_provider_quota_windows(&transaction, &mut stored)?;
+        let stored = set_provider_quota_state_in(&transaction, request)?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
     }
@@ -7166,6 +7187,234 @@ impl CapacityRepository for SqliteStore {
             attach_provider_quota_windows(&self.connection, state)?;
         }
         Ok(states)
+    }
+
+    fn record_provider_usage_observation(
+        &self,
+        request: &NewProviderUsageObservation,
+    ) -> RepositoryResult<ProviderUsageObservation> {
+        let observation = &request.observation;
+        if request.idempotency_key.is_some() != request.intent_hash.is_some() {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "ProviderUsageObservation",
+                "an explicit probe key and its canonical intent hash must be present together",
+            )));
+        }
+        let paired = match observation.state {
+            ProviderQuotaKind::Exhausted => observation.resets_at.is_some(),
+            _ => observation.resets_at.is_none(),
+        };
+        if !paired {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "ProviderUsageObservation",
+                "only an exhausted observation carries a reset instant, and it must carry one",
+            )));
+        }
+        let mut kinds: Vec<QuotaWindowKind> = observation
+            .windows
+            .iter()
+            .map(|window| window.kind)
+            .collect();
+        kinds.sort_unstable();
+        if kinds.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "ProviderUsageObservation",
+                "one window kind may be observed only once per account and provider",
+            )));
+        }
+        if observation
+            .windows
+            .iter()
+            .any(|window| window.used_percent > 100)
+        {
+            return Err(RepositoryError::Domain(DomainError::invalid(
+                "ProviderUsageObservation",
+                "a consumption share must be a percentage",
+            )));
+        }
+        if let Some(quota) = request.quota_state.as_ref() {
+            let matching = quota.project_id == observation.project_id
+                && quota.account_profile_id == observation.account_profile_id
+                && quota.provider == observation.provider
+                && quota.evidence_hash == observation.evidence_hash
+                && quota.state == observation.state
+                && quota.resets_at == observation.resets_at
+                && quota.source == ProviderQuotaSource::ProviderReport
+                && quota.observed_at == observation.observed_at
+                && (observation.windows.is_empty() || quota.windows == observation.windows);
+            if !matching {
+                return Err(RepositoryError::Domain(DomainError::invalid(
+                    "ProviderUsageObservation",
+                    "the quota projection does not describe this exact provider report",
+                )));
+            }
+        }
+
+        let transaction = self.begin()?;
+        if read_account_profile_in(
+            &transaction,
+            observation.project_id,
+            observation.account_profile_id,
+        )?
+        .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "account profile",
+            });
+        }
+        if let Some(key) = request.idempotency_key.as_ref() {
+            let replay: Option<(ProviderUsageObservation, String)> = transaction
+                .query_row(
+                    &format!(
+                        "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}, intent_hash
+                         FROM provider_usage_observations
+                         WHERE project_id = ?1 AND idempotency_key = ?2"
+                    ),
+                    params![observation.project_id.to_string(), key.as_str()],
+                    |row| {
+                        let observation =
+                            read_provider_usage_observation(row).map_err(|error| {
+                                rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+                            })?;
+                        Ok((observation, row.get(9)?))
+                    },
+                )
+                .optional()
+                .map_err(backend)?;
+            if let Some((stored, intent_hash)) = replay {
+                let intent_hash = ContentHash::parse(&intent_hash)?;
+                if Some(&intent_hash) != request.intent_hash.as_ref() {
+                    return Err(RepositoryError::Conflict {
+                        subject: "provider usage probe",
+                        rule: "the idempotency key was already used for a different operation",
+                    });
+                }
+                return Ok(stored);
+            }
+        }
+
+        if let Some(quota) = request.quota_state.as_ref() {
+            let _ = set_provider_quota_state_in(&transaction, quota)?;
+        } else {
+            let current: Option<RepositoryResult<ProviderQuotaState>> = transaction
+                .query_row(
+                    &format!(
+                        "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                         WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
+                    ),
+                    params![
+                        observation.project_id.to_string(),
+                        observation.account_profile_id.to_string(),
+                        observation.provider.as_str(),
+                    ],
+                    |row| Ok(read_provider_quota_state(row)),
+                )
+                .optional()
+                .map_err(backend)?;
+            let mut current = current.transpose()?.ok_or(RepositoryError::Conflict {
+                subject: "provider usage observation",
+                rule: "an unchanged heartbeat must match an existing provider report",
+            })?;
+            attach_provider_quota_windows(&transaction, &mut current)?;
+            if current.source != ProviderQuotaSource::ProviderReport
+                || current.evidence_hash != observation.evidence_hash
+                || current.state != observation.state
+                || current.resets_at != observation.resets_at
+                || (!observation.windows.is_empty() && current.windows != observation.windows)
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "provider usage observation",
+                    rule: "an unchanged heartbeat must match the current provider report",
+                });
+            }
+        }
+
+        let windows = serde_json::to_string(&observation.windows).map_err(|_| {
+            RepositoryError::Domain(DomainError::invalid(
+                "ProviderUsageObservation",
+                "the derived window set could not be serialized",
+            ))
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO provider_usage_observations
+                     (id, project_id, account_profile_id, provider, evidence_hash, state,
+                      resets_at, windows, observed_at, idempotency_key, intent_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    observation.id.to_string(),
+                    observation.project_id.to_string(),
+                    observation.account_profile_id.to_string(),
+                    observation.provider.as_str(),
+                    observation.evidence_hash.as_str(),
+                    observation.state.as_str(),
+                    observation.resets_at.map(text),
+                    windows,
+                    text(observation.observed_at),
+                    request.idempotency_key.as_ref().map(IdempotencyKey::as_str),
+                    request.intent_hash.as_ref().map(ContentHash::as_str),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(observation.clone())
+    }
+
+    fn latest_provider_usage_observation(
+        &self,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        provider: &str,
+    ) -> RepositoryResult<Option<ProviderUsageObservation>> {
+        let observation: Option<RepositoryResult<ProviderUsageObservation>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}
+                     FROM provider_usage_observations
+                     WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3
+                     ORDER BY observed_at DESC, id DESC LIMIT 1"
+                ),
+                params![
+                    project_id.to_string(),
+                    account_profile_id.to_string(),
+                    provider
+                ],
+                |row| Ok(read_provider_usage_observation(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        observation.transpose()
+    }
+
+    fn provider_usage_observation_by_key(
+        &self,
+        project_id: ProjectId,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<(ProviderUsageObservation, ContentHash)>> {
+        let observation: Option<RepositoryResult<(ProviderUsageObservation, ContentHash)>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}, intent_hash
+                     FROM provider_usage_observations
+                     WHERE project_id = ?1 AND idempotency_key = ?2"
+                ),
+                params![project_id.to_string(), key.as_str()],
+                |row| {
+                    Ok(
+                        read_provider_usage_observation(row).and_then(|observation| {
+                            Ok((
+                                observation,
+                                ContentHash::parse(&row.get::<_, String>(9).map_err(backend)?)?,
+                            ))
+                        }),
+                    )
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        observation.transpose()
     }
 
     fn list_availability_overrides(
