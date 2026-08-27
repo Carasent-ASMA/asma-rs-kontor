@@ -15860,7 +15860,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_value = serde_json::json!({
             "schema_version": 1,
             "operation": "invoke_committee_run",
             "project": project_id.to_string(),
@@ -15870,8 +15870,25 @@ impl ApplicationOperations for Services {
             "caller_seat_binding_id": request.caller_seat_binding_id.to_string(),
             "task_id": request.task_id.map(|id| id.to_string()),
             "re_review": request.re_review.as_ref(),
-            "initial_recovery_profiles": request.initial_recovery_profiles,
-        }))?;
+        });
+        if !request.initial_recovery_profiles.is_empty() {
+            let object = intent_value.as_object_mut().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee invocation intent could not be assembled",
+                )
+            })?;
+            object.insert(
+                "initial_recovery_profiles".to_owned(),
+                serde_json::to_value(&request.initial_recovery_profiles).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the initial Committee recovery profiles could not be canonicalized",
+                    )
+                })?,
+            );
+        }
+        let intent = self.intent(&intent_value)?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };

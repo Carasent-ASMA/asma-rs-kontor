@@ -25004,6 +25004,37 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .as_str()
         .expect("a Committee run id")
         .to_owned();
+    // This is the exact pre-initial-recovery canonical intent shape. An empty
+    // optional policy must remain absent: otherwise every ordinary invocation
+    // receipt written by the previous binary becomes impossible to replay.
+    let legacy_intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "invoke_committee_run",
+        "project": project,
+        "epic": epic,
+        "profile": ["01991c00-0000-7000-8000-000000000001", 4],
+        "question": "Does this evidence satisfy the operational gate?",
+        "caller_seat_binding_id": caller,
+        "task_id": null,
+        "re_review": null,
+    }))
+    .expect("the legacy Committee intent canonicalizes");
+    let frozen_invocation = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(
+                ProjectId::parse(project).expect("the project"),
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&run).expect("the Committee run id"),
+                ),
+            )
+            .expect("the Committee run reads")
+            .expect("the Committee run exists")
+    });
+    assert_eq!(
+        frozen_invocation.invoke_intent_hash,
+        *legacy_intent.hash(),
+        "an absent initial recovery policy changed the pre-deploy intent hash"
+    );
     let invoked_json = invoked.json();
     let seats = invoked_json["seats"].as_array().expect("Committee seats");
     let ordinary_routes: std::collections::BTreeMap<_, _> = seats
