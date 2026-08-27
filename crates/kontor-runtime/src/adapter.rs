@@ -601,6 +601,14 @@ pub struct PermissionAck {
 /// One agent runtime, reduced to what Kontor is willing to depend on.
 #[async_trait]
 pub trait RuntimeAdapter: Send + Sync {
+    /// Prove, without a native effect, that a route has an explicitly pinned
+    /// consultation permission mode in this runtime.
+    fn validate_consultation_model_rung(&self, _rung: &ModelRung) -> RuntimeResult<()> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
     /// Whether an operator-declared provider route is currently eligible.
     /// Runtimes with no provider concept accept every route.
     fn provider_available(&self, _provider: &str) -> bool {

@@ -423,6 +423,76 @@ pub struct NewConsultationRecoveryAttempt {
     pub prepared_at: Timestamp,
 }
 
+/// One immutable native-less materialization reroute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConsultationMaterializationReroute {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Preserved consultation run.
+    pub run_id: ConsultationRunId,
+    /// Preserved template slot.
+    pub role_slot_id: RoleSlotId,
+    /// Preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Credential generation fenced by the reroute.
+    pub predecessor_occupancy_generation: u64,
+    /// New active credential generation.
+    pub successor_occupancy_generation: u64,
+    /// Route that failed before native launch.
+    pub predecessor_model_rung: crate::spec::ModelRung,
+    /// Exact governed replacement route.
+    pub successor_model_rung: crate::spec::ModelRung,
+    /// Typed recovery reason.
+    pub reason: String,
+    /// Canonical ordered recovery policy.
+    pub recovery_profile: serde_json::Value,
+    /// Digest of the recovery policy.
+    pub recovery_profile_hash: ContentHash,
+    /// Digest of the exact command intent.
+    pub request_intent_hash: ContentHash,
+    /// Stable command replay key.
+    pub idempotency_key: IdempotencyKey,
+    /// Exact enabled account whose fresh provider report admitted the route.
+    pub headroom_account_profile_id: AccountProfileId,
+    /// Immutable successful provider-usage observation used at commit.
+    pub headroom_observation_id: ProviderUsageObservationId,
+    /// Evidence digest shared by the observation and current projection.
+    pub headroom_evidence_hash: ContentHash,
+    /// Run revision fenced by the reroute.
+    pub predecessor_run_revision: AggregateRevision,
+    /// Run revision after the reroute.
+    pub successor_run_revision: AggregateRevision,
+    /// Commit instant.
+    pub rerouted_at: Timestamp,
+}
+
+/// Compare-and-swap input for a native-less materialization reroute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewConsultationMaterializationReroute {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Exact active native-less seat read by the caller.
+    pub predecessor: StoredConsultationSeat,
+    /// Committee revision read by the caller.
+    pub expected_revision: AggregateRevision,
+    /// Selected governed successor route.
+    pub successor_model_rung: crate::spec::ModelRung,
+    /// Typed recovery reason.
+    pub reason: String,
+    /// Canonical ordered recovery policy.
+    pub recovery_profile: CanonicalDocument,
+    /// Digest of the exact command intent.
+    pub request_intent_hash: ContentHash,
+    /// Stable command replay key.
+    pub idempotency_key: IdempotencyKey,
+    /// Exact fresh immutable headroom observation selected by policy.
+    pub headroom_observation: ProviderUsageObservation,
+    /// Oldest provider observation that is still admissible at commit.
+    pub headroom_fresh_after: Timestamp,
+    /// Commit instant.
+    pub rerouted_at: Timestamp,
+}
+
 /// Exact runtime readback filling a persistent non-delivery topology seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredHostedTopologySeat {

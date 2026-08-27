@@ -190,6 +190,9 @@ closed_enum! {
         /// Archive and replace one native consultation filler while preserving
         /// its logical SeatBinding and immutable profile/template revision.
         RecoverConsultationSeat => "recover_consultation_seat",
+        /// Change the frozen route of a native-less materializing Committee
+        /// seat under an exact Admin compare-and-swap.
+        RerouteUnmaterializedConsultationSeat => "reroute_unmaterialized_consultation_seat",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -552,7 +555,10 @@ impl CommandKind {
             | Self::InvokeCommitteeRun
             | Self::RecordCommitteeFindings
             | Self::SettleCommitteeRun
-            | Self::RecoverConsultationSeat => witness(matches!(target, A::MiniProject)),
+            | Self::RecoverConsultationSeat
+            | Self::RerouteUnmaterializedConsultationSeat => {
+                witness(matches!(target, A::MiniProject))
+            }
         }
     }
 

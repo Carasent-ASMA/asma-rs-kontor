@@ -351,6 +351,42 @@ mod tests {
     }
 
     #[test]
+    fn native_less_committee_reroute_is_exposed_by_the_admin_cli_command() {
+        let matches = build()
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "admin",
+                "committee-seat-reroute-unmaterialized",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--committee-run-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--seat-binding-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72",
+                "--idempotency-key",
+                "native-less-reroute-1",
+                "--expected-revision",
+                "1",
+                "--expected-occupancy-generation",
+                "1",
+                "--expected-model-route",
+                r#"{"provider":"opencode","model":"deepseek/deepseek-v4-flash","effort":"max"}"#,
+                "--reason",
+                "permission_mode_unsupported",
+                "--recovery-profile",
+                r#"[{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]"#,
+            ])
+            .expect("the generated Admin CLI accepts a native-less reroute");
+        let (tool, sub) = resolve(&matches).expect("the reroute tool");
+        let arguments = arguments(tool, sub).expect("the reroute payload is JSON");
+        assert_eq!(arguments["expected_occupancy_generation"], 1);
+        assert_eq!(arguments["recovery_profile"][0]["provider"], "claude-work");
+    }
+
+    #[test]
     fn a_value_of_the_wrong_shape_is_refused_before_anything_is_dispatched() {
         let command = build();
         let matches = command

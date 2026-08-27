@@ -50,17 +50,18 @@ use kontor_core::repository::{
     HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
     IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationRecoveryAttempt, NewGateEvaluation,
-    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
-    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
-    ProviderUsageObservation, RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome,
-    RepositoryError, RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding,
-    RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition,
-    SourceEventIngest, SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration,
-    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
+    NewConsultationRecoveryAttempt, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
+    RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError,
+    RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
+    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredConsultationMaterializationReroute,
     StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
     StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
     StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
@@ -2958,6 +2959,386 @@ impl SqliteStore {
                     .as_ref()
                     .is_some_and(|identity| identity.native_id.as_str() == successor_native_id)
         }))
+    }
+
+    /// Read an already-committed native-less reroute by its exact intent.
+    pub fn get_consultation_materialization_reroute_by_intent(
+        &self,
+        project_id: ProjectId,
+        request_intent_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredConsultationMaterializationReroute>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT run_id, role_slot_id, seat_binding_id,
+                    predecessor_generation, successor_generation,
+                    predecessor_model_rung, successor_model_rung, reason,
+                    recovery_profile, recovery_profile_hash, idempotency_key,
+                    headroom_account_profile_id, headroom_observation_id,
+                    headroom_evidence_hash, predecessor_revision,
+                    successor_revision, rerouted_at
+             FROM consultation_seat_materialization_reroutes
+             WHERE project_id = ?1 AND request_intent_hash = ?2",
+                params![project_id.to_string(), request_intent_hash.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, i64>(14)?,
+                        row.get::<_, i64>(15)?,
+                        row.get::<_, String>(16)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(
+            |(
+                run_id,
+                role_slot_id,
+                seat_binding_id,
+                predecessor_generation,
+                successor_generation,
+                predecessor_model_rung,
+                successor_model_rung,
+                reason,
+                recovery_profile,
+                recovery_profile_hash,
+                idempotency_key,
+                headroom_account_profile_id,
+                headroom_observation_id,
+                headroom_evidence_hash,
+                predecessor_revision,
+                successor_revision,
+                rerouted_at,
+            )| {
+                Ok(StoredConsultationMaterializationReroute {
+                    project_id,
+                    run_id: ConsultationRunId::Committee(CommitteeRunId::parse(&run_id)?),
+                    role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+                    seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+                    predecessor_occupancy_generation: u64::try_from(predecessor_generation)
+                        .map_err(|_| {
+                            conflict(
+                                "materialization reroute",
+                                "the predecessor generation is invalid",
+                            )
+                        })?,
+                    successor_occupancy_generation: u64::try_from(successor_generation).map_err(
+                        |_| {
+                            conflict(
+                                "materialization reroute",
+                                "the successor generation is invalid",
+                            )
+                        },
+                    )?,
+                    predecessor_model_rung: serde_json::from_str(&predecessor_model_rung).map_err(
+                        |_| {
+                            conflict(
+                                "materialization reroute",
+                                "the predecessor route is invalid",
+                            )
+                        },
+                    )?,
+                    successor_model_rung: serde_json::from_str(&successor_model_rung).map_err(
+                        |_| conflict("materialization reroute", "the successor route is invalid"),
+                    )?,
+                    reason,
+                    recovery_profile: serde_json::from_str(&recovery_profile).map_err(|_| {
+                        conflict("materialization reroute", "the recovery profile is invalid")
+                    })?,
+                    recovery_profile_hash: ContentHash::parse(&recovery_profile_hash)?,
+                    request_intent_hash: request_intent_hash.clone(),
+                    idempotency_key: IdempotencyKey::parse(&idempotency_key)?,
+                    headroom_account_profile_id: AccountProfileId::parse(
+                        &headroom_account_profile_id,
+                    )?,
+                    headroom_observation_id: ProviderUsageObservationId::parse(
+                        &headroom_observation_id,
+                    )?,
+                    headroom_evidence_hash: ContentHash::parse(&headroom_evidence_hash)?,
+                    predecessor_run_revision: AggregateRevision::parse(
+                        u64::try_from(predecessor_revision).map_err(|_| {
+                            conflict(
+                                "materialization reroute",
+                                "the predecessor revision is invalid",
+                            )
+                        })?,
+                    )?,
+                    successor_run_revision: AggregateRevision::parse(
+                        u64::try_from(successor_revision).map_err(|_| {
+                            conflict(
+                                "materialization reroute",
+                                "the successor revision is invalid",
+                            )
+                        })?,
+                    )?,
+                    rerouted_at: read_timestamp(&rerouted_at)?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    /// Atomically reroute one still-native-less materializing Committee seat.
+    pub fn reroute_unmaterialized_consultation_seat(
+        &self,
+        request: &NewConsultationMaterializationReroute,
+    ) -> RepositoryResult<StoredConsultationMaterializationReroute> {
+        if request.reason != "permission_mode_unsupported" {
+            return Err(conflict(
+                "materialization reroute",
+                "the recovery reason is unsupported",
+            ));
+        }
+        if let Some(existing) = self.get_consultation_materialization_reroute_by_intent(
+            request.project_id,
+            &request.request_intent_hash,
+        )? {
+            if existing.idempotency_key != request.idempotency_key {
+                return Err(conflict(
+                    "materialization reroute",
+                    "the committed reroute belongs to another idempotency key",
+                ));
+            }
+            return Ok(existing);
+        }
+        let successor_generation = request
+            .predecessor
+            .occupancy_generation
+            .checked_add(1)
+            .ok_or_else(|| {
+                conflict(
+                    "materialization reroute",
+                    "the occupancy generation overflowed",
+                )
+            })?;
+        let successor_revision = request.expected_revision.next()?;
+        let predecessor_model =
+            serde_json::to_string(&request.predecessor.model_rung).map_err(|_| {
+                conflict(
+                    "materialization reroute",
+                    "the predecessor route could not be encoded",
+                )
+            })?;
+        let successor_model =
+            serde_json::to_string(&request.successor_model_rung).map_err(|_| {
+                conflict(
+                    "materialization reroute",
+                    "the successor route could not be encoded",
+                )
+            })?;
+        let transaction = self.begin()?;
+        let observation = transaction
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}
+                     FROM provider_usage_observations
+                     WHERE id = ?1 AND project_id = ?2 AND account_profile_id = ?3
+                       AND provider = ?4"
+                ),
+                params![
+                    request.headroom_observation.id.to_string(),
+                    request.project_id.to_string(),
+                    request.headroom_observation.account_profile_id.to_string(),
+                    request.successor_model_rung.provider.0.as_str(),
+                ],
+                |row| {
+                    read_provider_usage_observation(row)
+                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or_else(|| {
+                conflict(
+                    "materialization reroute headroom",
+                    "the selected provider usage observation is absent or foreign",
+                )
+            })?;
+        let latest_observation_id: String = transaction
+            .query_row(
+                "SELECT id FROM provider_usage_observations
+                 WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3
+                 ORDER BY observed_at DESC, id DESC LIMIT 1",
+                params![
+                    request.project_id.to_string(),
+                    observation.account_profile_id.to_string(),
+                    observation.provider.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if observation != request.headroom_observation
+            || latest_observation_id != observation.id.to_string()
+            || observation.state != ProviderQuotaKind::Available
+            || observation.observed_at < request.headroom_fresh_after
+        {
+            return Err(conflict(
+                "materialization reroute headroom",
+                "the selected provider observation is not the latest fresh available evidence",
+            ));
+        }
+        let current: Option<RepositoryResult<ProviderQuotaState>> = transaction
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_QUOTA_STATE_COLUMNS} FROM provider_quota_states
+                     WHERE project_id = ?1 AND account_profile_id = ?2 AND provider = ?3"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    observation.account_profile_id.to_string(),
+                    observation.provider.as_str(),
+                ],
+                |row| Ok(read_provider_quota_state(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let mut current = current.transpose()?.ok_or_else(|| {
+            conflict(
+                "materialization reroute headroom",
+                "the current provider-report projection is absent",
+            )
+        })?;
+        attach_provider_quota_windows(&transaction, &mut current)?;
+        let projection_matches = current.source == ProviderQuotaSource::ProviderReport
+            && current.state == ProviderQuotaKind::Available
+            && current.evidence_hash == observation.evidence_hash
+            && current.state == observation.state
+            && current.resets_at == observation.resets_at
+            && current.windows == observation.windows;
+        if !projection_matches {
+            return Err(conflict(
+                "materialization reroute headroom",
+                "the current provider report does not match the selected fresh observation",
+            ));
+        }
+        let run_ok: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM consultation_runs
+             WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
+               AND state = 'materializing' AND result IS NULL AND result_hash IS NULL
+               AND revision = ?3",
+                params![
+                    request.project_id.to_string(),
+                    request.predecessor.run_id.as_text(),
+                    i64::try_from(request.expected_revision.get()).unwrap_or(i64::MAX)
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let findings: i64 = transaction.query_row(
+            "SELECT count(*) FROM committee_findings WHERE project_id = ?1 AND committee_run_id = ?2",
+            params![request.project_id.to_string(), request.predecessor.run_id.as_text()],
+            |row| row.get(0),
+        ).map_err(backend)?;
+        if run_ok != 1 || findings != 0 {
+            return Err(conflict(
+                "materialization reroute",
+                "only an unchanged result-less and findings-free materializing Committee may be rerouted",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+             SET model_rung = ?7, occupancy_generation = ?8
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND seat_binding_id = ?4 AND model_rung = ?5 AND occupancy_generation = ?6
+               AND runtime_kind IS NULL AND host IS NULL AND generation IS NULL
+               AND native_id IS NULL AND provider_session_id IS NULL AND observed_at IS NULL",
+                params![
+                    request.project_id.to_string(),
+                    request.predecessor.run_id.as_text(),
+                    request.predecessor.role_slot_id.as_str(),
+                    request.predecessor.seat_binding_id.to_string(),
+                    predecessor_model,
+                    i64::try_from(request.predecessor.occupancy_generation).unwrap_or(i64::MAX),
+                    successor_model,
+                    i64::try_from(successor_generation).unwrap_or(i64::MAX)
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "materialization reroute",
+                "the target seat route, generation, binding, or native-less state moved",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO consultation_seat_materialization_reroutes
+             (project_id, run_id, role_slot_id, seat_binding_id,
+              predecessor_generation, successor_generation,
+              predecessor_model_rung, successor_model_rung, reason,
+              recovery_profile, recovery_profile_hash, request_intent_hash, idempotency_key,
+              headroom_account_profile_id, headroom_observation_id,
+              headroom_evidence_hash, predecessor_revision, successor_revision, rerouted_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                params![
+                    request.project_id.to_string(),
+                    request.predecessor.run_id.as_text(),
+                    request.predecessor.role_slot_id.as_str(),
+                    request.predecessor.seat_binding_id.to_string(),
+                    i64::try_from(request.predecessor.occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(successor_generation).unwrap_or(i64::MAX),
+                    predecessor_model,
+                    successor_model,
+                    request.reason,
+                    request.recovery_profile.json(),
+                    request.recovery_profile.hash().as_str(),
+                    request.request_intent_hash.as_str(),
+                    request.idempotency_key.as_str(),
+                    observation.account_profile_id.to_string(),
+                    observation.id.to_string(),
+                    observation.evidence_hash.as_str(),
+                    i64::try_from(request.expected_revision.get()).unwrap_or(i64::MAX),
+                    i64::try_from(successor_revision.get()).unwrap_or(i64::MAX),
+                    text(request.rerouted_at)
+                ],
+            )
+            .map_err(backend)?;
+        let run_changed = transaction
+            .execute(
+                "UPDATE consultation_runs SET revision = ?4, updated_at = ?5
+             WHERE project_id = ?1 AND run_id = ?2 AND revision = ?3 AND state = 'materializing'",
+                params![
+                    request.project_id.to_string(),
+                    request.predecessor.run_id.as_text(),
+                    i64::try_from(request.expected_revision.get()).unwrap_or(i64::MAX),
+                    i64::try_from(successor_revision.get()).unwrap_or(i64::MAX),
+                    text(request.rerouted_at)
+                ],
+            )
+            .map_err(backend)?;
+        if run_changed != 1 {
+            return Err(conflict(
+                "materialization reroute",
+                "the Committee revision moved during reroute",
+            ));
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_materialization_reroute_by_intent(
+            request.project_id,
+            &request.request_intent_hash,
+        )?
+        .ok_or_else(|| {
+            conflict(
+                "materialization reroute",
+                "the committed lineage could not be read back",
+            )
+        })
     }
 
     /// Atomically archive one exact consultation predecessor and install its

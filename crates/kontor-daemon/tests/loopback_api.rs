@@ -44,24 +44,29 @@ use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, 
 use kontor_accounts::UsageReading;
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
-use kontor_core::consultation::{ConsultationFamily, ConsultationRunId};
+use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
-    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode,
-    SeatBindingId, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp,
-    TopologyNodeId,
+    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, ProviderUsageObservationId,
+    QuickSessionId, RoleCode, RoleSlotId, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId,
+    TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
 };
+use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
-    CapacityRepository, CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject,
-    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow,
-    NewTeamRun, NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
-    SourceDisposition, SpecRepository, StoredConsultationProfileRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository,
-    WorkflowRepository,
+    CapacityRepository, CommandRepository, ConnectorSpecSelector,
+    NewConsultationMaterializationReroute, NewLocalCommand, NewMiniProject, NewObservation,
+    NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent,
+    NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
+    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, SourceDisposition,
+    SpecRepository, StoredConsultationProfileRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository, WorkflowRepository,
 };
-use kontor_core::spec::{CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderRef};
+use kontor_core::spec::{
+    CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
+    ProviderRef,
+};
 use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
     TerminalOutcome,
@@ -24635,11 +24640,11 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         "expected_revision": epic_read.json()["revision"],
         "initial_recovery_profiles": [
             {"role_slot_id": "reviewer-a", "ordered_routes": [
-                {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh"},
-                {"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "xhigh"}
+                {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "max"}
             ]},
             {"role_slot_id": "reviewer-b", "ordered_routes": [
-                {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "max"}
+                {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh"},
+                {"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "xhigh"}
             ]},
             {"role_slot_id": "judge", "ordered_routes": [
                 {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "high"},
@@ -24688,6 +24693,497 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         "admission must fail before creating a native-less Committee run"
     );
 
+    let reviewer_a = RoleSlotId::parse("reviewer-a").expect("a role slot");
+    world.fake.refusing_launch_of(&reviewer_a);
+    let first_invoke = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-recovery-admin")
+    .send(world)
+    .await;
+    assert_eq!(first_invoke.status, 503, "{}", first_invoke.body);
+    let stuck = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run_by_key(
+                ProjectId::parse(project).expect("the project"),
+                &IdempotencyKey::parse("committee-initial-recovery-admin").expect("the invoke key"),
+            )
+            .expect("the materializing run reads")
+            .expect("the run was frozen before launch")
+    });
+    assert_eq!(stuck.state, ConsultationRunState::Materializing);
+    let stuck_id = match stuck.id {
+        ConsultationRunId::Committee(id) => id,
+        _ => unreachable!(),
+    };
+    let stuck_read = Call::get(format!("/v1/projects/{project}/committee-runs/{stuck_id}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let stuck_json = stuck_read.json();
+    let stuck_seat = stuck_json["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("reviewer-a");
+    assert!(stuck_seat.get("observed_binding").is_none());
+
+    let reroute_body = serde_json::json!({
+        "expected_revision": stuck.revision,
+        "expected_occupancy_generation": 1,
+        "expected_model_route": stuck_seat["model_route"],
+        "reason": "permission_mode_unsupported",
+        "recovery_profile": [{
+            "provider": "claude-work", "model": "claude-opus-5", "effort": "xhigh"
+        }]
+    });
+    let reroute_intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "reroute_unmaterialized_consultation_seat",
+        "project": project,
+        "committee_run": stuck_id.to_string(),
+        "seat_binding_id": stuck_seat["seat_binding_id"],
+        "expected_revision": stuck.revision.get(),
+        "expected_occupancy_generation": 1,
+        "expected_model_route": reroute_body["expected_model_route"],
+        "reason": "permission_mode_unsupported",
+        "recovery_profile": reroute_body["recovery_profile"],
+    }))
+    .expect("the public reroute intent canonicalizes");
+    let operator_reroute = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-native-less-operator")
+    .send(world)
+    .await;
+    assert_eq!(operator_reroute.status, 403, "{}", operator_reroute.body);
+
+    let mut same_family = reroute_body.clone();
+    same_family["recovery_profile"] = serde_json::json!([{
+        "provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "xhigh"
+    }]);
+    let diversity_refused = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &same_family,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-diversity")
+    .send(world)
+    .await;
+    assert_eq!(diversity_refused.status, 409, "{}", diversity_refused.body);
+
+    let available = Call::post(
+        format!("/v1/projects/{project}/provider-quota-states:record"),
+        &serde_json::json!({
+            "account_profile_id": accounts["claude-work"], "provider": "claude-work",
+            "state": "available", "expected_revision": 1
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-claude-work-reset")
+    .send(world)
+    .await;
+    assert_eq!(available.status, 200, "{}", available.body);
+    let stale_operator = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-stale-operator")
+    .send(world)
+    .await;
+    assert_eq!(stale_operator.status, 409, "{}", stale_operator.body);
+    assert_eq!(stale_operator.code(), "placement_blocked");
+
+    let provider_reported_at = at("2020-01-01T00:00:00Z");
+    let provider_report_evidence = ContentHash::of(b"stale provider report");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id: ProjectId::parse(project).expect("the project"),
+                    account_profile_id: AccountProfileId::parse(&accounts["claude-work"])
+                        .expect("the Claude account"),
+                    provider: "claude-work".to_owned(),
+                    evidence_hash: provider_report_evidence.clone(),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    observed_at: provider_reported_at,
+                },
+                quota_state: Some(NewProviderQuotaState {
+                    project_id: ProjectId::parse(project).expect("the project"),
+                    account_profile_id: AccountProfileId::parse(&accounts["claude-work"])
+                        .expect("the Claude account"),
+                    provider: "claude-work".to_owned(),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    credit: None,
+                    evidence_hash: provider_report_evidence,
+                    source: ProviderQuotaSource::ProviderReport,
+                    observed_at: provider_reported_at,
+                    expected_revision: AggregateRevision::parse(2).expect("revision two"),
+                    updated_at: provider_reported_at,
+                }),
+                idempotency_key: None,
+                intent_hash: None,
+            })
+            .expect("stale exact provider usage observation records")
+    });
+    let stale_provider_report = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-stale-provider-report")
+    .send(world)
+    .await;
+    assert_eq!(
+        stale_provider_report.status, 409,
+        "{}",
+        stale_provider_report.body
+    );
+    assert_eq!(stale_provider_report.code(), "placement_blocked");
+
+    let mismatched_projection_at = kontor_api::now();
+    let mismatched_projection_evidence = ContentHash::of(b"new projection without heartbeat");
+    let projection_windows = vec![QuotaWindow {
+        kind: QuotaWindowKind::Weekly,
+        resets_at: at("2026-09-01T00:00:00Z"),
+        used_percent: 1,
+    }];
+    world.daemon.state().with_store(|store| {
+        store
+            .set_provider_quota_state(&NewProviderQuotaState {
+                project_id: ProjectId::parse(project).expect("the project"),
+                account_profile_id: AccountProfileId::parse(&accounts["claude-work"])
+                    .expect("the Claude account"),
+                provider: "claude-work".to_owned(),
+                state: ProviderQuotaKind::Available,
+                resets_at: None,
+                windows: projection_windows.clone(),
+                credit: None,
+                evidence_hash: mismatched_projection_evidence.clone(),
+                source: ProviderQuotaSource::ProviderReport,
+                observed_at: mismatched_projection_at,
+                expected_revision: AggregateRevision::parse(3).expect("revision three"),
+                updated_at: mismatched_projection_at,
+            })
+            .expect("a newer unmatched projection records")
+    });
+    let projection_mismatch = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-projection-mismatch")
+    .send(world)
+    .await;
+    assert_eq!(
+        projection_mismatch.status, 409,
+        "{}",
+        projection_mismatch.body
+    );
+    assert_eq!(projection_mismatch.code(), "placement_blocked");
+
+    let empty_window_observation_at = kontor_api::now();
+    let empty_window_observation = world.daemon.state().with_store(|store| {
+        store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id: ProjectId::parse(project).expect("the project"),
+                    account_profile_id: AccountProfileId::parse(&accounts["claude-work"])
+                        .expect("the Claude account"),
+                    provider: "claude-work".to_owned(),
+                    evidence_hash: mismatched_projection_evidence.clone(),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    observed_at: empty_window_observation_at,
+                },
+                quota_state: None,
+                idempotency_key: None,
+                intent_hash: None,
+            })
+            .expect("a matching freshness heartbeat records")
+    });
+    let direct_store_result = world.daemon.state().with_store(|store| {
+        let predecessor = store
+            .get_consultation_seat_by_binding(
+                ProjectId::parse(project).expect("the project"),
+                SeatBindingId::parse(stuck_seat["seat_binding_id"].as_str().expect("binding"))
+                    .expect("the SeatBinding"),
+            )
+            .expect("the seat reads")
+            .expect("the seat remains");
+        store.reroute_unmaterialized_consultation_seat(&NewConsultationMaterializationReroute {
+            project_id: ProjectId::parse(project).expect("the project"),
+            predecessor,
+            expected_revision: stuck.revision,
+            successor_model_rung: ModelRung {
+                provider: ProviderRef("claude-work".to_owned()),
+                model: ModelRef("claude-opus-5".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            },
+            reason: "permission_mode_unsupported".to_owned(),
+            recovery_profile: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "ordered_routes": [{
+                    "provider": "claude-work",
+                    "model": "claude-opus-5",
+                    "effort": "xhigh"
+                }]
+            }))
+            .expect("the recovery profile canonicalizes"),
+            request_intent_hash: ContentHash::of(b"direct-window-mismatch"),
+            idempotency_key: IdempotencyKey::parse("direct-window-mismatch")
+                .expect("the direct key"),
+            headroom_observation: empty_window_observation.clone(),
+            headroom_fresh_after: at("2026-08-27T00:00:00Z"),
+            rerouted_at: kontor_api::now(),
+        })
+    });
+    assert!(matches!(
+        direct_store_result,
+        Err(kontor_core::repository::RepositoryError::Conflict {
+            subject: "materialization reroute headroom",
+            ..
+        })
+    ));
+    let window_mismatch = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-window-mismatch")
+    .send(world)
+    .await;
+    assert_eq!(window_mismatch.status, 409, "{}", window_mismatch.body);
+    assert_eq!(window_mismatch.code(), "placement_blocked");
+    let mismatched_key =
+        IdempotencyKey::parse("committee-native-less-window-mismatch").expect("the refusal key");
+    let seat_binding_id =
+        SeatBindingId::parse(stuck_seat["seat_binding_id"].as_str().expect("binding"))
+            .expect("the SeatBinding");
+    let direct_mismatch_intent = ContentHash::of(b"direct-window-mismatch");
+    let (unchanged_run, unchanged_seat, absent_receipt, absent_lineage, absent_public_lineage) =
+        world.daemon.state().with_store(|store| {
+            (
+                store
+                    .get_consultation_run(ProjectId::parse(project).expect("the project"), stuck.id)
+                    .expect("the Committee reads")
+                    .expect("the Committee remains"),
+                store
+                    .get_consultation_seat_by_binding(
+                        ProjectId::parse(project).expect("the project"),
+                        seat_binding_id,
+                    )
+                    .expect("the seat reads")
+                    .expect("the seat remains"),
+                store
+                    .get_receipt_by_key(&mismatched_key)
+                    .expect("receipt absence reads"),
+                store
+                    .get_consultation_materialization_reroute_by_intent(
+                        ProjectId::parse(project).expect("the project"),
+                        &direct_mismatch_intent,
+                    )
+                    .expect("lineage absence reads"),
+                store
+                    .get_consultation_materialization_reroute_by_intent(
+                        ProjectId::parse(project).expect("the project"),
+                        reroute_intent.hash(),
+                    )
+                    .expect("public lineage absence reads"),
+            )
+        });
+    assert_eq!(unchanged_run.revision, stuck.revision);
+    assert_eq!(unchanged_seat.occupancy_generation, 1);
+    assert!(unchanged_seat.native_identity.is_none());
+    assert!(absent_receipt.is_none());
+    assert!(absent_lineage.is_none());
+    assert!(absent_public_lineage.is_none());
+
+    let matching_observation_at = kontor_api::now();
+    let matching_observation = world.daemon.state().with_store(|store| {
+        store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id: ProjectId::parse(project).expect("the project"),
+                    account_profile_id: AccountProfileId::parse(&accounts["claude-work"])
+                        .expect("the Claude account"),
+                    provider: "claude-work".to_owned(),
+                    evidence_hash: mismatched_projection_evidence,
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: projection_windows,
+                    observed_at: matching_observation_at,
+                },
+                quota_state: None,
+                idempotency_key: None,
+                intent_hash: None,
+            })
+            .expect("an exact matching freshness heartbeat records")
+    });
+    // Model the crash boundary after the immutable lineage and generation swap
+    // committed but before the command receipt was recorded. The public replay
+    // must project that transaction, write exactly the missing receipt, and
+    // never perform a second generation swap.
+    let reroute_key =
+        IdempotencyKey::parse("committee-native-less-reroute").expect("the reroute key");
+    let crash_boundary_lineage = world.daemon.state().with_store(|store| {
+        store
+            .reroute_unmaterialized_consultation_seat(&NewConsultationMaterializationReroute {
+                project_id: ProjectId::parse(project).expect("the project"),
+                predecessor: unchanged_seat,
+                expected_revision: stuck.revision,
+                successor_model_rung: ModelRung {
+                    provider: ProviderRef("claude-work".to_owned()),
+                    model: ModelRef("claude-opus-5".to_owned()),
+                    effort: Some(EffortLevel::Xhigh),
+                },
+                reason: "permission_mode_unsupported".to_owned(),
+                recovery_profile: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "ordered_routes": reroute_body["recovery_profile"],
+                }))
+                .expect("the recovery profile canonicalizes"),
+                request_intent_hash: reroute_intent.hash().clone(),
+                idempotency_key: reroute_key.clone(),
+                headroom_observation: matching_observation.clone(),
+                headroom_fresh_after: at("2026-08-27T00:00:00Z"),
+                rerouted_at: kontor_api::now(),
+            })
+            .expect("the lineage commits before its receipt")
+    });
+    let (post_lineage_run, post_lineage_seat, missing_receipt) =
+        world.daemon.state().with_store(|store| {
+            (
+                store
+                    .get_consultation_run(ProjectId::parse(project).expect("the project"), stuck.id)
+                    .expect("the Committee reads")
+                    .expect("the Committee remains"),
+                store
+                    .get_consultation_seat_by_binding(
+                        ProjectId::parse(project).expect("the project"),
+                        seat_binding_id,
+                    )
+                    .expect("the seat reads")
+                    .expect("the seat remains"),
+                store
+                    .get_receipt_by_key(&reroute_key)
+                    .expect("receipt absence reads"),
+            )
+        });
+    assert_eq!(
+        post_lineage_run.revision,
+        crash_boundary_lineage.successor_run_revision
+    );
+    assert_eq!(post_lineage_seat.occupancy_generation, 2);
+    assert_eq!(
+        post_lineage_seat.model_rung,
+        crash_boundary_lineage.successor_model_rung
+    );
+    assert!(post_lineage_seat.native_identity.is_none());
+    assert!(missing_receipt.is_none());
+
+    let rerouted = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-reroute")
+    .send(world)
+    .await;
+    assert_eq!(rerouted.status, 200, "{}", rerouted.body);
+    assert_eq!(rerouted.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(rerouted.json()["predecessor_occupancy_generation"], 1);
+    assert_eq!(rerouted.json()["active_occupancy_generation"], 2);
+    assert_eq!(
+        rerouted.json()["predecessor_model_route"]["provider"],
+        stuck_seat["model_route"]["provider"]
+    );
+    assert_eq!(
+        rerouted.json()["active_model_route"]["provider"],
+        "claude-work"
+    );
+    assert_eq!(
+        rerouted.json()["headroom_account_profile_id"],
+        accounts["claude-work"]
+    );
+    assert_eq!(
+        rerouted.json()["headroom_observation_id"],
+        matching_observation.id.to_string()
+    );
+    assert_eq!(
+        rerouted.json()["headroom_evidence_hash"],
+        matching_observation.evidence_hash.as_str()
+    );
+    let reroute_replay = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-reroute")
+    .send(world)
+    .await;
+    assert_eq!(reroute_replay.status, 200, "{}", reroute_replay.body);
+    assert_eq!(reroute_replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(reroute_replay.json()["active_occupancy_generation"], 2);
+
+    let foreign_key_replay = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &reroute_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-native-less-reroute-other-key")
+    .send(world)
+    .await;
+    assert_eq!(
+        foreign_key_replay.status, 409,
+        "{}",
+        foreign_key_replay.body
+    );
+    assert_eq!(foreign_key_replay.code(), "idempotency_conflict");
+
+    world.fake.allowing_launch_of(&reviewer_a);
+    let launches_before_materialization = world.fake.calls().len();
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke_body,
@@ -24697,6 +25193,36 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     .send(world)
     .await;
     assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let new_launches: Vec<_> = world.fake.calls()[launches_before_materialization..]
+        .iter()
+        .filter_map(|call| match call {
+            AdapterCall::LaunchConsultation(binding) => Some(*binding),
+            _ => None,
+        })
+        .collect();
+    let reviewer_bindings: BTreeSet<_> = invoked.json()["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .filter(|seat| {
+            seat["role_slot_id"]
+                .as_str()
+                .is_some_and(|slot| slot.starts_with("reviewer-"))
+        })
+        .map(|seat| {
+            SeatBindingId::parse(
+                seat["seat_binding_id"]
+                    .as_str()
+                    .expect("a reviewer binding"),
+            )
+            .expect("a SeatBinding")
+        })
+        .collect();
+    assert_eq!(new_launches.len(), reviewer_bindings.len());
+    assert_eq!(
+        new_launches.iter().copied().collect::<BTreeSet<_>>(),
+        reviewer_bindings
+    );
     let routes: std::collections::BTreeMap<_, _> = invoked.json()["seats"]
         .as_array()
         .expect("Committee seats")
@@ -24711,10 +25237,11 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
             )
         })
         .collect();
-    assert!(routes["reviewer-a"].starts_with("codex"));
-    assert_eq!(routes["reviewer-b"], "opencode");
+    assert_eq!(routes["reviewer-a"], "claude-work");
+    assert!(routes["reviewer-b"].starts_with("codex"));
     assert!(routes["judge"].starts_with("codex"));
 
+    let launches_after_materialization = world.fake.calls().len();
     let replayed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke_body,
@@ -24726,6 +25253,11 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     assert_eq!(replayed.status, 200, "{}", replayed.body);
     assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
     assert_eq!(replayed.json()["seats"], invoked.json()["seats"]);
+    assert_eq!(
+        world.fake.calls().len(),
+        launches_after_materialization,
+        "the original invoke replay must not launch any seat twice"
+    );
 
     let run = ConsultationRunId::Committee(
         kontor_core::id::CommitteeRunId::parse(

@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 129 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 129 is forever — it is what makes a later change to the daemon's
+//! 148 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 148 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "131 forever": this is what makes a later contract change fail here, so a
+    // Not "148 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        147,
+        148,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        146,
+        147,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -560,7 +560,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        148,
+        149,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -763,6 +763,13 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_committee_template_apply", CallerTier::Admin),
         ("kontor_committee_run_invoke", CallerTier::Operator),
         ("kontor_consultation_seat_recover", CallerTier::Admin),
+        // Rerouting a native-less seat replaces the active generation and
+        // provider route under immutable lineage. That authority-changing
+        // compare-and-swap is Admin-only on both the daemon and MCP surfaces.
+        (
+            "kontor_committee_seat_reroute_unmaterialized",
+            CallerTier::Admin,
+        ),
         ("kontor_committee_findings_record", CallerTier::Operator),
         ("kontor_committee_run_get", CallerTier::Observer),
         ("kontor_committee_run_settle", CallerTier::Operator),

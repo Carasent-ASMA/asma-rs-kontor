@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 67;
+pub const SCHEMA_VERSION: i64 = 68;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -267,6 +267,9 @@ const MIGRATIONS: &[&str] = &[
     // when a five-minute poll returns the same digest and leaves the mutable
     // quota projection unchanged.
     include_str!("../migrations/0067_provider_usage_observations.sql"),
+    // Schema v68. A failed pre-native Committee launch may be rerouted under
+    // immutable Admin-authorized lineage without changing logical identity.
+    include_str!("../migrations/0068_unmaterialized_consultation_seat_reroutes.sql"),
 ];
 
 const _: () = assert!(

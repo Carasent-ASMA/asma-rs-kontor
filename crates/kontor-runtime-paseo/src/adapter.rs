@@ -4025,6 +4025,10 @@ impl PaseoAdapter {
 
 #[async_trait]
 impl RuntimeAdapter for PaseoAdapter {
+    fn validate_consultation_model_rung(&self, rung: &ModelRung) -> RuntimeResult<()> {
+        super::client::consultation_permission_mode(&rung.provider.0).map(|_| ())
+    }
+
     fn provider_available(&self, provider: &str) -> bool {
         !self.config.unavailable_providers.contains(provider)
     }
