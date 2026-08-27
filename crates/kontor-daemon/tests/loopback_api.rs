@@ -24719,10 +24719,44 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "Use the bounded control-plane path and preserve identities."
     );
     assert_eq!(advisor_read.json()["result"]["disposition"], "accepted");
+    // The live pre-provenance run used a later immutable revision of the same
+    // published Committee identity even though Completion still named
+    // `independent_review@1`. Preserve that exact compatibility shape here;
+    // ordinary current-round and clean re-review selection remains revision
+    // strict.
+    let seeded_committee = Call::get(format!("/v1/projects/{project}/committee-templates"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(seeded_committee.status, 200, "{}", seeded_committee.body);
+    let mut legacy_template = kontor_profiles::seeds::bundled_consultation_presets()
+        .expect("the bundled presets load")
+        .committee_templates
+        .remove(0);
+    for version in 2..=4 {
+        legacy_template.version = SpecVersion::parse(version).expect("a legacy template version");
+        let legacy_template_document = legacy_template
+            .canonicalize()
+            .expect("the legacy template canonicalizes");
+        world.daemon.state().with_store(|store| {
+            store
+                .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                    project_id: ProjectId::parse(project).expect("the project id"),
+                    family: ConsultationFamily::Committee,
+                    profile_id: legacy_template.template_id.to_string(),
+                    version: legacy_template.version,
+                    name: legacy_template.name.clone(),
+                    definition: legacy_template_document.json().to_owned(),
+                    definition_hash: legacy_template_document.hash().clone(),
+                    published_at: kontor_api::now(),
+                })
+                .expect("the legacy Committee revision publishes");
+        });
+    }
     let invoke_body = serde_json::json!({
         "profile": {
             "id": "01991c00-0000-7000-8000-000000000001",
-            "version": 1
+            "version": 4
         },
         "question": "Does this evidence satisfy the operational gate?",
         "caller_seat_binding_id": caller,
@@ -25003,7 +25037,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             &serde_json::json!({
                 "round": 1,
                 "verdict": if index == 0 { "compliant" } else { "non_compliant" },
-                "evidence_complete": true,
+                "evidence_complete": index == 0,
                 "rationale": format!("reviewer {} found the evidence complete", index + 1),
                 "evidence_refs": [format!("evidence:reviewer-{}", index + 1)],
                 "expected_revision": revision,
@@ -25122,7 +25156,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         &serde_json::json!({
             "round": 1,
             "verdict": "non_compliant",
-            "evidence_complete": true,
+            "evidence_complete": false,
             "rationale": "The conjunctive rule fails on one independent finding.",
             "evidence_refs": ["evidence:reviewer-1", "evidence:reviewer-2"],
             "expected_revision": revision,
@@ -25155,10 +25189,10 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         Some(3)
     );
 
-    // Recreate the exact durable shape written by the pre-v62 daemon: the
+    // Recreate the exact live durable shape written by the pre-v62 daemon: the
     // immutable remediation exists, but the source run was advanced in place to
-    // round two and later settled with a different round-two result. Its
-    // round-one result was not retained.
+    // a still-running round two with one incomplete finding. Its round-one
+    // result was not retained.
     // This direct SQL is test-only historical fixture construction, like the
     // other legacy-shape regressions in this suite; the product path never
     // performs it. The canonical documents reproduce the old settlement bytes
@@ -25200,19 +25234,18 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .expect("the historical remediation canonicalizes");
     let failed_result_hash = result_document.hash().as_str().to_owned();
     let remediation_hash = remediation_document.hash().as_str().to_owned();
-    let round_two_result = CanonicalDocument::from_value(&serde_json::json!({
+    let round_two_finding = CanonicalDocument::from_value(&serde_json::json!({
         "schema_version": 1,
-        "verdict": "compliant",
-        "evidence_hash": ContentHash::of(b"distinct legacy round-two evidence").as_str(),
+        "committee_run_id": run,
         "round": 2,
-        "finding_hashes": [],
+        "role_slot_id": "reviewer-b",
+        "role": "reviewer",
+        "verdict": "non_compliant",
+        "evidence_complete": false,
+        "rationale": "The legacy re-review began before provenance fencing existed.",
+        "evidence_refs": ["evidence:legacy-round-two"],
     }))
-    .expect("the distinct round-two result canonicalizes");
-    assert_ne!(
-        round_two_result.hash(),
-        result_document.hash(),
-        "the regression requires different current and consumed-round results"
-    );
+    .expect("the legacy round-two finding canonicalizes");
     let legacy_revision = revision + 1;
     let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
     let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
@@ -25236,25 +25269,39 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     let advanced_in_place = connection
         .execute(
             "UPDATE consultation_runs
-             SET state = 'settled', round = 2, result = ?4, result_hash = ?5,
-                 revision = revision + 1, updated_at = ?6, settled_at = ?6
+             SET state = 'running', round = 2,
+                 revision = revision + 1, updated_at = ?4
              WHERE project_id = ?1 AND run_id = ?2 AND family = 'committee'
                AND revision = ?3 AND result IS NULL",
             rusqlite::params![
                 project,
                 run,
                 i64::try_from(revision).expect("the test revision fits SQLite"),
-                round_two_result.json(),
-                round_two_result.hash().as_str(),
                 "2026-08-25T20:24:23Z"
             ],
         )
         .expect("the legacy in-place round advance is reproduced");
     assert_eq!(advanced_in_place, 1);
+    connection
+        .execute(
+            "INSERT INTO committee_findings
+                 (committee_run_id, project_id, round, role_slot_id, role,
+                  verdict, evidence_complete, document, document_hash, recorded_at)
+             VALUES (?1, ?2, 2, 'reviewer-b', 'reviewer', 'non_compliant',
+                     0, ?3, ?4, ?5)",
+            rusqlite::params![
+                run,
+                project,
+                round_two_finding.json(),
+                round_two_finding.hash().as_str(),
+                "2026-08-25T20:25:00Z",
+            ],
+        )
+        .expect("the in-progress legacy round-two finding is reproduced");
     drop(connection);
 
     // The failed run is now historical evidence. Its seats cannot append to
-    // the already-settled second round, even with their still-valid
+    // the poisoned second round, even with their still-valid
     // generation-scoped credential.
     let poisoned_old_run = Call::post(
         format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
@@ -25346,11 +25393,17 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         legacy_after_ingest.body
     );
     assert_eq!(legacy_after_ingest.json()["round"], 2);
-    assert_eq!(legacy_after_ingest.json()["state"], "settled");
+    assert_eq!(legacy_after_ingest.json()["state"], "running");
+    assert!(legacy_after_ingest.json()["result_hash"].is_null());
     assert_eq!(
-        legacy_after_ingest.json()["result_hash"],
-        round_two_result.hash().as_str(),
-        "consuming historical round one must not compare with or rewrite the distinct round-two result"
+        legacy_after_ingest.json()["findings"]
+            .as_array()
+            .map(|findings| findings
+                .iter()
+                .filter(|finding| finding["round"] == 2)
+                .count()),
+        Some(1),
+        "consuming historical round one rewrote the poisoned round-two evidence"
     );
     let failed_evidence = advanced.json()["state"]["rounds"][0]["evidence"]
         .as_str()

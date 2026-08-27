@@ -10435,6 +10435,18 @@ impl Services {
                 let compiled = self.pinned_completion(stored)?;
                 let expected_template =
                     normalize_committee_reference(compiled.profile.verdict_committee.as_str());
+                let expected_template_ids = self
+                    .stored_consultation_profiles(stored.project_id, ConsultationFamily::Committee)?
+                    .into_iter()
+                    .filter(|revision| {
+                        normalize_committee_reference(&format!(
+                            "{}@{}",
+                            revision.name.as_str(),
+                            revision.version.get()
+                        )) == expected_template
+                    })
+                    .map(|revision| revision.profile_id)
+                    .collect::<BTreeSet<_>>();
                 let expected_re_review = if round > 1 {
                     let failed_round = state
                         .rounds
@@ -10489,15 +10501,9 @@ impl Services {
 
                 let mut candidates = Vec::new();
                 for run in runs {
-                    if !self.committee_template(&run).is_ok_and(|(revision, _)| {
-                        normalize_committee_reference(&format!(
-                            "{}@{}",
-                            revision.name.as_str(),
-                            revision.version.get()
-                        )) == expected_template
-                    }) {
+                    let Ok((template_revision, _)) = self.committee_template(&run) else {
                         continue;
-                    }
+                    };
                     let committee_run_id = match run.id {
                         ConsultationRunId::Committee(id) => id,
                         ConsultationRunId::Advisor(_) => continue,
@@ -10508,6 +10514,24 @@ impl Services {
                             .context
                             .get("re_review")
                             .is_none_or(serde_json::Value::is_null);
+                    let exact_template_revision = normalize_committee_reference(&format!(
+                        "{}@{}",
+                        template_revision.name.as_str(),
+                        template_revision.version.get()
+                    )) == expected_template;
+                    // The pre-provenance writer let a completion Committee use
+                    // a later published revision and then advanced that run in
+                    // place. Its remediation is the immutable link to round
+                    // one, so historical intake may follow that later revision
+                    // only when it retains the completion template's exact
+                    // published identity. Current rounds and clean re-reviews
+                    // remain pinned to the completion's exact revision.
+                    let legacy_template_revision = historical
+                        && expected_template_ids.len() == 1
+                        && expected_template_ids.contains(&template_revision.profile_id);
+                    if !exact_template_revision && !legacy_template_revision {
+                        continue;
+                    }
                     let clean_re_review = round > 1
                         && run.state == ConsultationRunState::Settled
                         && run.round == u32::from(round)
