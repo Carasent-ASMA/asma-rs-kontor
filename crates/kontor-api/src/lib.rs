@@ -629,6 +629,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::recover_consultation_seat),
             )
             .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/reroute-unmaterialized",
+                post(applications::reroute_unmaterialized_consultation_seat),
+            )
+            .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
                 post(applications::record_committee_findings),
             )

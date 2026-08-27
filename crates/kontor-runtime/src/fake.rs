@@ -1524,6 +1524,10 @@ fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<Sessio
 
 #[async_trait]
 impl RuntimeAdapter for ScriptedFakeRuntime {
+    fn validate_consultation_model_rung(&self, _rung: &ModelRung) -> RuntimeResult<()> {
+        Ok(())
+    }
+
     fn provider_available(&self, provider: &str) -> bool {
         !self.lock().unavailable_providers.contains(provider)
     }
@@ -1944,6 +1948,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        if state.unlaunchable.contains(request.role_slot_id.as_str()) {
+            return Err(RuntimeError::Transport {
+                rule: "this runtime will not launch that consultation role slot",
+            });
+        }
         request
             .container
             .ensure_node(request.container.binding.topology_node_id)?;

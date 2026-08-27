@@ -722,6 +722,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/reroute-unmaterialized": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reroute one native-less materializing Committee seat. */
+        post: operations["reroute_unmaterialized_consultation_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle": {
         parameters: {
             query?: never;
@@ -6353,6 +6370,28 @@ export interface components {
             /** @description The root-pointer revision, for a module that has one. */
             root_pointer_revision?: string | null;
         };
+        /** @description Exact Admin compare-and-swap for one native-less Committee seat. */
+        RerouteUnmaterializedConsultationSeatRequest: {
+            /** @description Exact active admitted route. */
+            expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * Format: int64
+             * @description Exact active credential generation.
+             */
+            expected_occupancy_generation: number;
+            /**
+             * Format: int64
+             * @description Committee revision read by the Admin.
+             */
+            expected_revision: number;
+            /** @description Typed native-less launch refusal. */
+            reason: components["schemas"]["UnmaterializedConsultationSeatRerouteReasonDto"];
+            /**
+             * @description Exact ordered governed alternatives. The first admissible route that
+             *     preserves the pinned Committee diversity policy is frozen.
+             */
+            recovery_profile: components["schemas"]["RuntimeModelRouteRequest"][];
+        };
         /** @description What `ticket:resolve-conflict` is asked for. */
         ResolveConflictRequest: {
             /** @description The conflict to close. */
@@ -7790,6 +7829,42 @@ export interface components {
             /** @description Kontor's immutable runtime binding id. */
             runtime_binding_id: string;
         };
+        /** @description Auditable native-less reroute outcome. */
+        UnmaterializedConsultationSeatRerouteDto: {
+            /** @description Exact active route. */
+            active_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * Format: int64
+             * @description Active replacement credential generation.
+             */
+            active_occupancy_generation: number;
+            /** @description Committee projection after the reroute. */
+            committee: components["schemas"]["CommitteeRunDto"];
+            /** @description Exact account profile whose current provider report admitted the route. */
+            headroom_account_profile_id: string;
+            /** @description Evidence digest shared by that observation and the current projection. */
+            headroom_evidence_hash: string;
+            /** @description Immutable provider-usage observation checked inside the swap transaction. */
+            headroom_observation_id: string;
+            /** @description Route superseded by this lineage row. */
+            predecessor_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * Format: int64
+             * @description Credential generation that was fenced.
+             */
+            predecessor_occupancy_generation: number;
+            /** @description Typed recovery reason. */
+            reason: components["schemas"]["UnmaterializedConsultationSeatRerouteReasonDto"];
+            /** @description Durable command receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Preserved logical SeatBinding. */
+            seat_binding_id: string;
+        };
+        /**
+         * @description Why an admitted but still-native-less Committee seat may be rerouted.
+         * @enum {string}
+         */
+        UnmaterializedConsultationSeatRerouteReasonDto: "permission_mode_unsupported";
         /** @description What `topology-specs:validate` is asked for. */
         ValidateTopologySpecRequest: {
             /** @description One complete candidate document. */
@@ -9634,6 +9709,65 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reroute_unmaterialized_consultation_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                committee_run_id: string;
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RerouteUnmaterializedConsultationSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnmaterializedConsultationSeatRerouteDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             503: {
                 headers: {
                     [name: string]: unknown;

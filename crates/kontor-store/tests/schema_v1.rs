@@ -49,6 +49,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "consultation_seats",
     "consultation_seat_recoveries",
     "consultation_seat_recovery_attempts",
+    "consultation_seat_materialization_reroutes",
     "committee_findings",
     "committee_remediations",
     "committee_re_review_claims",
@@ -470,8 +471,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     );
     // Pinned deliberately: appending a migration must be a decision, not a
     // side effect. v67 adds immutable exact-account provider-report freshness
-    // evidence beside the mutable quota projection.
-    assert_eq!(SCHEMA_VERSION, 67);
+    // evidence beside the mutable quota projection; v68 adds immutable
+    // native-less materialization reroute lineage and receipt authority.
+    assert_eq!(SCHEMA_VERSION, 68);
 }
 
 #[test]
@@ -845,6 +847,74 @@ fn v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent() {
             .expect("the schema version reads"),
         67
     );
+}
+
+#[test]
+fn v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_authority() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("the isolated lineage fixture disables parent checks");
+    connection
+        .execute(
+            "INSERT INTO consultation_seat_materialization_reroutes
+         (project_id,run_id,role_slot_id,seat_binding_id,
+          predecessor_generation,successor_generation,
+          predecessor_model_rung,successor_model_rung,reason,
+          recovery_profile,recovery_profile_hash,request_intent_hash,
+          idempotency_key,headroom_account_profile_id,headroom_observation_id,
+          headroom_evidence_hash,predecessor_revision,successor_revision,rerouted_at)
+         VALUES (?1,?2,'reviewer-a',?3,1,2,?4,?5,
+                 'permission_mode_unsupported',?6,?7,?8,'reroute-v1',?9,?10,?11,1,2,?12)",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000001",
+                "0193f000-0000-7000-8000-000000000002",
+                "0193f000-0000-7000-8000-000000000003",
+                r#"{"provider":"opencode","model":"deepseek/deepseek-v4-flash","effort":"max"}"#,
+                r#"{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}"#,
+                r#"{"schema_version":1,"ordered_routes":[]}"#,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "0193f000-0000-7000-8000-000000000004",
+                "0193f000-0000-7000-8000-000000000005",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "2026-08-27T17:01:00Z",
+            ],
+        )
+        .expect("one exact lineage row records");
+    assert!(
+        connection
+            .execute(
+                "UPDATE consultation_seat_materialization_reroutes SET reason = reason",
+                [],
+            )
+            .is_err(),
+        "lineage refuses even a no-op UPDATE"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM consultation_seat_materialization_reroutes", [],)
+            .is_err(),
+        "lineage cannot be withdrawn"
+    );
+
+    connection
+        .execute(
+            "INSERT INTO command_receipts
+         (id,project_id,idempotency_key,kind,target,target_revision,intent,intent_hash,
+          state,attempts,created_at,updated_at,execution_mode)
+         VALUES (?1,?2,'reroute-v1','reroute_unmaterialized_consultation_seat',
+                 '{}',2,'{}',?3,'confirmed',0,?4,?4,'local')",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000006",
+                "0193f000-0000-7000-8000-000000000001",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "2026-08-27T17:01:01Z",
+            ],
+        )
+        .expect("the distinct reroute command kind is accepted");
 }
 
 #[test]

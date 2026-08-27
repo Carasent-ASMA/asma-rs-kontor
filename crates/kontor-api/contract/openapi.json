@@ -1956,6 +1956,86 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/reroute-unmaterialized": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Reroute one native-less materializing Committee seat.",
+        "operationId": "reroute_unmaterialized_consultation_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RerouteUnmaterializedConsultationSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmaterializedConsultationSeatRerouteDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle": {
       "post": {
         "tags": [
@@ -16297,6 +16377,47 @@
         },
         "additionalProperties": false
       },
+      "RerouteUnmaterializedConsultationSeatRequest": {
+        "type": "object",
+        "description": "Exact Admin compare-and-swap for one native-less Committee seat.",
+        "required": [
+          "expected_revision",
+          "expected_occupancy_generation",
+          "expected_model_route",
+          "reason",
+          "recovery_profile"
+        ],
+        "properties": {
+          "expected_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Exact active admitted route."
+          },
+          "expected_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact active credential generation.",
+            "minimum": 0
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Committee revision read by the Admin.",
+            "minimum": 0
+          },
+          "reason": {
+            "$ref": "#/components/schemas/UnmaterializedConsultationSeatRerouteReasonDto",
+            "description": "Typed native-less launch refusal."
+          },
+          "recovery_profile": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeModelRouteRequest"
+            },
+            "description": "Exact ordered governed alternatives. The first admissible route that\npreserves the pinned Committee diversity policy is frozen."
+          }
+        },
+        "additionalProperties": false
+      },
       "ResolveConflictRequest": {
         "type": "object",
         "description": "What `ticket:resolve-conflict` is asked for.",
@@ -19308,6 +19429,80 @@
           }
         },
         "additionalProperties": false
+      },
+      "UnmaterializedConsultationSeatRerouteDto": {
+        "type": "object",
+        "description": "Auditable native-less reroute outcome.",
+        "required": [
+          "committee",
+          "seat_binding_id",
+          "predecessor_occupancy_generation",
+          "active_occupancy_generation",
+          "predecessor_model_route",
+          "active_model_route",
+          "headroom_account_profile_id",
+          "headroom_observation_id",
+          "headroom_evidence_hash",
+          "reason",
+          "receipt"
+        ],
+        "properties": {
+          "active_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Exact active route."
+          },
+          "active_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active replacement credential generation.",
+            "minimum": 0
+          },
+          "committee": {
+            "$ref": "#/components/schemas/CommitteeRunDto",
+            "description": "Committee projection after the reroute."
+          },
+          "headroom_account_profile_id": {
+            "type": "string",
+            "description": "Exact account profile whose current provider report admitted the route."
+          },
+          "headroom_evidence_hash": {
+            "type": "string",
+            "description": "Evidence digest shared by that observation and the current projection."
+          },
+          "headroom_observation_id": {
+            "type": "string",
+            "description": "Immutable provider-usage observation checked inside the swap transaction."
+          },
+          "predecessor_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Immediate predecessor route superseded by this lineage row."
+          },
+          "predecessor_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Credential generation that was fenced.",
+            "minimum": 0
+          },
+          "reason": {
+            "$ref": "#/components/schemas/UnmaterializedConsultationSeatRerouteReasonDto",
+            "description": "Typed recovery reason."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Preserved logical SeatBinding."
+          }
+        }
+      },
+      "UnmaterializedConsultationSeatRerouteReasonDto": {
+        "type": "string",
+        "description": "Why an admitted but still-native-less Committee seat may be rerouted.",
+        "enum": [
+          "permission_mode_unsupported"
+        ]
       },
       "ValidateTopologySpecRequest": {
         "type": "object",

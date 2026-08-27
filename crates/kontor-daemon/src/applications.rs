@@ -73,8 +73,10 @@ use kontor_api::applications::{
     PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
     RecordFindingsRequest, RecoverConsultationSeatRequest, RemediateCompletionRequest,
     RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto, RosterUpgradePreviewDto,
+    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
+    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
     RosterUpgradePreviewRequest, SettleConsultationRequest,
+    UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
     AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedProjectTopologySelectionDto,
@@ -136,16 +138,17 @@ use kontor_core::repository::{
     CommandRepository, CredentialReference, CredentialReferenceKind, IntakeOutcome,
     IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAccountProfile,
     NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride, NewCapacityObservation,
-    NewCommandIntent, NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTeamRun, OpenQuestionRepository, ProjectRepository,
-    ProjectTopologyDefault, RealmRepository, RepositoryError, RunRepository, RuntimeBinding,
-    SeatLivenessObservation, SourceDisposition, SpecRepository, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow, TicketLink, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    NewCommandIntent, NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewGateEvaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamRun,
+    OpenQuestionRepository, ProjectRepository, ProjectTopologyDefault, ProviderUsageObservation,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    TaskTransitionRequest, TaskWorkflow, TicketLink, TicketRepository, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -9043,6 +9046,56 @@ fn resolve_recovery_placement(
     Ok(None)
 }
 
+/// Native-less reroute is recovery from a route that already failed before a
+/// session existed. Unlike ordinary scheduling, an elapsed operator reset is
+/// not positive evidence that another launch is safe: require a fresh provider
+/// report for the exact selectable alias and account.
+fn has_fresh_provider_reported_headroom(
+    rung: &ModelRung,
+    accounts: &[kontor_scheduler::headroom::EligibleAccount],
+    states: &[kontor_core::repository::ProviderQuotaState],
+    observations: &[ProviderUsageObservation],
+    now: Timestamp,
+    freshness_seconds: i64,
+) -> Option<ProviderUsageObservation> {
+    let mut selectable = accounts
+        .iter()
+        .filter(|account| account.selectable_providers.contains(&rung.provider.0));
+    let Some(account) = selectable.next() else {
+        return None;
+    };
+    if selectable.next().is_some() {
+        // The runtime launch request freezes a governed provider alias but not
+        // an account id. More than one profile able to select the same alias
+        // would make the provider-report basis ambiguous, so recovery refuses.
+        return None;
+    }
+    states.iter().find_map(|state| {
+        (state.account_profile_id == account.account_profile_id
+            && state.provider == rung.provider.0
+            && state.source == kontor_core::spec::ProviderQuotaSource::ProviderReport
+            && state.state == kontor_core::spec::ProviderQuotaKind::Available)
+            .then(|| {
+                observations.iter().find(|observation| {
+                    observation.project_id == state.project_id
+                        && observation.account_profile_id == state.account_profile_id
+                        && observation.provider == state.provider
+                        && observation.evidence_hash == state.evidence_hash
+                        && observation.state == state.state
+                        && observation.resets_at == state.resets_at
+                        && observation.windows == state.windows
+                        && kontor_core::state::Freshness::evaluate(
+                            Some(observation.observed_at),
+                            now,
+                            jiff::SignedDuration::from_secs(freshness_seconds),
+                        ) == kontor_core::state::Freshness::Fresh
+                })
+            })
+            .flatten()
+            .cloned()
+    })
+}
+
 fn freeze_seat_model_rung(
     adapter: &dyn RuntimeAdapter,
     snapshot: &TeamRunSnapshot,
@@ -16531,6 +16584,370 @@ impl ApplicationOperations for Services {
             },
         )
     }
+
+    async fn reroute_unmaterialized_consultation_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        request: &RerouteUnmaterializedConsultationSeatRequest,
+    ) -> Result<UnmaterializedConsultationSeatRerouteDto, ApiError> {
+        let target_run_id = ConsultationRunId::Committee(committee_run_id);
+        let mut run = self.consultation_run(project_id, target_run_id)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: run.mini_project_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "reroute_unmaterialized_consultation_seat",
+            "project": project_id.to_string(),
+            "committee_run": committee_run_id.to_string(),
+            "seat_binding_id": seat_binding_id.to_string(),
+            "expected_revision": request.expected_revision.get(),
+            "expected_occupancy_generation": request.expected_occupancy_generation,
+            "expected_model_route": request.expected_model_route,
+            "reason": request.reason.as_str(),
+            "recovery_profile": request.recovery_profile,
+        }))?;
+        let project_reroute =
+            |services: &Self,
+             run: &StoredConsultationRun,
+             lineage: &kontor_core::repository::StoredConsultationMaterializationReroute,
+             receipt_id,
+             applied|
+             -> Result<UnmaterializedConsultationSeatRerouteDto, ApiError> {
+                let committee = services.committee_run_dto(run, Some(receipt_id), applied)?;
+                let receipt = committee.receipt.clone().ok_or_else(|| {
+                    services.deny(
+                        ApiErrorCode::Unavailable,
+                        "the materialization reroute receipt could not be projected",
+                    )
+                })?;
+                Ok(UnmaterializedConsultationSeatRerouteDto {
+                    committee,
+                    seat_binding_id: lineage.seat_binding_id,
+                    predecessor_occupancy_generation: lineage.predecessor_occupancy_generation,
+                    active_occupancy_generation: lineage.successor_occupancy_generation,
+                    predecessor_model_route: runtime_model_route_dto(
+                        &lineage.predecessor_model_rung,
+                    ),
+                    active_model_route: runtime_model_route_dto(&lineage.successor_model_rung),
+                    headroom_account_profile_id: lineage.headroom_account_profile_id,
+                    headroom_observation_id: lineage.headroom_observation_id,
+                    headroom_evidence_hash: lineage.headroom_evidence_hash.clone(),
+                    reason: request.reason,
+                    receipt,
+                })
+            };
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            let lineage = self
+                .state()?
+                .with_store(|store| {
+                    store.get_consultation_materialization_reroute_by_intent(
+                        project_id,
+                        intent.hash(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the reroute receipt has no immutable lineage",
+                    )
+                })?;
+            run = self.consultation_run(project_id, target_run_id)?;
+            return project_reroute(self, &run, &lineage, receipt.id, AppliedDto::Unchanged);
+        }
+        if let Some(lineage) = self
+            .state()?
+            .with_store(|store| {
+                store.get_consultation_materialization_reroute_by_intent(project_id, intent.hash())
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            if lineage.idempotency_key != *key {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the committed reroute belongs to another idempotency key",
+                ));
+            }
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::RerouteUnmaterializedConsultationSeat,
+                target,
+                lineage.successor_run_revision,
+                &intent,
+            )?;
+            run = self.consultation_run(project_id, target_run_id)?;
+            return project_reroute(self, &run, &lineage, receipt_id, AppliedDto::Unchanged);
+        }
+        if run.state != ConsultationRunState::Materializing || run.result.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a result-less materializing Committee may be rerouted",
+            ));
+        }
+        if run.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Committee moved since the native-less seat was read",
+                )
+                .with_revision(Some(run.revision)));
+        }
+        let seat = self
+            .state()?
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.run_id == target_run_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee has no such logical consultation seat",
+                )
+            })?;
+        let expected_rung = parse_runtime_model_route(&request.expected_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if seat.occupancy_generation != request.expected_occupancy_generation
+            || seat.model_rung != expected_rung
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the active native-less route or occupancy generation moved",
+            ));
+        }
+        if seat.native_identity.is_some()
+            || seat.provider_session_id.is_some()
+            || seat.observed_at.is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "a materialized consultation seat must use native predecessor recovery",
+            ));
+        }
+        let admission_route = run
+            .context
+            .get("admission")
+            .and_then(|value| value.get("routes"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|routes| {
+                routes.iter().find(|route| {
+                    route
+                        .get("role_slot_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(seat.role_slot_id.as_str())
+                })
+            })
+            .and_then(|route| route.get("model_route"))
+            .cloned()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen Committee admission has no route for this seat",
+                )
+            })?;
+        let admission_rung: kontor_api::applications::RuntimeModelRouteRequest =
+            serde_json::from_value(admission_route).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen Committee admission route is unreadable",
+                )
+            })?;
+        if request.expected_occupancy_generation == 1
+            && admission_rung != request.expected_model_route
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the requested initial route differs from the frozen Committee admission",
+            ));
+        }
+        if request.recovery_profile.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a materialization recovery profile must declare at least one exact route",
+            ));
+        }
+        let (_, template) = self.committee_template(&run)?;
+        let state = self.state()?;
+        let adapter = state
+            .runtimes()
+            .get(&self.node_runtime_kind()?)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the consultation runtime is not configured",
+                )
+            })?;
+        let occupied_families: BTreeSet<String> = state
+            .with_store(|store| store.list_consultation_seats(project_id, target_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|candidate| {
+                candidate.role_slot_id != seat.role_slot_id
+                    && candidate.committee_role == Some(CommitteeRole::Reviewer)
+            })
+            .map(|candidate| provider_family(&candidate.model_rung.provider.0).to_owned())
+            .collect();
+        let mut candidates = Vec::new();
+        for route in &request.recovery_profile {
+            let rung =
+                parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?;
+            if provider_family(&rung.provider.0) == rung.provider.0.as_str()
+                || !model_route_is_catalogued(&rung)
+            {
+                return Err(self.deny(ApiErrorCode::InvalidRequest,
+                    "a materialization recovery profile must name exact catalogued governed aliases"));
+            }
+            adapter
+                .validate_consultation_model_rung(&rung)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let violates_diversity = template.diversity
+                == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
+                && seat.committee_role == Some(CommitteeRole::Reviewer)
+                && occupied_families.contains(provider_family(&rung.provider.0));
+            if !violates_diversity && !candidates.contains(&rung) {
+                candidates.push(rung);
+            }
+        }
+        if candidates.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no recovery route preserves the pinned provider-family diversity",
+            ));
+        }
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let accounts = self.eligible_accounts(project_id)?;
+        let usage_observations = state
+            .with_store(
+                |store| -> Result<Vec<ProviderUsageObservation>, RepositoryError> {
+                    let mut observations = Vec::new();
+                    for account in &accounts {
+                        for rung in &candidates {
+                            if !account.selectable_providers.contains(&rung.provider.0) {
+                                continue;
+                            }
+                            if let Some(observation) = store.latest_provider_usage_observation(
+                                project_id,
+                                account.account_profile_id,
+                                &rung.provider.0,
+                            )? {
+                                observations.push(observation);
+                            }
+                        }
+                    }
+                    Ok(observations)
+                },
+            )
+            .map_err(|error| self.refuse(&error))?;
+        let now = kontor_api::now();
+        let governed_candidates: Vec<(ModelRung, ProviderUsageObservation)> = candidates
+            .into_iter()
+            .filter_map(|rung| {
+                has_fresh_provider_reported_headroom(
+                    &rung,
+                    &accounts,
+                    &quota_states,
+                    &usage_observations,
+                    now,
+                    state.evidence_window_seconds(),
+                )
+                .map(|observation| (rung, observation))
+            })
+            .collect();
+        if governed_candidates.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no recovery route has fresh provider-reported admissibility for its exact governed account",
+            ));
+        }
+        let candidates: Vec<ModelRung> = governed_candidates
+            .iter()
+            .map(|(rung, _)| rung.clone())
+            .collect();
+        let selected = resolve_recovery_placement(
+            adapter.as_ref(),
+            &candidates,
+            &QuotaOutlook {
+                states: &quota_states,
+                account: None,
+                accounts: &accounts,
+                headroom: self.headroom_policy(),
+                now,
+            },
+        )
+        .map_err(|error| self.refuse_domain(&error))?
+        .ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no route in the materialization recovery profile is currently admissible",
+            )
+        })?;
+        let headroom_observation = governed_candidates
+            .into_iter()
+            .find_map(|(rung, observation)| (rung == selected).then_some(observation))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the selected recovery route lost its frozen headroom basis",
+                )
+            })?;
+        let headroom_fresh_after = now
+            .checked_sub(jiff::SignedDuration::from_secs(
+                state.evidence_window_seconds(),
+            ))
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the provider-report freshness boundary could not be represented",
+                )
+            })?;
+        let recovery_profile = self.intent(&serde_json::json!({
+            "schema_version": 1, "ordered_routes": request.recovery_profile,
+        }))?;
+        let lineage = state
+            .with_store(|store| {
+                store.reroute_unmaterialized_consultation_seat(
+                    &NewConsultationMaterializationReroute {
+                        project_id,
+                        predecessor: seat,
+                        expected_revision: request.expected_revision,
+                        successor_model_rung: selected,
+                        reason: request.reason.as_str().to_owned(),
+                        recovery_profile,
+                        request_intent_hash: intent.hash().clone(),
+                        idempotency_key: key.clone(),
+                        headroom_observation,
+                        headroom_fresh_after,
+                        rerouted_at: kontor_api::now(),
+                    },
+                )
+            })
+            .map_err(|error| match error {
+                RepositoryError::Conflict {
+                    subject: "materialization reroute headroom",
+                    ..
+                } => self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the fresh provider-report basis moved before the reroute committed",
+                ),
+                other => self.refuse(&other),
+            })?;
+        run = self.consultation_run(project_id, target_run_id)?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::RerouteUnmaterializedConsultationSeat,
+            target,
+            run.revision,
+            &intent,
+        )?;
+        project_reroute(self, &run, &lineage, receipt_id, AppliedDto::Created)
+    }
+
     async fn record_committee_findings(
         &self,
         key: &IdempotencyKey,

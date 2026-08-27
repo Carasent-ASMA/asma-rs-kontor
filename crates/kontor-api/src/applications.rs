@@ -46,8 +46,9 @@ use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
-    ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId,
-    SpecVersion, TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    ProjectId, ProviderUsageObservationId, QuickSessionId, RoleCatalogId, RoleCode, RoleSlotId,
+    RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamRunId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
 use kontor_core::spec::{
@@ -1452,6 +1453,73 @@ pub struct ConsultationSeatRecoveryDto {
     /// Route frozen onto the successor.
     pub active_model_route: RuntimeModelRouteRequest,
     /// Durable audited command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Why an admitted but still-native-less Committee seat may be rerouted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnmaterializedConsultationSeatRerouteReasonDto {
+    /// The runtime has no explicitly pinned read-only mode for the admitted provider.
+    PermissionModeUnsupported,
+}
+
+impl UnmaterializedConsultationSeatRerouteReasonDto {
+    /// Stable storage and receipt vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PermissionModeUnsupported => "permission_mode_unsupported",
+        }
+    }
+}
+
+/// Exact Admin compare-and-swap for one native-less Committee seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RerouteUnmaterializedConsultationSeatRequest {
+    /// Committee revision read by the Admin.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact active credential generation.
+    pub expected_occupancy_generation: u64,
+    /// Exact active admitted route.
+    pub expected_model_route: RuntimeModelRouteRequest,
+    /// Typed native-less launch refusal.
+    pub reason: UnmaterializedConsultationSeatRerouteReasonDto,
+    /// Exact ordered governed alternatives. The first admissible route that
+    /// preserves the pinned Committee diversity policy is frozen.
+    pub recovery_profile: Vec<RuntimeModelRouteRequest>,
+}
+
+/// Auditable native-less reroute outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct UnmaterializedConsultationSeatRerouteDto {
+    /// Committee projection after the reroute.
+    pub committee: CommitteeRunDto,
+    /// Preserved logical SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Credential generation that was fenced.
+    pub predecessor_occupancy_generation: u64,
+    /// Active replacement credential generation.
+    pub active_occupancy_generation: u64,
+    /// Immediate predecessor route superseded by this lineage row.
+    pub predecessor_model_route: RuntimeModelRouteRequest,
+    /// Exact active route.
+    pub active_model_route: RuntimeModelRouteRequest,
+    /// Exact account profile whose current provider report admitted the route.
+    #[schema(value_type = String)]
+    pub headroom_account_profile_id: AccountProfileId,
+    /// Immutable provider-usage observation checked inside the swap transaction.
+    #[schema(value_type = String)]
+    pub headroom_observation_id: ProviderUsageObservationId,
+    /// Evidence digest shared by that observation and the current projection.
+    #[schema(value_type = String)]
+    pub headroom_evidence_hash: ContentHash,
+    /// Typed recovery reason.
+    pub reason: UnmaterializedConsultationSeatRerouteReasonDto,
+    /// Durable command receipt.
     pub receipt: MutationReceiptDto,
 }
 
@@ -5647,6 +5715,15 @@ pub trait ApplicationOperations: Send + Sync {
         seat_binding_id: SeatBindingId,
         request: &RecoverConsultationSeatRequest,
     ) -> Result<ConsultationSeatRecoveryDto, ApiError>;
+    /// Reroute one admitted Committee seat before any native effect exists.
+    async fn reroute_unmaterialized_consultation_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        request: &RerouteUnmaterializedConsultationSeatRequest,
+    ) -> Result<UnmaterializedConsultationSeatRerouteDto, ApiError>;
     /// Record one round of Committee findings.
     async fn record_committee_findings(
         &self,
@@ -8125,6 +8202,45 @@ pub async fn recover_consultation_seat(
         state
             .applications()
             .recover_consultation_seat(
+                &key,
+                project_id,
+                committee_run_id,
+                seat_binding_id,
+                &request,
+            )
+            .await?,
+    ))
+}
+
+/// Reroute one native-less materializing Committee seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/reroute-unmaterialized", tag = "applications",
+    params(
+        ("project_id" = String, Path), ("committee_run_id" = String, Path),
+        ("seat_binding_id" = String, Path), ("Idempotency-Key" = String, Header)
+    ),
+    request_body = RerouteUnmaterializedConsultationSeatRequest,
+    responses(
+        (status = 200, body = UnmaterializedConsultationSeatRerouteDto),
+        (status = 401), (status = 403), (status = 404), (status = 409), (status = 503)
+    )
+)]
+pub async fn reroute_unmaterialized_consultation_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id, seat_binding_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RerouteUnmaterializedConsultationSeatRequest>,
+) -> Result<Json<UnmaterializedConsultationSeatRerouteDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .reroute_unmaterialized_consultation_seat(
                 &key,
                 project_id,
                 committee_run_id,

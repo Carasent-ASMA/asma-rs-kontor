@@ -139,6 +139,7 @@ impl Modify for RealmBearer {
         crate::applications::invoke_committee_run,
         crate::applications::committee_run,
         crate::applications::recover_consultation_seat,
+        crate::applications::reroute_unmaterialized_consultation_seat,
         crate::applications::record_committee_findings,
         crate::applications::settle_committee_run,
         crate::applications::completion_profiles,
