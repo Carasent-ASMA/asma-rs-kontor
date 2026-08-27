@@ -24475,6 +24475,234 @@ async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
 /// read-only seats, hold the Judge until both independent findings are durable,
 /// recompute the conjunction, settle, and replay without another native launch.
 #[tokio::test]
+async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayable() {
+    let composed = compose_realm("/tmp/kontor-committee-initial-recovery").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (quick, preview_hash) = quick_session_ready_to_promote(
+        world,
+        project,
+        "Committee initial recovery",
+        "committee-initial-recovery-quick",
+    )
+    .await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-initial-recovery-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-recovery-control")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA SeatBinding")
+        .to_owned();
+
+    let mut accounts = std::collections::BTreeMap::new();
+    for (label, provider) in [
+        ("Claude Work", "claude-work"),
+        ("Claude Personal", "claude-personal"),
+        ("Codex Work", "codex-work"),
+        ("Codex Personal", "codex-personal"),
+        ("Paseo Local", "opencode"),
+    ] {
+        let ensured = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": label,
+                "harness": "fake.runtime",
+                "credential_alias": provider,
+                "selectable_providers": [provider],
+                "enabled": true
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("committee-initial-account-{provider}"))
+        .send(world)
+        .await;
+        assert_eq!(ensured.status, 200, "{}", ensured.body);
+        accounts.insert(
+            provider,
+            ensured.json()["account_profile_id"]
+                .as_str()
+                .expect("an account id")
+                .to_owned(),
+        );
+    }
+    for provider in ["claude-work", "claude-personal"] {
+        let exhausted = Call::post(
+            format!("/v1/projects/{project}/provider-quota-states:record"),
+            &serde_json::json!({
+                "account_profile_id": accounts[provider],
+                "provider": provider,
+                "state": "exhausted",
+                "resets_at": "2099-01-01T00:00:00Z",
+                "expected_revision": 1
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("committee-initial-exhaust-{provider}"))
+        .send(world)
+        .await;
+        assert_eq!(exhausted.status, 200, "{}", exhausted.body);
+    }
+
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoke_body = serde_json::json!({
+        "profile": {"id": "01991c00-0000-7000-8000-000000000001", "version": 1},
+        "question": "Does the remediated evidence now comply?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": epic_read.json()["revision"],
+        "initial_recovery_profiles": [
+            {"role_slot_id": "reviewer-a", "ordered_routes": [
+                {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh"},
+                {"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "xhigh"}
+            ]},
+            {"role_slot_id": "reviewer-b", "ordered_routes": [
+                {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "max"}
+            ]},
+            {"role_slot_id": "judge", "ordered_routes": [
+                {"provider": "codex-work", "model": "gpt-5.6-sol", "effort": "high"},
+                {"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "high"}
+            ]}
+        ]
+    });
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-initial-recovery-operator")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    let mut no_route_body = invoke_body.clone();
+    no_route_body["initial_recovery_profiles"] = serde_json::json!([{
+        "role_slot_id": "reviewer-a",
+        "ordered_routes": [
+            {"provider": "claude-work", "model": "claude-opus-5", "effort": "xhigh"}
+        ]
+    }]);
+    let no_route = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &no_route_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-recovery-no-route")
+    .send(world)
+    .await;
+    assert_eq!(no_route.status, 409, "{}", no_route.body);
+    assert_eq!(no_route.code(), "placement_blocked");
+    let runs_after_refusal = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                ProjectId::parse(project).expect("the project"),
+                MiniProjectId::parse(&epic).expect("the epic"),
+                ConsultationFamily::Committee,
+            )
+            .expect("Committee runs list")
+    });
+    assert!(
+        runs_after_refusal.is_empty(),
+        "admission must fail before creating a native-less Committee run"
+    );
+
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-recovery-admin")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let routes: std::collections::BTreeMap<_, _> = invoked.json()["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .map(|seat| {
+            (
+                seat["role_slot_id"].as_str().expect("a slot").to_owned(),
+                seat["model_route"]["provider"]
+                    .as_str()
+                    .expect("a frozen provider")
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert!(routes["reviewer-a"].starts_with("codex"));
+    assert_eq!(routes["reviewer-b"], "opencode");
+    assert!(routes["judge"].starts_with("codex"));
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-recovery-admin")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replayed.json()["seats"], invoked.json()["seats"]);
+
+    let run = ConsultationRunId::Committee(
+        kontor_core::id::CommitteeRunId::parse(
+            invoked.json()["committee_run_id"]
+                .as_str()
+                .expect("a Committee run"),
+        )
+        .expect("a Committee run id"),
+    );
+    let frozen = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(ProjectId::parse(project).expect("the project"), run)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let admission = frozen.context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    assert!(admission.iter().all(|route| {
+        route["profile_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64)
+            && route["rank"].as_u64().is_some()
+            && route["headroom_basis_account_id"].as_str().is_some()
+    }));
+}
+
+#[tokio::test]
 async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     let composed = compose_realm("/tmp/kontor-op05-committee").await;
     let world = &composed.world;
@@ -24776,8 +25004,54 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .as_str()
         .expect("a Committee run id")
         .to_owned();
+    // This is the exact pre-initial-recovery canonical intent shape. An empty
+    // optional policy must remain absent: otherwise every ordinary invocation
+    // receipt written by the previous binary becomes impossible to replay.
+    let legacy_intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "invoke_committee_run",
+        "project": project,
+        "epic": epic,
+        "profile": ["01991c00-0000-7000-8000-000000000001", 4],
+        "question": "Does this evidence satisfy the operational gate?",
+        "caller_seat_binding_id": caller,
+        "task_id": null,
+        "re_review": null,
+    }))
+    .expect("the legacy Committee intent canonicalizes");
+    let frozen_invocation = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(
+                ProjectId::parse(project).expect("the project"),
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&run).expect("the Committee run id"),
+                ),
+            )
+            .expect("the Committee run reads")
+            .expect("the Committee run exists")
+    });
+    assert_eq!(
+        frozen_invocation.invoke_intent_hash,
+        *legacy_intent.hash(),
+        "an absent initial recovery policy changed the pre-deploy intent hash"
+    );
     let invoked_json = invoked.json();
     let seats = invoked_json["seats"].as_array().expect("Committee seats");
+    let ordinary_routes: std::collections::BTreeMap<_, _> = seats
+        .iter()
+        .map(|seat| {
+            (
+                seat["role_slot_id"].as_str().expect("a slot").to_owned(),
+                seat["model_route"]["provider"]
+                    .as_str()
+                    .expect("a frozen provider")
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(ordinary_routes["reviewer-a"], "claude-work");
+    assert_eq!(ordinary_routes["reviewer-b"], "codex-work");
+    assert_eq!(ordinary_routes["judge"], "claude-work");
     let reviewer_ids: Vec<String> = seats
         .iter()
         .filter(|seat| {

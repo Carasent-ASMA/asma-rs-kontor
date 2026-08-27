@@ -248,6 +248,18 @@ struct CommitteeInvocation<'a> {
     re_review_evidence: Option<&'a serde_json::Value>,
 }
 
+/// One admissible initial Committee route with the policy evidence that chose
+/// it. Only `model_rung` reaches the runtime; the account is retained solely as
+/// the headroom basis and is never claimed as execution identity.
+#[derive(Clone)]
+struct FrozenCommitteeRoute {
+    model_rung: ModelRung,
+    source: &'static str,
+    rank: u32,
+    profile_hash: ContentHash,
+    headroom_basis_account_id: Option<AccountProfileId>,
+}
+
 /// The exact immutable result a Committee settlement derives from one round.
 /// This is shared by live settlement and historical completion ingestion so the
 /// two paths cannot disagree about cardinality, order, evidence or the result
@@ -7170,6 +7182,182 @@ impl Services {
         }
     }
 
+    /// Freeze a complete Committee allocation before creating its run.
+    ///
+    /// A Committee is one policy unit: selecting each slot independently can
+    /// route both reviewers onto the same provider family when a primary is
+    /// exhausted. Candidate routes therefore come from the immutable template
+    /// followed by explicit, Admin-authorized per-slot recovery profiles, and the
+    /// deterministic search accepts only a whole allocation that satisfies the
+    /// pinned diversity rule. Nothing is persisted until every slot has one.
+    fn freeze_committee_model_rungs(
+        &self,
+        project_id: ProjectId,
+        template_revision: &StoredConsultationProfileRevision,
+        template: &CommitteeTemplateSpec,
+        request: &InvokeConsultationRequest,
+        now: Timestamp,
+    ) -> Result<Vec<FrozenCommitteeRoute>, ApiError> {
+        let state = self.state()?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let Some(adapter) = state.runtimes().get(&runtime_kind) else {
+            if !request.initial_recovery_profiles.is_empty() {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "initial Committee recovery profiles require an available runtime adapter",
+                ));
+            }
+            return Ok(template
+                .slots
+                .iter()
+                .map(|slot| FrozenCommitteeRoute {
+                    model_rung: slot.models.rungs[0].clone(),
+                    source: "template",
+                    rank: 1,
+                    profile_hash: template_revision.definition_hash.clone(),
+                    headroom_basis_account_id: None,
+                })
+                .collect());
+        };
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let accounts = self.eligible_accounts(project_id)?;
+        let quota = QuotaOutlook {
+            states: &quota_states,
+            account: None,
+            accounts: &accounts,
+            headroom: self.headroom_policy(),
+            now,
+        };
+        let mut recovery_profiles = BTreeMap::new();
+        for profile in &request.initial_recovery_profiles {
+            if !template
+                .slots
+                .iter()
+                .any(|slot| slot.id == profile.role_slot_id)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "an initial Committee recovery profile names no slot in the pinned template",
+                ));
+            }
+            if profile.ordered_routes.is_empty() {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "an initial Committee recovery profile must declare at least one ordered route",
+                ));
+            }
+            let profile_document = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "role_slot_id": profile.role_slot_id.as_str(),
+                "ordered_routes": profile.ordered_routes,
+            }))?;
+            let routes = profile
+                .ordered_routes
+                .iter()
+                .map(parse_runtime_model_route)
+                .collect::<kontor_core::DomainResult<Vec<_>>>()
+                .map_err(|error| self.refuse_domain(&error))?;
+            for route in &routes {
+                if !model_route_is_catalogued(route) {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "an initial Committee recovery route is absent from the governed model catalog",
+                    ));
+                }
+            }
+            if recovery_profiles
+                .insert(
+                    profile.role_slot_id.clone(),
+                    (routes, profile_document.hash().clone()),
+                )
+                .is_some()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "an initial Committee recovery profile names one role slot more than once",
+                ));
+            }
+        }
+        let mut candidates = Vec::with_capacity(template.slots.len());
+        for slot in &template.slots {
+            let mut effective = committee_route_candidates(
+                &slot.models.rungs,
+                "template",
+                &template_revision.definition_hash,
+                &accounts,
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+            let governed_template = effective
+                .iter()
+                .any(|candidate| consultation_route_has_account(&candidate.model_rung, &accounts));
+            let has_recovery_profile = recovery_profiles.contains_key(&slot.id);
+            if let Some((routes, profile_hash)) = recovery_profiles.get(&slot.id) {
+                for candidate in committee_route_candidates(
+                    routes,
+                    "initial_recovery_profile",
+                    profile_hash,
+                    &accounts,
+                )
+                .map_err(|error| self.refuse_domain(&error))?
+                {
+                    if !effective
+                        .iter()
+                        .any(|existing| existing.model_rung == candidate.model_rung)
+                    {
+                        effective.push(candidate);
+                    }
+                }
+            }
+            let mut admitted = Vec::new();
+            for candidate in &effective {
+                if let kontor_scheduler::headroom::Placement::Admit { rung, account } =
+                    resolve_chain_placement(
+                        adapter.as_ref(),
+                        std::slice::from_ref(&candidate.model_rung),
+                        kontor_scheduler::headroom::SeatClass::Delivery,
+                        &quota,
+                    )
+                    .map_err(|error| self.refuse_domain(&error))?
+                    && !admitted
+                        .iter()
+                        .any(|existing: &FrozenCommitteeRoute| existing.model_rung == rung)
+                {
+                    let mut admitted_candidate = candidate.clone();
+                    admitted_candidate.model_rung = rung;
+                    admitted_candidate.headroom_basis_account_id = Some(account);
+                    admitted.push(admitted_candidate);
+                }
+            }
+            if admitted.is_empty() && !governed_template && !has_recovery_profile {
+                // Compatibility for a realm that has no addressable account or
+                // fallback policy for this provider family. The runtime still
+                // owns the typed launch refusal, exactly as before.
+                admitted.push(FrozenCommitteeRoute {
+                    model_rung: slot.models.rungs[0].clone(),
+                    source: "template",
+                    rank: 1,
+                    profile_hash: template_revision.definition_hash.clone(),
+                    headroom_basis_account_id: None,
+                });
+            }
+            if admitted.is_empty() {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a Committee slot has no currently admissible governed route",
+                ));
+            }
+            candidates.push(admitted);
+        }
+        select_committee_allocation(template, &candidates).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no currently admissible whole-Committee allocation preserves the pinned provider-family diversity",
+            )
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn freeze_advisor_run(
         &self,
@@ -7472,6 +7660,7 @@ impl Services {
                     logical_role: seat.logical_role.as_str().to_owned(),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
+                    model_route: runtime_model_route_dto(&seat.model_rung),
                     observed_binding: seat.native_identity.map(|identity| ObservedBindingDto {
                         runtime_kind: identity.runtime_kind,
                         native_id: identity.native_id,
@@ -7522,6 +7711,30 @@ impl Services {
         let run_id = CommitteeRunId::generate();
         let node_id = TopologyNodeId::generate();
         let question_hash = ContentHash::of(request.question.as_str().as_bytes());
+        let frozen_model_rungs = self.freeze_committee_model_rungs(
+            project_id,
+            template_revision,
+            template,
+            request,
+            now,
+        )?;
+        let admission_routes: Vec<_> = template
+            .slots
+            .iter()
+            .zip(&frozen_model_rungs)
+            .map(|(slot, frozen)| {
+                serde_json::json!({
+                    "role_slot_id": slot.id.as_str(),
+                    "model_route": runtime_model_route_dto(&frozen.model_rung),
+                    "source": frozen.source,
+                    "rank": frozen.rank,
+                    "profile_hash": frozen.profile_hash.as_str(),
+                    "headroom_basis_account_id": frozen
+                        .headroom_basis_account_id
+                        .map(|account| account.to_string()),
+                })
+            })
+            .collect();
         let context = self.intent(&serde_json::json!({
             "schema_version": 1,
             "realm_id": state.realm_id().to_string(),
@@ -7537,6 +7750,11 @@ impl Services {
             "round": round,
             "re_review": re_review,
             "re_review_evidence": re_review_evidence,
+            "admission": {
+                "schema_version": 1,
+                "policy": "template_then_admin_initial_recovery_profiles",
+                "routes": admission_routes,
+            },
         }))?;
         let run = StoredConsultationRun {
             id: ConsultationRunId::Committee(run_id),
@@ -7582,7 +7800,7 @@ impl Services {
             .unwrap_or(now);
         let mut stored_seats = Vec::with_capacity(template.slots.len());
         let mut bindings = Vec::with_capacity(template.slots.len());
-        for slot in &template.slots {
+        for (slot, frozen) in template.slots.iter().zip(frozen_model_rungs) {
             let code = self
                 .domain
                 .delivery
@@ -7600,12 +7818,7 @@ impl Services {
                 committee_role: Some(slot.role),
                 logical_role: slot.logical_role.clone(),
                 seat_binding_id,
-                model_rung: self.freeze_consultation_model_rung(
-                    project_id,
-                    &slot.models.rungs,
-                    now,
-                    "a Committee slot has no model route",
-                )?,
+                model_rung: frozen.model_rung,
                 occupancy_generation: 1,
                 native_identity: None,
                 provider_session_id: None,
@@ -8063,6 +8276,7 @@ impl Services {
                     logical_role: seat.logical_role.as_str().to_owned(),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
+                    model_route: runtime_model_route_dto(&seat.model_rung),
                     observed_binding: seat.native_identity.map(|identity| ObservedBindingDto {
                         runtime_kind: identity.runtime_kind,
                         native_id: identity.native_id,
@@ -8613,11 +8827,129 @@ fn consultation_account_rungs(
     qualified
 }
 
+/// Qualify one ordered policy source with account aliases while retaining the
+/// source/rank/hash that must be frozen beside the selected execution route.
+fn committee_route_candidates(
+    declared: &[ModelRung],
+    source: &'static str,
+    profile_hash: &ContentHash,
+    accounts: &[kontor_scheduler::headroom::EligibleAccount],
+) -> kontor_core::DomainResult<Vec<FrozenCommitteeRoute>> {
+    let mut candidates = Vec::new();
+    for (index, rung) in declared.iter().enumerate() {
+        let qualified = consultation_account_rungs(std::slice::from_ref(rung), accounts);
+        ensure_unambiguous_generic_consultation_routes(&qualified, accounts)?;
+        for model_rung in qualified {
+            if !candidates
+                .iter()
+                .any(|existing: &FrozenCommitteeRoute| existing.model_rung == model_rung)
+            {
+                candidates.push(FrozenCommitteeRoute {
+                    model_rung,
+                    source,
+                    rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                    profile_hash: profile_hash.clone(),
+                    headroom_basis_account_id: None,
+                });
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+fn consultation_route_has_account(
+    rung: &ModelRung,
+    accounts: &[kontor_scheduler::headroom::EligibleAccount],
+) -> bool {
+    accounts
+        .iter()
+        .any(|account| account.selectable_providers.contains(&rung.provider.0))
+}
+
+/// A generic provider spelling can select an account for headroom without
+/// carrying that account identity into a consultation launch. That is honest
+/// only while exactly one enabled account owns the spelling; aliases are the
+/// supported way to distinguish two accounts on one provider family.
+fn ensure_unambiguous_generic_consultation_routes(
+    rungs: &[ModelRung],
+    accounts: &[kontor_scheduler::headroom::EligibleAccount],
+) -> kontor_core::DomainResult<()> {
+    for rung in rungs {
+        if provider_family(&rung.provider.0) != rung.provider.0 {
+            continue;
+        }
+        let matching = accounts
+            .iter()
+            .filter(|account| account.selectable_providers.contains(&rung.provider.0))
+            .count();
+        if matching > 1 {
+            return Err(kontor_core::DomainError::invalid(
+                "ConsultationAdmissionPolicy",
+                "a generic consultation provider is selected by multiple enabled accounts; exact aliases are required",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// First lexicographic whole-Committee allocation satisfying the frozen
+/// diversity rule. Slot order and each slot's candidate order are both pinned,
+/// so equivalent retries choose byte-identical routes.
+fn select_committee_allocation(
+    template: &CommitteeTemplateSpec,
+    candidates: &[Vec<FrozenCommitteeRoute>],
+) -> Option<Vec<FrozenCommitteeRoute>> {
+    fn walk(
+        template: &CommitteeTemplateSpec,
+        candidates: &[Vec<FrozenCommitteeRoute>],
+        index: usize,
+        reviewer_families: &mut BTreeSet<String>,
+        selected: &mut Vec<FrozenCommitteeRoute>,
+    ) -> bool {
+        if index == template.slots.len() {
+            return true;
+        }
+        let slot = &template.slots[index];
+        for rung in &candidates[index] {
+            let family = provider_family(&rung.model_rung.provider.0).to_owned();
+            let constrained = template.diversity
+                == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
+                && slot.role == CommitteeRole::Reviewer;
+            if constrained && !reviewer_families.insert(family.clone()) {
+                continue;
+            }
+            selected.push(rung.clone());
+            if walk(template, candidates, index + 1, reviewer_families, selected) {
+                return true;
+            }
+            selected.pop();
+            if constrained {
+                reviewer_families.remove(&family);
+            }
+        }
+        false
+    }
+
+    if candidates.len() != template.slots.len() {
+        return None;
+    }
+    let mut selected = Vec::with_capacity(template.slots.len());
+    let mut reviewer_families = BTreeSet::new();
+    walk(
+        template,
+        candidates,
+        0,
+        &mut reviewer_families,
+        &mut selected,
+    )
+    .then_some(selected)
+}
+
 /// Whether one route is exposed by the governed Teams model catalog.
 ///
-/// Runtime-only fallback configuration passes through this same predicate.
-/// That closes the old split in which a route omitted from `/v1/catalog` could
-/// still be selected after quota routing failed.
+/// Explicit initial-admission recovery profiles pass through this same
+/// predicate. That prevents an Admin request from selecting a route omitted
+/// from `/v1/catalog` after quota routing failed.
 pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
     let effort = rung.effort.map(EffortLevel::as_str);
     let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));
@@ -15528,7 +15860,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_value = serde_json::json!({
             "schema_version": 1,
             "operation": "invoke_committee_run",
             "project": project_id.to_string(),
@@ -15538,7 +15870,25 @@ impl ApplicationOperations for Services {
             "caller_seat_binding_id": request.caller_seat_binding_id.to_string(),
             "task_id": request.task_id.map(|id| id.to_string()),
             "re_review": request.re_review.as_ref(),
-        }))?;
+        });
+        if !request.initial_recovery_profiles.is_empty() {
+            let object = intent_value.as_object_mut().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee invocation intent could not be assembled",
+                )
+            })?;
+            object.insert(
+                "initial_recovery_profiles".to_owned(),
+                serde_json::to_value(&request.initial_recovery_profiles).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the initial Committee recovery profiles could not be canonicalized",
+                    )
+                })?,
+            );
+        }
+        let intent = self.intent(&intent_value)?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
@@ -24010,12 +24360,14 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        QuotaOutlook, consultation_account_rungs, counts_towards_completion, eligible_roots,
-        render_legacy_container_name, seat_block, slot_prompt,
+        FrozenCommitteeRoute, QuotaOutlook, consultation_account_rungs, counts_towards_completion,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        render_legacy_container_name, seat_block, select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
-        AccountProfileId, ExternalId, ExternalName, MiniProjectId, RealmId, TaskId, Timestamp,
+        AccountProfileId, ContentHash, ExternalId, ExternalName, MiniProjectId, RealmId, TaskId,
+        Timestamp,
     };
     use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
     use kontor_core::state::TaskState;
@@ -24023,6 +24375,96 @@ mod tests {
     use kontor_runtime::scope::{EpicScope, ExecutionScope};
     use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig};
     use std::collections::BTreeSet;
+
+    fn committee_route(provider: &str, model: &str) -> FrozenCommitteeRoute {
+        FrozenCommitteeRoute {
+            model_rung: ModelRung {
+                provider: ProviderRef(provider.to_owned()),
+                model: ModelRef(model.to_owned()),
+                effort: Some(EffortLevel::High),
+            },
+            source: "fixture",
+            rank: 1,
+            profile_hash: ContentHash::of(b"fixture"),
+            headroom_basis_account_id: None,
+        }
+    }
+
+    #[test]
+    fn whole_committee_allocation_backtracks_to_preserve_reviewer_families() {
+        let template = kontor_profiles::seeds::bundled_consultation_presets()
+            .expect("the presets load")
+            .committee_templates
+            .remove(0);
+        let candidates = vec![
+            vec![
+                committee_route("codex-work", "gpt-5.6-sol"),
+                committee_route("opencode", "deepseek/deepseek-v4-flash"),
+            ],
+            vec![committee_route("codex-personal", "gpt-5.6-sol")],
+            vec![committee_route("codex-work", "gpt-5.6-sol")],
+        ];
+
+        let selected = select_committee_allocation(&template, &candidates)
+            .expect("a diverse whole allocation exists");
+        assert_eq!(selected[0].model_rung.provider.0, "opencode");
+        assert_eq!(selected[1].model_rung.provider.0, "codex-personal");
+        assert_eq!(selected[2].model_rung.provider.0, "codex-work");
+    }
+
+    #[test]
+    fn whole_committee_allocation_is_deterministic_and_fails_without_diversity() {
+        let template = kontor_profiles::seeds::bundled_consultation_presets()
+            .expect("the presets load")
+            .committee_templates
+            .remove(0);
+        let primary = vec![
+            vec![committee_route("claude-work", "claude-opus-5")],
+            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("claude-personal", "claude-opus-5")],
+        ];
+        let first = select_committee_allocation(&template, &primary)
+            .expect("the ordinary primaries are diverse");
+        let second = select_committee_allocation(&template, &primary)
+            .expect("the same allocation remains available");
+        assert_eq!(
+            first
+                .iter()
+                .map(|route| &route.model_rung)
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|route| &route.model_rung)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(first[0].model_rung.provider.0, "claude-work");
+
+        let colliding = vec![
+            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("codex-personal", "gpt-5.6-sol")],
+            vec![committee_route("claude-work", "claude-opus-5")],
+        ];
+        assert!(select_committee_allocation(&template, &colliding).is_none());
+    }
+
+    #[test]
+    fn a_generic_consultation_route_requires_one_headroom_basis_account() {
+        let route = committee_route("opencode", "deepseek/deepseek-v4-flash").model_rung;
+        let accounts = [
+            EligibleAccount {
+                account_profile_id: AccountProfileId::generate(),
+                selectable_providers: BTreeSet::from(["opencode".to_owned()]),
+            },
+            EligibleAccount {
+                account_profile_id: AccountProfileId::generate(),
+                selectable_providers: BTreeSet::from(["opencode".to_owned()]),
+            },
+        ];
+        assert!(
+            ensure_unambiguous_generic_consultation_routes(&[route], &accounts).is_err(),
+            "two indistinguishable profiles cannot be silently reduced to one"
+        );
+    }
 
     /// Regression for ASMA-7681: an explicit Claude Work task pin must freeze
     /// both halves of the route before dispatch. Keeping the Codex rung while

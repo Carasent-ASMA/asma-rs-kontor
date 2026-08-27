@@ -310,6 +310,47 @@ mod tests {
     }
 
     #[test]
+    fn committee_initial_recovery_profiles_are_exposed_by_the_admin_cli_command() {
+        let command = build();
+        let matches = command
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "admin",
+                "committee-run-invoke",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--epic-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--idempotency-key",
+                "committee-initial-recovery-1",
+                "--profile",
+                r#"{"id":"independent_review","version":1}"#,
+                "--question",
+                "Verify the governed remediation.",
+                "--caller-seat-binding-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72",
+                "--expected-revision",
+                "7",
+                "--initial-recovery-profiles",
+                r#"[{"role_slot_id":"reviewer-b","ordered_routes":[{"provider":"opencode","model":"deepseek/deepseek-v4-flash","effort":"max"}]}]"#,
+            ])
+            .expect("the generated Admin CLI accepts initial recovery profiles");
+        let (tool, sub) = resolve(&matches).expect("the Committee invoke tool");
+        let arguments = arguments(tool, sub).expect("the recovery profiles are JSON");
+        assert_eq!(
+            arguments["initial_recovery_profiles"][0]["role_slot_id"],
+            "reviewer-b"
+        );
+        assert_eq!(
+            arguments["initial_recovery_profiles"][0]["ordered_routes"][0]["provider"],
+            "opencode"
+        );
+    }
+
+    #[test]
     fn a_value_of_the_wrong_shape_is_refused_before_anything_is_dispatched() {
         let command = build();
         let matches = command

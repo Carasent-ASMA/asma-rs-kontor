@@ -381,6 +381,20 @@ const RUNTIME_MODEL_ROUTE: &[FieldSpec] = &[
     ),
 ];
 
+/// One Admin-authorized initial Committee recovery profile.
+const INITIAL_COMMITTEE_RECOVERY_PROFILE: &[FieldSpec] = &[
+    field(
+        "role_slot_id",
+        ArgType::OpenKey,
+        "The exact role slot in the pinned Committee template.",
+    ),
+    field(
+        "ordered_routes",
+        ArgType::ObjectArray(RUNTIME_MODEL_ROUTE),
+        "Catalogued routes considered after that slot's immutable template chain.",
+    ),
+];
+
 /// Exact identity and outage evidence for retiring one never-dispatched seat.
 const UNAVAILABLE_PROVIDER_SEAT: &[FieldSpec] = &[
     field(
@@ -4631,6 +4645,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Json,
                 "The exact completion/remediation provenance for a clean round-two run.",
+            ),
+            opt(
+                "initial_recovery_profiles",
+                Place::Body,
+                ArgType::ObjectArray(INITIAL_COMMITTEE_RECOVERY_PROFILE),
+                "Admin-authorized per-slot initial admission recovery profiles; ordinary invocation remains Operator-authorized.",
             ),
         ],
         about: "Invoke one Committee consultation against an epic.",

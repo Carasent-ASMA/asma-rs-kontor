@@ -46,8 +46,8 @@ use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
-    ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RuntimeKindKey, SeatBindingId, SpecVersion,
-    TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId,
+    SpecVersion, TaskId, TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
 use kontor_core::spec::{
@@ -1201,6 +1201,12 @@ pub struct InvokeConsultationRequest {
     /// `round = 2`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub re_review: Option<CommitteeReReviewProvenance>,
+    /// Admin-authorized initial admission recovery routes, one ordered profile
+    /// per affected Committee slot. The immutable template is always tried
+    /// first; these routes are considered only when a whole allocation cannot
+    /// otherwise be admitted under its diversity rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_recovery_profiles: Vec<InitialConsultationRecoveryProfileRequest>,
 }
 
 impl From<&InvokeAdvisorRequest> for InvokeConsultationRequest {
@@ -1212,8 +1218,20 @@ impl From<&InvokeAdvisorRequest> for InvokeConsultationRequest {
             task_id: request.task_id,
             expected_revision: request.expected_revision,
             re_review: None,
+            initial_recovery_profiles: Vec::new(),
         }
     }
+}
+
+/// Explicit, per-slot initial Committee recovery policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InitialConsultationRecoveryProfileRequest {
+    /// Exact immutable Committee role slot.
+    #[schema(value_type = String)]
+    pub role_slot_id: RoleSlotId,
+    /// Ordered catalogued routes considered after the template's own chain.
+    pub ordered_routes: Vec<RuntimeModelRouteRequest>,
 }
 
 /// Immutable lineage that authorizes one clean Committee re-review for an epic
@@ -1255,6 +1273,12 @@ pub struct ConsultationSeatDto {
     /// Monotonic native-filler generation. Seat-scoped credentials are fenced
     /// to this value.
     pub occupancy_generation: u64,
+    /// Exact provider/model route frozen before the first native effect.
+    ///
+    /// This is the auditable result of the pinned template plus any explicit
+    /// initial-admission recovery profile; retries and recovery never re-resolve it in
+    /// place.
+    pub model_route: RuntimeModelRouteRequest,
     /// Native runtime identity after launch/recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_binding: Option<ObservedBindingDto>,
@@ -7946,7 +7970,11 @@ pub async fn invoke_committee_run(
     headers: HeaderMap,
     Json(request): Json<InvokeConsultationRequest>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    if request.initial_recovery_profiles.is_empty() {
+        caller.require(&state, CallerCapability::Operator)?;
+    } else {
+        caller.require(&state, CallerCapability::Admin)?;
+    }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
     let key = idempotency_key(&state, &headers)?;
