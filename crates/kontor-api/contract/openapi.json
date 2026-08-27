@@ -11264,12 +11264,17 @@
           "role_slot_id",
           "logical_role",
           "seat_binding_id",
-          "occupancy_generation"
+          "occupancy_generation",
+          "model_route"
         ],
         "properties": {
           "logical_role": {
             "type": "string",
             "description": "Logical role under the pinned policy."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Exact provider/model route frozen before the first native effect.\n\nThis is the auditable result of the pinned template plus any explicit\ninitial-admission recovery profile; retries and recovery never re-resolve it in\nplace."
           },
           "observed_binding": {
             "oneOf": [
@@ -13228,6 +13233,28 @@
           }
         }
       },
+      "InitialConsultationRecoveryProfileRequest": {
+        "type": "object",
+        "description": "Explicit, per-slot initial Committee recovery policy.",
+        "required": [
+          "role_slot_id",
+          "ordered_routes"
+        ],
+        "properties": {
+          "ordered_routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeModelRouteRequest"
+            },
+            "description": "Ordered catalogued routes considered after the template's own chain."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Exact immutable Committee role slot."
+          }
+        },
+        "additionalProperties": false
+      },
       "InstallWorkflowSpecRequest": {
         "type": "object",
         "description": "The exact shipped external-workflow revision an Admin wants to pin.",
@@ -13411,6 +13438,13 @@
             "format": "int64",
             "description": "The epic revision the caller believes is current.",
             "minimum": 0
+          },
+          "initial_recovery_profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InitialConsultationRecoveryProfileRequest"
+            },
+            "description": "Admin-authorized initial admission recovery routes, one ordered profile\nper affected Committee slot. The immutable template is always tried\nfirst; these routes are considered only when a whole allocation cannot\notherwise be admitted under its diversity rule."
           },
           "profile": {
             "$ref": "#/components/schemas/RevisionRefDto",

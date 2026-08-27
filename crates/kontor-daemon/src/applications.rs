@@ -8861,12 +8861,9 @@ fn consultation_route_has_account(
     rung: &ModelRung,
     accounts: &[kontor_scheduler::headroom::EligibleAccount],
 ) -> bool {
-    accounts.iter().any(|account| {
-        account.selectable_providers.iter().any(|provider| {
-            provider == &rung.provider.0
-                || provider_family(provider) == provider_family(&rung.provider.0)
-        })
-    })
+    accounts
+        .iter()
+        .any(|account| account.selectable_providers.contains(&rung.provider.0))
 }
 
 /// A generic provider spelling can select an account for headroom without
@@ -8950,9 +8947,9 @@ fn select_committee_allocation(
 
 /// Whether one route is exposed by the governed Teams model catalog.
 ///
-/// Runtime-only fallback configuration passes through this same predicate.
-/// That closes the old split in which a route omitted from `/v1/catalog` could
-/// still be selected after quota routing failed.
+/// Explicit initial-admission recovery profiles pass through this same
+/// predicate. That prevents an Admin request from selecting a route omitted
+/// from `/v1/catalog` after quota routing failed.
 pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
     let effort = rung.effort.map(EffortLevel::as_str);
     let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));

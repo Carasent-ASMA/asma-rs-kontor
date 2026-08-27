@@ -1276,7 +1276,7 @@ pub struct ConsultationSeatDto {
     /// Exact provider/model route frozen before the first native effect.
     ///
     /// This is the auditable result of the pinned template plus any explicit
-    /// fleet fallback policy; retries and recovery never re-resolve it in
+    /// initial-admission recovery profile; retries and recovery never re-resolve it in
     /// place.
     pub model_route: RuntimeModelRouteRequest,
     /// Native runtime identity after launch/recovery.

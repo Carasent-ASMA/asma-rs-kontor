@@ -24606,6 +24606,37 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
 
+    let mut no_route_body = invoke_body.clone();
+    no_route_body["initial_recovery_profiles"] = serde_json::json!([{
+        "role_slot_id": "reviewer-a",
+        "ordered_routes": [
+            {"provider": "claude-work", "model": "claude-opus-5", "effort": "xhigh"}
+        ]
+    }]);
+    let no_route = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &no_route_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-recovery-no-route")
+    .send(world)
+    .await;
+    assert_eq!(no_route.status, 409, "{}", no_route.body);
+    assert_eq!(no_route.code(), "placement_blocked");
+    let runs_after_refusal = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                ProjectId::parse(project).expect("the project"),
+                MiniProjectId::parse(&epic).expect("the epic"),
+                ConsultationFamily::Committee,
+            )
+            .expect("Committee runs list")
+    });
+    assert!(
+        runs_after_refusal.is_empty(),
+        "admission must fail before creating a native-less Committee run"
+    );
+
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke_body,
@@ -24975,6 +25006,21 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .to_owned();
     let invoked_json = invoked.json();
     let seats = invoked_json["seats"].as_array().expect("Committee seats");
+    let ordinary_routes: std::collections::BTreeMap<_, _> = seats
+        .iter()
+        .map(|seat| {
+            (
+                seat["role_slot_id"].as_str().expect("a slot").to_owned(),
+                seat["model_route"]["provider"]
+                    .as_str()
+                    .expect("a frozen provider")
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(ordinary_routes["reviewer-a"], "claude-work");
+    assert_eq!(ordinary_routes["reviewer-b"], "codex-work");
+    assert_eq!(ordinary_routes["judge"], "claude-work");
     let reviewer_ids: Vec<String> = seats
         .iter()
         .filter(|seat| {

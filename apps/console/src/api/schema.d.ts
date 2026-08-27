@@ -3942,6 +3942,14 @@ export interface components {
         ConsultationSeatDto: {
             /** @description Logical role under the pinned policy. */
             logical_role: string;
+            /**
+             * @description Exact provider/model route frozen before the first native effect.
+             *
+             *     This is the auditable result of the pinned template plus any explicit
+             *     initial-admission recovery profile; retries and recovery never re-resolve it in
+             *     place.
+             */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
             observed_binding?: null | components["schemas"]["ObservedBindingDto"];
             /**
              * Format: int64
@@ -4916,6 +4924,13 @@ export interface components {
             snapshot_hash: string;
             source: string;
         };
+        /** @description Explicit, per-slot initial Committee recovery policy. */
+        InitialConsultationRecoveryProfileRequest: {
+            /** @description Ordered catalogued routes considered after the template's own chain. */
+            ordered_routes: components["schemas"]["RuntimeModelRouteRequest"][];
+            /** @description Exact immutable Committee role slot. */
+            role_slot_id: string;
+        };
         /** @description The exact shipped external-workflow revision an Admin wants to pin. */
         InstallWorkflowSpecRequest: {
             /**
@@ -5002,6 +5017,13 @@ export interface components {
              * @description The epic revision the caller believes is current.
              */
             expected_revision: number;
+            /**
+             * @description Admin-authorized initial admission recovery routes, one ordered profile
+             *     per affected Committee slot. The immutable template is always tried
+             *     first; these routes are considered only when a whole allocation cannot
+             *     otherwise be admitted under its diversity rule.
+             */
+            initial_recovery_profiles?: components["schemas"]["InitialConsultationRecoveryProfileRequest"][];
             /** @description The profile or template revision to run under. */
             profile: components["schemas"]["RevisionRefDto"];
             /** @description What is being asked. */
