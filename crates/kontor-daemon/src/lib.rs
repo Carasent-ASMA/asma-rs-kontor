@@ -315,13 +315,28 @@ impl Daemon {
     /// or claimed, the database cannot be opened, or the credentials cannot be
     /// established. Every one of them leaves the state root exactly as it was.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None)
+        Self::start_with_supervision(config, runtimes, None, None)
+    }
+
+    /// Start with a scripted exact-provider reporter for black-box contracts.
+    ///
+    /// The injected poller receives no daemon credential material. Production
+    /// uses [`Self::start`] and always composes the real resolver from the state
+    /// root.
+    #[doc(hidden)]
+    pub fn start_with_usage_poller(
+        config: DaemonConfig,
+        runtimes: RuntimeRegistry,
+        usage_poller: usage::UsagePoller,
+    ) -> Result<Self, StartupError> {
+        Self::start_with_supervision(config, runtimes, None, Some(usage_poller))
     }
 
     fn start_with_supervision(
         config: DaemonConfig,
         runtimes: RuntimeRegistry,
         supervision: Option<SupervisionPolicy>,
+        usage_poller: Option<usage::UsagePoller>,
     ) -> Result<Self, StartupError> {
         // The address and the ceilings are judged before anything is created, so a
         // misconfigured daemon does not leave a lock file and a database behind.
@@ -347,7 +362,8 @@ impl Daemon {
             .clone()
             .map_or_else(|| kontor_jira::JiraConnectors::read(&config.state_root), Ok)
             .map_err(|source| StartupError::Connector { source })?;
-        let usage_poller = usage::UsagePoller::discover(&config.state_root);
+        let usage_poller =
+            usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
@@ -415,7 +431,7 @@ impl Daemon {
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
-        Self::start_with_supervision(config, registry, supervision)
+        Self::start_with_supervision(config, registry, supervision, None)
     }
 
     /// This Realm's identity.

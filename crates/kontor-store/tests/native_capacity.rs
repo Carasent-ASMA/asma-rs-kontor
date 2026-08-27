@@ -800,10 +800,92 @@ fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_
     assert_eq!(replayed.id, stored.id);
     let by_key = fixture
         .store
-        .provider_usage_observation_by_key(fixture.project_id, &key)
+        .provider_usage_observation_by_key(&key)
         .expect("the key reads")
         .expect("the binding exists");
-    assert_eq!(by_key, (stored, intent));
+    assert_eq!(by_key, (stored.clone(), intent.clone()));
+
+    let second_project = ProjectId::generate();
+    let second_account = AccountProfileId::generate();
+    fixture
+        .store
+        .create_project(&NewProject {
+            id: second_project,
+            name: name("Second quota project"),
+            root_path: name("/tmp/second-quota-project"),
+            created_at: at("2026-08-27T17:06:30Z"),
+        })
+        .expect("the second project is created");
+    fixture
+        .store
+        .create_account_profile(&NewAccountProfile {
+            id: second_account,
+            project_id: second_project,
+            label: name("Second account"),
+            external_account_id: None,
+            harness: RuntimeKindKey::parse("paseo").expect("a valid runtime kind"),
+            credential_ref: CredentialReference {
+                kind: CredentialReferenceKind::ConfigHome,
+                alias: CredentialAlias::parse("secondary").expect("a valid alias"),
+            },
+            environment: document(serde_json::json!({ "schema_version": 1 })),
+            routing: document(serde_json::json!({ "schema_version": 1 })),
+            capability: document(serde_json::json!({ "schema_version": 1 })),
+            provider_identity: None,
+            enabled: true,
+            created_at: at("2026-08-27T17:06:30Z"),
+        })
+        .expect("the second account is created");
+    let cross_project =
+        fixture
+            .store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id: second_project,
+                    account_profile_id: second_account,
+                    provider: "claude-work".into(),
+                    evidence_hash: ContentHash::of(b"a second provider answer"),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    observed_at: at("2026-08-27T17:06:31Z"),
+                },
+                quota_state: None,
+                idempotency_key: Some(key.clone()),
+                intent_hash: Some(ContentHash::of(b"second project intent")),
+            });
+    assert!(matches!(
+        cross_project,
+        Err(RepositoryError::Conflict {
+            subject: "provider usage probe",
+            ..
+        })
+    ));
+    assert!(
+        fixture
+            .store
+            .list_provider_quota_states(second_project)
+            .expect("the second projection reads")
+            .is_empty(),
+        "global replay conflict happens before quota projection"
+    );
+    assert!(
+        fixture
+            .store
+            .latest_provider_usage_observation(second_project, second_account, "claude-work")
+            .expect("the second observation reads")
+            .is_none(),
+        "global replay conflict appends no second observation"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .provider_usage_observation_by_key(&key)
+            .expect("the global key reads")
+            .expect("the original remains"),
+        (stored, intent)
+    );
     let conflict = fixture
         .store
         .record_provider_usage_observation(&NewProviderUsageObservation {

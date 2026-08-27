@@ -40,9 +40,14 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
-use kontor_accounts::{UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage};
+use async_trait::async_trait;
+use kontor_accounts::{
+    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_chatgpt_usage_strict,
+    read_claude_usage, read_claude_usage_strict,
+};
 use kontor_api::state::ApiState;
 use kontor_core::id::{ContentHash, CredentialAlias, IdempotencyKey, ProviderUsageObservationId};
 use kontor_core::repository::{
@@ -132,6 +137,15 @@ impl ProviderApi {
         match self {
             Self::Codex => read_chatgpt_usage(self.provider(), body),
             Self::Claude => read_claude_usage(self.provider(), body),
+        }
+    }
+
+    /// Read the provider report as admission evidence, where an absent field
+    /// cannot be defaulted into fresh headroom.
+    fn read_strict(self, body: &[u8]) -> Result<UsageReading, UsageFailure> {
+        match self {
+            Self::Codex => read_chatgpt_usage_strict(self.provider(), body),
+            Self::Claude => read_claude_usage_strict(self.provider(), body),
         }
     }
 }
@@ -309,6 +323,7 @@ fn detect(home: &Path) -> Option<(ProviderApi, SecretString)> {
 pub struct UsagePoller {
     homes: ProviderHomes,
     client: reqwest::Client,
+    exact_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
 }
 
 /// A redacted, closed failure from one explicit provider usage probe.
@@ -325,6 +340,21 @@ pub enum ProviderUsageProbeFailure {
     Unreachable,
 }
 
+/// Non-secret reporter seam for one exact configured account/provider route.
+///
+/// Production leaves this unimplemented and uses the daemon-owned home/token
+/// resolver below. Contract tests inject a scripted reporter so they can prove
+/// request cardinality and typed failures without possessing any credential.
+#[async_trait]
+pub trait ExactProviderUsageReporter: fmt::Debug + Send + Sync {
+    /// Return one normalized provider report or a closed redacted failure.
+    async fn probe(
+        &self,
+        profile: &AccountProfile,
+        provider: &str,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure>;
+}
+
 impl UsagePoller {
     /// Compose a poller over the accounts registered in a state root.
     #[must_use]
@@ -338,6 +368,7 @@ impl UsagePoller {
                 .timeout(POLL_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
+            exact_reporter: None,
         }
     }
 
@@ -345,6 +376,22 @@ impl UsagePoller {
     #[must_use]
     pub const fn homes(&self) -> &ProviderHomes {
         &self.homes
+    }
+
+    /// Compose the real home resolver with an injected exact-provider reporter.
+    ///
+    /// This seam exists for black-box contract tests: the reporter receives
+    /// only the persisted non-secret profile and exact provider alias, never a
+    /// token, endpoint or resolved home.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_exact_reporter(
+        state_root: &Path,
+        reporter: Arc<dyn ExactProviderUsageReporter>,
+    ) -> Self {
+        let mut poller = Self::discover(state_root);
+        poller.exact_reporter = Some(reporter);
+        poller
     }
 
     /// Ask one account's provider for its current usage.
@@ -389,7 +436,7 @@ impl UsagePoller {
         let Some((api, token)) = detect(home) else {
             return Err(ProviderUsageProbeFailure::Unauthorized);
         };
-        self.request(api, token).await
+        self.request(api, token, false).await
     }
 
     /// Probe the vendor fixed by an exact configured provider route.
@@ -402,6 +449,9 @@ impl UsagePoller {
         profile: &AccountProfile,
         provider: &str,
     ) -> Result<UsageReading, ProviderUsageProbeFailure> {
+        if let Some(reporter) = self.exact_reporter.as_ref() {
+            return reporter.probe(profile, provider).await;
+        }
         if profile.credential_ref.kind != CredentialReferenceKind::ConfigHome {
             return Err(ProviderUsageProbeFailure::Unsupported);
         }
@@ -411,13 +461,14 @@ impl UsagePoller {
         let api =
             ProviderApi::for_provider(provider).ok_or(ProviderUsageProbeFailure::Unsupported)?;
         let token = access_token(home, api).map_err(|_| ProviderUsageProbeFailure::Unauthorized)?;
-        self.request(api, token).await
+        self.request(api, token, true).await
     }
 
     async fn request(
         &self,
         api: ProviderApi,
         token: SecretString,
+        strict: bool,
     ) -> Result<UsageReading, ProviderUsageProbeFailure> {
         let mut request = self
             .client
@@ -443,8 +494,12 @@ impl UsagePoller {
             .bytes()
             .await
             .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
-        api.read(&body)
-            .map_err(|_| ProviderUsageProbeFailure::Unsupported)
+        if strict {
+            api.read_strict(&body)
+        } else {
+            api.read(&body)
+        }
+        .map_err(|_| ProviderUsageProbeFailure::Unsupported)
     }
 }
 

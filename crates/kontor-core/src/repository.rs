@@ -2582,10 +2582,13 @@ pub trait CapacityRepository {
         provider: &str,
     ) -> RepositoryResult<Option<ProviderUsageObservation>>;
 
-    /// Resolve one explicit probe replay without touching the provider.
+    /// Resolve one explicit probe replay globally without touching the provider.
+    ///
+    /// Probe keys are globally unique. The returned observation therefore
+    /// carries the stored project, account and provider that a caller must
+    /// compare before resolving any credential or contacting a vendor.
     fn provider_usage_observation_by_key(
         &self,
-        project_id: ProjectId,
         key: &IdempotencyKey,
     ) -> RepositoryResult<Option<(ProviderUsageObservation, ContentHash)>>;
 

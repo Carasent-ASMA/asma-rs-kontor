@@ -7268,9 +7268,9 @@ impl CapacityRepository for SqliteStore {
                     &format!(
                         "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}, intent_hash
                          FROM provider_usage_observations
-                         WHERE project_id = ?1 AND idempotency_key = ?2"
+                         WHERE idempotency_key = ?1"
                     ),
-                    params![observation.project_id.to_string(), key.as_str()],
+                    params![key.as_str()],
                     |row| {
                         let observation =
                             read_provider_usage_observation(row).map_err(|error| {
@@ -7283,7 +7283,10 @@ impl CapacityRepository for SqliteStore {
                 .map_err(backend)?;
             if let Some((stored, intent_hash)) = replay {
                 let intent_hash = ContentHash::parse(&intent_hash)?;
-                if Some(&intent_hash) != request.intent_hash.as_ref() {
+                let same_subject = stored.project_id == observation.project_id
+                    && stored.account_profile_id == observation.account_profile_id
+                    && stored.provider == observation.provider;
+                if !same_subject || Some(&intent_hash) != request.intent_hash.as_ref() {
                     return Err(RepositoryError::Conflict {
                         subject: "provider usage probe",
                         rule: "the idempotency key was already used for a different operation",
@@ -7389,7 +7392,6 @@ impl CapacityRepository for SqliteStore {
 
     fn provider_usage_observation_by_key(
         &self,
-        project_id: ProjectId,
         key: &IdempotencyKey,
     ) -> RepositoryResult<Option<(ProviderUsageObservation, ContentHash)>> {
         let observation: Option<RepositoryResult<(ProviderUsageObservation, ContentHash)>> = self
@@ -7398,9 +7400,9 @@ impl CapacityRepository for SqliteStore {
                 &format!(
                     "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}, intent_hash
                      FROM provider_usage_observations
-                     WHERE project_id = ?1 AND idempotency_key = ?2"
+                     WHERE idempotency_key = ?1"
                 ),
-                params![project_id.to_string(), key.as_str()],
+                params![key.as_str()],
                 |row| {
                     Ok(
                         read_provider_usage_observation(row).and_then(|observation| {

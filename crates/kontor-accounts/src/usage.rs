@@ -253,6 +253,89 @@ pub fn read_chatgpt_usage(provider: &str, body: &[u8]) -> Result<UsageReading, U
     })
 }
 
+/// Read a ChatGPT usage response for an admission preflight.
+///
+/// The background collector deliberately tolerates additive and partially
+/// deployed vendor shapes. Admission cannot: an absent `rate_limit` or its
+/// explicit `limit_reached` fact must not become a fresh `Available` proof.
+/// A stated refusal with no usable reset is still a valid blocking `Unknown`
+/// reading rather than a parser failure.
+///
+/// # Errors
+/// [`UsageFailure::Unreadable`] when the document does not carry the minimum
+/// catalogued account-level quota facts needed for admission.
+pub fn read_chatgpt_usage_strict(
+    provider: &str,
+    body: &[u8],
+) -> Result<UsageReading, UsageFailure> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| UsageFailure::Unreadable)?;
+    let rate_limit = value
+        .as_object()
+        .and_then(|root| root.get("rate_limit"))
+        .and_then(serde_json::Value::as_object)
+        .ok_or(UsageFailure::Unreadable)?;
+    let limit_reached = rate_limit
+        .get("limit_reached")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or(UsageFailure::Unreadable)?;
+    let mut catalogued_fact = limit_reached;
+    let mut resetless_spent_window = false;
+    for key in ["primary_window", "secondary_window"] {
+        let Some(window) = rate_limit.get(key) else {
+            continue;
+        };
+        if window.is_null() {
+            continue;
+        }
+        catalogued_fact = true;
+        let window = window.as_object().ok_or(UsageFailure::Unreadable)?;
+        let used = window
+            .get("used_percent")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(UsageFailure::Unreadable)?;
+        let reset_is_usable = window
+            .get("reset_at")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|instant| instant > 0);
+        if !reset_is_usable && used >= i64::from(SPENT_PERCENT) {
+            resetless_spent_window = true;
+        }
+        if !reset_is_usable && !limit_reached && used < i64::from(SPENT_PERCENT) {
+            return Err(UsageFailure::Unreadable);
+        }
+    }
+    if let Some(credits) = value.get("credits") {
+        catalogued_fact = true;
+        let credits = credits.as_object().ok_or(UsageFailure::Unreadable)?;
+        for field in ["has_credits", "unlimited", "overage_limit_reached"] {
+            if !credits
+                .get(field)
+                .is_some_and(serde_json::Value::is_boolean)
+            {
+                return Err(UsageFailure::Unreadable);
+            }
+        }
+    }
+    if !catalogued_fact {
+        return Err(UsageFailure::Unreadable);
+    }
+    let mut reading = read_chatgpt_usage(provider, body)?;
+    if value.get("credits").is_none() {
+        // The compatible reader's empty document default is conservative for
+        // background collection. Admission may not turn an absent balance
+        // section into evidence that prepaid credit is exhausted.
+        reading.credits_exhausted = false;
+    }
+    if resetless_spent_window {
+        // A contradictory or lagging top-level flag cannot erase the only
+        // concrete account-level fact in the response: a fully consumed
+        // allowance with no usable reset is blocking `Unknown` evidence.
+        reading.limit_reached = true;
+    }
+    Ok(reading)
+}
+
 /// The fields Kontor reads out of a ChatGPT usage response.
 ///
 /// `deny_unknown_fields` is deliberately **absent**: the live document carries
@@ -373,6 +456,53 @@ pub fn read_claude_usage(provider: &str, body: &[u8]) -> Result<UsageReading, Us
     })
 }
 
+/// Read a Claude usage response for an admission preflight.
+///
+/// At least one account-level window with a parseable utilisation is required.
+/// A spent window whose reset is absent or unusable is retained as the blocking
+/// fact `limit_reached = true` even though it cannot become a [`QuotaWindow`];
+/// [`observe`] consequently returns `Unknown`, never `Available`.
+///
+/// # Errors
+/// [`UsageFailure::Unreadable`] for an empty, model-only, malformed or
+/// otherwise incomplete account-level document.
+pub fn read_claude_usage_strict(provider: &str, body: &[u8]) -> Result<UsageReading, UsageFailure> {
+    let document: ClaudeDocument =
+        serde_json::from_slice(body).map_err(|_| UsageFailure::Unreadable)?;
+    let reported = [
+        (FIVE_HOUR_MINUTES, document.five_hour),
+        (SEVEN_DAY_MINUTES, document.seven_day),
+    ];
+    if reported.iter().all(|(_, window)| window.is_none()) {
+        return Err(UsageFailure::Unreadable);
+    }
+    let mut limit_reached = false;
+    let mut windows = Vec::new();
+    for (minutes, reported_window) in reported {
+        let Some(reported_window) = reported_window else {
+            continue;
+        };
+        let used = reported_window
+            .strict_percent()
+            .ok_or(UsageFailure::Unreadable)?;
+        let instant = reported_window.instant();
+        if used >= SPENT_PERCENT {
+            limit_reached = true;
+        } else if instant.is_none() {
+            return Err(UsageFailure::Unreadable);
+        }
+        if let Some(window) = window(minutes, used, instant) {
+            windows.push(window);
+        }
+    }
+    Ok(UsageReading {
+        provider: provider.to_owned(),
+        limit_reached,
+        windows,
+        credits_exhausted: false,
+    })
+}
+
 /// The fields Kontor reads out of a Claude usage response.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -391,10 +521,11 @@ struct ClaudeWindow {
 
 impl ClaudeWindow {
     fn percent(&self) -> u8 {
-        self.utilization
-            .as_ref()
-            .and_then(LooseNumber::percent)
-            .unwrap_or(0)
+        self.strict_percent().unwrap_or(0)
+    }
+
+    fn strict_percent(&self) -> Option<u8> {
+        self.utilization.as_ref().and_then(LooseNumber::percent)
     }
 
     fn instant(&self) -> Option<Timestamp> {
@@ -643,6 +774,48 @@ mod tests {
         assert_eq!(observe(&read).kind, ProviderQuotaKind::Unknown);
     }
 
+    #[test]
+    fn strict_chatgpt_refuses_empty_or_incomplete_documents_but_keeps_a_resetless_refusal_blocking()
+    {
+        assert_eq!(
+            read_chatgpt_usage_strict("codex", b"{}").expect_err("empty is not evidence"),
+            UsageFailure::Unreadable
+        );
+        assert_eq!(
+            read_chatgpt_usage_strict("codex", br#"{"rate_limit": {}}"#)
+                .expect_err("an unstated disposition is not evidence"),
+            UsageFailure::Unreadable
+        );
+        assert_eq!(
+            read_chatgpt_usage_strict("codex", br#"{"rate_limit": {"limit_reached": false}}"#,)
+                .expect_err("an available flag without an allowance is incomplete"),
+            UsageFailure::Unreadable
+        );
+        let blocked = read_chatgpt_usage_strict(
+            "codex",
+            br#"{"rate_limit": {"limit_reached": false,
+                    "primary_window": {"used_percent": 100, "reset_at": 0}}}"#,
+        )
+        .expect("a resetless spent window remains usable blocking evidence");
+        assert!(blocked.limit_reached);
+        assert!(blocked.windows.is_empty());
+        assert_eq!(observe(&blocked).kind, ProviderQuotaKind::Unknown);
+    }
+
+    #[test]
+    fn strict_chatgpt_accepts_a_complete_available_control() {
+        let reading = read_chatgpt_usage_strict(
+            "codex",
+            br#"{"rate_limit": {"limit_reached": false,
+                    "primary_window": {"used_percent": 9,
+                                       "limit_window_seconds": 18000,
+                                       "reset_at": 1787421242}}}"#,
+        )
+        .expect("the catalogued account-level shape reads");
+        assert_eq!(observe(&reading).kind, ProviderQuotaKind::Available);
+        assert_eq!(reading.windows, vec![session(9, 1_787_421_242)]);
+    }
+
     // -- the Claude reader ---------------------------------------------------
 
     #[test]
@@ -739,5 +912,47 @@ mod tests {
         let read = read_claude_usage("claude", b"{}").expect("the document reads");
         assert!(read.windows.is_empty());
         assert_eq!(observe(&read).kind, ProviderQuotaKind::Available);
+    }
+
+    #[test]
+    fn strict_claude_refuses_empty_model_only_and_incomplete_documents() {
+        for body in [
+            br#"{}"#.as_slice(),
+            br#"{"seven_day_opus": {"utilization": 10,
+                    "resets_at": "2026-08-25T09:00:00Z"}}"#,
+            br#"{"five_hour": {"resets_at": "2026-08-22T18:00:00Z"}}"#,
+        ] {
+            assert_eq!(
+                read_claude_usage_strict("claude", body)
+                    .expect_err("incomplete account evidence is refused"),
+                UsageFailure::Unreadable
+            );
+        }
+    }
+
+    #[test]
+    fn strict_claude_keeps_a_spent_resetless_window_blocking() {
+        let reading = read_claude_usage_strict(
+            "claude",
+            br#"{"seven_day": {"utilization": 100, "resets_at": null}}"#,
+        )
+        .expect("the spent fact is useful even without a reset");
+        assert!(reading.limit_reached);
+        assert!(reading.windows.is_empty());
+        assert_eq!(observe(&reading).kind, ProviderQuotaKind::Unknown);
+    }
+
+    #[test]
+    fn strict_claude_accepts_a_complete_available_control() {
+        let reading = read_claude_usage_strict(
+            "claude",
+            br#"{"five_hour": {"utilization": 40,
+                                 "resets_at": "2026-08-22T18:00:00Z"},
+                    "seven_day": {"utilization": 61,
+                                  "resets_at": "2026-08-25T09:00:00Z"}}"#,
+        )
+        .expect("the catalogued account-level shape reads");
+        assert_eq!(observe(&reading).kind, ProviderQuotaKind::Available);
+        assert_eq!(reading.windows.len(), 2);
     }
 }

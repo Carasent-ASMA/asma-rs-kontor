@@ -442,6 +442,9 @@ pub struct Services {
     runtime_roots: PathBuf,
     /// The only component allowed to resolve approved provider credential homes.
     usage_poller: crate::usage::UsagePoller,
+    /// Serializes explicit provider probes so concurrent first use of one
+    /// global idempotency key cannot contact the vendor twice.
+    provider_probe_guard: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Services {
@@ -488,6 +491,7 @@ impl Services {
             capacity,
             runtime_roots,
             usage_poller,
+            provider_probe_guard: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -11795,6 +11799,12 @@ impl ApplicationOperations for Services {
         account_profile_id: AccountProfileId,
         request: &ProbeProviderQuotaRequest,
     ) -> Result<ProviderUsageObservationDto, ApiError> {
+        // The durable observation is the replay claim. Holding this guard from
+        // lookup through append makes the first successful caller publish that
+        // claim before any concurrent caller can resolve a home or call a
+        // vendor. A restart after an uncommitted failure safely retries because
+        // there is no success observation to replay.
+        let _probe_guard = self.provider_probe_guard.lock().await;
         let state = self.state()?;
         let _project = self.project_row(project_id)?;
         kontor_core::id::validate_open_key("provider", &request.provider)
@@ -11807,10 +11817,13 @@ impl ApplicationOperations for Services {
             "provider": request.provider,
         }))?;
         if let Some((observation, stored_intent)) = state
-            .with_store(|store| store.provider_usage_observation_by_key(project_id, key))
+            .with_store(|store| store.provider_usage_observation_by_key(key))
             .map_err(|error| self.refuse(&error))?
         {
-            if stored_intent != *intent.hash() {
+            let same_subject = observation.project_id == project_id
+                && observation.account_profile_id == account_profile_id
+                && observation.provider == request.provider;
+            if !same_subject || stored_intent != *intent.hash() {
                 return Err(self.deny(
                     ApiErrorCode::IdempotencyConflict,
                     "the idempotency key was already used for a different operation",
