@@ -1426,6 +1426,36 @@ async fn prelaunch_refuses_a_paseo_provisioned_worktree() {
 }
 
 #[tokio::test]
+async fn prelaunch_adopts_only_the_exact_configured_paseo_worktree() {
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED));
+    let mut configured = config();
+    configured
+        .adopted_containers
+        .insert(node(NODE_B), external(WORKSPACE_ID));
+    let plane = Plane::build_with_config(
+        recorded,
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        configured,
+    );
+    plane
+        .adapter
+        .prepare_project("cmd-1", &project_name())
+        .await
+        .expect("project");
+    let workspace = plane
+        .prepare_workspace()
+        .await
+        .expect("the exact configured native workspace is adopted");
+
+    plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the explicitly adopted workspace remains placement-safe");
+    assert_eq!(plane.daemon.count("agent run"), 1);
+}
+
+#[tokio::test]
 async fn prelaunch_refuses_a_workspace_with_no_id() {
     let recorded = daemon();
     recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_NO_ID));

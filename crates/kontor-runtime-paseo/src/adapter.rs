@@ -1491,6 +1491,12 @@ impl PaseoAdapter {
     /// worktree, the project root or any other non-worktree place, a tree Paseo
     /// provisioned for itself instead of registering the one Kontor prepared,
     /// and a workspace with no id at all.
+    ///
+    /// The one ownership exception is an operator-configured exact native id.
+    /// That is the same explicit adoption boundary used for existing projects:
+    /// path, project and kind still have to match, while the immutable native
+    /// identity is named ahead of the readback. An ownership bit alone never
+    /// widens placement.
     fn verify_workspace_placement(
         &self,
         workspace: &PaseoWorkspace,
@@ -1518,7 +1524,13 @@ impl PaseoAdapter {
                 rule: "a ticket role may not be placed in a root or plain local workspace",
             });
         }
-        if workspace.is_paseo_owned_worktree() {
+        let configured_adoption = ExternalId::parse(&workspace.id).is_ok_and(|workspace_id| {
+            self.config
+                .adopted_containers
+                .values()
+                .any(|native_id| native_id == &workspace_id)
+        });
+        if workspace.is_paseo_owned_worktree() && !configured_adoption {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "Paseo provisioned its own worktree instead of registering the prepared one",
             });
@@ -6493,6 +6505,64 @@ mod task_scope_tests {
             adapter.verify_workspace_placement(&workspace, &project, &root),
             Err(RuntimeError::WorkspaceMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn only_an_explicitly_configured_owned_worktree_is_adopted() {
+        let project = PaseoProjectBinding {
+            mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                .expect("epic"),
+            host_key: ExternalName::parse("fixture-host").expect("host"),
+            project_id: ExternalId::parse("prj_epic").expect("project"),
+            observed_name: "Epic · ASMA-7869 · Kontor Operational MVP".to_owned(),
+        };
+        let root = WorkspaceRoot::parse("/repo/op-01").expect("worktree");
+        let workspace = PaseoWorkspace {
+            id: "wks_existing".to_owned(),
+            project_id: "prj_epic".to_owned(),
+            workspace_directory: "/repo/op-01".to_owned(),
+            workspace_kind: PaseoWorkspaceKind::Worktree,
+            name: "TSW · ASMA-7870 · OP-01".to_owned(),
+            title: None,
+            git_runtime: Some(crate::wire::PaseoGitRuntime {
+                is_paseo_owned_worktree: true,
+            }),
+        };
+
+        assert!(matches!(
+            adapter().verify_workspace_placement(&workspace, &project, &root),
+            Err(RuntimeError::WorkspaceMismatch { .. })
+        ));
+
+        let mut adopted_containers = BTreeMap::new();
+        adopted_containers.insert(
+            TopologyNodeId::parse("01890000-0000-7000-8000-0000000000d1").expect("node"),
+            ExternalId::parse("wks_existing").expect("workspace"),
+        );
+        let adapter = PaseoAdapter::new(
+            PaseoConfig {
+                runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
+                host_key: ExternalName::parse("fixture-host").expect("host"),
+                mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                    .expect("epic selector"),
+                scope: scope(),
+                max_concurrent_sessions: 8,
+                unavailable_providers: BTreeSet::new(),
+                provider_selects_account: false,
+                provider_fallbacks: BTreeMap::new(),
+                adopted_containers,
+                seat_mcp: None,
+            },
+            Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
+            PaseoCheckpoint::fresh(
+                1,
+                ExternalName::parse("fixture-host").expect("checkpoint host"),
+            ),
+        )
+        .expect("the fixture adapter builds");
+        adapter
+            .verify_workspace_placement(&workspace, &project, &root)
+            .expect("the exact configured native workspace is adoptable");
     }
 
     /// Imported epics used to leak their Kontor `MiniProjectId` into the public
