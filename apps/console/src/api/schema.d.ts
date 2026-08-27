@@ -1635,6 +1635,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/quota:probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Probe one exact configured account through the daemon-owned credential seam. */
+        post: operations["probe_provider_quota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend": {
         parameters: {
             query?: never;
@@ -5458,6 +5475,16 @@ export interface components {
             /** @description The title it was addressed by. */
             title: string;
         };
+        /**
+         * @description Select one exact provider route of the addressed configured account.
+         *
+         *     The value can only select an alias already frozen on the account profile; it
+         *     cannot choose an endpoint, credential or home.
+         */
+        ProbeProviderQuotaRequest: {
+            /** @description The exact selectable provider route to refresh. */
+            provider: string;
+        };
         /** @description Publish one revalidated definition as an immutable revision. */
         ProfileApplyRequest: {
             /** @description The complete definition to publish. */
@@ -5841,6 +5868,25 @@ export interface components {
             /** @description `available`, `exhausted`, `drained`, `unknown` or `cannot_report`. */
             state: string;
             /** @description Every concurrent window observed on this pair, ordered by kind. */
+            windows: components["schemas"]["QuotaWindowDto"][];
+        };
+        /** @description One immutable, redacted successful provider-usage observation. */
+        ProviderUsageObservationDto: {
+            /** @description The exact configured account that answered. */
+            account_profile_id: string;
+            /** @description Digest of provider evidence. Raw provider output is never retained. */
+            evidence_hash: string;
+            /** @description The immutable freshness evidence row. */
+            observation_id: string;
+            /** @description Freshness instant of this successful provider report. */
+            observed_at: string;
+            /** @description The exact selectable provider route this reading applies to. */
+            provider: string;
+            /** @description Reset instant derived for an exhausted response. */
+            resets_at?: string | null;
+            /** @description State derived from the successful response. */
+            state: string;
+            /** @description Concurrent windows derived from the successful response. */
             windows: components["schemas"]["QuotaWindowDto"][];
         };
         /**
@@ -12293,6 +12339,79 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    probe_provider_quota: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact configured account */
+                account_profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeProviderQuotaRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderUsageObservationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

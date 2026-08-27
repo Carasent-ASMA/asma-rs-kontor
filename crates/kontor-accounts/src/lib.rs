@@ -81,4 +81,7 @@ pub use resolver::{
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
     ResolverPolicyBuilder, SystemKeychain,
 };
-pub use usage::{UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage};
+pub use usage::{
+    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_chatgpt_usage_strict,
+    read_claude_usage, read_claude_usage_strict,
+};

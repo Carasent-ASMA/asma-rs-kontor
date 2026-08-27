@@ -259,6 +259,12 @@ entity_ids! {
     /// separate records, and this is what lets the derived answer cite the
     /// observation it came from.
     CapacityObservationId,
+    /// Identifies one immutable successful provider-usage poll.
+    ///
+    /// A new observation is appended even when the provider returned the same
+    /// usage digest. Its identity is therefore the durable freshness proof; it
+    /// is never used as the mutable quota-state identity.
+    ProviderUsageObservationId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {

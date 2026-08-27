@@ -9,14 +9,15 @@
 
 use kontor_core::id::{
     AccountProfileId, AggregateRevision, CanonicalDocument, CapacityObservationId, ContentHash,
-    CredentialAlias, ExternalName, ProjectId, RuntimeKindKey, Timestamp, parse_utc_timestamp,
+    CredentialAlias, ExternalName, IdempotencyKey, ProjectId, ProviderUsageObservationId,
+    RuntimeKindKey, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::id::{CurrencyCode, Money};
 use kontor_core::quota::{CreditBalance, HeadroomThresholds, QuotaWindow, QuotaWindowKind};
 use kontor_core::repository::{
     CapacityRepository, CredentialReference, CredentialReferenceKind, NewAccountProfile,
     NewAvailabilityOverride, NewCapacityObservation, NewProject, NewProviderQuotaState,
-    ProjectRepository, RepositoryError,
+    NewProviderUsageObservation, ProjectRepository, ProviderUsageObservation, RepositoryError,
 };
 use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
 use kontor_store::SqliteStore;
@@ -663,4 +664,239 @@ fn a_provider_that_cannot_report_headroom_is_storable_and_does_not_block() {
             .state,
         ProviderQuotaKind::CannotReport
     );
+}
+
+#[test]
+fn an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn() {
+    let fixture = fixture();
+    let first_at = at("2026-08-27T16:57:15Z");
+    let second_at = at("2026-08-27T17:02:15Z");
+    let evidence = ContentHash::of(b"one unchanged provider report");
+    let windows = vec![QuotaWindow {
+        kind: QuotaWindowKind::Weekly,
+        resets_at: at("2026-09-03T17:00:00Z"),
+        used_percent: 42,
+    }];
+    let observation = |id, observed_at| ProviderUsageObservation {
+        id,
+        project_id: fixture.project_id,
+        account_profile_id: fixture.account_profile_id,
+        provider: "claude-work".into(),
+        evidence_hash: evidence.clone(),
+        state: ProviderQuotaKind::Available,
+        resets_at: None,
+        windows: windows.clone(),
+        observed_at,
+    };
+    let first = fixture
+        .store
+        .record_provider_usage_observation(&NewProviderUsageObservation {
+            observation: observation(ProviderUsageObservationId::generate(), first_at),
+            quota_state: Some(NewProviderQuotaState {
+                project_id: fixture.project_id,
+                account_profile_id: fixture.account_profile_id,
+                provider: "claude-work".into(),
+                state: ProviderQuotaKind::Available,
+                resets_at: None,
+                windows: windows.clone(),
+                credit: None,
+                evidence_hash: evidence.clone(),
+                source: ProviderQuotaSource::ProviderReport,
+                observed_at: first_at,
+                expected_revision: AggregateRevision::INITIAL,
+                updated_at: first_at,
+            }),
+            idempotency_key: None,
+            intent_hash: None,
+        })
+        .expect("the first provider report commits");
+    let second = fixture
+        .store
+        .record_provider_usage_observation(&NewProviderUsageObservation {
+            observation: observation(ProviderUsageObservationId::generate(), second_at),
+            quota_state: None,
+            idempotency_key: None,
+            intent_hash: None,
+        })
+        .expect("the unchanged heartbeat appends");
+    assert_ne!(first.id, second.id);
+    let quota = fixture
+        .store
+        .list_provider_quota_states(fixture.project_id)
+        .expect("the projection reads")
+        .pop()
+        .expect("the projection exists");
+    assert_eq!(quota.revision, AggregateRevision::INITIAL);
+    assert_eq!(
+        quota.observed_at, first_at,
+        "the unchanged digest does not churn the projection"
+    );
+    let latest = fixture
+        .store
+        .latest_provider_usage_observation(
+            fixture.project_id,
+            fixture.account_profile_id,
+            "claude-work",
+        )
+        .expect("the exact latest observation reads")
+        .expect("the heartbeat exists");
+    assert_eq!(latest.id, second.id);
+    assert_eq!(latest.observed_at, second_at);
+    assert_eq!(latest.evidence_hash, quota.evidence_hash);
+}
+
+#[test]
+fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_intent() {
+    let fixture = fixture();
+    let key = IdempotencyKey::parse("probe-exact-claude-work").expect("a key");
+    let intent = ContentHash::of(b"exact project account and provider");
+    let evidence = ContentHash::of(b"provider answer");
+    let original = ProviderUsageObservation {
+        id: ProviderUsageObservationId::generate(),
+        project_id: fixture.project_id,
+        account_profile_id: fixture.account_profile_id,
+        provider: "claude-work".into(),
+        evidence_hash: evidence.clone(),
+        state: ProviderQuotaKind::Available,
+        resets_at: None,
+        windows: Vec::new(),
+        observed_at: at("2026-08-27T17:05:00Z"),
+    };
+    let stored = fixture
+        .store
+        .record_provider_usage_observation(&NewProviderUsageObservation {
+            observation: original.clone(),
+            quota_state: Some(NewProviderQuotaState {
+                project_id: fixture.project_id,
+                account_profile_id: fixture.account_profile_id,
+                provider: "claude-work".into(),
+                state: ProviderQuotaKind::Available,
+                resets_at: None,
+                windows: Vec::new(),
+                credit: None,
+                evidence_hash: evidence,
+                source: ProviderQuotaSource::ProviderReport,
+                observed_at: original.observed_at,
+                expected_revision: AggregateRevision::INITIAL,
+                updated_at: original.observed_at,
+            }),
+            idempotency_key: Some(key.clone()),
+            intent_hash: Some(intent.clone()),
+        })
+        .expect("the explicit probe records");
+    let replayed = fixture
+        .store
+        .record_provider_usage_observation(&NewProviderUsageObservation {
+            observation: ProviderUsageObservation {
+                id: ProviderUsageObservationId::generate(),
+                observed_at: at("2026-08-27T17:06:00Z"),
+                ..original.clone()
+            },
+            quota_state: None,
+            idempotency_key: Some(key.clone()),
+            intent_hash: Some(intent.clone()),
+        })
+        .expect("the exact command replays");
+    assert_eq!(replayed.id, stored.id);
+    let by_key = fixture
+        .store
+        .provider_usage_observation_by_key(&key)
+        .expect("the key reads")
+        .expect("the binding exists");
+    assert_eq!(by_key, (stored.clone(), intent.clone()));
+
+    let second_project = ProjectId::generate();
+    let second_account = AccountProfileId::generate();
+    fixture
+        .store
+        .create_project(&NewProject {
+            id: second_project,
+            name: name("Second quota project"),
+            root_path: name("/tmp/second-quota-project"),
+            created_at: at("2026-08-27T17:06:30Z"),
+        })
+        .expect("the second project is created");
+    fixture
+        .store
+        .create_account_profile(&NewAccountProfile {
+            id: second_account,
+            project_id: second_project,
+            label: name("Second account"),
+            external_account_id: None,
+            harness: RuntimeKindKey::parse("paseo").expect("a valid runtime kind"),
+            credential_ref: CredentialReference {
+                kind: CredentialReferenceKind::ConfigHome,
+                alias: CredentialAlias::parse("secondary").expect("a valid alias"),
+            },
+            environment: document(serde_json::json!({ "schema_version": 1 })),
+            routing: document(serde_json::json!({ "schema_version": 1 })),
+            capability: document(serde_json::json!({ "schema_version": 1 })),
+            provider_identity: None,
+            enabled: true,
+            created_at: at("2026-08-27T17:06:30Z"),
+        })
+        .expect("the second account is created");
+    let cross_project =
+        fixture
+            .store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id: second_project,
+                    account_profile_id: second_account,
+                    provider: "claude-work".into(),
+                    evidence_hash: ContentHash::of(b"a second provider answer"),
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    observed_at: at("2026-08-27T17:06:31Z"),
+                },
+                quota_state: None,
+                idempotency_key: Some(key.clone()),
+                intent_hash: Some(ContentHash::of(b"second project intent")),
+            });
+    assert!(matches!(
+        cross_project,
+        Err(RepositoryError::Conflict {
+            subject: "provider usage probe",
+            ..
+        })
+    ));
+    assert!(
+        fixture
+            .store
+            .list_provider_quota_states(second_project)
+            .expect("the second projection reads")
+            .is_empty(),
+        "global replay conflict happens before quota projection"
+    );
+    assert!(
+        fixture
+            .store
+            .latest_provider_usage_observation(second_project, second_account, "claude-work")
+            .expect("the second observation reads")
+            .is_none(),
+        "global replay conflict appends no second observation"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .provider_usage_observation_by_key(&key)
+            .expect("the global key reads")
+            .expect("the original remains"),
+        (stored, intent)
+    );
+    let conflict = fixture
+        .store
+        .record_provider_usage_observation(&NewProviderUsageObservation {
+            observation: ProviderUsageObservation {
+                id: ProviderUsageObservationId::generate(),
+                observed_at: at("2026-08-27T17:07:00Z"),
+                ..original
+            },
+            quota_state: None,
+            idempotency_key: Some(key),
+            intent_hash: Some(ContentHash::of(b"another provider route")),
+        });
+    assert!(matches!(conflict, Err(RepositoryError::Conflict { .. })));
 }

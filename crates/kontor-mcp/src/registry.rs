@@ -3630,6 +3630,35 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Record one account's quota state for one provider, so launches route around it.",
     },
+    ToolSpec {
+        name: "kontor_provider_quota_probe",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/quota:probe",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "account_profile_id",
+                Place::Path,
+                ArgType::AccountProfileId,
+                "The exact configured account to ask.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "provider",
+                Place::Body,
+                ArgType::OpenKey,
+                "The exact selectable provider route to refresh; it cannot choose an endpoint.",
+            ),
+        ],
+        about: "Ask one exact configured account for fresh provider headroom and append immutable redacted evidence.",
+    },
     // ---- Native capacity: evidence is collected, never asserted ------------
     ToolSpec {
         name: "kontor_capacity_config_get",

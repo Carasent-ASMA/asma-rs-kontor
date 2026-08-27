@@ -40,14 +40,19 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
-use kontor_accounts::{UsageFailure, UsageReading, observe, read_chatgpt_usage, read_claude_usage};
+use async_trait::async_trait;
+use kontor_accounts::{
+    UsageFailure, UsageReading, observe, read_chatgpt_usage, read_chatgpt_usage_strict,
+    read_claude_usage, read_claude_usage_strict,
+};
 use kontor_api::state::ApiState;
-use kontor_core::id::{ContentHash, CredentialAlias};
+use kontor_core::id::{ContentHash, CredentialAlias, IdempotencyKey, ProviderUsageObservationId};
 use kontor_core::repository::{
     AccountProfile, CapacityRepository, CredentialReferenceKind, NewProviderQuotaState,
-    ProjectRepository,
+    NewProviderUsageObservation, ProjectRepository, ProviderUsageObservation, RepositoryError,
 };
 use kontor_core::spec::ProviderQuotaSource;
 use secrecy::{ExposeSecret, SecretString};
@@ -102,6 +107,15 @@ impl ProviderApi {
         }
     }
 
+    /// Resolve an exact selectable route to its closed vendor family.
+    fn for_provider(provider: &str) -> Option<Self> {
+        match crate::applications::provider_family(provider) {
+            "codex" => Some(Self::Codex),
+            "claude" => Some(Self::Claude),
+            _ => None,
+        }
+    }
+
     /// The credential file inside a home, and the path to the token within it.
     const fn credential(self) -> (&'static str, &'static [&'static str]) {
         match self {
@@ -123,6 +137,15 @@ impl ProviderApi {
         match self {
             Self::Codex => read_chatgpt_usage(self.provider(), body),
             Self::Claude => read_claude_usage(self.provider(), body),
+        }
+    }
+
+    /// Read the provider report as admission evidence, where an absent field
+    /// cannot be defaulted into fresh headroom.
+    fn read_strict(self, body: &[u8]) -> Result<UsageReading, UsageFailure> {
+        match self {
+            Self::Codex => read_chatgpt_usage_strict(self.provider(), body),
+            Self::Claude => read_claude_usage_strict(self.provider(), body),
         }
     }
 }
@@ -300,6 +323,36 @@ fn detect(home: &Path) -> Option<(ProviderApi, SecretString)> {
 pub struct UsagePoller {
     homes: ProviderHomes,
     client: reqwest::Client,
+    exact_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
+}
+
+/// A redacted, closed failure from one explicit provider usage probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProviderUsageProbeFailure {
+    /// This account is not backed by an approved, pollable config home.
+    #[error("the account does not support provider usage probes")]
+    Unsupported,
+    /// The approved home has no usable credential, or the provider rejected it.
+    #[error("the provider did not authorize the account usage probe")]
+    Unauthorized,
+    /// The fixed vendor endpoint could not be reached successfully.
+    #[error("the provider usage endpoint could not be reached")]
+    Unreachable,
+}
+
+/// Non-secret reporter seam for one exact configured account/provider route.
+///
+/// Production leaves this unimplemented and uses the daemon-owned home/token
+/// resolver below. Contract tests inject a scripted reporter so they can prove
+/// request cardinality and typed failures without possessing any credential.
+#[async_trait]
+pub trait ExactProviderUsageReporter: fmt::Debug + Send + Sync {
+    /// Return one normalized provider report or a closed redacted failure.
+    async fn probe(
+        &self,
+        profile: &AccountProfile,
+        provider: &str,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure>;
 }
 
 impl UsagePoller {
@@ -315,6 +368,7 @@ impl UsagePoller {
                 .timeout(POLL_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
+            exact_reporter: None,
         }
     }
 
@@ -322,6 +376,22 @@ impl UsagePoller {
     #[must_use]
     pub const fn homes(&self) -> &ProviderHomes {
         &self.homes
+    }
+
+    /// Compose the real home resolver with an injected exact-provider reporter.
+    ///
+    /// This seam exists for black-box contract tests: the reporter receives
+    /// only the persisted non-secret profile and exact provider alias, never a
+    /// token, endpoint or resolved home.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_exact_reporter(
+        state_root: &Path,
+        reporter: Arc<dyn ExactProviderUsageReporter>,
+    ) -> Self {
+        let mut poller = Self::discover(state_root);
+        poller.exact_reporter = Some(reporter);
+        poller
     }
 
     /// Ask one account's provider for its current usage.
@@ -340,15 +410,66 @@ impl UsagePoller {
         &self,
         profile: &AccountProfile,
     ) -> Result<Option<UsageReading>, UsageFailure> {
+        match self.probe(profile).await {
+            Ok(reading) => Ok(Some(reading)),
+            Err(ProviderUsageProbeFailure::Unsupported) => Ok(None),
+            Err(ProviderUsageProbeFailure::Unauthorized) => Err(UsageFailure::Unauthorized),
+            Err(ProviderUsageProbeFailure::Unreachable) => Err(UsageFailure::Unreachable),
+        }
+    }
+
+    /// Ask one exact configured account for a fresh provider report.
+    ///
+    /// Unlike [`Self::poll`], an account that this build cannot poll is a typed
+    /// refusal. This is the operator-facing preflight used before placement.
+    /// No credential, home path, endpoint or response body leaves this method.
+    pub async fn probe(
+        &self,
+        profile: &AccountProfile,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure> {
         if profile.credential_ref.kind != CredentialReferenceKind::ConfigHome {
-            return Ok(None);
+            return Err(ProviderUsageProbeFailure::Unsupported);
         }
         let Some(home) = self.homes.get(&profile.credential_ref.alias) else {
-            return Ok(None);
+            return Err(ProviderUsageProbeFailure::Unsupported);
         };
         let Some((api, token)) = detect(home) else {
-            return Ok(None);
+            return Err(ProviderUsageProbeFailure::Unauthorized);
         };
+        self.request(api, token, false).await
+    }
+
+    /// Probe the vendor fixed by an exact configured provider route.
+    ///
+    /// A home can contain more than one credential document during migration.
+    /// Route identity therefore selects the vendor first; token-shape discovery
+    /// cannot silently turn a `claude-work` preflight into a Codex observation.
+    pub async fn probe_provider(
+        &self,
+        profile: &AccountProfile,
+        provider: &str,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure> {
+        if let Some(reporter) = self.exact_reporter.as_ref() {
+            return reporter.probe(profile, provider).await;
+        }
+        if profile.credential_ref.kind != CredentialReferenceKind::ConfigHome {
+            return Err(ProviderUsageProbeFailure::Unsupported);
+        }
+        let Some(home) = self.homes.get(&profile.credential_ref.alias) else {
+            return Err(ProviderUsageProbeFailure::Unsupported);
+        };
+        let api =
+            ProviderApi::for_provider(provider).ok_or(ProviderUsageProbeFailure::Unsupported)?;
+        let token = access_token(home, api).map_err(|_| ProviderUsageProbeFailure::Unauthorized)?;
+        self.request(api, token, true).await
+    }
+
+    async fn request(
+        &self,
+        api: ProviderApi,
+        token: SecretString,
+        strict: bool,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure> {
         let mut request = self
             .client
             .get(api.endpoint())
@@ -360,26 +481,31 @@ impl UsagePoller {
         let response = request
             .send()
             .await
-            .map_err(|_| UsageFailure::Unreachable)?;
+            .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
             || response.status() == reqwest::StatusCode::FORBIDDEN
         {
-            return Err(UsageFailure::Unauthorized);
+            return Err(ProviderUsageProbeFailure::Unauthorized);
         }
         if !response.status().is_success() {
-            return Err(UsageFailure::Unreachable);
+            return Err(ProviderUsageProbeFailure::Unreachable);
         }
         let body = response
             .bytes()
             .await
-            .map_err(|_| UsageFailure::Unreachable)?;
-        api.read(&body).map(Some)
+            .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
+        if strict {
+            api.read_strict(&body)
+        } else {
+            api.read(&body)
+        }
+        .map_err(|_| ProviderUsageProbeFailure::Unsupported)
     }
 }
 
 /// Poll every enabled account in every project once, and write what came back.
 ///
-/// Returns how many rows were written. Nothing here refuses: a project that
+/// Returns how many immutable observations were appended. Nothing here refuses: a project that
 /// cannot be read, an account that cannot be polled and a row that loses a
 /// compare-and-swap are each logged and stepped over, because the alternative is
 /// one unreachable account stopping the Realm from observing the others.
@@ -407,25 +533,45 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
             }
         };
         for profile in profiles.iter().filter(|profile| profile.enabled) {
-            match poller.poll(profile).await {
-                Ok(None) => {}
-                Ok(Some(reading)) => {
-                    written += record_for_profile(state, profile, &reading);
+            let aliases = match kontor_accounts::selectable_providers(profile) {
+                Ok(aliases) => aliases,
+                Err(error) => {
+                    warn!(account = %profile.id, detail = %error, "the account routing document is invalid; its usage poll is skipped");
+                    continue;
                 }
-                // A pollable account that would not answer is left exactly as it
-                // was. It is tempting to write `unknown` here, and wrong: the
-                // network being down is a fact about this machine, not about the
-                // account's allowance, and recording it would block a route that
-                // is fine.
-                Err(failure) => debug!(
-                    account = %profile.id,
-                    detail = %failure,
-                    "an account's usage endpoint did not answer; its quota state is left as it was"
-                ),
+            };
+            if aliases.is_empty() {
+                match poller.poll(profile).await {
+                    Ok(None) => {}
+                    Ok(Some(reading)) => written += record_for_profile(state, profile, &reading),
+                    Err(failure) => log_poll_failure(profile, &failure),
+                }
+                continue;
+            }
+            for provider in aliases {
+                match poller.probe_provider(profile, &provider).await {
+                    Ok(reading) => {
+                        if record_exact(state, profile, &provider, &reading, None, None).is_ok() {
+                            written += 1;
+                        }
+                    }
+                    Err(failure) => log_poll_failure(profile, &failure),
+                }
             }
         }
     }
     written
+}
+
+fn log_poll_failure(profile: &AccountProfile, failure: &impl fmt::Display) {
+    // A pollable account that would not answer is left exactly as it was. It
+    // is tempting to write `unknown` here, and wrong: the network being down is
+    // a fact about this machine, not about the account's allowance.
+    debug!(
+        account = %profile.id,
+        detail = %failure,
+        "an account's usage endpoint did not answer; its quota state is left as it was"
+    );
 }
 
 /// Record one account reading under the provider aliases that can select it.
@@ -446,6 +592,7 @@ fn record_for_profile(state: &ApiState, profile: &AccountProfile, reading: &Usag
     }
     aliases
         .into_iter()
+        .filter(|provider| crate::applications::provider_family(provider) == reading.provider)
         .filter(|provider| {
             let mut routed = reading.clone();
             routed.provider.clone_from(provider);
@@ -454,15 +601,32 @@ fn record_for_profile(state: &ApiState, profile: &AccountProfile, reading: &Usag
         .count()
 }
 
-/// Write one reading into `provider_quota_states`, if it says something new.
+/// Persist one reading as immutable freshness evidence.
 ///
-/// Returns whether a row was written. An unchanged reading is skipped rather
-/// than rewritten: the digest is over the numbers, so an identical digest means
-/// nothing about the account has moved, and bumping `revision` every five
-/// minutes would bury the one change an operator is looking for.
+/// The mutable quota projection changes only when the provider report changes,
+/// while every successful call appends a usage observation. This makes an
+/// unchanged five-minute poll provable without churning the projection revision.
 fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) -> bool {
+    record_exact(state, profile, &reading.provider, reading, None, None).is_ok()
+}
+
+/// Persist one successful exact-account report and its immutable heartbeat.
+///
+/// The explicit command key and intent hash are both present for an API probe,
+/// or both absent for the background collector. A changed quota projection and
+/// the heartbeat commit in one store transaction.
+pub fn record_exact(
+    state: &ApiState,
+    profile: &AccountProfile,
+    provider: &str,
+    reading: &UsageReading,
+    idempotency_key: Option<IdempotencyKey>,
+    intent_hash: Option<ContentHash>,
+) -> Result<ProviderUsageObservation, RepositoryError> {
     let now = kontor_api::now();
-    let observed = observe(reading);
+    let mut routed = reading.clone();
+    routed.provider = provider.to_owned();
+    let observed = observe(&routed);
     let evidence = reading.evidence();
 
     let existing = match state
@@ -473,15 +637,18 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
         }),
         Err(error) => {
             warn!(account = %profile.id, detail = %error, "provider quota states could not be read");
-            return false;
+            return Err(error);
         }
     };
 
-    let expected_revision = match &existing {
-        Some(row) if unchanged(row, &evidence) => return false,
-        Some(row) => row.revision,
-        None => kontor_core::id::AggregateRevision::INITIAL,
-    };
+    let changed = !existing
+        .as_ref()
+        .is_some_and(|row| unchanged(row, &evidence));
+    let expected_revision = existing
+        .as_ref()
+        .map_or(kontor_core::id::AggregateRevision::INITIAL, |row| {
+            row.revision
+        });
 
     // Observed windows replace the stored set, because a live reading is better
     // evidence than whatever was there. An **empty** reading does not: a
@@ -502,7 +669,7 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
     } else {
         reading.windows.clone()
     };
-    let request = NewProviderQuotaState {
+    let quota_state = changed.then(|| NewProviderQuotaState {
         project_id: profile.project_id,
         account_profile_id: profile.id,
         provider: observed.provider.clone(),
@@ -510,31 +677,41 @@ fn record(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) ->
         resets_at: observed.resets_at,
         windows,
         credit: existing.as_ref().and_then(|row| row.credit),
-        evidence_hash: evidence,
+        evidence_hash: evidence.clone(),
         source: ProviderQuotaSource::ProviderReport,
         observed_at: now,
         expected_revision,
         updated_at: now,
+    });
+    let observation = ProviderUsageObservation {
+        id: ProviderUsageObservationId::generate(),
+        project_id: profile.project_id,
+        account_profile_id: profile.id,
+        provider: observed.provider.clone(),
+        evidence_hash: evidence,
+        state: observed.kind,
+        resets_at: observed.resets_at,
+        windows: reading.windows.clone(),
+        observed_at: now,
     };
-    match state.with_store(|store| store.set_provider_quota_state(&request)) {
-        Ok(_) => {
-            info!(
-                account = %profile.id,
-                provider = %observed.provider,
-                state = observed.kind.as_str(),
-                resets_at = observed.resets_at.map(|instant| instant.to_string()),
-                "provider quota observed"
-            );
-            true
-        }
-        // A lost compare-and-swap means an operator asserted something while the
-        // poll was in flight. Theirs stands until the next tick, which is the
-        // right precedence for a five-minute loop racing a person.
-        Err(error) => {
-            debug!(account = %profile.id, detail = %error, "the quota observation was not applied");
-            false
-        }
-    }
+    let stored = state.with_store(|store| {
+        store.record_provider_usage_observation(&NewProviderUsageObservation {
+            observation,
+            quota_state,
+            idempotency_key,
+            intent_hash,
+        })
+    })?;
+    state.signals().appended();
+    info!(
+        observation = %stored.id,
+        account = %profile.id,
+        provider = %observed.provider,
+        state = observed.kind.as_str(),
+        changed,
+        "provider usage observed"
+    );
+    Ok(stored)
 }
 
 /// Whether a stored row already says exactly what a new reading says.
@@ -561,7 +738,7 @@ pub async fn poll_until_stopped(poller: UsagePoller, state: ApiState) {
     loop {
         let written = poll_once(&poller, &state).await;
         if written > 0 {
-            debug!(written, "provider quota states updated from a usage poll");
+            debug!(written, "provider usage observations appended from a poll");
         }
         tokio::select! {
             () = tokio::time::sleep(POLL_INTERVAL) => {}
@@ -733,6 +910,19 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_account_alias_selects_only_its_vendor_family() {
+        assert_eq!(
+            ProviderApi::for_provider("codex-personal"),
+            Some(ProviderApi::Codex)
+        );
+        assert_eq!(
+            ProviderApi::for_provider("claude-work"),
+            Some(ProviderApi::Claude)
+        );
+        assert_eq!(ProviderApi::for_provider("opencode"), None);
+    }
+
+    #[test]
     fn an_operator_window_set_survives_a_later_poller_record_of_the_same_header() {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let daemon = Daemon::start(
@@ -816,17 +1006,14 @@ mod tests {
             profile
         });
 
-        let written = record(
-            &state,
-            &profile,
-            &UsageReading {
-                provider: "codex".into(),
-                limit_reached: false,
-                // The reading names no window — the case that must not delete.
-                windows: Vec::new(),
-                credits_exhausted: false,
-            },
-        );
+        let reading = UsageReading {
+            provider: "codex".into(),
+            limit_reached: false,
+            // The reading names no window — the case that must not delete.
+            windows: Vec::new(),
+            credits_exhausted: false,
+        };
+        let written = record(&state, &profile, &reading);
         assert!(written, "an operator row is never skipped as unchanged");
 
         let restored = state
@@ -845,6 +1032,27 @@ mod tests {
             "a poller tick must not null the operator-recorded credit"
         );
         assert_eq!(restored.source, ProviderQuotaSource::ProviderReport);
+
+        let revision_after_change = restored.revision;
+        let heartbeat = record_exact(&state, &profile, "codex", &reading, None, None)
+            .expect("an unchanged poll appends a heartbeat");
+        let latest = state
+            .with_store(|store| {
+                store.latest_provider_usage_observation(project_id, account_profile_id, "codex")
+            })
+            .expect("the latest observation is readable")
+            .expect("the heartbeat is durable");
+        assert_eq!(latest.id, heartbeat.id);
+        let unchanged_projection = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .expect("the projection is readable")
+            .into_iter()
+            .find(|row| row.account_profile_id == account_profile_id && row.provider == "codex")
+            .expect("the projection remains present");
+        assert_eq!(
+            unchanged_projection.revision, revision_after_change,
+            "an unchanged background heartbeat must not churn the projection"
+        );
     }
 
     #[test]

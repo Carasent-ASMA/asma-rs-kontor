@@ -31,25 +31,32 @@
 
 mod harness;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
+use kontor_accounts::UsageReading;
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::consultation::{ConsultationFamily, ConsultationRunId};
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey,
-    ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
-    IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode, SeatBindingId, SpecVersion,
-    TaskId, TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
+    AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
+    CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
+    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, QuickSessionId, RoleCode,
+    SeatBindingId, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TicketLinkId, Timestamp,
+    TopologyNodeId,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
-    CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject, NewObservation,
-    NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun,
-    NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
+    CapacityRepository, CommandRepository, ConnectorSpecSelector, NewLocalCommand, NewMiniProject,
+    NewObservation, NewProject, NewRuntimeEvent, NewSeatBinding, NewTask, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink, ProjectRepository, RealmRepository, RunClosure, RunRepository,
     SourceDisposition, SpecRepository, StoredConsultationProfileRevision, StoredEpicCompletion,
     StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository,
     WorkflowRepository,
@@ -59,6 +66,7 @@ use kontor_core::state::{
     Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
     TerminalOutcome,
 };
+use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
@@ -69,6 +77,49 @@ use kontor_store::{IdempotencyBinding, RegisteredPack, TeamTemplateSource};
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct ScriptedUsageReporter {
+    replies: tokio::sync::Mutex<VecDeque<Result<UsageReading, ProviderUsageProbeFailure>>>,
+    calls: AtomicUsize,
+    delay: Duration,
+}
+
+impl ScriptedUsageReporter {
+    fn new(
+        replies: impl IntoIterator<Item = Result<UsageReading, ProviderUsageProbeFailure>>,
+        delay: Duration,
+    ) -> Self {
+        Self {
+            replies: tokio::sync::Mutex::new(replies.into_iter().collect()),
+            calls: AtomicUsize::new(0),
+            delay,
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ExactProviderUsageReporter for ScriptedUsageReporter {
+    async fn probe(
+        &self,
+        _profile: &kontor_core::repository::AccountProfile,
+        _provider: &str,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
+        self.replies
+            .lock()
+            .await
+            .pop_front()
+            .unwrap_or(Err(ProviderUsageProbeFailure::Unreachable))
+    }
+}
 
 /// A session with four recorded items and two more waiting to be streamed.
 const HISTORY_LIVE: &str = r#"{
@@ -26570,6 +26621,378 @@ async fn a_provider_account_profile_can_be_relabelled_and_taken_out_of_service()
     .send(&world)
     .await;
     assert_eq!(refused.status, 403, "{}", refused.body);
+}
+
+/// The exact-account probe is an operational read with a durable success side
+/// effect: observers cannot cause it, an account cannot cross project scope,
+/// and every typed preflight failure leaves both evidence and projection empty.
+#[tokio::test]
+async fn a_provider_quota_probe_is_operator_fenced_exact_and_atomic_on_failure() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let first = ensure_project(
+        &world,
+        "quota-probe-first",
+        "Quota probe first",
+        "/tmp/kontor-quota-probe-first",
+    )
+    .await;
+    let first_project = first.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let second = ensure_project(
+        &world,
+        "quota-probe-second",
+        "Quota probe second",
+        "/tmp/kontor-quota-probe-second",
+    )
+    .await;
+    let second_project = second.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let account = Call::post(
+        format!("/v1/projects/{first_project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Claude Work",
+            "harness": "fake.runtime",
+            "credential_alias": "claude-work",
+            "selectable_providers": ["claude-work"],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("quota-probe-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let exact_uri =
+        format!("/v1/projects/{first_project}/provider-account-profiles/{account_id}/quota:probe");
+    let body = serde_json::json!({"provider": "claude-work"});
+
+    let observer = Call::post(&exact_uri, &body)
+        .signed_as(&world, "observer")
+        .with_key("quota-probe-observer")
+        .send(&world)
+        .await;
+    assert_eq!(observer.status, 403, "{}", observer.body);
+
+    let cross_project = Call::post(
+        format!("/v1/projects/{second_project}/provider-account-profiles/{account_id}/quota:probe"),
+        &body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("quota-probe-cross-project")
+    .send(&world)
+    .await;
+    assert_eq!(cross_project.status, 404, "{}", cross_project.body);
+
+    let wrong_route = Call::post(
+        &exact_uri,
+        &serde_json::json!({"provider": "claude-personal"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("quota-probe-wrong-route")
+    .send(&world)
+    .await;
+    assert_eq!(wrong_route.status, 422, "{}", wrong_route.body);
+    assert_eq!(wrong_route.code(), "provider_unsupported");
+
+    let unpinned = Call::post(
+        format!("/v1/projects/{first_project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Unpinned Claude",
+            "harness": "fake.runtime",
+            "credential_alias": "claude-unpinned",
+            "selectable_providers": [],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("quota-probe-unpinned-account")
+    .send(&world)
+    .await;
+    assert_eq!(unpinned.status, 200, "{}", unpinned.body);
+    let unpinned_id = unpinned.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let unpinned_route = Call::post(
+        format!("/v1/projects/{first_project}/provider-account-profiles/{unpinned_id}/quota:probe"),
+        &body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("quota-probe-unpinned-route")
+    .send(&world)
+    .await;
+    assert_eq!(unpinned_route.status, 422, "{}", unpinned_route.body);
+    assert_eq!(unpinned_route.code(), "provider_unsupported");
+
+    // The black-box realm has no approved provider home, so the exact route is
+    // supported by the API but not by this deployment's credential resolver.
+    let unsupported = Call::post(&exact_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("quota-probe-no-home")
+        .send(&world)
+        .await;
+    assert_eq!(unsupported.status, 422, "{}", unsupported.body);
+    assert_eq!(unsupported.code(), "provider_unsupported");
+
+    let project_id = ProjectId::parse(&first_project).expect("a project id");
+    let account_profile_id = AccountProfileId::parse(&account_id).expect("an account id");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_provider_quota_states(project_id)
+                .expect("quota states are readable")
+                .is_empty(),
+            "typed probe failures cannot create a mutable quota projection"
+        );
+        assert!(
+            store
+                .latest_provider_usage_observation(project_id, account_profile_id, "claude-work",)
+                .expect("usage evidence is readable")
+                .is_none(),
+            "typed probe failures cannot create immutable success evidence"
+        );
+    });
+}
+
+#[tokio::test]
+async fn a_global_probe_key_serializes_first_use_and_replays_before_any_second_provider_call() {
+    let reporter = Arc::new(ScriptedUsageReporter::new(
+        [Ok(UsageReading {
+            provider: "claude".to_owned(),
+            limit_reached: false,
+            windows: Vec::new(),
+            credits_exhausted: false,
+        })],
+        Duration::from_millis(50),
+    ));
+    let world = World::open_empty_with_usage_reporter(Arc::clone(&reporter) as Arc<_>).await;
+    world.daemon.reconcile().await;
+    let first = ensure_project(
+        &world,
+        "quota-idempotency-first",
+        "Quota idempotency first",
+        "/tmp/kontor-quota-idempotency-first",
+    )
+    .await;
+    let first_project = first.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let second = ensure_project(
+        &world,
+        "quota-idempotency-second",
+        "Quota idempotency second",
+        "/tmp/kontor-quota-idempotency-second",
+    )
+    .await;
+    let second_project = second.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let account = |project: &str, label: &str, key: &str| {
+        Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": label,
+                "harness": "fake.runtime",
+                "credential_alias": "claude-work",
+                "selectable_providers": ["claude-work"],
+                "enabled": true
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(key)
+    };
+    let first_account = account(&first_project, "Claude first", "quota-idem-account-first")
+        .send(&world)
+        .await;
+    let second_account = account(
+        &second_project,
+        "Claude second",
+        "quota-idem-account-second",
+    )
+    .send(&world)
+    .await;
+    assert_eq!(first_account.status, 200, "{}", first_account.body);
+    assert_eq!(second_account.status, 200, "{}", second_account.body);
+    let first_account_id = first_account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let second_account_id = second_account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let first_uri = format!(
+        "/v1/projects/{first_project}/provider-account-profiles/{first_account_id}/quota:probe"
+    );
+    let second_uri = format!(
+        "/v1/projects/{second_project}/provider-account-profiles/{second_account_id}/quota:probe"
+    );
+    let body = serde_json::json!({"provider": "claude-work"});
+
+    let left = Call::post(&first_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("one-global-provider-probe");
+    let right = Call::post(&first_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("one-global-provider-probe");
+    let (left, right) = tokio::join!(left.send(&world), right.send(&world));
+    assert_eq!(left.status, 200, "{}", left.body);
+    assert_eq!(right.status, 200, "{}", right.body);
+    assert_eq!(
+        left.json()["observation_id"],
+        right.json()["observation_id"],
+        "concurrent first use returns one durable success"
+    );
+    assert_eq!(reporter.calls(), 1, "the provider is asked exactly once");
+
+    let sequential = Call::post(&first_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("one-global-provider-probe")
+        .send(&world)
+        .await;
+    assert_eq!(sequential.status, 200, "{}", sequential.body);
+    assert_eq!(
+        sequential.json()["observation_id"],
+        left.json()["observation_id"]
+    );
+    assert_eq!(reporter.calls(), 1, "a sequential replay calls nobody");
+
+    let cross_project = Call::post(&second_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("one-global-provider-probe")
+        .send(&world)
+        .await;
+    assert_eq!(cross_project.status, 409, "{}", cross_project.body);
+    assert_eq!(cross_project.code(), "idempotency_conflict");
+    assert_eq!(
+        reporter.calls(),
+        1,
+        "a cross-project reuse is fenced before provider resolution"
+    );
+
+    let first_project_id = ProjectId::parse(&first_project).expect("a project id");
+    let second_project_id = ProjectId::parse(&second_project).expect("a project id");
+    let first_account_id = AccountProfileId::parse(&first_account_id).expect("an account id");
+    let second_account_id = AccountProfileId::parse(&second_account_id).expect("an account id");
+    let key = IdempotencyKey::parse("one-global-provider-probe").expect("a key");
+    world.daemon.state().with_store(|store| {
+        let first_states = store
+            .list_provider_quota_states(first_project_id)
+            .expect("the first projection reads");
+        assert_eq!(first_states.len(), 1);
+        assert_eq!(first_states[0].account_profile_id, first_account_id);
+        let stored = store
+            .provider_usage_observation_by_key(&key)
+            .expect("the global key reads")
+            .expect("the success exists")
+            .0;
+        assert_eq!(stored.project_id, first_project_id);
+        assert_eq!(stored.account_profile_id, first_account_id);
+        assert!(
+            store
+                .list_provider_quota_states(second_project_id)
+                .expect("the second projection reads")
+                .is_empty(),
+            "cross-project conflict writes no quota projection"
+        );
+        assert!(
+            store
+                .latest_provider_usage_observation(
+                    second_project_id,
+                    second_account_id,
+                    "claude-work",
+                )
+                .expect("the second observation reads")
+                .is_none(),
+            "cross-project conflict appends no observation"
+        );
+    });
+}
+
+#[tokio::test]
+async fn typed_provider_probe_failures_call_once_each_and_write_nothing() {
+    let reporter = Arc::new(ScriptedUsageReporter::new(
+        [
+            Err(ProviderUsageProbeFailure::Unauthorized),
+            Err(ProviderUsageProbeFailure::Unreachable),
+            Err(ProviderUsageProbeFailure::Unsupported),
+        ],
+        Duration::ZERO,
+    ));
+    let world = World::open_empty_with_usage_reporter(Arc::clone(&reporter) as Arc<_>).await;
+    world.daemon.reconcile().await;
+    let project = ensure_project(
+        &world,
+        "quota-typed-failures",
+        "Quota typed failures",
+        "/tmp/kontor-quota-typed-failures",
+    )
+    .await;
+    let project = project.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Claude failures",
+            "harness": "fake.runtime",
+            "credential_alias": "claude-work",
+            "selectable_providers": ["claude-work"],
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("quota-typed-failure-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let uri = format!("/v1/projects/{project}/provider-account-profiles/{account}/quota:probe");
+    for (key, status, code) in [
+        ("quota-unauthorized", 502, "provider_unauthorized"),
+        ("quota-unreachable", 503, "provider_unreachable"),
+        ("quota-unsupported", 422, "provider_unsupported"),
+    ] {
+        let answer = Call::post(&uri, &serde_json::json!({"provider": "claude-work"}))
+            .signed_as(&world, "operator")
+            .with_key(key)
+            .send(&world)
+            .await;
+        assert_eq!(answer.status, status, "{}", answer.body);
+        assert_eq!(answer.code(), code);
+    }
+    assert_eq!(reporter.calls(), 3);
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let account_id = AccountProfileId::parse(&account).expect("an account id");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_provider_quota_states(project_id)
+                .expect("the projection reads")
+                .is_empty()
+        );
+        assert!(
+            store
+                .latest_provider_usage_observation(project_id, account_id, "claude-work")
+                .expect("the evidence reads")
+                .is_none()
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------

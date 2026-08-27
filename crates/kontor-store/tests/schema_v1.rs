@@ -125,6 +125,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
+    "provider_usage_observations",
     "profile_selection_outcomes",
     "quick_session_promotions",
     "quick_sessions",
@@ -468,9 +469,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v66 binds remediation effects to their exact replay
-    // authority and makes clean re-review provenance unique in storage.
-    assert_eq!(SCHEMA_VERSION, 66);
+    // side effect. v67 adds immutable exact-account provider-report freshness
+    // evidence beside the mutable quota projection.
+    assert_eq!(SCHEMA_VERSION, 67);
 }
 
 #[test]
@@ -777,6 +778,72 @@ fn v66_claims_remediation_commands_and_re_review_provenance_immutably() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("the schema version reads"),
         66
+    );
+}
+
+#[test]
+fn v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent() {
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys enable");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE account_profiles (
+                 id TEXT NOT NULL,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 PRIMARY KEY (project_id, id)
+             ) STRICT;
+             INSERT INTO projects VALUES ('0193f000-0000-7000-8000-000000000001');
+             INSERT INTO account_profiles VALUES (
+                 '0193f000-0000-7000-8000-000000000002',
+                 '0193f000-0000-7000-8000-000000000001'
+             );",
+        )
+        .expect("the parent identities seed");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0067_provider_usage_observations.sql"
+        ))
+        .expect("the supported v67 migration installs");
+    connection
+        .execute(
+            "INSERT INTO provider_usage_observations
+                 (id, project_id, account_profile_id, provider, evidence_hash, state,
+                  resets_at, windows, observed_at, idempotency_key, intent_hash)
+             VALUES (?1, ?2, ?3, 'claude-work', ?4, 'available', NULL, '[]', ?5,
+                     'probe-key', ?6)",
+            rusqlite::params![
+                "0193f000-0000-7000-8000-000000000003",
+                "0193f000-0000-7000-8000-000000000001",
+                "0193f000-0000-7000-8000-000000000002",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "2026-08-27T17:01:00Z",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ],
+        )
+        .expect("the heartbeat records");
+    assert!(
+        connection
+            .execute(
+                "UPDATE provider_usage_observations SET observed_at = ?1",
+                ["2026-08-27T17:02:00Z"],
+            )
+            .is_err(),
+        "a success heartbeat is immutable"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM provider_usage_observations", [])
+            .is_err(),
+        "a success heartbeat cannot be withdrawn"
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the schema version reads"),
+        67
     );
 }
 

@@ -28,10 +28,11 @@ use crate::id::{
     ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
     GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
     MiniProjectId, ModuleKey, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
-    QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId,
-    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
+    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
+    WorkProfileKey,
 };
 use crate::open_question::{
     AmbiguityRound, Disposition, OpenQuestion, OpenQuestionSummary, TriggerFiring,
@@ -2432,6 +2433,49 @@ pub struct NewProviderQuotaState {
     pub updated_at: Timestamp,
 }
 
+/// One immutable proof that an exact configured account answered its vendor's
+/// usage endpoint successfully.
+///
+/// This is deliberately separate from [`ProviderQuotaState`]. That projection
+/// changes only when the provider's answer changes, while this append-only row
+/// proves *when* an unchanged answer was observed again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderUsageObservation {
+    /// The observation.
+    pub id: ProviderUsageObservationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The exact configured account that was polled.
+    pub account_profile_id: AccountProfileId,
+    /// The exact selectable provider route the reading was projected onto.
+    pub provider: String,
+    /// Digest of the provider response after provider-specific parsing.
+    pub evidence_hash: ContentHash,
+    /// State derived from that response.
+    pub state: crate::spec::ProviderQuotaKind,
+    /// Reset instant derived for an exhausted response.
+    pub resets_at: Option<Timestamp>,
+    /// Concurrent windows derived from the response.
+    pub windows: Vec<crate::quota::QuotaWindow>,
+    /// When the successful response was observed.
+    pub observed_at: Timestamp,
+}
+
+/// One successful usage poll to append, optionally accompanied by a changed
+/// provider-quota projection in the same transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewProviderUsageObservation {
+    /// Immutable observation body.
+    pub observation: ProviderUsageObservation,
+    /// A changed provider-report projection. `None` means the digest is
+    /// unchanged and only the freshness heartbeat is appended.
+    pub quota_state: Option<NewProviderQuotaState>,
+    /// Explicit probe replay key. Background polls have no command key.
+    pub idempotency_key: Option<IdempotencyKey>,
+    /// Canonical explicit-probe intent paired with the key above.
+    pub intent_hash: Option<ContentHash>,
+}
+
 /// Account-owned capacity evidence and the judgement standing beside it.
 ///
 /// Raw first: [`CapacityRepository::record_capacity_observation`] is the only
@@ -2512,6 +2556,41 @@ pub trait CapacityRepository {
         &self,
         project_id: ProjectId,
     ) -> RepositoryResult<Vec<ProviderQuotaState>>;
+
+    /// Atomically apply a changed provider-report projection, when present, and
+    /// append the successful usage observation even when its digest is unchanged.
+    ///
+    /// # Errors
+    /// Refuses an unknown/cross-project account, mismatched observation and
+    /// projection identities, stale quota revision, duplicate observation id,
+    /// or an explicit probe key reused for different canonical intent. Every
+    /// refusal writes neither table.
+    fn record_provider_usage_observation(
+        &self,
+        request: &NewProviderUsageObservation,
+    ) -> RepositoryResult<ProviderUsageObservation>;
+
+    /// Read the most recent successful observation for one exact route.
+    ///
+    /// This is the freshness seam used by admission: callers still judge the
+    /// matching current [`ProviderQuotaState`] for headroom, and must require
+    /// provider-report source plus the same evidence hash.
+    fn latest_provider_usage_observation(
+        &self,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        provider: &str,
+    ) -> RepositoryResult<Option<ProviderUsageObservation>>;
+
+    /// Resolve one explicit probe replay globally without touching the provider.
+    ///
+    /// Probe keys are globally unique. The returned observation therefore
+    /// carries the stored project, account and provider that a caller must
+    /// compare before resolving any credential or contacting a vendor.
+    fn provider_usage_observation_by_key(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<(ProviderUsageObservation, ContentHash)>>;
 
     /// A project's standing operator judgements, including lapsed ones.
     ///

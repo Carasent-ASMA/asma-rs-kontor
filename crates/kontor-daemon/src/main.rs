@@ -250,7 +250,7 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
     // anything that happened while it was down happened unobserved — and the
     // poller stops itself when the same shutdown signal the streams watch fires.
     tokio::spawn(usage::poll_until_stopped(
-        usage::UsagePoller::discover(&daemon.config().state_root),
+        daemon.usage_poller(),
         daemon.state(),
     ));
 

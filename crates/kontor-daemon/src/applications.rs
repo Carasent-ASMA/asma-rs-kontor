@@ -39,11 +39,12 @@ use kontor_api::applications::{
     EnsureAccountProfileRequest, EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto,
     EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction,
     LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
-    ProjectDto, ProviderQuotaStateDto, PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto,
-    ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
-    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
-    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
-    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
+    ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
+    PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
+    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
+    SeatProjectionDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
+    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -439,6 +440,11 @@ pub struct Services {
     capacity: CapacityConfig,
     /// Stable native-root marker directories, derived by project and epic id.
     runtime_roots: PathBuf,
+    /// The only component allowed to resolve approved provider credential homes.
+    usage_poller: crate::usage::UsagePoller,
+    /// Serializes explicit provider probes so concurrent first use of one
+    /// global idempotency key cannot contact the vendor twice.
+    provider_probe_guard: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Services {
@@ -473,6 +479,7 @@ impl Services {
         capacity: CapacityConfig,
         jira: JiraConnectors,
         runtime_roots: PathBuf,
+        usage_poller: crate::usage::UsagePoller,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -483,6 +490,8 @@ impl Services {
             jira,
             capacity,
             runtime_roots,
+            usage_poller,
+            provider_probe_guard: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -8773,7 +8782,7 @@ impl QuotaOutlook<'_> {
 }
 
 /// The built-in family behind a selectable Paseo account alias.
-fn provider_family(provider: &str) -> &str {
+pub(crate) fn provider_family(provider: &str) -> &str {
     for family in ["claude", "codex", "copilot", "opencode", "pi", "omp"] {
         if provider == family
             || provider
@@ -9916,6 +9925,21 @@ fn provider_quota_state_dto(
         windows: entry.windows().iter().map(quota_window_dto).collect(),
         credit: entry.credit.map(credit_balance_dto),
         revision: entry.revision,
+    }
+}
+
+fn provider_usage_observation_dto(
+    entry: &kontor_core::repository::ProviderUsageObservation,
+) -> ProviderUsageObservationDto {
+    ProviderUsageObservationDto {
+        observation_id: entry.id,
+        account_profile_id: entry.account_profile_id,
+        provider: entry.provider.clone(),
+        evidence_hash: entry.evidence_hash.as_str().to_owned(),
+        state: entry.state.as_str().to_owned(),
+        resets_at: entry.resets_at.map(|instant| instant.to_string()),
+        windows: entry.windows.iter().map(quota_window_dto).collect(),
+        observed_at: entry.observed_at.to_string(),
     }
 }
 
@@ -11766,6 +11790,113 @@ impl ApplicationOperations for Services {
                 )
             })?;
         Ok(provider_quota_state_dto(&stored, now))
+    }
+
+    async fn probe_provider_quota(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        request: &ProbeProviderQuotaRequest,
+    ) -> Result<ProviderUsageObservationDto, ApiError> {
+        // The durable observation is the replay claim. Holding this guard from
+        // lookup through append makes the first successful caller publish that
+        // claim before any concurrent caller can resolve a home or call a
+        // vendor. A restart after an uncommitted failure safely retries because
+        // there is no success observation to replay.
+        let _probe_guard = self.provider_probe_guard.lock().await;
+        let state = self.state()?;
+        let _project = self.project_row(project_id)?;
+        kontor_core::id::validate_open_key("provider", &request.provider)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "probe_provider_quota",
+            "project": project_id.to_string(),
+            "account_profile_id": account_profile_id.to_string(),
+            "provider": request.provider,
+        }))?;
+        if let Some((observation, stored_intent)) = state
+            .with_store(|store| store.provider_usage_observation_by_key(key))
+            .map_err(|error| self.refuse(&error))?
+        {
+            let same_subject = observation.project_id == project_id
+                && observation.account_profile_id == account_profile_id
+                && observation.provider == request.provider;
+            if !same_subject || stored_intent != *intent.hash() {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
+            return Ok(provider_usage_observation_dto(&observation));
+        }
+
+        let profile = state
+            .with_store(|store| store.list_account_profiles(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|profile| profile.id == account_profile_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the account profile does not exist in this project",
+                )
+            })?;
+        if !profile.enabled {
+            return Err(self.deny(
+                ApiErrorCode::ProviderUnsupported,
+                "a disabled account profile cannot be probed for placement headroom",
+            ));
+        }
+        let selectable = kontor_accounts::selectable_providers(&profile)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if !selectable
+            .iter()
+            .any(|provider| provider == &request.provider)
+        {
+            return Err(self.deny(
+                ApiErrorCode::ProviderUnsupported,
+                "the requested provider route is not selectable by this account profile",
+            ));
+        }
+        let reading = self
+            .usage_poller
+            .probe_provider(&profile, &request.provider)
+            .await
+            .map_err(|failure| {
+                use crate::usage::ProviderUsageProbeFailure;
+                match failure {
+                    ProviderUsageProbeFailure::Unauthorized => self.deny(
+                        ApiErrorCode::ProviderUnauthorized,
+                        "the provider rejected the exact configured account usage probe",
+                    ),
+                    ProviderUsageProbeFailure::Unreachable => self.deny(
+                        ApiErrorCode::ProviderUnreachable,
+                        "the fixed provider usage endpoint did not answer successfully",
+                    ),
+                    ProviderUsageProbeFailure::Unsupported => self.deny(
+                        ApiErrorCode::ProviderUnsupported,
+                        "the exact account or provider response is not supported by this build",
+                    ),
+                }
+            })?;
+        if provider_family(&request.provider) != reading.provider {
+            return Err(self.deny(
+                ApiErrorCode::ProviderUnsupported,
+                "the requested provider route does not match the account's detected provider family",
+            ));
+        }
+        let observation = crate::usage::record_exact(
+            state,
+            &profile,
+            &request.provider,
+            &reading,
+            Some(key.clone()),
+            Some(intent.hash().clone()),
+        )
+        .map_err(|error| self.refuse(&error))?;
+        Ok(provider_usage_observation_dto(&observation))
     }
 
     fn teams(&self) -> Result<TeamsProjectionDto, ApiError> {

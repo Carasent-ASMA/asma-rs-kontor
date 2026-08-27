@@ -3071,6 +3071,40 @@ pub struct ProviderQuotaStateDto {
     pub revision: AggregateRevision,
 }
 
+/// One immutable, redacted successful provider-usage observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProviderUsageObservationDto {
+    /// The immutable freshness evidence row.
+    #[schema(value_type = String)]
+    pub observation_id: kontor_core::id::ProviderUsageObservationId,
+    /// The exact configured account that answered.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// The exact selectable provider route this reading applies to.
+    pub provider: String,
+    /// Digest of provider evidence. Raw provider output is never retained.
+    pub evidence_hash: String,
+    /// State derived from the successful response.
+    pub state: String,
+    /// Reset instant derived for an exhausted response.
+    pub resets_at: Option<String>,
+    /// Concurrent windows derived from the successful response.
+    pub windows: Vec<QuotaWindowDto>,
+    /// Freshness instant of this successful provider report.
+    pub observed_at: String,
+}
+
+/// Select one exact provider route of the addressed configured account.
+///
+/// The value can only select an alias already frozen on the account profile; it
+/// cannot choose an endpoint, credential or home.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeProviderQuotaRequest {
+    /// The exact selectable provider route to refresh.
+    pub provider: String,
+}
+
 /// One concurrent quota window, on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -5134,6 +5168,16 @@ pub trait ApplicationOperations: Send + Sync {
         request: &RecordProviderQuotaRequest,
     ) -> Result<ProviderQuotaStateDto, ApiError>;
 
+    /// Probe one exact configured account and append redacted immutable success
+    /// evidence for one provider route frozen on it.
+    async fn probe_provider_quota(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        account_profile_id: AccountProfileId,
+        request: &ProbeProviderQuotaRequest,
+    ) -> Result<ProviderUsageObservationDto, ApiError>;
+
     /// Current Teams drafts and immutable revisions.
     fn teams(&self) -> Result<TeamsProjectionDto, ApiError>;
 
@@ -6281,6 +6325,42 @@ pub async fn record_provider_quota(
         state
             .applications()
             .record_provider_quota(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Probe one exact configured account through the daemon-owned credential seam.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/quota:probe",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("account_profile_id" = String, Path, description = "The exact configured account"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProbeProviderQuotaRequest,
+    responses(
+        (status = 200, body = ProviderUsageObservationDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 422), (status = 502), (status = 503)
+    )
+)]
+pub async fn probe_provider_quota(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, account_profile_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ProbeProviderQuotaRequest>,
+) -> Result<Json<ProviderUsageObservationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let account_profile_id = parse_id(&state, AccountProfileId::parse(&account_profile_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .probe_provider_quota(&key, project_id, account_profile_id, &request)
             .await?,
     ))
 }

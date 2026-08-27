@@ -33,6 +33,7 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::TeamRunSnapshot;
 use kontor_core::state::{NativeRuntimeIdentity, TaskState};
+use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
 use kontor_profiles::seeds::bundled_pack;
@@ -141,6 +142,23 @@ impl World {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
+    /// Start an empty Realm whose exact-provider calls use a non-secret scripted
+    /// reporter. The legacy/background poller remains composed from the empty
+    /// temporary state root.
+    pub(crate) async fn open_empty_with_usage_reporter(
+        reporter: Arc<dyn ExactProviderUsageReporter>,
+    ) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            Some(reporter),
+        )
+        .await
+    }
+
     /// Start an empty Realm whose runtime holds a **plane-level container**.
     ///
     /// This is the shipped Paseo shape and the one no in-process fake had: every
@@ -228,7 +246,7 @@ impl World {
         planed: bool,
         capacity: CapacityConfig,
     ) -> Self {
-        Self::compose_with_connector(capabilities, configured, seeded, planed, capacity).await
+        Self::compose_with_connector(capabilities, configured, seeded, planed, capacity, None).await
     }
 
     async fn compose_with_connector(
@@ -237,6 +255,7 @@ impl World {
         seeded: bool,
         planed: bool,
         capacity: CapacityConfig,
+        usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         let fake = Arc::new(if planed {
@@ -252,7 +271,14 @@ impl World {
         let config = DaemonConfig::at(directory.path())
             .with_port(0)
             .with_capacity(capacity);
-        let daemon = Daemon::start(config, registry).expect("the realm starts");
+        let daemon = match usage_reporter {
+            Some(reporter) => {
+                let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);
+                Daemon::start_with_usage_poller(config, registry, poller)
+            }
+            None => Daemon::start(config, registry),
+        }
+        .expect("the realm starts");
         let router = daemon.router();
 
         let project = ProjectId::generate();

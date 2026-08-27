@@ -85,8 +85,15 @@ impl ExitClass {
             | "stale_binding"
             | "resnapshot_required"
             | "timeline_refetch_required" => Self::Conflict,
-            "reconciliation_pending" | "unavailable" | "capacity_exhausted" => Self::Unavailable,
-            "not_found" | "unsupported_capability" | "role_slot_unbound" => Self::Absent,
+            "reconciliation_pending"
+            | "unavailable"
+            | "capacity_exhausted"
+            | "provider_unreachable" => Self::Unavailable,
+            "not_found"
+            | "unsupported_capability"
+            | "role_slot_unbound"
+            | "provider_unsupported" => Self::Absent,
+            "provider_unauthorized" => Self::Refused,
             "invalid_request" => Self::Local,
             // Outside the closed vocabulary: whatever answered is not a realm of
             // this contract generation.
@@ -182,6 +189,9 @@ mod tests {
             "capacity_exhausted",
             "role_slot_unbound",
             "unavailable",
+            "provider_unauthorized",
+            "provider_unreachable",
+            "provider_unsupported",
             "not_found",
             "invalid_request",
         ] {
