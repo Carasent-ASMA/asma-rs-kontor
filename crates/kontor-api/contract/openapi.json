@@ -16048,7 +16048,7 @@
       },
       "RemediateCompletionRequest": {
         "type": "object",
-        "description": "Record one epic's remediation authority.",
+        "description": "Record one epic's remediation authority.\n\nThe same ordered LSA/TPM pair may recover a terminal `needs_human` state\nonly for its latest failed Committee round. Recovery still enters\nremediation first; a new integration receipt and repository outcome are\nrequired before another Committee round can be invoked.",
         "required": [
           "expected_revision",
           "action"
@@ -16156,7 +16156,8 @@
         "description": "The two immutable authorities required before remediation integration.",
         "required": [
           "lsa_proposal",
-          "tpm_routing"
+          "tpm_routing",
+          "needs_human_recovery"
         ],
         "properties": {
           "lsa_actor": {
@@ -16173,6 +16174,10 @@
           "lsa_proposal": {
             "type": "string",
             "description": "LSA proposal evidence."
+          },
+          "needs_human_recovery": {
+            "type": "boolean",
+            "description": "This pair of authorities explicitly reopened a terminal\n`needs_human` verdict for new remediation evidence and re-review."
           },
           "tpm_actor": {
             "oneOf": [

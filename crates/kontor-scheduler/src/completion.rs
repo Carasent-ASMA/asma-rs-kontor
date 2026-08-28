@@ -431,6 +431,13 @@ pub struct RemediationAuthorization {
     /// Identity-bound TPM routing authority.
     #[serde(default)]
     pub tpm_actor: Option<RemediationAuthority>,
+    /// This authorization was the explicit two-seat recovery from a terminal
+    /// `needs_human` verdict rather than an ordinary bounded remediation.
+    ///
+    /// Defaulted so completion states published before the recovery route was
+    /// introduced remain readable and retain their original meaning.
+    #[serde(default)]
+    pub needs_human_recovery: bool,
 }
 
 /// One completed remediation round.
@@ -679,7 +686,17 @@ pub fn advance(
             replayed: true,
         });
     }
-    if current.phase.is_terminal() {
+    let governed_needs_human_recovery = matches!(
+        &signal.observation,
+        CompletionObservation::RemediationApproved(approval)
+            if current.phase == CompletionPhase::NeedsHuman
+                && approval.authorization.needs_human_recovery
+                && needs_human_recovery_round(
+                    current,
+                    compiled.profile.max_remediation_rounds,
+                ) == Some(approval.round)
+    );
+    if current.phase.is_terminal() && !governed_needs_human_recovery {
         return Err(DomainError::Terminal {
             subject: "completion",
         });
@@ -769,11 +786,24 @@ pub fn advance(
         (
             CompletionObservation::RemediationApproved(approval),
             CompletionPhase::AwaitRemediation(expected_round),
-        ) if approval.round == expected_round => {
+        ) if approval.round == expected_round && !approval.authorization.needs_human_recovery => {
             next.pending_remediation = Some(approval.authorization.clone());
             next.phase = CompletionPhase::Remediating(expected_round);
             commands.push(CompletionCommand::LaunchRemediation {
                 round: expected_round,
+                authorization: approval.authorization.clone(),
+            });
+        }
+        (CompletionObservation::RemediationApproved(approval), CompletionPhase::NeedsHuman)
+            if approval.authorization.needs_human_recovery
+                && needs_human_recovery_round(current, compiled.profile.max_remediation_rounds)
+                    == Some(approval.round) =>
+        {
+            next.pending_remediation = Some(approval.authorization.clone());
+            next.needs_human = None;
+            next.phase = CompletionPhase::Remediating(approval.round);
+            commands.push(CompletionCommand::LaunchRemediation {
+                round: approval.round,
                 authorization: approval.authorization.clone(),
             });
         }
@@ -789,6 +819,9 @@ pub fn advance(
                         subject: "completion remediation",
                         rule: "LSA proposal and TPM routing receipts are required before launch",
                     })?;
+            if authorization.needs_human_recovery {
+                validate_new_recovery_integration(&next, integration)?;
+            }
             next.integrations.push(integration.clone());
             next.remediations.push(RemediationRecord {
                 round,
@@ -972,6 +1005,66 @@ fn validate_integration(integration: &IntegrationRecord) -> DomainResult<()> {
             "completion integration",
             "each repository may have only one outcome per round",
         ));
+    }
+    Ok(())
+}
+
+/// The failed Committee round that may be recovered from `needs_human`.
+///
+/// Only a terminal state produced by an unresolved failed verdict qualifies.
+/// A generic stall, a passing last round, a half-applied remediation, or a
+/// round already followed by remediation cannot be reopened through this
+/// route.
+#[must_use]
+pub fn needs_human_recovery_round(
+    state: &CompletionState,
+    max_remediation_rounds: u8,
+) -> Option<u8> {
+    if state.phase != CompletionPhase::NeedsHuman
+        || state.needs_human.is_none()
+        || state.pending_remediation.is_some()
+    {
+        return None;
+    }
+    let failed = state.rounds.last()?;
+    if failed.round <= max_remediation_rounds
+        || failed.verdict != CommitteeVerdict::Fail
+        || state
+            .remediations
+            .iter()
+            .any(|remediation| remediation.round == failed.round)
+    {
+        return None;
+    }
+    Some(failed.round)
+}
+
+fn validate_new_recovery_integration(
+    state: &CompletionState,
+    integration: &IntegrationRecord,
+) -> DomainResult<()> {
+    if state
+        .integrations
+        .iter()
+        .any(|recorded| recorded.receipt == integration.receipt)
+    {
+        return Err(DomainError::MissingEvidence {
+            subject: "completion needs_human recovery",
+            rule: "the recovery must carry a new integration receipt",
+        });
+    }
+    let has_new_outcome = integration.repositories.iter().any(|candidate| {
+        !state
+            .integrations
+            .iter()
+            .flat_map(|recorded| recorded.repositories.iter())
+            .any(|existing| existing == candidate)
+    });
+    if !has_new_outcome {
+        return Err(DomainError::MissingEvidence {
+            subject: "completion needs_human recovery",
+            rule: "the recovery must name at least one new repository outcome",
+        });
     }
     Ok(())
 }

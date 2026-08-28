@@ -24028,6 +24028,244 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         stale_route.json()["current_revision"],
         awaiting_revision + 1
     );
+
+    // ---- explicit two-seat recovery after the bounded verdicts are exhausted ----
+    // Walk an equivalent governed first remediation to a second failed verdict,
+    // then replace only this test fixture's projection. The real endpoint below
+    // owns every recovery write and receipt under test.
+    let ordinary_authorization = kontor_scheduler::RemediationAuthorization {
+        lsa_proposal: ContentHash::of(b"ordinary-lsa-proposal"),
+        tpm_routing: ContentHash::of(b"ordinary-tpm-route"),
+        lsa_actor: Some(kontor_scheduler::RemediationAuthority {
+            seat_binding_id: lsa,
+            occupancy_generation: 2,
+        }),
+        tpm_actor: Some(kontor_scheduler::RemediationAuthority {
+            seat_binding_id: tpm,
+            occupancy_generation: 1,
+        }),
+        needs_human_recovery: false,
+    };
+    let first_routed = kontor_scheduler::advance(
+        &compiled,
+        &awaiting,
+        &signal(
+            "fixture-route-1",
+            &awaiting,
+            kontor_scheduler::CompletionObservation::RemediationApproved(
+                kontor_scheduler::RemediationApproval {
+                    round: 1,
+                    authorization: ordinary_authorization,
+                },
+            ),
+        ),
+    )
+    .expect("the ordinary remediation is authorized")
+    .state;
+    let remediation_integration = kontor_scheduler::IntegrationRecord {
+        receipt: ContentHash::of(b"integration-2"),
+        repositories: vec![kontor_scheduler::RepositoryOutcome {
+            repository: name("asma-rs-kontor"),
+            pull_request: name("PR-2"),
+            module_revision: name("fedcba9"),
+            root_pointer_revision: Some(name("8765fed")),
+        }],
+    };
+    let second_verdict = kontor_scheduler::advance(
+        &compiled,
+        &first_routed,
+        &signal(
+            "fixture-integration-2",
+            &first_routed,
+            kontor_scheduler::CompletionObservation::RemediationCompleted(
+                remediation_integration.clone(),
+            ),
+        ),
+    )
+    .expect("the remediation integration lands")
+    .state;
+    let second_findings = ContentHash::of(b"round-2-findings");
+    let human = kontor_scheduler::advance(
+        &compiled,
+        &second_verdict,
+        &signal(
+            "fixture-verdict-2",
+            &second_verdict,
+            kontor_scheduler::CompletionObservation::VerdictRecorded {
+                round: 2,
+                verdict: kontor_scheduler::CommitteeVerdict::Fail,
+                evidence: second_findings.clone(),
+                committee_run_id: None,
+                result_hash: None,
+                remediation_hash: None,
+                deliberation: vec![kontor_policy::DeliberationStep {
+                    role: name("Committee"),
+                    consultation: name("independent_review"),
+                    round: 2,
+                    outcome: name("fail"),
+                }],
+            },
+        ),
+    )
+    .expect("the exhausted second failure enters needs_human")
+    .state;
+    assert_eq!(human.phase, kontor_scheduler::CompletionPhase::NeedsHuman);
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.update_epic_completion(
+                &seed(&human),
+                AggregateRevision::parse(awaiting_revision + 1).expect("the routed revision"),
+            )
+        })
+        .expect("the test fixture advances to needs_human");
+
+    let recovery_revision = human.revision.get();
+    let recovery_proposal_body = serde_json::json!({
+        "expected_revision": recovery_revision,
+        "action": {
+            "action": "lsa_proposal",
+            "round": 2,
+            "failed_round_evidence": second_findings.as_str(),
+            "proposal": ContentHash::of(b"publish preserved commits and migrate deploy identity").as_str()
+        }
+    });
+    let recovery_proposed = remediate(
+        recovery_proposal_body.clone(),
+        "op06-needs-human-propose",
+        lsa,
+        2,
+    )
+    .send(world)
+    .await;
+    assert_eq!(recovery_proposed.status, 200, "{}", recovery_proposed.body);
+    assert_eq!(
+        recovery_proposed.json()["state"]["phase"]["phase"],
+        "needs_human",
+        "the LSA alone cannot reopen the completion: {}",
+        recovery_proposed.body
+    );
+    assert_eq!(
+        recovery_proposed.json()["receipt"]["revision"],
+        recovery_revision
+    );
+
+    let recovery_route_body = serde_json::json!({
+        "expected_revision": recovery_revision,
+        "action": {
+            "action": "tpm_route",
+            "round": 2,
+            "route": ContentHash::of(b"route the post-needs-human remediation").as_str()
+        }
+    });
+    let recovery_routed = remediate(
+        recovery_route_body.clone(),
+        "op06-needs-human-route",
+        tpm,
+        1,
+    )
+    .send(world)
+    .await;
+    assert_eq!(recovery_routed.status, 200, "{}", recovery_routed.body);
+    assert_eq!(
+        recovery_routed.json()["state"]["phase"]["phase"],
+        "remediation"
+    );
+    assert_eq!(recovery_routed.json()["state"]["phase"]["round"], 2);
+    assert!(recovery_routed.json()["state"]["needs_human"].is_null());
+
+    let recovery_routed_again = remediate(recovery_route_body, "op06-needs-human-route", tpm, 1)
+        .send(world)
+        .await;
+    assert_eq!(
+        recovery_routed_again.status, 200,
+        "{}",
+        recovery_routed_again.body
+    );
+    assert_eq!(
+        recovery_routed_again.json()["receipt"]["applied"],
+        "unchanged"
+    );
+
+    let routed_revision = recovery_routed.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the recovery route revision");
+    let duplicate_integration = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": routed_revision,
+            "evidence": {
+                "phase": "integration",
+                "repositories": [{
+                    "repository": remediation_integration.repositories[0].repository.as_str(),
+                    "pull_request": remediation_integration.repositories[0].pull_request.as_str(),
+                    "module_revision": remediation_integration.repositories[0].module_revision.as_str(),
+                    "root_pointer_revision": remediation_integration.repositories[0]
+                        .root_pointer_revision
+                        .as_ref()
+                        .map(ExternalName::as_str)
+                }]
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-needs-human-duplicate-integration")
+    .send(world)
+    .await;
+    assert_eq!(
+        duplicate_integration.status, 400,
+        "{}",
+        duplicate_integration.body
+    );
+    assert!(
+        duplicate_integration.json()["subject"]
+            .as_str()
+            .expect("a subject")
+            .contains("completion needs_human recovery"),
+        "{}",
+        duplicate_integration.body
+    );
+
+    let recovery_integrated = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": routed_revision,
+            "evidence": {
+                "phase": "integration",
+                "repositories": [{
+                    "repository": "asma-bunjs-editor",
+                    "pull_request": "archival-tags",
+                    "module_revision": "b040f35",
+                    "root_pointer_revision": null
+                }]
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-needs-human-new-integration")
+    .send(world)
+    .await;
+    assert_eq!(
+        recovery_integrated.status, 200,
+        "{}",
+        recovery_integrated.body
+    );
+    assert_eq!(
+        recovery_integrated.json()["state"]["phase"]["phase"],
+        "verdict"
+    );
+    assert_eq!(recovery_integrated.json()["state"]["phase"]["round"], 3);
+    let recorded_recovery = &recovery_integrated.json()["state"]["remediations"][1];
+    assert_eq!(recorded_recovery["round"], 2);
+    assert_eq!(
+        recorded_recovery["authorization"]["needs_human_recovery"],
+        true
+    );
+    assert_ne!(
+        recorded_recovery["authorization"]["lsa_actor"]["seat_binding_id"],
+        recorded_recovery["authorization"]["tpm_actor"]["seat_binding_id"]
+    );
 }
 
 /// Integration advances on a typed operator receipt, and only the right one.

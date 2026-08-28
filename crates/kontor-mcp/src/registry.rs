@@ -5098,10 +5098,13 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Json,
                 "Which remediation authority is acting: an `lsa_proposal` naming the \
                  failed round, its evidence and the bounded correction, or a `tpm_route` \
-                 naming the round and the routed task set.",
+                 naming the round and the routed task set. In `needs_human`, the same \
+                 ordered, distinct LSA/TPM actions may recover only the latest failed \
+                 Committee round; completion then requires a new integration receipt \
+                 and repository outcome before another Committee review.",
             ),
         ],
-        about: "Record one epic's LSA remediation proposal or TPM next-round route.",
+        about: "Record one epic's LSA remediation proposal or TPM next-round/recovery route.",
     },
 ];
 

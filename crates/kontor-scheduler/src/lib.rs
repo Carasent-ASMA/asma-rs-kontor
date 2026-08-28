@@ -65,7 +65,7 @@ pub use completion::{
     CompletionRound, CompletionSignal, CompletionState, CompletionTransition, IntegrationRecord,
     PollingFallback, RemediationApproval, RemediationAuthority, RemediationAuthorization,
     RemediationRecord, RepositoryOutcome, SignalDelivery, advance, blockers, compile,
-    operational_default, outstanding, start,
+    needs_human_recovery_round, operational_default, outstanding, start,
 };
 pub use headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass, WaitReason, resolve};
 pub use model::{
