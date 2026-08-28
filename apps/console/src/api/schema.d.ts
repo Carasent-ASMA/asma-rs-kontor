@@ -6221,7 +6221,14 @@ export interface components {
             /** @description The pack document. Validated in full before anything is stored. */
             pack: Record<string, never>;
         };
-        /** @description Record one epic's remediation authority. */
+        /**
+         * @description Record one epic's remediation authority.
+         *
+         *     The same ordered LSA/TPM pair may recover a terminal `needs_human` state
+         *     only for its latest failed Committee round. Recovery still enters
+         *     remediation first; a new integration receipt and repository outcome are
+         *     required before another Committee round can be invoked.
+         */
         RemediateCompletionRequest: {
             /** @description Which authority is acting, and over what. */
             action: components["schemas"]["RemediationActionDto"];
@@ -6282,6 +6289,11 @@ export interface components {
             lsa_actor?: null | components["schemas"]["RemediationAuthorityDto"];
             /** @description LSA proposal evidence. */
             lsa_proposal: string;
+            /**
+             * @description This pair of authorities explicitly reopened a terminal
+             *     `needs_human` verdict for new remediation evidence and re-review.
+             */
+            needs_human_recovery: boolean;
             tpm_actor?: null | components["schemas"]["RemediationAuthorityDto"];
             /** @description TPM routing evidence. */
             tpm_routing: string;
@@ -7846,7 +7858,7 @@ export interface components {
             headroom_evidence_hash: string;
             /** @description Immutable provider-usage observation checked inside the swap transaction. */
             headroom_observation_id: string;
-            /** @description Route superseded by this lineage row. */
+            /** @description Immediate predecessor route superseded by this lineage row. */
             predecessor_model_route: components["schemas"]["RuntimeModelRouteRequest"];
             /**
              * Format: int64

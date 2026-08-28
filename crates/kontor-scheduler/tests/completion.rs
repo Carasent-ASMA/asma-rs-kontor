@@ -8,8 +8,8 @@ use kontor_core::id::{
 };
 use kontor_core::open_question::{OpenQuestionStatus, OpenQuestionSummary};
 use kontor_policy::{
-    CloseoutEvidence, CloseoutRequirement, DeliberationStep, OpenQuestionBlocker, TicketEvidence,
-    TicketRequirement,
+    CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload,
+    OpenQuestionBlocker, TicketEvidence, TicketRequirement,
 };
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
@@ -225,6 +225,36 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
     assert_one_tpm_wake(&commands, tpm);
     state = next;
 
+    let mut generic_stall = state.clone();
+    generic_stall.phase = CompletionPhase::NeedsHuman;
+    generic_stall.needs_human = Some(
+        NeedsHumanPayload::new(
+            name("Inspect the stalled bounded remediation"),
+            deliberation(1, "stalled"),
+        )
+        .expect("the stall carries its tried path"),
+    );
+    let in_bounds_recovery = advance(
+        &compiled,
+        &generic_stall,
+        &callback(
+            &generic_stall,
+            "in-bounds-needs-human-recovery",
+            CompletionObservation::RemediationApproved(RemediationApproval {
+                round: 1,
+                authorization: RemediationAuthorization {
+                    lsa_proposal: digest("in-bounds-lsa"),
+                    tpm_routing: digest("in-bounds-tpm"),
+                    lsa_actor: None,
+                    tpm_actor: None,
+                    needs_human_recovery: true,
+                },
+            }),
+        ),
+    )
+    .expect_err("a generic stall inside the bounded allowance is not verdict recovery");
+    assert!(matches!(in_bounds_recovery, DomainError::Terminal { .. }));
+
     let premature = advance(
         &compiled,
         &state,
@@ -242,6 +272,7 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
         tpm_routing: digest("tpm-routing"),
         lsa_actor: None,
         tpm_actor: None,
+        needs_human_recovery: false,
     };
     let (next, commands) = apply_and_restart(
         &compiled,
@@ -306,6 +337,95 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
         .as_ref()
         .expect("needs_human always carries context");
     assert_eq!(escalation.tried_deliberation_path().len(), 2);
+
+    let human = second_failure.state.clone();
+    let ordinary_authorization = RemediationAuthorization {
+        lsa_proposal: digest("late-lsa-proposal"),
+        tpm_routing: digest("late-tpm-routing"),
+        lsa_actor: None,
+        tpm_actor: None,
+        needs_human_recovery: false,
+    };
+    let ordinary = advance(
+        &compiled,
+        &human,
+        &callback(
+            &human,
+            "ordinary-after-needs-human",
+            CompletionObservation::RemediationApproved(RemediationApproval {
+                round: 2,
+                authorization: ordinary_authorization,
+            }),
+        ),
+    )
+    .expect_err("ordinary remediation cannot reopen a terminal completion");
+    assert!(matches!(ordinary, DomainError::Terminal { .. }));
+
+    let recovery_authorization = RemediationAuthorization {
+        lsa_proposal: digest("needs-human-lsa-proposal"),
+        tpm_routing: digest("needs-human-tpm-routing"),
+        lsa_actor: None,
+        tpm_actor: None,
+        needs_human_recovery: true,
+    };
+    let (recovering, commands) = apply_and_restart(
+        &compiled,
+        &human,
+        &callback(
+            &human,
+            "needs-human-recovery-approved",
+            CompletionObservation::RemediationApproved(RemediationApproval {
+                round: 2,
+                authorization: recovery_authorization.clone(),
+            }),
+        ),
+    );
+    assert_eq!(recovering.phase, CompletionPhase::Remediating(2));
+    assert!(recovering.needs_human.is_none());
+    assert_eq!(
+        commands[0],
+        CompletionCommand::LaunchRemediation {
+            round: 2,
+            authorization: recovery_authorization,
+        }
+    );
+    assert_one_tpm_wake(&commands, tpm);
+
+    let duplicate = advance(
+        &compiled,
+        &recovering,
+        &callback(
+            &recovering,
+            "needs-human-duplicate-evidence",
+            CompletionObservation::RemediationCompleted(human.integrations[1].clone()),
+        ),
+    )
+    .expect_err("terminal recovery must carry new integration evidence");
+    assert!(matches!(duplicate, DomainError::MissingEvidence { .. }));
+
+    let rounds_before_recovery = recovering.rounds.clone();
+    let (third_verdict, commands) = apply_and_restart(
+        &compiled,
+        &recovering,
+        &callback(
+            &recovering,
+            "needs-human-new-evidence",
+            CompletionObservation::RemediationCompleted(integration("human-recovery")),
+        ),
+    );
+    assert_eq!(third_verdict.phase, CompletionPhase::Verdict(3));
+    assert_eq!(third_verdict.rounds, rounds_before_recovery);
+    assert_eq!(third_verdict.remediations.len(), 2);
+    assert!(
+        third_verdict.remediations[1]
+            .authorization
+            .needs_human_recovery
+    );
+    assert!(matches!(
+        commands[0],
+        CompletionCommand::InvokeCommittee { round: 3, .. }
+    ));
+    assert_one_tpm_wake(&commands, tpm);
 
     let first_round = state.rounds[0].clone();
     let (next, commands) = apply_and_restart(
@@ -376,6 +496,19 @@ fn fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_evid
         replay.commands.is_empty(),
         "a replay wakes no duplicate TPM"
     );
+}
+
+#[test]
+fn published_remediation_authorizations_default_to_bounded_not_human_recovery() {
+    let legacy = serde_json::json!({
+        "lsa_proposal": digest("legacy-lsa"),
+        "tpm_routing": digest("legacy-tpm"),
+        "lsa_actor": null,
+        "tpm_actor": null
+    });
+    let restored: RemediationAuthorization =
+        serde_json::from_value(legacy).expect("a pre-recovery authorization remains readable");
+    assert!(!restored.needs_human_recovery);
 }
 
 #[test]

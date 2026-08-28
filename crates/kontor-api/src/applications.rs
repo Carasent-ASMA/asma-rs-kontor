@@ -1839,6 +1839,9 @@ pub struct RemediationAuthorizationDto {
     /// TPM seat and native occupancy that authored the route.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tpm_actor: Option<RemediationAuthorityDto>,
+    /// This pair of authorities explicitly reopened a terminal
+    /// `needs_human` verdict for new remediation evidence and re-review.
+    pub needs_human_recovery: bool,
 }
 
 /// One completed, governed remediation and its frozen integration evidence.
@@ -2049,6 +2052,11 @@ pub enum RemediationActionDto {
 }
 
 /// Record one epic's remediation authority.
+///
+/// The same ordered LSA/TPM pair may recover a terminal `needs_human` state
+/// only for its latest failed Committee round. Recovery still enters
+/// remediation first; a new integration receipt and repository outcome are
+/// required before another Committee round can be invoked.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemediateCompletionRequest {
@@ -5771,7 +5779,8 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &AdvanceCompletionRequest,
     ) -> Result<CompletionOutcomeDto, ApiError>;
-    /// Send one epic's completion back for remediation.
+    /// Send one epic's completion back for remediation, including the governed
+    /// two-seat recovery from a failed-verdict `needs_human` state.
     async fn remediate_completion(
         &self,
         key: &IdempotencyKey,

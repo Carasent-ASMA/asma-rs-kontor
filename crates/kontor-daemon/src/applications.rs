@@ -10810,6 +10810,7 @@ impl Services {
                                 occupancy_generation: actor.occupancy_generation,
                             }
                         }),
+                        needs_human_recovery: remediation.authorization.needs_human_recovery,
                     },
                     integration: integration_dto(&remediation.integration),
                 })
@@ -17966,7 +17967,11 @@ impl ApplicationOperations for Services {
                     ));
                 }
                 let permit_create = current.revision == request.expected_revision
-                    && current.phase == CompletionPhase::AwaitRemediation(*round);
+                    && (current.phase == CompletionPhase::AwaitRemediation(*round)
+                        || kontor_scheduler::needs_human_recovery_round(
+                            &current,
+                            compiled.profile.max_remediation_rounds,
+                        ) == Some(*round));
                 let (receipt, applied) = self
                     .state()?
                     .with_store(|store| {
@@ -18039,6 +18044,7 @@ impl ApplicationOperations for Services {
                     tpm_routing: route.clone(),
                     lsa_actor: Some(lsa_actor),
                     tpm_actor: Some(actor.clone()),
+                    needs_human_recovery: *round > compiled.profile.max_remediation_rounds,
                 };
                 let effect_revision = request
                     .expected_revision
@@ -18059,9 +18065,17 @@ impl ApplicationOperations for Services {
                         || current.remediations.iter().any(|record| {
                             record.round == *round && record.authorization == authorization
                         }));
+                let route_phase_matches = (current.phase
+                    == CompletionPhase::AwaitRemediation(*round)
+                    && !authorization.needs_human_recovery)
+                    || (kontor_scheduler::needs_human_recovery_round(
+                        &current,
+                        compiled.profile.max_remediation_rounds,
+                    ) == Some(*round)
+                        && authorization.needs_human_recovery);
                 let (next, effect_already_present) = if current.revision
                     == request.expected_revision
-                    && current.phase == CompletionPhase::AwaitRemediation(*round)
+                    && route_phase_matches
                 {
                     let transition = kontor_scheduler::advance(&compiled, &current, &signal)
                         .map_err(|error| self.refuse_domain(&error))?;
@@ -18089,7 +18103,7 @@ impl ApplicationOperations for Services {
                 } else {
                     return Err(self.deny(
                         ApiErrorCode::InvalidRequest,
-                        "this completion is not waiting for that remediation route",
+                        "this completion is not waiting for that bounded or needs_human remediation route",
                     ));
                 };
                 let live_tpm =
