@@ -24693,6 +24693,157 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         "admission must fail before creating a native-less Committee run"
     );
 
+    // An operator-accepted OpenCode initial fallback is not automatically an
+    // accepted SeatRecoveryProfile. Prove that credential-propagation recovery
+    // validates that new provenance before it fences the logical generation or
+    // archives the already-running filler.
+    let active_opencode = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-opencode-pre-effect-recovery")
+    .send(world)
+    .await;
+    assert_eq!(active_opencode.status, 200, "{}", active_opencode.body);
+    let active_run_id = kontor_core::id::CommitteeRunId::parse(
+        active_opencode.json()["committee_run_id"]
+            .as_str()
+            .expect("the active Committee run"),
+    )
+    .expect("a Committee run id");
+    let active_run = ConsultationRunId::Committee(active_run_id);
+    let active_opencode_json = active_opencode.json();
+    let active_opencode_seat = active_opencode_json["seats"]
+        .as_array()
+        .expect("the active Committee seats")
+        .iter()
+        .find(|seat| seat["model_route"]["provider"] == "opencode")
+        .expect("the operator-accepted OpenCode reviewer");
+    let active_binding = SeatBindingId::parse(
+        active_opencode_seat["seat_binding_id"]
+            .as_str()
+            .expect("the OpenCode SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let active_native = ExternalId::parse(
+        active_opencode_seat["observed_binding"]["native_id"]
+            .as_str()
+            .expect("the OpenCode native filler"),
+    )
+    .expect("a native id");
+    let active_slot = RoleSlotId::parse(
+        active_opencode_seat["role_slot_id"]
+            .as_str()
+            .expect("the OpenCode role slot"),
+    )
+    .expect("a role slot");
+    let (run_before_refusal, seat_before_refusal) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_consultation_run(ProjectId::parse(project).expect("the project"), active_run)
+                .expect("the Committee reads")
+                .expect("the Committee remains"),
+            store
+                .get_consultation_seat_by_binding(
+                    ProjectId::parse(project).expect("the project"),
+                    active_binding,
+                )
+                .expect("the seat reads")
+                .expect("the seat remains"),
+        )
+    });
+    let runtime_identity_before = world
+        .fake
+        .consultation_identity(active_binding)
+        .expect("the native filler is active");
+    let calls_before_refusal = world.fake.calls();
+    world
+        .fake
+        .refusing_consultation_recovery_provider("opencode");
+    let refused_recovery_key =
+        IdempotencyKey::parse("committee-opencode-recovery-refused").expect("the recovery key");
+    let refused_recovery = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{active_run_id}/seats/{active_binding}/recover"
+        ),
+        &serde_json::json!({
+            "expected_revision": run_before_refusal.revision,
+            "expected_native_id": active_native,
+            "reason": "credential_propagation",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(refused_recovery_key.as_str())
+    .send(world)
+    .await;
+    assert_eq!(refused_recovery.status, 503, "{}", refused_recovery.body);
+    assert!(
+        refused_recovery.json().get("receipt_id").is_none(),
+        "a pre-effect refusal created a receipt: {}",
+        refused_recovery.body
+    );
+    assert_eq!(
+        world.fake.calls(),
+        calls_before_refusal,
+        "route validation happened after a native recovery effect"
+    );
+    let (run_after_refusal, seat_after_refusal, attempt, lineage, receipt) =
+        world.daemon.state().with_store(|store| {
+            (
+                store
+                    .get_consultation_run(
+                        ProjectId::parse(project).expect("the project"),
+                        active_run,
+                    )
+                    .expect("the Committee reads")
+                    .expect("the Committee remains"),
+                store
+                    .get_consultation_seat_by_binding(
+                        ProjectId::parse(project).expect("the project"),
+                        active_binding,
+                    )
+                    .expect("the seat reads")
+                    .expect("the seat remains"),
+                store
+                    .get_consultation_recovery_attempt(
+                        ProjectId::parse(project).expect("the project"),
+                        active_run,
+                        &active_slot,
+                        &active_native,
+                    )
+                    .expect("attempt absence reads"),
+                store
+                    .get_consultation_recovery_successor(
+                        ProjectId::parse(project).expect("the project"),
+                        active_run,
+                        &active_slot,
+                        &active_native,
+                    )
+                    .expect("lineage absence reads"),
+                store
+                    .get_receipt_by_key(&refused_recovery_key)
+                    .expect("receipt absence reads"),
+            )
+        });
+    assert_eq!(run_after_refusal.revision, run_before_refusal.revision);
+    assert_eq!(
+        seat_after_refusal.occupancy_generation,
+        seat_before_refusal.occupancy_generation
+    );
+    assert_eq!(
+        seat_after_refusal.native_identity,
+        seat_before_refusal.native_identity
+    );
+    assert!(attempt.is_none());
+    assert!(lineage.is_none());
+    assert!(receipt.is_none());
+    assert_eq!(
+        world.fake.consultation_identity(active_binding),
+        Some(runtime_identity_before),
+        "the refused recovery archived or unbound the predecessor"
+    );
+
     let reviewer_a = RoleSlotId::parse("reviewer-a").expect("a role slot");
     world.fake.refusing_launch_of(&reviewer_a);
     let first_invoke = Call::post(

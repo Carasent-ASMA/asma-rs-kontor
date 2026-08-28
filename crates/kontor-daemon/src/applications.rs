@@ -16560,7 +16560,9 @@ impl ApplicationOperations for Services {
                 "the runtime selected for Committee recovery is not configured",
             )
         })?;
-        let (desired_rung, recovery_profile, attempt) = if let Some(attempt) = pending_attempt {
+        let (desired_rung, recovery_profile, pending_attempt) = if let Some(attempt) =
+            pending_attempt
+        {
             if attempt.recovery_reason != request.reason.as_str()
                 || attempt.request_intent_hash != *intent.hash()
             {
@@ -16570,7 +16572,7 @@ impl ApplicationOperations for Services {
                 ));
             }
             let profile = self.intent(&attempt.recovery_profile)?;
-            (attempt.selected_model_rung.clone(), profile, attempt)
+            (attempt.selected_model_rung.clone(), profile, Some(attempt))
         } else {
             let effective_rungs = match request.reason {
                 ConsultationSeatRecoveryReasonDto::CredentialPropagation => {
@@ -16656,6 +16658,30 @@ impl ApplicationOperations for Services {
                 "schema_version": 1,
                 "ordered_rungs": effective_rungs,
             }))?;
+            (desired_rung, recovery_profile, None)
+        };
+        if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
+            && desired_rung == predecessor.model_rung
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "provider recovery did not resolve to a different governed route",
+            ));
+        }
+        let successor_route_provenance =
+            consultation_route_provenance("seat_recovery_profile", recovery_profile.hash().clone())
+                .map_err(|error| self.refuse_domain(&error))?;
+        // Validate the exact successor policy before fencing the logical seat or
+        // touching its native predecessor. In particular, a same-rung
+        // credential-propagation retry must not turn an already-running
+        // operator-accepted OpenCode filler into a prepared recovery attempt
+        // when SeatRecoveryProfile is not an accepted source for that route.
+        adapter
+            .validate_consultation_model_rung(&desired_rung, &successor_route_provenance)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let attempt = if let Some(attempt) = pending_attempt {
+            attempt
+        } else {
             let attempt = state
                 .with_store(|store| {
                     store.prepare_consultation_recovery_attempt(&NewConsultationRecoveryAttempt {
@@ -16670,20 +16696,12 @@ impl ApplicationOperations for Services {
                     })
                 })
                 .map_err(|error| self.refuse(&error))?;
-            (desired_rung, recovery_profile, attempt)
+            attempt
         };
         if attempt.recovery_profile_hash != *recovery_profile.hash() {
             return Err(self.deny(
                 ApiErrorCode::IdempotencyConflict,
                 "the durable recovery profile differs from this retry",
-            ));
-        }
-        if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
-            && desired_rung == predecessor.model_rung
-        {
-            return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "provider recovery did not resolve to a different governed route",
             ));
         }
         predecessor.occupancy_generation = attempt.predecessor_occupancy_generation;
@@ -16706,9 +16724,6 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?;
         let mut successor_basis = predecessor.clone();
         successor_basis.occupancy_generation = attempt.successor_occupancy_generation;
-        let successor_route_provenance =
-            consultation_route_provenance("seat_recovery_profile", recovery_profile.hash().clone())
-                .map_err(|error| self.refuse_domain(&error))?;
         let successor = self
             .launch_committee_recovery_successor(
                 &run,
