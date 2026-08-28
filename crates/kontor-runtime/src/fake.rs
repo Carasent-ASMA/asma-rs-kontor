@@ -30,11 +30,11 @@ use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest, HostedSeatClaimOutcome,
-    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatLaunchRequest,
-    HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatRetireOutcome,
-    HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
-    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
+    HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
+    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -451,6 +451,8 @@ struct FakeState {
     canonical_root: Option<WorkspaceRoot>,
     /// Role slots this runtime will not launch, by slot id.
     unlaunchable: BTreeSet<String>,
+    /// Providers this runtime refuses specifically as recovery successors.
+    unsupported_consultation_recovery_providers: BTreeSet<String>,
     /// Every seat whose *placement* this runtime can currently prove.
     ///
     /// Separate from `bindings` because the two are lost and recovered
@@ -941,6 +943,7 @@ impl ScriptedFakeRuntime {
                 plane: PlaneRequirement::NotRequired,
                 canonical_root: None,
                 unlaunchable: BTreeSet::new(),
+                unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
                 host: ExternalName::parse("fake-host").expect("valid host name"),
@@ -1020,6 +1023,17 @@ impl ScriptedFakeRuntime {
     /// scheduler replay resumes the durable admission.
     pub fn allowing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.remove(slot.as_str());
+    }
+
+    /// Refuse recovery-successor validation for one exact provider spelling.
+    ///
+    /// This is opt-in evidence for the pre-effect route-validation boundary:
+    /// production adapters may reject a route even when its native predecessor
+    /// is already running and recoverable.
+    pub fn refusing_consultation_recovery_provider(&self, provider: &str) {
+        self.lock()
+            .unsupported_consultation_recovery_providers
+            .insert(provider.to_owned());
     }
 
     /// Declare one provider temporarily unavailable and optionally route its
@@ -1366,6 +1380,15 @@ impl ScriptedFakeRuntime {
         self.lock().consultation_routes.get(&seat).cloned()
     }
 
+    /// Native identity still held for one active consultation filler.
+    #[must_use]
+    pub fn consultation_identity(&self, seat: SeatBindingId) -> Option<NativeRuntimeIdentity> {
+        self.lock()
+            .consultations
+            .get(&seat)
+            .map(|outcome| outcome.identity.clone())
+    }
+
     /// Take the recorded calls and start a fresh log.
     pub fn take_calls(&self) -> Vec<AdapterCall> {
         std::mem::take(&mut self.lock().calls)
@@ -1524,7 +1547,21 @@ fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<Sessio
 
 #[async_trait]
 impl RuntimeAdapter for ScriptedFakeRuntime {
-    fn validate_consultation_model_rung(&self, _rung: &ModelRung) -> RuntimeResult<()> {
+    fn validate_consultation_model_rung(
+        &self,
+        rung: &ModelRung,
+        provenance: &ConsultationRouteProvenance,
+    ) -> RuntimeResult<()> {
+        if provenance.source == crate::adapter::ConsultationRouteSource::SeatRecoveryProfile
+            && self
+                .lock()
+                .unsupported_consultation_recovery_providers
+                .contains(&rung.provider.0)
+        {
+            return Err(RuntimeError::PermissionModeUnsupported {
+                provider: rung.provider.0.clone(),
+            });
+        }
         Ok(())
     }
 

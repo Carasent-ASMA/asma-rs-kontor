@@ -56,12 +56,12 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest, HostedSeatClaimOutcome,
-    HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
-    HostedSeatRetireOutcome, HostedSeatRetireRequest, HostedSeatTitleConflict, LaunchOutcome,
-    MessageAck, PermissionAck, RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter,
-    RuntimeError, RuntimeResult,
+    ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
+    HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
+    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatMessageOutcome,
+    HostedSeatMessageRequest, HostedSeatRetireOutcome, HostedSeatRetireRequest,
+    HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
+    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -94,10 +94,7 @@ use kontor_runtime::workspace::{
     WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
 };
 
-use crate::client::{
-    PaseoCommand, PaseoRpc, PaseoTransport, consultation_permission_mode, ensure_frame_bounded,
-    paseo_mode,
-};
+use crate::client::{PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, paseo_mode};
 use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
     MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
@@ -1833,7 +1830,7 @@ impl PaseoAdapter {
     fn verify_agent_route_with_mode(
         agent: &PaseoAgent,
         requested: &ModelRung,
-        consultation: bool,
+        consultation_provenance: Option<&ConsultationRouteProvenance>,
         autonomy: SeatAutonomy,
     ) -> RuntimeResult<()> {
         if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
@@ -1844,8 +1841,8 @@ impl PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        let expected_mode = if consultation {
-            consultation_permission_mode(&requested.provider.0)?
+        let expected_mode = if let Some(provenance) = consultation_provenance {
+            super::client::consultation_route_permission_mode(requested, provenance)?
         } else {
             paseo_mode(&requested.provider.0, autonomy)?
         };
@@ -1864,7 +1861,7 @@ impl PaseoAdapter {
         requested: &ModelRung,
         autonomy: SeatAutonomy,
     ) -> RuntimeResult<()> {
-        Self::verify_agent_route_with_mode(agent, requested, false, autonomy)
+        Self::verify_agent_route_with_mode(agent, requested, None, autonomy)
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -3380,7 +3377,7 @@ impl PaseoAdapter {
         workspace_id: &str,
     ) -> RuntimeResult<BTreeMap<String, String>> {
         let scope = self.effective_scope(&request.scope)?;
-        Ok([
+        let mut labels: BTreeMap<String, String> = [
             (
                 label::CONSULTATION_RUN,
                 format!(
@@ -3402,17 +3399,26 @@ impl PaseoAdapter {
             (label::ROLE_SLOT, request.role_slot_id.as_str().to_owned()),
             (label::WORKSPACE_ID, workspace_id.to_owned()),
             (label::WORKTREE, request.cwd.as_str().to_owned()),
-            (label::READ_ONLY, "true".to_owned()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
-        .collect())
+        .collect();
+        if request.model_rung.provider.0 == "opencode" {
+            labels.insert(
+                label::OPERATOR_ACCEPTED_FALLBACK.to_owned(),
+                request.route_provenance.evidence_hash.as_str().to_owned(),
+            );
+        } else {
+            labels.insert(label::READ_ONLY.to_owned(), "true".to_owned());
+        }
+        Ok(labels)
     }
 
     async fn launch_consultation_inner(
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.validate_consultation_model_rung(&request.model_rung, &request.route_provenance)?;
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
         let effective_scope = self.effective_scope(&request.scope)?;
@@ -3502,6 +3508,7 @@ impl PaseoAdapter {
                     &workspace_id,
                     request.cwd.as_str(),
                     &request.model_rung,
+                    &request.route_provenance,
                     request.display_name.as_str(),
                     &labels,
                     request.prompt.as_str(),
@@ -3540,7 +3547,7 @@ impl PaseoAdapter {
         Self::verify_agent_route_with_mode(
             &agent,
             &request.model_rung,
-            true,
+            Some(&request.route_provenance),
             SeatAutonomy::Advisory,
         )?;
         Ok(ConsultationLaunchOutcome {
@@ -3623,6 +3630,7 @@ impl PaseoAdapter {
             label::TEAM_RUN,
             label::CONSULTATION_RUN,
             label::READ_ONLY,
+            label::OPERATOR_ACCEPTED_FALLBACK,
             label::PARENT_AGENT,
         ]
         .iter()
@@ -3653,6 +3661,7 @@ impl PaseoAdapter {
             label::SEAT_BINDING,
             label::HOSTED_SEAT,
             label::READ_ONLY,
+            label::OPERATOR_ACCEPTED_FALLBACK,
         ]
         .iter()
         .any(|key| agent.label(key).is_some())
@@ -4025,8 +4034,12 @@ impl PaseoAdapter {
 
 #[async_trait]
 impl RuntimeAdapter for PaseoAdapter {
-    fn validate_consultation_model_rung(&self, rung: &ModelRung) -> RuntimeResult<()> {
-        super::client::consultation_permission_mode(&rung.provider.0).map(|_| ())
+    fn validate_consultation_model_rung(
+        &self,
+        rung: &ModelRung,
+        provenance: &ConsultationRouteProvenance,
+    ) -> RuntimeResult<()> {
+        super::client::consultation_route_permission_mode(rung, provenance).map(|_| ())
     }
 
     fn provider_available(&self, provider: &str) -> bool {
@@ -4244,9 +4257,17 @@ impl RuntimeAdapter for PaseoAdapter {
         let native_id = request.identity.native_id.as_str();
         let before = self.fetch_agent(native_id).await?;
         let expected_seat = request.seat_binding_id.to_string();
+        let fallback_hash = request.route_provenance.evidence_hash.as_str();
+        let restriction_matches = if request.model_rung.provider.0 == "opencode" {
+            before.label(label::READ_ONLY).is_none()
+                && before.label(label::OPERATOR_ACCEPTED_FALLBACK) == Some(fallback_hash)
+        } else {
+            before.label(label::READ_ONLY) == Some("true")
+                && before.label(label::OPERATOR_ACCEPTED_FALLBACK).is_none()
+        };
         if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
             || before.label(label::CONSULTATION_RUN).is_none()
-            || before.label(label::READ_ONLY) != Some("true")
+            || !restriction_matches
         {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -4259,7 +4280,7 @@ impl RuntimeAdapter for PaseoAdapter {
         Self::verify_agent_route_with_mode(
             &before,
             &request.model_rung,
-            true,
+            Some(&request.route_provenance),
             SeatAutonomy::Advisory,
         )?;
         if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {

@@ -18,7 +18,8 @@ use kontor_core::DomainError;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    BoundedText, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId, SeatBindingId, Timestamp,
+    BoundedText, ContentHash, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId,
+    SeatBindingId, Timestamp,
 };
 use kontor_core::spec::{ContextPolicySnapshot, ModelRung};
 use kontor_core::state::NativeRuntimeIdentity;
@@ -270,7 +271,85 @@ pub struct LaunchOutcome {
     pub observation: ControlPlaneObservation,
 }
 
-/// Launch one read-only consultation seat in an already prepared ASW/CSW.
+/// Source of one consultation route, frozen before native construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsultationRouteSource {
+    /// Route published by the immutable Advisor/Committee profile itself.
+    Template,
+    /// Route in an Admin-authorized per-slot initial recovery profile.
+    InitialRecoveryProfile,
+    /// Route in a later Admin-authorized materialization recovery profile.
+    MaterializationRecoveryProfile,
+    /// Route selected while replacing an already-materialized native filler.
+    SeatRecoveryProfile,
+}
+
+impl ConsultationRouteSource {
+    /// Stable spelling stored in immutable consultation provenance.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Template => "template",
+            Self::InitialRecoveryProfile => "initial_recovery_profile",
+            Self::MaterializationRecoveryProfile => "materialization_recovery_profile",
+            Self::SeatRecoveryProfile => "seat_recovery_profile",
+        }
+    }
+}
+
+/// Explicit disposition carried by a fallback route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsultationFallbackDisposition {
+    /// The Realm operator accepted this exact fallback policy.
+    OperatorAccepted,
+    /// The fallback was considered but not accepted.
+    Rejected,
+}
+
+/// Immutable route lineage presented to validation and native construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationRouteProvenance {
+    /// Which governed policy supplied the route.
+    pub source: ConsultationRouteSource,
+    /// Canonical hash of that exact profile/policy document.
+    pub evidence_hash: ContentHash,
+    /// Operator disposition when this is a fallback rather than template data.
+    pub fallback_disposition: Option<ConsultationFallbackDisposition>,
+}
+
+impl ConsultationRouteProvenance {
+    /// Provenance for a published profile/template route.
+    #[must_use]
+    pub fn template(evidence_hash: ContentHash) -> Self {
+        Self {
+            source: ConsultationRouteSource::Template,
+            evidence_hash,
+            fallback_disposition: None,
+        }
+    }
+
+    /// Provenance for one Admin-authorized initial recovery profile.
+    #[must_use]
+    pub fn operator_accepted_initial_recovery_profile(evidence_hash: ContentHash) -> Self {
+        Self {
+            source: ConsultationRouteSource::InitialRecoveryProfile,
+            evidence_hash,
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        }
+    }
+
+    /// Whether this is the one risk-accepted initial fallback class.
+    #[must_use]
+    pub const fn is_operator_accepted_initial_recovery_profile(&self) -> bool {
+        matches!(self.source, ConsultationRouteSource::InitialRecoveryProfile)
+            && matches!(
+                self.fallback_disposition,
+                Some(ConsultationFallbackDisposition::OperatorAccepted)
+            )
+    }
+}
+
+/// Launch one governed consultation seat in an already prepared ASW/CSW.
 ///
 /// Unlike delivery launch this is not a TeamRun and has no TaskId. Its native
 /// uniqueness key is the durable SeatBinding id, while the family-qualified run
@@ -283,7 +362,7 @@ pub struct ConsultationLaunchRequest {
     pub seat_binding_id: SeatBindingId,
     /// Template slot.
     pub role_slot_id: RoleSlotId,
-    /// Runtime-facing read-only title.
+    /// Runtime-facing consultation title.
     pub display_name: ExternalName,
     /// Exact node-keyed container prepared by this runtime.
     pub container: ContainerBindingSnapshot,
@@ -298,6 +377,8 @@ pub struct ConsultationLaunchRequest {
     pub credential: ScopedSeatCredential,
     /// Exact provider/model/effort route.
     pub model_rung: ModelRung,
+    /// Immutable policy and disposition that selected the route.
+    pub route_provenance: ConsultationRouteProvenance,
     /// Immutable context-window policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
@@ -355,6 +436,8 @@ pub struct ConsultationSeatRetireRequest {
     pub identity: NativeRuntimeIdentity,
     /// Exact route that predecessor must still report.
     pub model_rung: ModelRung,
+    /// Immutable policy and disposition that selected that route.
+    pub route_provenance: ConsultationRouteProvenance,
     /// Audited retirement instant.
     pub requested_at: Timestamp,
 }
@@ -603,7 +686,11 @@ pub struct PermissionAck {
 pub trait RuntimeAdapter: Send + Sync {
     /// Prove, without a native effect, that a route has an explicitly pinned
     /// consultation permission mode in this runtime.
-    fn validate_consultation_model_rung(&self, _rung: &ModelRung) -> RuntimeResult<()> {
+    fn validate_consultation_model_rung(
+        &self,
+        _rung: &ModelRung,
+        _provenance: &ConsultationRouteProvenance,
+    ) -> RuntimeResult<()> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
         })
@@ -694,7 +781,7 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(())
     }
 
-    /// Start or recover one read-only Advisor/Committee seat.
+    /// Start or recover one governed Advisor/Committee seat.
     ///
     /// The default refuses because consultation placement is a distinct runtime
     /// capability boundary: a delivery-only adapter must not accidentally

@@ -2961,6 +2961,47 @@ impl SqliteStore {
         }))
     }
 
+    /// Read the immutable route/profile basis for one native-less successor.
+    pub fn get_consultation_materialization_route_provenance(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        role_slot_id: &RoleSlotId,
+        successor_generation: u64,
+    ) -> RepositoryResult<Option<(kontor_core::spec::ModelRung, ContentHash)>> {
+        let generation = i64::try_from(successor_generation).map_err(|_| {
+            conflict(
+                "materialization reroute",
+                "the successor generation cannot be represented",
+            )
+        })?;
+        self.connection
+            .query_row(
+                "SELECT successor_model_rung, recovery_profile_hash
+                 FROM consultation_seat_materialization_reroutes
+                 WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+                   AND successor_generation = ?4",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    role_slot_id.as_str(),
+                    generation,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(route, hash)| {
+                Ok((
+                    serde_json::from_str(&route).map_err(|_| {
+                        conflict("materialization reroute", "the successor route is invalid")
+                    })?,
+                    ContentHash::parse(&hash)?,
+                ))
+            })
+            .transpose()
+    }
+
     /// Read an already-committed native-less reroute by its exact intent.
     pub fn get_consultation_materialization_reroute_by_intent(
         &self,

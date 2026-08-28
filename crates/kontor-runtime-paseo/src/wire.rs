@@ -184,6 +184,12 @@ pub mod label {
     pub const TITLE_RELEASED_FOR: &str = "kontor.title_released_for_seat_binding_id";
     /// Explicit non-mutating authority marker for consultation sessions.
     pub const READ_ONLY: &str = "kontor.read_only";
+    /// Canonical profile hash for a risk-accepted behavioral fallback.
+    ///
+    /// Its presence deliberately replaces `READ_ONLY`; the two labels are
+    /// mutually exclusive so metadata never claims OS containment for a route
+    /// whose restriction depends on model behavior.
+    pub const OPERATOR_ACCEPTED_FALLBACK: &str = "kontor.operator_accepted_fallback";
 
     /// Every label key, in the order they are applied.
     pub const ALL: &[&str] = &[

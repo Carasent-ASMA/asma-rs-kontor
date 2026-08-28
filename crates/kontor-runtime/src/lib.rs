@@ -48,8 +48,9 @@ pub mod timeline;
 pub mod workspace;
 
 pub use adapter::{
-    ConsultationCredential, ConsultationLaunchOutcome, ConsultationLaunchRequest,
-    ConsultationMessageRequest, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
+    ConsultationCredential, ConsultationFallbackDisposition, ConsultationLaunchOutcome,
+    ConsultationLaunchRequest, ConsultationMessageRequest, ConsultationRouteProvenance,
+    ConsultationRouteSource, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
     HostedSeatClaimRequest, HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck,
     RuntimeAdapter, RuntimeError, RuntimeResult, ScopedSeatCredential,
