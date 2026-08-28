@@ -144,7 +144,7 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
     }
 }
 
-/// The provider-native non-mutating mode used by consultation seats.
+/// The provider-native restricted mode used by consultation seats.
 ///
 /// Cursor is deliberately absent. Mode names and provider metadata are not
 /// evidence of containment: Cursor describes `plan` as read-only and `ask` as
@@ -152,11 +152,18 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 /// in both modes (and file writes in `ask`). Kontor cannot sandbox an
 /// already-launched Paseo agent, so Cursor remains refused until Paseo exposes
 /// and attests an enforced non-mutating execution boundary.
+///
+/// OpenCode `plan` is an explicit operator-authorized progression fallback for
+/// a consultation whose ordinary distinct provider is unavailable. It is a
+/// behavioral restriction, not an OS-enforced filesystem boundary: the
+/// qualified DeepSeek Flash canary proved that shell writes remain possible.
+/// The allocator still freezes the exact configured provider/model/effort
+/// route; this mapping only makes that already-governed route constructible.
 pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match built_in_provider(provider) {
-        "claude" => Ok(Some("plan")),
+        "claude" | "opencode" => Ok(Some("plan")),
         "codex" => Ok(Some("auto-review")),
-        // Providers without a proven read-only mode are not consultation-safe.
+        // Providers without a governed consultation mode remain fail-closed.
         other => Err(RuntimeError::PermissionModeUnsupported {
             provider: other.to_owned(),
         }),
@@ -2004,12 +2011,50 @@ mod tests {
                 "seat-secret-value"
             );
         }
-        for provider in ["cursor", "opencode"] {
-            assert!(matches!(
-                consultation_permission_mode(provider),
-                Err(RuntimeError::PermissionModeUnsupported { .. })
-            ));
-        }
+        assert!(matches!(
+            consultation_permission_mode("cursor"),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
+    }
+
+    /// The ASMA-8001 fallback is exact and intentionally risk-accepted.
+    ///
+    /// OpenCode `plan` describes the seat's expected behavior but does not
+    /// claim OS-level containment. The qualified canary demonstrated that a
+    /// shell write remains possible. This contract proves only that the frozen
+    /// DeepSeek Flash/max route and its scoped seat credential are transported
+    /// without silently changing provider, model, effort or permission mode.
+    #[test]
+    fn opencode_deepseek_flash_max_consultation_fallback_is_constructible() {
+        let request = PaseoRpc::consultation_agent_create(
+            "request-deepseek-fallback".to_owned(),
+            "wks_1",
+            "/w/epic",
+            &route(
+                "opencode",
+                "deepseek/deepseek-v4-flash",
+                Some(EffortLevel::Max),
+            ),
+            "Reviewer",
+            &labels(),
+            "audit without mutation",
+            "seat-secret-value",
+        )
+        .expect("the operator-authorized OpenCode fallback is constructible");
+
+        assert_eq!(request.message["config"]["provider"], "opencode");
+        assert_eq!(
+            request.message["config"]["model"],
+            "deepseek/deepseek-v4-flash"
+        );
+        assert_eq!(request.message["config"]["thinkingOptionId"], "max");
+        assert_eq!(request.message["config"]["modeId"], "plan");
+        assert!(request.message.get("env").is_none());
+        assert!(!format!("{request:?}").contains("seat-secret-value"));
+        assert_eq!(
+            request.envelope()["message"]["env"]["KONTOR_AUTH"],
+            "seat-secret-value"
+        );
     }
 
     /// Regression contract for the Cursor/Grok 4.6 containment canary.
