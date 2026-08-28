@@ -30,11 +30,11 @@ use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
-    ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest, HostedSeatClaimOutcome,
-    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatLaunchRequest,
-    HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatRetireOutcome,
-    HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
-    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
+    HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
+    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -1524,7 +1524,11 @@ fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<Sessio
 
 #[async_trait]
 impl RuntimeAdapter for ScriptedFakeRuntime {
-    fn validate_consultation_model_rung(&self, _rung: &ModelRung) -> RuntimeResult<()> {
+    fn validate_consultation_model_rung(
+        &self,
+        _rung: &ModelRung,
+        _provenance: &ConsultationRouteProvenance,
+    ) -> RuntimeResult<()> {
         Ok(())
     }
 

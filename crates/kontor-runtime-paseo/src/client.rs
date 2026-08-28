@@ -59,7 +59,7 @@ use futures::{SinkExt, StreamExt};
 use kontor_core::DomainError;
 use kontor_core::id::ExternalId;
 use kontor_core::spec::{ModelRung, SeatAutonomy};
-use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
+use kontor_runtime::adapter::{ConsultationRouteProvenance, RuntimeError, RuntimeResult};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, oneshot};
@@ -144,7 +144,7 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
     }
 }
 
-/// The provider-native restricted mode used by consultation seats.
+/// The provider-native contained mode used by ordinary consultation seats.
 ///
 /// Cursor is deliberately absent. Mode names and provider metadata are not
 /// evidence of containment: Cursor describes `plan` as read-only and `ask` as
@@ -152,22 +152,41 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 /// in both modes (and file writes in `ask`). Kontor cannot sandbox an
 /// already-launched Paseo agent, so Cursor remains refused until Paseo exposes
 /// and attests an enforced non-mutating execution boundary.
-///
-/// OpenCode `plan` is an explicit operator-authorized progression fallback for
-/// a consultation whose ordinary distinct provider is unavailable. It is a
-/// behavioral restriction, not an OS-enforced filesystem boundary: the
-/// qualified DeepSeek Flash canary proved that shell writes remain possible.
-/// The allocator still freezes the exact configured provider/model/effort
-/// route; this mapping only makes that already-governed route constructible.
 pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match built_in_provider(provider) {
-        "claude" | "opencode" => Ok(Some("plan")),
+        "claude" => Ok(Some("plan")),
         "codex" => Ok(Some("auto-review")),
-        // Providers without a governed consultation mode remain fail-closed.
+        // Providers without a proven contained mode remain fail-closed here.
         other => Err(RuntimeError::PermissionModeUnsupported {
             provider: other.to_owned(),
         }),
     }
+}
+
+/// Resolve a consultation route under its immutable policy provenance.
+///
+/// OpenCode is not added to the ordinary provider table above. The sole
+/// exception is the exact ASMA-8001 progression fallback accepted by an
+/// operator in an Admin-authorized initial recovery profile. Its `plan` mode is
+/// behavioral guidance, not OS-level containment; the qualified canary proved
+/// shell writes remain possible. Every other OpenCode provider alias, model,
+/// effort, template route and future recovery source remains refused.
+pub(crate) fn consultation_route_permission_mode(
+    rung: &ModelRung,
+    provenance: &ConsultationRouteProvenance,
+) -> RuntimeResult<Option<&'static str>> {
+    if rung.provider.0 == "opencode" {
+        let exact_model = rung.model.0 == "deepseek/deepseek-v4-flash";
+        let exact_effort = rung.effort.is_some_and(|effort| effort.as_str() == "max");
+        if exact_model && exact_effort && provenance.is_operator_accepted_initial_recovery_profile()
+        {
+            return Ok(Some("plan"));
+        }
+        return Err(RuntimeError::PermissionModeUnsupported {
+            provider: rung.provider.0.clone(),
+        });
+    }
+    consultation_permission_mode(&rung.provider.0)
 }
 
 /// The built-in Paseo provider an id resolves to.
@@ -908,7 +927,7 @@ impl PaseoRpc {
         )
     }
 
-    /// `create_agent_request` for one read-only consultation seat.
+    /// `create_agent_request` for one provenance-validated consultation seat.
     ///
     /// The scoped credential travels in the daemon session frame's `env`
     /// object. It is deliberately absent from both the CLI process environment
@@ -920,12 +939,13 @@ impl PaseoRpc {
         workspace_id: &str,
         canonical_cwd: &str,
         model_rung: &ModelRung,
+        route_provenance: &ConsultationRouteProvenance,
         title: &str,
         labels: &BTreeMap<String, String>,
         prompt: &str,
         credential: &str,
     ) -> RuntimeResult<Self> {
-        let mode = consultation_permission_mode(model_rung.provider.0.as_str())?;
+        let mode = consultation_route_permission_mode(model_rung, route_provenance)?;
         Self::scoped_seat_agent_create(
             request_id,
             workspace_id,
@@ -1761,7 +1781,9 @@ pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontor_core::id::ContentHash;
     use kontor_core::spec::{EffortLevel, ModelRef, ProviderRef};
+    use kontor_runtime::adapter::{ConsultationFallbackDisposition, ConsultationRouteSource};
 
     fn labels() -> BTreeMap<String, String> {
         [("kontor.role".to_owned(), "implement".to_owned())]
@@ -1775,6 +1797,16 @@ mod tests {
             model: ModelRef(model.to_owned()),
             effort,
         }
+    }
+
+    fn template_provenance() -> ConsultationRouteProvenance {
+        ConsultationRouteProvenance::template(ContentHash::of(b"template"))
+    }
+
+    fn accepted_initial_recovery_provenance() -> ConsultationRouteProvenance {
+        ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(ContentHash::of(
+            b"initial recovery profile",
+        ))
     }
 
     #[test]
@@ -1997,6 +2029,7 @@ mod tests {
                 "wks_1",
                 "/w/epic",
                 &route(provider, model, None),
+                &template_provenance(),
                 "Reviewer",
                 &labels(),
                 "read only",
@@ -2035,6 +2068,7 @@ mod tests {
                 "deepseek/deepseek-v4-flash",
                 Some(EffortLevel::Max),
             ),
+            &accepted_initial_recovery_provenance(),
             "Reviewer",
             &labels(),
             "audit without mutation",
@@ -2057,6 +2091,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn opencode_consultation_fallback_rejects_every_non_exact_route_or_provenance() {
+        let accepted = accepted_initial_recovery_provenance();
+        let profile_hash = accepted.evidence_hash.clone();
+        let cases = [
+            (
+                route("opencode", "deepseek/deepseek-v4-flash", None),
+                accepted.clone(),
+                "missing effort",
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-v4-flash",
+                    Some(EffortLevel::High),
+                ),
+                accepted.clone(),
+                "other effort",
+            ),
+            (
+                route("opencode", "deepseek/deepseek-v3", Some(EffortLevel::Max)),
+                accepted.clone(),
+                "other model",
+            ),
+            (
+                route(
+                    "opencode-personal",
+                    "deepseek/deepseek-v4-flash",
+                    Some(EffortLevel::Max),
+                ),
+                accepted.clone(),
+                "provider alias",
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-v4-flash",
+                    Some(EffortLevel::Max),
+                ),
+                template_provenance(),
+                "template or Advisor path",
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-v4-flash",
+                    Some(EffortLevel::Max),
+                ),
+                ConsultationRouteProvenance {
+                    source: ConsultationRouteSource::InitialRecoveryProfile,
+                    evidence_hash: profile_hash.clone(),
+                    fallback_disposition: None,
+                },
+                "missing operator disposition",
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-v4-flash",
+                    Some(EffortLevel::Max),
+                ),
+                ConsultationRouteProvenance {
+                    source: ConsultationRouteSource::InitialRecoveryProfile,
+                    evidence_hash: profile_hash.clone(),
+                    fallback_disposition: Some(ConsultationFallbackDisposition::Rejected),
+                },
+                "unaccepted operator disposition",
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-v4-flash",
+                    Some(EffortLevel::Max),
+                ),
+                ConsultationRouteProvenance {
+                    source: ConsultationRouteSource::MaterializationRecoveryProfile,
+                    evidence_hash: profile_hash,
+                    fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+                },
+                "future recovery source",
+            ),
+        ];
+
+        for (rung, provenance, case) in cases {
+            let error = PaseoRpc::consultation_agent_create(
+                format!("request-{case}"),
+                "wks_1",
+                "/w/epic",
+                &rung,
+                &provenance,
+                "Reviewer",
+                &labels(),
+                "audit without mutation",
+                "seat-secret-value",
+            )
+            .expect_err(case);
+            assert!(
+                matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
+                "{case}: {error:?}"
+            );
+        }
+    }
+
     /// Regression contract for the Cursor/Grok 4.6 containment canary.
     ///
     /// On the qualified host, Cursor `plan` denied direct file tools but let a
@@ -2072,6 +2209,7 @@ mod tests {
             "wks_1",
             "/w/epic",
             &route("cursor", "grok-4.6", None),
+            &template_provenance(),
             "Reviewer",
             &labels(),
             "read only",

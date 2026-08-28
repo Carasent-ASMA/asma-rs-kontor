@@ -181,7 +181,8 @@ use kontor_profiles::pack::{
     ResolvedProfileBundle, parse_pack, resolve_profile, validate_pack,
 };
 use kontor_runtime::adapter::{
-    ConsultationCredential, ConsultationLaunchRequest, ConsultationSeatRetireRequest,
+    ConsultationCredential, ConsultationFallbackDisposition, ConsultationLaunchRequest,
+    ConsultationRouteProvenance, ConsultationRouteSource, ConsultationSeatRetireRequest,
     HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RetitleSeatRequest,
     RuntimeAdapter, RuntimeError,
@@ -262,6 +263,38 @@ struct FrozenCommitteeRoute {
     rank: u32,
     profile_hash: ContentHash,
     headroom_basis_account_id: Option<AccountProfileId>,
+}
+
+fn consultation_route_provenance(
+    source: &str,
+    evidence_hash: ContentHash,
+) -> kontor_core::DomainResult<ConsultationRouteProvenance> {
+    match source {
+        "template" => Ok(ConsultationRouteProvenance::template(evidence_hash)),
+        "initial_recovery_profile" => Ok(
+            ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(evidence_hash),
+        ),
+        "materialization_recovery_profile" => Ok(ConsultationRouteProvenance {
+            source: ConsultationRouteSource::MaterializationRecoveryProfile,
+            evidence_hash,
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        }),
+        "seat_recovery_profile" => Ok(ConsultationRouteProvenance {
+            source: ConsultationRouteSource::SeatRecoveryProfile,
+            evidence_hash,
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        }),
+        _ => Err(kontor_core::DomainError::invalid(
+            "consultation route provenance",
+            "the frozen route source is not recognized by this build",
+        )),
+    }
+}
+
+impl FrozenCommitteeRoute {
+    fn provenance(&self) -> kontor_core::DomainResult<ConsultationRouteProvenance> {
+        consultation_route_provenance(self.source, self.profile_hash.clone())
+    }
 }
 
 /// The exact immutable result a Committee settlement derives from one round.
@@ -7324,6 +7357,19 @@ impl Services {
             }
             let mut admitted = Vec::new();
             for candidate in &effective {
+                let provenance = candidate
+                    .provenance()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                match adapter.validate_consultation_model_rung(&candidate.model_rung, &provenance) {
+                    Ok(()) => {}
+                    Err(
+                        RuntimeError::PermissionModeUnsupported { .. }
+                        | RuntimeError::UnsupportedCapability { .. },
+                    ) => continue,
+                    Err(error) => {
+                        return Err(ApiError::from_runtime(state.realm_id(), &error));
+                    }
+                }
                 if let kontor_scheduler::headroom::Placement::Admit { rung, account } =
                     resolve_chain_placement(
                         adapter.as_ref(),
@@ -7345,14 +7391,23 @@ impl Services {
             if admitted.is_empty() && !governed_template && !has_recovery_profile {
                 // Compatibility for a realm that has no addressable account or
                 // fallback policy for this provider family. The runtime still
-                // owns the typed launch refusal, exactly as before.
-                admitted.push(FrozenCommitteeRoute {
+                // owns route validation before anything is frozen.
+                let compatibility = FrozenCommitteeRoute {
                     model_rung: slot.models.rungs[0].clone(),
                     source: "template",
                     rank: 1,
                     profile_hash: template_revision.definition_hash.clone(),
                     headroom_basis_account_id: None,
-                });
+                };
+                let provenance = compatibility
+                    .provenance()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                if adapter
+                    .validate_consultation_model_rung(&compatibility.model_rung, &provenance)
+                    .is_ok()
+                {
+                    admitted.push(compatibility);
+                }
             }
             if admitted.is_empty() {
                 return Err(self.deny(
@@ -7466,18 +7521,26 @@ impl Services {
         let deadline = now
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
             .unwrap_or(now);
+        let model_rung = self.freeze_consultation_model_rung(
+            project_id,
+            &profile.models.rungs,
+            now,
+            "the Advisor profile has no model route",
+        )?;
+        let route_provenance =
+            ConsultationRouteProvenance::template(revision.definition_hash.clone());
+        if let Some(adapter) = state.runtimes().get(&self.node_runtime_kind()?) {
+            adapter
+                .validate_consultation_model_rung(&model_rung, &route_provenance)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
         let seat = StoredConsultationSeat {
             run_id: run.id,
             role_slot_id: role_slot_id.clone(),
             committee_role: None,
             logical_role,
             seat_binding_id,
-            model_rung: self.freeze_consultation_model_rung(
-                project_id,
-                &profile.models.rungs,
-                now,
-                "the Advisor profile has no model route",
-            )?,
+            model_rung,
             occupancy_generation: 1,
             native_identity: None,
             provider_session_id: None,
@@ -7558,6 +7621,10 @@ impl Services {
         if seat.native_identity.is_some() {
             return Ok(());
         }
+        let route_provenance = ConsultationRouteProvenance::template(run.definition_hash.clone());
+        adapter
+            .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let seat_credential = state
             .credentials()
             .consultation_seat_credential_for_generation(
@@ -7596,6 +7663,7 @@ impl Services {
                 prompt,
                 credential: ConsultationCredential::new(seat_credential),
                 model_rung: seat.model_rung.clone(),
+                route_provenance,
                 context_policy,
                 requested_at: kontor_api::now(),
             })
@@ -7856,6 +7924,95 @@ impl Services {
         Ok(run)
     }
 
+    /// Reconstruct the exact immutable policy that selected one Committee seat.
+    fn committee_seat_route_provenance(
+        &self,
+        run: &StoredConsultationRun,
+        seat: &StoredConsultationSeat,
+    ) -> Result<ConsultationRouteProvenance, ApiError> {
+        let admission = run
+            .context
+            .get("admission")
+            .and_then(|value| value.get("routes"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|routes| {
+                routes.iter().find(|route| {
+                    route
+                        .get("role_slot_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(seat.role_slot_id.as_str())
+                })
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen Committee admission has no provenance for this seat",
+                )
+            })?;
+        let admitted_route = admission
+            .get("model_route")
+            .cloned()
+            .and_then(|value| {
+                serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
+                    .ok()
+            })
+            .map(|route| parse_runtime_model_route(&route))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen Committee admission route is unreadable",
+                )
+            })?;
+        if admitted_route == seat.model_rung {
+            let source = admission
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the frozen Committee admission source is unreadable",
+                    )
+                })?;
+            let evidence_hash = admission
+                .get("profile_hash")
+                .and_then(serde_json::Value::as_str)
+                .map(ContentHash::parse)
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the frozen Committee admission hash is unreadable",
+                    )
+                })?;
+            return consultation_route_provenance(source, evidence_hash)
+                .map_err(|error| self.refuse_domain(&error));
+        }
+
+        let reroute = self
+            .state()?
+            .with_store(|store| {
+                store.get_consultation_materialization_route_provenance(
+                    run.project_id,
+                    run.id,
+                    &seat.role_slot_id,
+                    seat.occupancy_generation,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .filter(|(rung, _)| rung == &seat.model_rung)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the active Committee route has no immutable admission or reroute provenance",
+                )
+            })?;
+        consultation_route_provenance("materialization_recovery_profile", reroute.1)
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
     /// Launch or exact-label recover the Committee seats currently eligible.
     /// Reviewers launch at invoke; the Judge launches only after all independent
     /// findings are durable, so it cannot observe them early or race them.
@@ -7952,6 +8109,10 @@ impl Services {
             {
                 continue;
             }
+            let route_provenance = self.committee_seat_route_provenance(run, seat)?;
+            adapter
+                .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let evidence = if slot.role == CommitteeRole::Judge {
                 serde_json::to_string(
                     &findings
@@ -7975,13 +8136,20 @@ impl Services {
                     seat.seat_binding_id,
                     seat.occupancy_generation,
                 );
+            let authority = if seat.model_rung.provider.0 == "opencode" {
+                "Operator-authorized behavioral fallback Committee seat. The runtime does not \
+                 assert filesystem containment; you must inspect only and must not mutate code,"
+            } else {
+                "Read-only Committee seat. You may inspect evidence but must not mutate code,"
+            };
             let prompt = BoundedText::parse(&format!(
-                "Read-only Committee seat. You may inspect evidence but must not mutate code, \
+                "{} \
                  Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
                  Question: {} Durable reviewer findings available to this seat: {} \
                  Governed re-review evidence reconstructed by Kontor: {} \
                  Submit this seat's own finding using the KONTOR_AUTH environment value. \
                  It is valid only for SeatBinding {} and must not be disclosed.",
+                authority,
                 template.charter.as_str(),
                 slot.behavior.as_str(),
                 run.question.as_str(),
@@ -8013,6 +8181,7 @@ impl Services {
                     prompt,
                     credential: ConsultationCredential::new(seat_credential),
                     model_rung: seat.model_rung.clone(),
+                    route_provenance,
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
                 })
@@ -8051,6 +8220,7 @@ impl Services {
         template: &CommitteeTemplateSpec,
         predecessor: &StoredConsultationSeat,
         model_rung: ModelRung,
+        route_provenance: ConsultationRouteProvenance,
     ) -> Result<StoredConsultationSeat, ApiError> {
         let state = self.state()?;
         let slot = template
@@ -8127,12 +8297,21 @@ impl Services {
         } else {
             "[]".to_owned()
         };
+        adapter
+            .validate_consultation_model_rung(&model_rung, &route_provenance)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let authority = if model_rung.provider.0 == "opencode" {
+            "Operator-authorized behavioral fallback Committee seat. The runtime does not assert \
+             filesystem containment; you must inspect only and must not mutate code,"
+        } else {
+            "Read-only Committee seat. You may inspect evidence but must not mutate code,"
+        };
         let prompt = BoundedText::parse(&format!(
-            "Read-only Committee seat. You may inspect evidence but must not mutate code, \
-             Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
+            "{} Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
              Question: {} Durable reviewer findings available to this seat: {} \
              Submit this seat's own finding using the KONTOR_AUTH environment value. \
              It is valid only for SeatBinding {} and must not be disclosed.",
+            authority,
             template.charter.as_str(),
             slot.behavior.as_str(),
             run.question.as_str(),
@@ -8171,6 +8350,7 @@ impl Services {
                         ),
                 ),
                 model_rung: model_rung.clone(),
+                route_provenance,
                 context_policy,
                 requested_at,
             })
@@ -16507,11 +16687,14 @@ impl ApplicationOperations for Services {
             ));
         }
         predecessor.occupancy_generation = attempt.predecessor_occupancy_generation;
+        let predecessor_route_provenance =
+            self.committee_seat_route_provenance(&run, &predecessor)?;
         let retired = adapter
             .retire_consultation_seat(&ConsultationSeatRetireRequest {
                 seat_binding_id,
                 identity: predecessor_identity,
                 model_rung: predecessor.model_rung.clone(),
+                route_provenance: predecessor_route_provenance,
                 requested_at: kontor_api::now(),
             })
             .await
@@ -16523,8 +16706,17 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?;
         let mut successor_basis = predecessor.clone();
         successor_basis.occupancy_generation = attempt.successor_occupancy_generation;
+        let successor_route_provenance =
+            consultation_route_provenance("seat_recovery_profile", recovery_profile.hash().clone())
+                .map_err(|error| self.refuse_domain(&error))?;
         let successor = self
-            .launch_committee_recovery_successor(&run, &template, &successor_basis, desired_rung)
+            .launch_committee_recovery_successor(
+                &run,
+                &template,
+                &successor_basis,
+                desired_rung,
+                successor_route_provenance,
+            )
             .await?;
         state
             .with_store(|store| {
@@ -16790,6 +16982,14 @@ impl ApplicationOperations for Services {
             })
             .map(|candidate| provider_family(&candidate.model_rung.provider.0).to_owned())
             .collect();
+        let recovery_profile_document = self.intent(&serde_json::json!({
+            "schema_version": 1, "ordered_routes": request.recovery_profile,
+        }))?;
+        let recovery_provenance = consultation_route_provenance(
+            "materialization_recovery_profile",
+            recovery_profile_document.hash().clone(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let mut candidates = Vec::new();
         for route in &request.recovery_profile {
             let rung =
@@ -16801,7 +17001,7 @@ impl ApplicationOperations for Services {
                     "a materialization recovery profile must name exact catalogued governed aliases"));
             }
             adapter
-                .validate_consultation_model_rung(&rung)
+                .validate_consultation_model_rung(&rung, &recovery_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let violates_diversity = template.diversity
                 == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
@@ -16905,9 +17105,6 @@ impl ApplicationOperations for Services {
                     "the provider-report freshness boundary could not be represented",
                 )
             })?;
-        let recovery_profile = self.intent(&serde_json::json!({
-            "schema_version": 1, "ordered_routes": request.recovery_profile,
-        }))?;
         let lineage = state
             .with_store(|store| {
                 store.reroute_unmaterialized_consultation_seat(
@@ -16917,7 +17114,7 @@ impl ApplicationOperations for Services {
                         expected_revision: request.expected_revision,
                         successor_model_rung: selected,
                         reason: request.reason.as_str().to_owned(),
-                        recovery_profile,
+                        recovery_profile: recovery_profile_document,
                         request_intent_hash: intent.hash().clone(),
                         idempotency_key: key.clone(),
                         headroom_observation,
