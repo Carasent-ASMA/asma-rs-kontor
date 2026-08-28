@@ -3957,13 +3957,25 @@ impl PaseoAdapter {
         .into_iter()
         .collect();
         let census = self.fetch_agents(&seat_labels, false).await?;
+        let fenced_predecessors = request
+            .fenced_predecessor_native_ids
+            .iter()
+            .map(ExternalId::as_str)
+            .collect::<BTreeSet<_>>();
         let exact = census
             .iter()
-            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .filter(|agent| {
+                agent.matches_labels(&labels)
+                    && !agent.is_archived()
+                    && !fenced_predecessors.contains(agent.id.as_str())
+            })
             .collect::<Vec<_>>();
         let recovered_id = match exact.as_slice() {
             [agent] => Some(agent.id.clone()),
-            [] if census.iter().any(|agent| !agent.is_archived()) => {
+            [] if census.iter().any(|agent| {
+                !agent.is_archived() && !fenced_predecessors.contains(agent.id.as_str())
+            }) =>
+            {
                 return Err(RuntimeError::SlotAlreadyAdmitted {
                     rule: "a live Paseo agent already carries this hosted seat binding",
                 });
