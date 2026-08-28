@@ -5030,6 +5030,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
             credential: kontor_runtime::adapter::ScopedSeatCredential::new(
                 "kontor-seat-v2.test.1.redacted".to_owned(),
             ),
+            fenced_predecessor_native_ids: Vec::new(),
             model_rung: model_rung(),
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-16T09:10:00Z"),
@@ -5040,6 +5041,117 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+}
+
+/// A native already committed to append-only hosted-seat history no longer has
+/// submission authority for the logical seat, even if Paseo still projects its
+/// old labels. A route replay may therefore ignore that exact fenced identity
+/// while every unrecognized live claimant remains a hard admission conflict.
+#[tokio::test]
+async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
+    let seat_binding_id = SeatBindingId::generate();
+    let retired_id = "agt_retired_predecessor";
+    let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+    workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+
+    let labels = serde_json::json!({
+        "jira.epic": "ASMA-7744",
+        "kontor.project_id": MINI_PROJECT,
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+        "kontor.role": "lsa",
+        "kontor.role_slot_id": "lsa",
+        "kontor.workspace_id": WORKSPACE_ID,
+        "kontor.worktree": CWD,
+    });
+    let mut retired = v(AGENT);
+    retired["agent"]["id"] = serde_json::json!(retired_id);
+    retired["agent"]["labels"] = labels.clone();
+    let retired_list = serde_json::json!({
+        "requestId": "req-fixture",
+        "entries": [{
+            "agent": retired["agent"].clone(),
+            "project": retired["project"].clone()
+        }],
+        "pageInfo": {"nextCursor": null, "prevCursor": null, "hasMore": false}
+    });
+
+    let mut successor = v(AGENT);
+    successor["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    successor["agent"]["labels"] = labels;
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", workspace)
+        .answering_rpc("fetch_agents_request", retired_list)
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({
+                "status": "agent_created",
+                "agent": {"id": AGENT_ID}
+            }),
+        )
+        .answering_rpc("fetch_agent_request", successor);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-hosted-fenced-predecessor", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+        .await
+        .expect("the existing exact ECP is bound")
+        .snapshot;
+
+    let mut request = HostedSeatLaunchRequest {
+        seat_binding_id,
+        role_slot_id: slot("lsa"),
+        display_name: name("LSA · ASMA-7744"),
+        container,
+        cwd: root(),
+        scope: epic_execution_scope(),
+        prompt: text("continue epic leadership through Kontor"),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "kontor-seat-v2.test.2.redacted".to_owned(),
+        ),
+        fenced_predecessor_native_ids: Vec::new(),
+        model_rung: model_rung(),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-08-16T09:10:00Z"),
+    };
+    let refused = plane
+        .adapter
+        .launch_hosted_seat(&request)
+        .await
+        .expect_err("an unrecognized live claimant remains an admission conflict");
+    assert!(
+        matches!(
+            refused,
+            RuntimeError::SlotAlreadyAdmitted { .. } | RuntimeError::CorrelationFailed
+        ),
+        "unexpected refusal: {refused:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+
+    request.fenced_predecessor_native_ids = vec![external(retired_id)];
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&request)
+        .await
+        .expect("the immutable history fence admits a distinct successor");
+
+    assert!(outcome.created);
+    assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+    assert_eq!(
+        plane.daemon.count(&format!("agent archive {retired_id}")),
+        0,
+        "the already-fenced native is never mutated by successor launch"
+    );
 }
 
 /// Claiming a hand-started session is metadata-only: the native id and provider

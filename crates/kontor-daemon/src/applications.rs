@@ -14699,6 +14699,7 @@ impl ApplicationOperations for Services {
                                 .credentials()
                                 .seat_credential_for_generation(seat_binding_id, 1),
                         ),
+                        fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
@@ -14888,6 +14889,11 @@ impl ApplicationOperations for Services {
                         "the hosted-seat occupancy generation overflowed",
                     )
                 })?;
+            let fenced_predecessor_native_ids = state
+                .with_store(|store| {
+                    store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
+                })
+                .map_err(|error| self.refuse(&error))?;
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -14903,6 +14909,7 @@ impl ApplicationOperations for Services {
                             successor_occupancy_generation,
                         ),
                     ),
+                    fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
                     context_policy,
                     requested_at: kontor_api::now(),

@@ -470,6 +470,11 @@ pub struct HostedSeatLaunchRequest {
     pub prompt: BoundedText,
     /// Generation-fenced credential for seat-authored authority routes.
     pub credential: ScopedSeatCredential,
+    /// Older native occupants already frozen in Kontor's append-only route
+    /// history. Their generation-scoped credentials are fenced, so a runtime
+    /// that still projects one with stale seat labels must not mistake it for
+    /// the current logical occupant or let it block a supported replacement.
+    pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
     /// Immutable context policy.

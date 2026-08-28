@@ -3942,6 +3942,40 @@ impl SqliteStore {
         .transpose()
     }
 
+    /// Read every immutable predecessor of one persistent topology seat.
+    ///
+    /// The ordered native ids are passed to the runtime only as a negative
+    /// admission fence: a stale native projection may be ignored during a new
+    /// launch only when Kontor has already committed that exact identity to
+    /// append-only route history. Nothing here makes a historical native
+    /// current or driveable again.
+    pub fn list_hosted_topology_seat_history_native_ids(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Vec<ExternalId>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT native_id
+                 FROM hosted_topology_seat_history
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                 ORDER BY retired_at, native_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut history = Vec::new();
+        for row in rows {
+            history.push(ExternalId::parse(&row.map_err(backend)?)?);
+        }
+        Ok(history)
+    }
+
     /// Atomically move the exact predecessor to history and make its successor
     /// the active native filler of the same logical SeatBinding.
     pub fn replace_hosted_topology_seat_route(
