@@ -145,9 +145,16 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 }
 
 /// The provider-native non-mutating mode used by consultation seats.
+///
+/// Cursor is deliberately absent. Mode names and provider metadata are not
+/// evidence of containment: Cursor describes `plan` as read-only and `ask` as
+/// lacking edits or command execution, but its ACP runtime permits shell writes
+/// in both modes (and file writes in `ask`). Kontor cannot sandbox an
+/// already-launched Paseo agent, so Cursor remains refused until Paseo exposes
+/// and attests an enforced non-mutating execution boundary.
 pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match built_in_provider(provider) {
-        "claude" | "cursor" => Ok(Some("plan")),
+        "claude" => Ok(Some("plan")),
         "codex" => Ok(Some("auto-review")),
         // Providers without a proven read-only mode are not consultation-safe.
         other => Err(RuntimeError::PermissionModeUnsupported {
@@ -1976,7 +1983,6 @@ mod tests {
     fn consultation_routes_are_read_only_and_the_scoped_secret_crosses_only_the_session_frame() {
         for (provider, model, expected_mode) in [
             ("claude", "claude-opus-5", "plan"),
-            ("cursor", "composer-2", "plan"),
             ("codex", "gpt-5.6-sol", "auto-review"),
         ] {
             let request = PaseoRpc::consultation_agent_create(
@@ -1998,9 +2004,39 @@ mod tests {
                 "seat-secret-value"
             );
         }
+        for provider in ["cursor", "opencode"] {
+            assert!(matches!(
+                consultation_permission_mode(provider),
+                Err(RuntimeError::PermissionModeUnsupported { .. })
+            ));
+        }
+    }
+
+    /// Regression contract for the Cursor/Grok 4.6 containment canary.
+    ///
+    /// On the qualified host, Cursor `plan` denied direct file tools but let a
+    /// shell delete and create files; `ask` let file creation, replacement and
+    /// shell creation execute, prompting only for deletion. Neither mode is an
+    /// enforceable read-only boundary. Refusal must therefore happen while the
+    /// request is being built, before a transport can dispatch a create-agent
+    /// frame or an operator can be asked to decide a mutation.
+    #[test]
+    fn cursor_consultation_is_refused_before_an_rpc_can_be_constructed() {
+        let error = PaseoRpc::consultation_agent_create(
+            "request-cursor-canary".to_owned(),
+            "wks_1",
+            "/w/epic",
+            &route("cursor", "grok-4.6", None),
+            "Reviewer",
+            &labels(),
+            "read only",
+            "seat-secret-value",
+        )
+        .expect_err("Cursor has no enforced non-mutating consultation mode");
+
         assert!(matches!(
-            consultation_permission_mode("opencode"),
-            Err(RuntimeError::PermissionModeUnsupported { .. })
+            error,
+            RuntimeError::PermissionModeUnsupported { provider } if provider == "cursor"
         ));
     }
 
