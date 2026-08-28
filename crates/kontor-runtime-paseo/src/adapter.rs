@@ -1326,6 +1326,31 @@ impl PaseoAdapter {
         Ok(agent)
     }
 
+    /// Read one exact agent even after Paseo has moved it out of the active
+    /// lookup surface.
+    ///
+    /// Paseo's exact `agent.fetch` returns `agent: null` once an agent is
+    /// archived, while the paginated directory still returns that same exact
+    /// identity when `includeArchived` is set. Hosted-seat retirement must
+    /// prove the archive stamp after issuing the archive command, and a retry
+    /// must be able to prove it again. Keep this fallback private to terminal
+    /// retirement so an archived session can never become driveable through a
+    /// normal exact lookup.
+    async fn fetch_agent_including_archived(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
+        match self.fetch_agent(agent_id).await {
+            Ok(agent) => Ok(agent),
+            Err(RuntimeError::StaleBinding { .. }) => self
+                .fetch_agents(&BTreeMap::new(), true)
+                .await?
+                .into_iter()
+                .find(|agent| agent.id == agent_id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the exact native agent no longer exists",
+                }),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn fetch_agent_with_archive(
         &self,
         agent_id: &str,
@@ -4453,7 +4478,7 @@ impl RuntimeAdapter for PaseoAdapter {
             });
         }
         let native_id = request.identity.native_id.as_str();
-        let before = self.fetch_agent(native_id).await?;
+        let before = self.fetch_agent_including_archived(native_id).await?;
         let expected_seat = request.seat_binding_id.to_string();
         if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
             || before.label(label::HOSTED_SEAT) != Some("true")
@@ -4486,7 +4511,7 @@ impl RuntimeAdapter for PaseoAdapter {
         if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        let after = self.fetch_agent(native_id).await?;
+        let after = self.fetch_agent_including_archived(native_id).await?;
         if after.id != before.id
             || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
             || !after.is_archived()
