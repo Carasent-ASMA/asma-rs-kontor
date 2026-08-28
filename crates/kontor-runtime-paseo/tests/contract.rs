@@ -130,6 +130,7 @@ const AGENT_LIST_IMPLEMENT: &str = fixture!("protocol/agent-list-implement.json"
 const AGENT_LIST_WITH_FOREIGN: &str = fixture!("protocol/agent-list-with-foreign.json");
 const AGENT_LIST_DUPLICATE_SLOT: &str = fixture!("protocol/agent-list-duplicate-slot.json");
 const AGENT_LIST_ARCHIVED_ONLY: &str = fixture!("protocol/agent-list-archived-only.json");
+const AGENT_NOT_FOUND: &str = fixture!("protocol/agent-not-found.json");
 const TIMELINE_GAP: &str = fixture!("protocol/timeline-gap.json");
 const TIMELINE_COLLAPSED: &str = fixture!("protocol/timeline-projected-collapsed.json");
 const TIMELINE_MESSAGE_TWICE: &str = fixture!("protocol/timeline-message-twice.json");
@@ -5223,6 +5224,58 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
         1,
         "retirement replay must not archive twice"
     );
+}
+
+/// Paseo removes an archived agent from its exact active lookup even though
+/// the include-archived directory still carries the immutable archive stamp.
+/// Retirement must use that directory only for terminal proof, both after the
+/// first effect and when an apply is retried after losing its acknowledgement.
+#[tokio::test]
+async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
+    let seat_binding_id = SeatBindingId::generate();
+    let labels = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let mut before = v(AGENT);
+    before["agent"]["labels"] = labels.clone();
+    let mut archived = v(AGENT_LIST_ARCHIVED_ONLY);
+    archived["entries"][0]["agent"]["labels"] = labels;
+
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+        .announcing(&v(SERVER_INFO))
+        .then_answering_rpc("fetch_agent_request", before)
+        .answering_rpc("fetch_agent_request", v(AGENT_NOT_FOUND))
+        .answering_rpc("fetch_agents_request", archived);
+    let plane = Plane::fresh(recorded);
+    let request = HostedSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    };
+
+    let retired = plane
+        .adapter
+        .retire_hosted_seat(&request)
+        .await
+        .expect("the archive is proved from the include-archived directory");
+    assert_eq!(retired.identity, request.identity);
+
+    let replayed = plane
+        .adapter
+        .retire_hosted_seat(&request)
+        .await
+        .expect("a lost post-archive acknowledgement replays without a second effect");
+    assert_eq!(replayed.identity, request.identity);
+    assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
 }
 
 /// A terminal archive is accepted from its exact correlated predecessor even
