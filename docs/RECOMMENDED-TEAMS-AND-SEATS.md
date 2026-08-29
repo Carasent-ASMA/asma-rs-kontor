@@ -1,15 +1,26 @@
-# Teams and seats: a model-agnostic capability blueprint
+# Recommended teams and seats setup
 
-Status: **Recommended baseline, derived from the 2026-08-29 v4 fleet
-restructure (three-round independent-review committee, final verdict
-`compliant`).**
+Status: **Recommended starting point — not the only possible setup.** Derived
+from the 2026-08-29 v4 fleet restructure (three-round independent-review
+committee, final verdict `compliant`).
 Date: 2026-08-29
+
+**This is a recommendation to start from, not a prescription.** Teams, seats,
+chains, committees and advisors are versioned configuration; every adopter is
+expected to tailor them to their own work types, risk profile, providers and
+budgets — add teams, drop seats, re-cut chains, rename roles. What this
+document offers is a proven shape and the reasoning behind it, so tailoring
+starts from something that already works rather than from a blank page. The
+only parts that are not yours to tailor are the code-enforced safety
+invariants listed in §5 (one non-terminal session per role slot, proposal ≠
+authority, verdict gates, frozen evidence) — everything else is data and is
+meant to be changed.
 
 This document is deliberately **model-free**. New, more capable and cheaper
 models appear weekly; any document that names one is stale on arrival. What
 does not churn is the *work*: the types of tickets a team exists for, the
 responsibilities each seat must discharge, and the capabilities a model must
-demonstrably have before it may hold that seat. This blueprint records those
+demonstrably have before it may hold that seat. This recommendation records those
 three things, plus the principles for ordering a fallback chain and the
 evaluation pipeline that turns any new model into a placement decision.
 
@@ -46,7 +57,7 @@ Two axes deserve emphasis because they are independent and both matter:
 against outage. A chain diversified on one can still be concentrated on the
 other. Every chain must state its known correlations rather than hide them.
 
-## 2. Seat blueprint
+## 2. Recommended seats
 
 A **seat** is a role slot in a team run: stable id, one non-terminal session at
 a time (code-enforced invariant), authority defined by its role — never by
@@ -168,7 +179,7 @@ classes maps **down** to the class it fully covers (a ~400K model is a `large`
 model, not a `deep` one); rounding up is how a seat ends up compacting in the
 middle of the work it was sized for.
 
-## 3. Team blueprints — what each team is for
+## 3. Recommended teams — what each team is for
 
 | Team | Designed for | Seats (mandatory in bold) | Notes |
 |---|---|---|---|
