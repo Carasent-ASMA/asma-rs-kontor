@@ -58,8 +58,9 @@ use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
-    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatMessageOutcome,
-    HostedSeatMessageRequest, HostedSeatRetireOutcome, HostedSeatRetireRequest,
+    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatNativeState, HostedSeatRetireOutcome, HostedSeatRetireRequest,
     HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
     RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
@@ -1337,18 +1338,56 @@ impl PaseoAdapter {
     /// retirement so an archived session can never become driveable through a
     /// normal exact lookup.
     async fn fetch_agent_including_archived(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
+        self.find_agent_including_archived(agent_id)
+            .await?
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the exact native agent no longer exists",
+            })
+    }
+
+    async fn find_agent_including_archived(
+        &self,
+        agent_id: &str,
+    ) -> RuntimeResult<Option<PaseoAgent>> {
         match self.fetch_agent(agent_id).await {
-            Ok(agent) => Ok(agent),
-            Err(RuntimeError::StaleBinding { .. }) => self
+            Ok(agent) => Ok(Some(agent)),
+            Err(RuntimeError::StaleBinding { .. }) => Ok(self
                 .fetch_agents(&BTreeMap::new(), true)
                 .await?
                 .into_iter()
-                .find(|agent| agent.id == agent_id)
-                .ok_or(RuntimeError::StaleBinding {
-                    rule: "the exact native agent no longer exists",
-                }),
+                .find(|agent| agent.id == agent_id)),
             Err(error) => Err(error),
         }
+    }
+
+    async fn hosted_seat_agent(
+        &self,
+        request: &HostedSeatInspectRequest,
+    ) -> RuntimeResult<Option<PaseoAgent>> {
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the hosted topology predecessor belongs to another runtime",
+            });
+        }
+        let Some(agent) = self
+            .find_agent_including_archived(request.identity.native_id.as_str())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let expected_seat = request.seat_binding_id.to_string();
+        if agent.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || agent.label(label::HOSTED_SEAT) != Some("true")
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if !agent.is_archived() {
+            Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+        }
+        Ok(Some(agent))
     }
 
     async fn fetch_agent_with_archive(
@@ -4475,28 +4514,46 @@ impl RuntimeAdapter for PaseoAdapter {
         outcome
     }
 
+    async fn inspect_hosted_seat(
+        &self,
+        request: &HostedSeatInspectRequest,
+    ) -> RuntimeResult<HostedSeatInspection> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let native = self.hosted_seat_agent(request).await?;
+        Ok(HostedSeatInspection {
+            identity: request.identity.clone(),
+            state: match native {
+                Some(agent) if agent.is_archived() => HostedSeatNativeState::Archived,
+                Some(_) => HostedSeatNativeState::Live,
+                None => HostedSeatNativeState::Missing,
+            },
+            observed_at: request.requested_at,
+        })
+    }
+
     async fn retire_hosted_seat(
         &self,
         request: &HostedSeatRetireRequest,
     ) -> RuntimeResult<HostedSeatRetireOutcome> {
         let declared = self.declared().await?;
         preflight(&declared, &OperationContext::new(RuntimeCapability::Retire))?;
-        if request.identity.runtime_kind != self.config.runtime_kind
-            || request.identity.host != self.config.host_key
-            || request.identity.generation > self.generation()
-        {
-            return Err(RuntimeError::StaleBinding {
-                rule: "the hosted topology predecessor belongs to another runtime",
-            });
-        }
         let native_id = request.identity.native_id.as_str();
-        let before = self.fetch_agent_including_archived(native_id).await?;
-        let expected_seat = request.seat_binding_id.to_string();
-        if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
-            || before.label(label::HOSTED_SEAT) != Some("true")
-        {
-            return Err(RuntimeError::CorrelationFailed);
-        }
+        let inspect = HostedSeatInspectRequest {
+            seat_binding_id: request.seat_binding_id,
+            identity: request.identity.clone(),
+            model_rung: request.model_rung.clone(),
+            requested_at: request.requested_at,
+        };
+        let Some(before) = self.hosted_seat_agent(&inspect).await? else {
+            return Ok(HostedSeatRetireOutcome {
+                identity: request.identity.clone(),
+                archived_at: request.requested_at,
+            });
+        };
         // An archive stamp is the terminal readback this operation exists to
         // prove. Older hosted seats may carry a permission mode that no longer
         // matches the current supervised policy; requiring a live route match
@@ -4509,7 +4566,6 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         }
-        Self::verify_agent_route(&before, &request.model_rung, SeatAutonomy::Supervised)?;
         if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
             return Err(RuntimeError::ReplacementNotEvidenced {
                 rule: "Core Team route correction requires an idle predecessor with no pending permission",
@@ -4523,6 +4579,7 @@ impl RuntimeAdapter for PaseoAdapter {
         if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
             return Err(RuntimeError::CorrelationFailed);
         }
+        let expected_seat = request.seat_binding_id.to_string();
         let after = self.fetch_agent_including_archived(native_id).await?;
         if after.id != before.id
             || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())

@@ -209,7 +209,7 @@ pub struct ObservedBindingDto {
     /// The runtime family that answered.
     #[schema(value_type = String)]
     pub runtime_kind: RuntimeKindKey,
-    /// The native container identity it reported.
+    /// The exact native identity it reported.
     #[schema(value_type = String)]
     pub native_id: ExternalId,
     /// The native display name it reported.
@@ -767,7 +767,7 @@ pub struct CoreTeamSeatRouteRequest {
     pub model_route: RuntimeModelRouteRequest,
 }
 
-/// Exact in-place correction requested for one persistent Core Team seat.
+/// Exact in-place route correction or stale-native recovery for one persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamRoutePreviewRequest {
@@ -786,7 +786,7 @@ pub struct CoreTeamRoutePreviewRequest {
     pub desired_model_route: RuntimeModelRouteRequest,
 }
 
-/// Read-only route-correction plan for one persistent Core Team seat.
+/// Read-only route-correction or stale-native recovery plan for one persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamRoutePreviewDto {
     /// Realm that computed the plan.
@@ -806,7 +806,7 @@ pub struct CoreTeamRoutePreviewDto {
     pub predecessor_native_id: ExternalId,
     /// Frozen current route.
     pub current_model_route: RuntimeModelRouteRequest,
-    /// Requested replacement route.
+    /// Requested successor route, which may equal the current route during recovery.
     pub desired_model_route: RuntimeModelRouteRequest,
     /// Whether a native archive/launch is required.
     pub would_replace_native: bool,
@@ -5574,8 +5574,8 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &CoreTeamMaterializeRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError>;
-    /// Preview an exact provider/model correction for one persistent seat.
-    fn preview_core_team_route(
+    /// Preview an exact route correction or stale-native recovery for one persistent seat.
+    async fn preview_core_team_route(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
@@ -7474,7 +7474,7 @@ pub async fn materialize_core_team(
     ))
 }
 
-/// Preview an exact provider/model correction for one persistent Core Team seat.
+/// Preview an exact route correction or stale-native recovery for one persistent Core Team seat.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview", tag = "applications",
     params(
@@ -7500,11 +7500,12 @@ pub async fn preview_core_team_route(
     Ok(Json(
         state
             .applications()
-            .preview_core_team_route(project_id, epic_id, &request)?,
+            .preview_core_team_route(project_id, epic_id, &request)
+            .await?,
     ))
 }
 
-/// Apply one still-current Core Team route correction without replacing its logical seat.
+/// Apply one still-current Core Team route correction or stale-native recovery.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply", tag = "applications",
     params(

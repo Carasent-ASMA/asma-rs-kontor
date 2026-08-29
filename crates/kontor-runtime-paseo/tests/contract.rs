@@ -42,8 +42,9 @@ use kontor_core::id::{
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
-    HostedSeatClaimRequest, HostedSeatLaunchRequest, HostedSeatRetireRequest, LaunchOutcome,
-    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatLaunchRequest,
+    HostedSeatNativeState, HostedSeatRetireRequest, LaunchOutcome, RetitleSeatRequest,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
@@ -5388,6 +5389,73 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
         .expect("a lost post-archive acknowledgement replays without a second effect");
     assert_eq!(replayed.identity, request.identity);
     assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
+}
+
+#[tokio::test]
+async fn hosted_seat_inspection_reports_an_exact_hidden_archive_without_mutation() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut archived = v(AGENT_LIST_ARCHIVED_ONLY);
+    archived["entries"][0]["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", v(AGENT_NOT_FOUND))
+        .answering_rpc("fetch_agents_request", archived);
+    let plane = Plane::fresh(recorded);
+    let request = HostedSeatInspectRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    };
+
+    let inspection = plane
+        .adapter
+        .inspect_hosted_seat(&request)
+        .await
+        .expect("the include-archived census proves the exact native");
+    assert_eq!(inspection.identity, request.identity);
+    assert_eq!(inspection.state, HostedSeatNativeState::Archived);
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn hosted_seat_inspection_reports_a_missing_exact_native_without_mutation() {
+    let seat_binding_id = SeatBindingId::generate();
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", v(AGENT_NOT_FOUND))
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    let plane = Plane::fresh(recorded);
+    let request = HostedSeatInspectRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    };
+
+    let inspection = plane
+        .adapter
+        .inspect_hosted_seat(&request)
+        .await
+        .expect("absence from both exact and archive-aware census is authoritative");
+    assert_eq!(inspection.identity, request.identity);
+    assert_eq!(inspection.state, HostedSeatNativeState::Missing);
+    assert!(plane.daemon.mutations().is_empty());
 }
 
 /// A terminal archive is accepted from its exact correlated predecessor even

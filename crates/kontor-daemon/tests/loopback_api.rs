@@ -22526,6 +22526,140 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "a replay touched the runtime"
     );
 
+    // The logical TPM binding can outlive the corrected native session. An
+    // archived exact native must not be mistaken for a live seat merely because
+    // its shared ECP container remains present, and an unchanged desired route
+    // must still authorize the ordinary fenced replacement path.
+    let corrected_successor = ExternalId::parse(
+        corrected.json()["successor_native_id"]
+            .as_str()
+            .expect("the corrected TPM successor"),
+    )
+    .expect("a canonical corrected successor");
+    let corrected_generation = corrected_tpm["native_seat"]["generation"]
+        .as_u64()
+        .expect("the corrected TPM generation");
+    world.fake.archive_hosted_seat(&corrected_successor);
+    let seat_before_attention = world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, tpm_binding_id)
+            .expect("the TPM binding reads")
+            .expect("the TPM binding exists")
+    });
+    let attention = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{tpm_binding}/attention"),
+        &serde_json::json!({
+            "expected_revision": seat_before_attention.revision,
+            "reason": "Confirm the exact hosted TPM native before recovery",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("inspect-archived-core-team-tpm")
+    .send(world)
+    .await;
+    assert_eq!(attention.status, 200, "{}", attention.body);
+    assert!(
+        attention.json()["observed_binding"].is_null(),
+        "an archived hosted native was reported from its live container: {}",
+        attention.body
+    );
+    let seat_after_attention = world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, tpm_binding_id)
+            .expect("the TPM binding reads after attention")
+            .expect("the TPM binding exists after attention")
+    });
+    assert_eq!(
+        seat_after_attention.last_attached_at, seat_before_attention.last_attached_at,
+        "attention refreshed attachment from the container rather than the exact hosted native"
+    );
+
+    let recovery_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": tpm_binding,
+        "expected_native_id": corrected_successor,
+        "expected_generation": corrected_generation,
+        "desired_model_route": {
+            "provider": "opencode",
+            "model": "deepseek/deepseek-v4-flash",
+            "effort": "high"
+        }
+    });
+    let recovery_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &recovery_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(recovery_preview.status, 200, "{}", recovery_preview.body);
+    assert_eq!(recovery_preview.json()["would_replace_native"], true);
+    assert_eq!(
+        recovery_preview.json()["current_model_route"],
+        recovery_preview.json()["desired_model_route"],
+        "the recovery case must exercise an unchanged route"
+    );
+    let mut recovery_body = recovery_request;
+    recovery_body["preview_hash"] = recovery_preview.json()["preview_hash"].clone();
+    let calls_before_recovery = world.fake.calls().len();
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &recovery_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("recover-archived-core-team-tpm")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["receipt"]["applied"], "updated");
+    assert_eq!(
+        recovered.json()["predecessor_native_id"],
+        corrected_successor.as_str()
+    );
+    assert_ne!(
+        recovered.json()["successor_native_id"],
+        corrected_successor.as_str()
+    );
+    let recovery_calls = &world.fake.calls()[calls_before_recovery..];
+    assert!(
+        recovery_calls.contains(&AdapterCall::LaunchHostedSeat(tpm_binding_id)),
+        "the archived same-route predecessor was not relaunched: {recovery_calls:?}"
+    );
+    assert!(
+        !recovery_calls.contains(&AdapterCall::RetireHostedSeat(tpm_binding_id)),
+        "an already archived predecessor emitted a duplicate retirement: {recovery_calls:?}"
+    );
+    assert!(
+        world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat_history(project_id, tpm_binding_id, &corrected_successor)
+                .expect("the recovered predecessor history reads")
+                .is_some()
+        }),
+        "same-route recovery did not preserve the archived predecessor in history"
+    );
+
+    let calls_before_recovery_replay = world.fake.calls().len();
+    let replayed_recovery = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &recovery_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("recover-archived-core-team-tpm")
+    .send(world)
+    .await;
+    assert_eq!(replayed_recovery.status, 200, "{}", replayed_recovery.body);
+    assert_eq!(replayed_recovery.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed_recovery.json()["successor_native_id"],
+        recovered.json()["successor_native_id"]
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_recovery_replay,
+        "same-route recovery replay emitted duplicate native effects"
+    );
+
     let message_id = kontor_runtime::request::MessageId::generate().to_string();
     let handoff = Call::post(
         format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
