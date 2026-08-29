@@ -505,6 +505,8 @@ pub struct HostedSeatMessageOutcome {
     pub message_id: MessageId,
     /// Acceptance instant.
     pub accepted_at: Timestamp,
+    /// Canonical position proving the caller message landed exactly once.
+    pub position: TimelinePosition,
 }
 
 /// What a fresh exact native read says about one persisted hosted seat.

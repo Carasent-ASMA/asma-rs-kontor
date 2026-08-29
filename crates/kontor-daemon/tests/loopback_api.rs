@@ -60,8 +60,9 @@ use kontor_core::repository::{
     NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent,
     NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
     ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, SourceDisposition,
-    SpecRepository, StoredConsultationProfileRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository, WorkflowRepository,
+    SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, TicketRepository, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
@@ -22387,6 +22388,52 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     let tpm_generation = native_tpm["native_seat"]["generation"]
         .as_u64()
         .expect("TPM generation");
+    let tpm_binding_id = SeatBindingId::parse(&tpm_binding).expect("TPM binding id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+
+    // Reproduce the operational gap: several logical wakes predate a stale TPM
+    // replacement and none received a hosted-native acknowledgement. The
+    // current completion projection is revision nine, so revision eight stays
+    // immutable audit history and only nine may be delivered to a successor.
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the Completion profile compiles");
+    let mut completion =
+        kontor_scheduler::start(&compiled, tpm_binding_id, Vec::new()).expect("a run starts");
+    completion.revision = AggregateRevision::parse(9).expect("revision nine");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&completion).expect("completion serializes"),
+                revision: completion.revision,
+                updated_at: at("2026-08-20T05:00:00Z"),
+            })?;
+            for (revision, appended_at) in
+                [(8, "2026-08-20T05:01:00Z"), (9, "2026-08-20T05:02:00Z")]
+            {
+                store.append_completion_wake(&StoredCompletionWake {
+                    project_id,
+                    mini_project_id: epic_id,
+                    completion_revision: AggregateRevision::parse(revision)
+                        .expect("a positive revision"),
+                    reason: name("completion_advanced"),
+                    seat_binding_id: tpm_binding_id,
+                    receipt: compiled.definition_hash.clone(),
+                    appended_at: at(appended_at),
+                    acknowledged_at: None,
+                })?;
+            }
+            Ok::<(), kontor_core::repository::RepositoryError>(())
+        })
+        .expect("the stale Completion wake ledger is seeded");
 
     let replayed_native = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
@@ -22493,7 +22540,6 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         corrected_tpm["native_seat"]["model_route"]["provider"],
         "opencode"
     );
-    let tpm_binding_id = SeatBindingId::parse(&tpm_binding).expect("TPM binding id");
     let route_calls = &world.fake.calls()[calls_before_apply..];
     assert!(
         route_calls.contains(&AdapterCall::RetireHostedSeat(tpm_binding_id)),
@@ -22502,6 +22548,35 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     assert!(
         route_calls.contains(&AdapterCall::LaunchHostedSeat(tpm_binding_id)),
         "the successor was not launched: {route_calls:?}"
+    );
+    assert!(
+        route_calls.contains(&AdapterCall::MessageHostedSeat(tpm_binding_id)),
+        "the newest stale Completion wake did not reach the exact successor: {route_calls:?}"
+    );
+    let first_deliveries = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wake_deliveries(project_id, epic_id)
+            .expect("the first successor delivery reads")
+    });
+    assert_eq!(first_deliveries.len(), 1);
+    assert_eq!(first_deliveries[0].wake.completion_revision.get(), 9);
+    assert_eq!(
+        first_deliveries[0].native_identity.native_id.as_str(),
+        corrected.json()["successor_native_id"]
+            .as_str()
+            .expect("the corrected successor")
+    );
+    assert!(first_deliveries[0].acknowledged_at.is_some());
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .list_completion_wakes(project_id, epic_id)
+                .expect("logical wakes read"))
+            .len(),
+        2,
+        "coalescing must not delete older wake audit history"
     );
 
     let calls_before_replay = world.fake.calls().len();
@@ -22626,6 +22701,10 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "the archived same-route predecessor was not relaunched: {recovery_calls:?}"
     );
     assert!(
+        recovery_calls.contains(&AdapterCall::MessageHostedSeat(tpm_binding_id)),
+        "the newest Completion wake was not replayed to the same-route TPM successor: {recovery_calls:?}"
+    );
+    assert!(
         !recovery_calls.contains(&AdapterCall::RetireHostedSeat(tpm_binding_id)),
         "an already archived predecessor emitted a duplicate retirement: {recovery_calls:?}"
     );
@@ -22637,6 +22716,29 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
                 .is_some()
         }),
         "same-route recovery did not preserve the archived predecessor in history"
+    );
+    let successor_deliveries = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wake_deliveries(project_id, epic_id)
+            .expect("successor delivery history reads")
+    });
+    assert_eq!(successor_deliveries.len(), 2);
+    assert_eq!(successor_deliveries[0].wake.completion_revision.get(), 9);
+    assert_eq!(successor_deliveries[1].wake.completion_revision.get(), 9);
+    assert!(
+        successor_deliveries
+            .iter()
+            .all(|delivery| delivery.acknowledged_at.is_some())
+    );
+    assert_eq!(
+        successor_deliveries[1].native_identity.native_id.as_str(),
+        recovered.json()["successor_native_id"]
+            .as_str()
+            .expect("the recovered successor")
+    );
+    assert_ne!(
+        successor_deliveries[0].occupancy_generation,
+        successor_deliveries[1].occupancy_generation
     );
 
     let calls_before_recovery_replay = world.fake.calls().len();
@@ -23701,17 +23803,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
 
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
-        &serde_json::json!({
-            "expected_revision": 1,
-            "routes": [
-                {"role_code": "LSA", "model_route": {
-                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
-                }},
-                {"role_code": "TPM", "model_route": {
-                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
-                }}
-            ]
-        }),
+        &serde_json::json!({"expected_revision": 1}),
     )
     .signed_as(world, "admin")
     .with_key("op06-materialize")
@@ -23797,6 +23889,40 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     assert_eq!(wakes[0]["seat_binding_id"], tpm.to_string());
     assert_eq!(wakes[0]["completion_revision"], 2);
 
+    // The owner mutation committed while no TPM native filled the logical seat,
+    // so delivery remains pending. Fill that exact seat after the fact; the
+    // same advance API replay below must be a reconciliation seam of its own.
+    let native = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-materialize-native")
+    .send(world)
+    .await;
+    assert_eq!(native.status, 200, "{}", native.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .list_completion_wake_deliveries(project_id, epic_id)
+                .expect("the pending wake delivery inventory reads"))
+            .is_empty(),
+        "materializing the native is not itself a completion transition"
+    );
+    let calls_before_advance_replay = world.fake.calls().len();
+
     // The same key and the same expected revision replay to the same receipt and
     // move nothing, even though the run is no longer at that revision.
     let replayed = Call::post(
@@ -23816,6 +23942,21 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         replayed.body
     );
     assert_eq!(replayed.json()["state"]["phase"]["phase"], "integration");
+    assert_eq!(
+        world.fake.calls()[calls_before_advance_replay..]
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::MessageHostedSeat(id) if *id == tpm))
+            .count(),
+        1,
+        "the early idempotency return must drain exactly one pending wake"
+    );
+    let replay_delivery = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wake_deliveries(project_id, epic_id)
+            .expect("the replay delivery reads")
+    });
+    assert_eq!(replay_delivery.len(), 1);
+    assert!(replay_delivery[0].acknowledged_at.is_some());
 
     // A *different* key presenting that now-stale revision is a genuine conflict.
     let stale = Call::post(

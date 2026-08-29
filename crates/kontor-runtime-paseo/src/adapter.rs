@@ -4614,6 +4614,22 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        // Hosted seats are deliberately absent from the ordinary issued-binding
+        // registry, so their delivery evidence cannot live in that registry's
+        // in-memory message ledger. Always settle the stable clientMessageId
+        // against this exact native's canonical history before touching the
+        // wire. This is inexpensive for the rare leadership wake and is what
+        // makes a retry safe after a fresh daemon adapter starts empty.
+        if let Some((position, accepted_at)) = self
+            .reconcile_hosted_message(native_id, request.message_id)
+            .await?
+        {
+            return Ok(HostedSeatMessageOutcome {
+                message_id: request.message_id,
+                accepted_at,
+                position,
+            });
+        }
         self.ensure_provider_available(&agent.provider)?;
         let declared = self.declared().await?;
         preflight(
@@ -4637,15 +4653,26 @@ impl RuntimeAdapter for PaseoAdapter {
             &request.message_id.to_string(),
             request.body.as_str(),
         );
-        let frame = self.transport.request(&rpc).await?;
-        let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
-        if accepted.agent_id != native_id || !accepted.accepted {
-            return Err(RuntimeError::CorrelationFailed);
+        let sent = self.transport.request(&rpc).await;
+        if let Ok(frame) = sent {
+            let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
+            if accepted.agent_id != native_id || !accepted.accepted {
+                return Err(RuntimeError::CorrelationFailed);
+            }
         }
-        Ok(HostedSeatMessageOutcome {
-            message_id: request.message_id,
-            accepted_at: request.sent_at,
-        })
+        match self
+            .reconcile_hosted_message(native_id, request.message_id)
+            .await?
+        {
+            Some((position, accepted_at)) => Ok(HostedSeatMessageOutcome {
+                message_id: request.message_id,
+                accepted_at,
+                position,
+            }),
+            None => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the hosted-seat message is not yet present in canonical history",
+            }),
+        }
     }
 
     async fn message_consultation(
@@ -6250,6 +6277,72 @@ impl RuntimeAdapter for PaseoAdapter {
 // ---------------------------------------------------------------------------
 
 impl PaseoAdapter {
+    /// Settle a persistent hosted-seat message directly against one exact
+    /// native's canonical history.
+    ///
+    /// Unlike Delivery AgentRuns, a hosted LSA/TPM has no RuntimeBindingId to
+    /// key adapter cursors or an issued-message ledger by. The stable UUIDv7 is
+    /// therefore searched from the canonical tail across a bounded complete
+    /// history. No hit authorizes one send; one hit is the acknowledgement;
+    /// more than one is durable divergence and never authorizes another effect.
+    async fn reconcile_hosted_message(
+        &self,
+        native_id: &str,
+        message_id: MessageId,
+    ) -> RuntimeResult<Option<(TimelinePosition, Timestamp)>> {
+        let mut expected = None;
+        let mut before: Option<PaseoTimelineCursor> = None;
+        let mut found: Option<(TimelinePosition, Timestamp)> = None;
+        let mut hits = 0usize;
+        let mut complete = false;
+        for _ in 0..RECONCILE_PAGE_BUDGET {
+            let page = self
+                .fetch_canonical(
+                    native_id,
+                    if before.is_some() {
+                        PaseoDirection::Before
+                    } else {
+                        PaseoDirection::Tail
+                    },
+                    before.as_ref(),
+                    MAX_HISTORY_PAGE,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            let epoch = self.resolve_epoch(&page.epoch, expected)?;
+            expected = Some(epoch);
+            for event in self.normalize_page(&page, epoch)? {
+                if event.subject == EventSubject::Message(message_id) {
+                    hits += 1;
+                    found.get_or_insert((event.position, event.emitted_at));
+                }
+            }
+            match (page.has_older, page.start_cursor) {
+                (true, Some(start)) => before = Some(start),
+                (false, _) => {
+                    complete = true;
+                    break;
+                }
+                (true, None) => {
+                    return Err(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    });
+                }
+            }
+        }
+        if !complete {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::SequenceGap,
+            });
+        }
+        if hits > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "appears more than once in this hosted seat's canonical content",
+            });
+        }
+        Ok(found)
+    }
+
     fn record_delivery(
         &self,
         message_id: MessageId,

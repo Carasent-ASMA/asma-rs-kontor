@@ -5953,6 +5953,10 @@ pub trait ApplicationOperations: Send + Sync {
     /// hand over. Returns how many reached a seat this time.
     async fn retry_undelivered_dispatches(&self) -> Result<usize, ApiError>;
 
+    /// Reconcile the newest Completion wake for every persistent hosted TPM.
+    /// Existing exact-native acknowledgements replay without a second effect.
+    async fn retry_completion_wakes(&self) -> Result<usize, ApiError>;
+
     /// Excuse one declared role slot that was never bound.
     ///
     /// Admin, matching gate-waiver authority. Every rule that makes the waiver

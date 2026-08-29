@@ -6,15 +6,20 @@
 //! that passes under both proves nothing about which one is running.
 
 use kontor_core::id::{
-    ExternalId, ExternalName, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
-    SeatBindingId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    AggregateRevision, BoundedText, ContentHash, ExternalId, ExternalName, MiniProjectId,
+    ProjectId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, Timestamp, TopologyKindKey,
+    TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::{
     MiniProjectTopologySnapshot, NewMiniProject, NewNativeContainerBinding, NewProject,
     NewSeatBinding, NewSessionTopologyNode, ProjectRepository, ProjectTopologyDefault,
-    SeatLivenessObservation, TopologyRepository,
+    RepositoryError, SeatLivenessObservation, StoredCompletionWake, StoredCompletionWakeDelivery,
+    StoredHostedTopologySeat, TopologyRepository,
 };
-use kontor_core::spec::{CatalogRoleRef, Shareability, ShareabilityTier, TopologySnapshot};
+use kontor_core::spec::{
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    TopologySnapshot,
+};
 use kontor_core::state::{
     NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, SeatAttachment,
 };
@@ -765,4 +770,179 @@ fn a_task_resolves_to_at_most_one_active_topology_node() {
         })
         .expect_err("one task cannot have two live workspaces");
     assert!(refusal.to_string().contains("constraint"), "{refusal:?}");
+}
+
+#[test]
+fn newest_completion_wake_is_stable_per_hosted_tpm_occupancy() {
+    let fixture = Fixture::build();
+    let tpm = fixture.seat(
+        fixture.ecp_id,
+        "TPM",
+        "epic.tpm",
+        at("2026-08-16T01:00:00Z"),
+        at("2026-08-16T01:10:00Z"),
+        None,
+    );
+    let rung = ModelRung {
+        provider: ProviderRef("codex".to_owned()),
+        model: ModelRef("gpt-5.6".to_owned()),
+        effort: None,
+    };
+    let predecessor = StoredHostedTopologySeat {
+        project_id: fixture.project_id,
+        seat_binding_id: tpm,
+        model_rung: rung.clone(),
+        native_identity: identity("tpm-predecessor", 7),
+        provider_session_id: Some(
+            ExternalId::parse("thread-predecessor").expect("a provider session id"),
+        ),
+        observed_at: at("2026-08-16T01:01:00Z"),
+    };
+    fixture
+        .store
+        .bind_hosted_topology_seat(&predecessor)
+        .expect("the first TPM occupancy is bound");
+
+    let older = StoredCompletionWake {
+        project_id: fixture.project_id,
+        mini_project_id: fixture.mini_project_id,
+        completion_revision: AggregateRevision::parse(8).expect("revision eight"),
+        reason: name("completion_advanced"),
+        seat_binding_id: tpm,
+        receipt: ContentHash::of(b"definition"),
+        appended_at: at("2026-08-16T01:02:00Z"),
+        acknowledged_at: None,
+    };
+    let newest = StoredCompletionWake {
+        completion_revision: AggregateRevision::parse(9).expect("revision nine"),
+        appended_at: at("2026-08-16T01:03:00Z"),
+        ..older.clone()
+    };
+    fixture
+        .store
+        .append_completion_wake(&older)
+        .expect("the older wake is retained");
+    fixture
+        .store
+        .append_completion_wake(&newest)
+        .expect("the newest wake is retained");
+    assert_eq!(
+        fixture
+            .store
+            .latest_completion_wake(fixture.project_id, fixture.mini_project_id, tpm)
+            .expect("the newest wake is readable")
+            .expect("a wake exists")
+            .completion_revision,
+        newest.completion_revision
+    );
+
+    let body = BoundedText::parse("frozen completion revision 9").expect("a bounded body");
+    let first_candidate = StoredCompletionWakeDelivery {
+        wake: newest.clone(),
+        occupancy_generation: 1,
+        native_identity: predecessor.native_identity.clone(),
+        message_id: "0193f000-0000-7000-8000-000000000070".to_owned(),
+        body_hash: ContentHash::of(body.as_str().as_bytes()),
+        body: body.clone(),
+        created_at: at("2026-08-16T01:04:00Z"),
+        acknowledged_at: None,
+        timeline_epoch: None,
+        timeline_sequence: None,
+    };
+    let first = fixture
+        .store
+        .claim_completion_wake_delivery(&first_candidate)
+        .expect("the first exact-native delivery is claimed");
+    let racing_candidate = StoredCompletionWakeDelivery {
+        message_id: "0193f000-0000-7000-8000-000000000071".to_owned(),
+        created_at: at("2026-08-16T01:04:01Z"),
+        ..first_candidate.clone()
+    };
+    let replayed = fixture
+        .store
+        .claim_completion_wake_delivery(&racing_candidate)
+        .expect("a racing claimant reads the durable winner");
+    assert_eq!(replayed.message_id, first.message_id);
+    assert_eq!(replayed.body_hash, first.body_hash);
+    fixture
+        .store
+        .acknowledge_completion_wake_delivery(&first, at("2026-08-16T01:04:02Z"), 4, 21)
+        .expect("canonical timeline evidence acknowledges the first occupancy");
+    fixture
+        .store
+        .acknowledge_completion_wake_delivery(&first, at("2026-08-16T01:04:02Z"), 4, 21)
+        .expect("the same canonical acknowledgement replays");
+    assert!(matches!(
+        fixture.store.acknowledge_completion_wake_delivery(
+            &first,
+            at("2026-08-16T01:04:02Z"),
+            4,
+            22,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("tpm-successor", 7),
+        provider_session_id: Some(
+            ExternalId::parse("thread-successor").expect("a provider session id"),
+        ),
+        observed_at: at("2026-08-16T01:05:00Z"),
+        ..predecessor.clone()
+    };
+    fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            &predecessor,
+            &successor,
+            at("2026-08-16T01:05:00Z"),
+            "stale native recovery",
+        )
+        .expect("the exact successor takes the logical TPM seat");
+    let successor_candidate = StoredCompletionWakeDelivery {
+        wake: newest.clone(),
+        occupancy_generation: 2,
+        native_identity: successor.native_identity.clone(),
+        message_id: "0193f000-0000-7000-8000-000000000072".to_owned(),
+        body_hash: ContentHash::of(body.as_str().as_bytes()),
+        body,
+        created_at: at("2026-08-16T01:05:01Z"),
+        acknowledged_at: None,
+        timeline_epoch: None,
+        timeline_sequence: None,
+    };
+    let successor_delivery = fixture
+        .store
+        .claim_completion_wake_delivery(&successor_candidate)
+        .expect("the successor gets its own delivery of the newest wake");
+    assert_ne!(successor_delivery.message_id, first.message_id);
+
+    let stale_projection = StoredCompletionWakeDelivery {
+        wake: older,
+        message_id: "0193f000-0000-7000-8000-000000000073".to_owned(),
+        ..successor_candidate
+    };
+    assert!(matches!(
+        fixture
+            .store
+            .claim_completion_wake_delivery(&stale_projection),
+        Err(RepositoryError::Conflict { .. })
+    ));
+    let deliveries = fixture
+        .store
+        .list_completion_wake_deliveries(fixture.project_id, fixture.mini_project_id)
+        .expect("delivery audit history is readable");
+    assert_eq!(deliveries.len(), 2);
+    assert_eq!(deliveries[0].occupancy_generation, 1);
+    assert!(deliveries[0].acknowledged_at.is_some());
+    assert_eq!(deliveries[1].occupancy_generation, 2);
+    assert!(deliveries[1].acknowledged_at.is_none());
+    assert_eq!(
+        fixture
+            .store
+            .list_completion_wakes(fixture.project_id, fixture.mini_project_id)
+            .expect("logical wake history is preserved")
+            .len(),
+        2
+    );
 }

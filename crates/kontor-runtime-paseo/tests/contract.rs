@@ -43,8 +43,8 @@ use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
     HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatLaunchRequest,
-    HostedSeatNativeState, HostedSeatRetireRequest, LaunchOutcome, RetitleSeatRequest,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatMessageRequest, HostedSeatNativeState, HostedSeatRetireRequest, LaunchOutcome,
+    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
@@ -5042,6 +5042,48 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+}
+
+#[tokio::test]
+async fn a_fresh_adapter_reconciles_a_hosted_wake_from_canonical_history() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut agent = v(AGENT);
+    agent["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", agent)
+        .answering_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    // `fresh` deliberately has no issued-binding/message ledger. The only
+    // acknowledgement available after a daemon restart is Paseo's canonical
+    // clientMessageId history for the exact hosted native.
+    let plane = Plane::fresh(recorded);
+    let outcome = plane
+        .adapter
+        .message_hosted_seat(&HostedSeatMessageRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            message_id: MessageId::parse(MESSAGE).expect("pinned message id"),
+            body: text("frozen completion wake"),
+            sent_at: at("2026-08-20T05:10:00Z"),
+        })
+        .await
+        .expect("canonical history reconciles the hosted wake");
+    assert_eq!(outcome.message_id.to_string(), MESSAGE);
+    assert_eq!(outcome.position.sequence, 1);
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        0,
+        "restart reconciliation never repeats the native message"
+    );
 }
 
 /// A native already committed to append-only hosted-seat history no longer has

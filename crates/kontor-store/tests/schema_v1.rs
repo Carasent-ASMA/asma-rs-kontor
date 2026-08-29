@@ -63,6 +63,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_completion_remediation_command_claims",
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
+    "epic_completion_wake_deliveries",
     "epic_native_name_tokens",
     "epic_execution_scopes",
     "epic_rosters",
@@ -472,8 +473,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // Pinned deliberately: appending a migration must be a decision, not a
     // side effect. v68 adds immutable native-less materialization reroute
     // lineage and receipt authority; v69 widens global Committee recovery
-    // rounds to the scheduler's positive u8 domain.
-    assert_eq!(SCHEMA_VERSION, 69);
+    // rounds to the scheduler's positive u8 domain; v70 adds exact-occupancy
+    // durable Completion-wake delivery evidence.
+    assert_eq!(SCHEMA_VERSION, 70);
 }
 
 #[test]

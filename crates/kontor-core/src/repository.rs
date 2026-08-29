@@ -757,6 +757,38 @@ pub struct StoredCompletionWake {
     pub acknowledged_at: Option<Timestamp>,
 }
 
+/// One durable delivery of a logical Completion wake to an exact hosted TPM
+/// native occupancy.
+///
+/// Replacement preserves [`SeatBindingId`] but changes native identity. The
+/// delivery key therefore includes the occupancy generation and native id: a
+/// successor receives the newest wake once, while every predecessor attempt
+/// remains audit evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCompletionWakeDelivery {
+    /// The logical wake being delivered.
+    pub wake: StoredCompletionWake,
+    /// Persistent-seat occupancy generation used by scoped authority.
+    pub occupancy_generation: u64,
+    /// Exact native recipient frozen when the delivery was claimed.
+    pub native_identity: NativeRuntimeIdentity,
+    /// Stable runtime message id, stored as canonical UUID text to keep the
+    /// core crate independent of runtime request types.
+    pub message_id: String,
+    /// Frozen bounded body; every retry must present these exact bytes.
+    pub body: BoundedText,
+    /// Digest of the frozen body.
+    pub body_hash: ContentHash,
+    /// Claim instant.
+    pub created_at: Timestamp,
+    /// Canonical runtime acknowledgement, once observed.
+    pub acknowledged_at: Option<Timestamp>,
+    /// Canonical timeline epoch of the acknowledgement.
+    pub timeline_epoch: Option<u64>,
+    /// Canonical timeline sequence of the acknowledgement.
+    pub timeline_sequence: Option<u64>,
+}
+
 /// One immutable topology snapshot pinned to a MiniProject/epic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiniProjectTopologySnapshot {
