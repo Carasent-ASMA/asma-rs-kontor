@@ -27038,9 +27038,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             format!("/v1/projects/{project}/committee-runs/{re_review_run}/findings:record"),
             &serde_json::json!({
                 "round": 2,
-                "verdict": "compliant",
+                "verdict": "non_compliant",
                 "evidence_complete": true,
-                "rationale": format!("clean reviewer {} verified the remediation", index + 1),
+                "rationale": format!("reviewer {} found the bounded remediation incomplete", index + 1),
                 "evidence_refs": [format!("evidence:clean-reviewer-{}", index + 1)],
                 "expected_revision": re_review_revision,
             }),
@@ -27066,9 +27066,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         format!("/v1/projects/{project}/committee-runs/{re_review_run}/findings:record"),
         &serde_json::json!({
             "round": 2,
-            "verdict": "compliant",
+            "verdict": "non_compliant",
             "evidence_complete": true,
-            "rationale": "The clean re-review passes conjunctively.",
+            "rationale": "The bounded clean re-review remains conjunctively non-compliant.",
             "evidence_refs": ["evidence:clean-reviewer-1", "evidence:clean-reviewer-2"],
             "expected_revision": re_review_revision,
         }),
@@ -27089,6 +27089,8 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     let clean_settled = Call::post(
         format!("/v1/projects/{project}/committee-runs/{re_review_run}/settle"),
         &serde_json::json!({
+            "recommendation": "Escalate the exhausted bounded review through explicit human recovery.",
+            "tried_path": "Both bounded Committee rounds were recorded and remained non-compliant.",
             "expected_revision": re_review_judged.json()["receipt"]["revision"]
         }),
     )
@@ -27098,7 +27100,8 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     assert_eq!(clean_settled.status, 200, "{}", clean_settled.body);
     assert_eq!(clean_settled.json()["state"], "settled");
-    assert_eq!(clean_settled.json()["outcome"], "compliant");
+    assert_eq!(clean_settled.json()["outcome"], "non_compliant");
+    assert!(clean_settled.json()["remediation_hash"].is_null());
 
     let completed_verdict = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
@@ -27111,15 +27114,327 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     assert_eq!(completed_verdict.status, 200, "{}", completed_verdict.body);
     assert_eq!(
         completed_verdict.json()["state"]["phase"]["phase"],
-        "closeout"
+        "needs_human"
     );
     assert_eq!(
         completed_verdict.json()["state"]["rounds"][1]["verdict"],
-        "pass"
+        "fail"
     );
     assert_eq!(
         completed_verdict.json()["state"]["rounds"][1]["committee_run_id"],
         re_review_run
+    );
+
+    // Exhausting the template's bounded rounds is not the end of the governed
+    // path. Distinct live LSA and TPM seats may authorize one more remediation,
+    // whose new integration freeze opens a global Committee round three.
+    let needs_human_revision = completed_verdict.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the needs-human completion revision");
+    let failed_round_two_evidence = completed_verdict.json()["state"]["rounds"][1]["evidence"]
+        .as_str()
+        .expect("the failed round-two evidence")
+        .to_owned();
+    let recovery_proposal_hash =
+        ContentHash::of(b"publish the human-authorized recovery for global round three");
+    let recovery_proposed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+        &serde_json::json!({
+            "expected_revision": needs_human_revision,
+            "action": {
+                "action": "lsa_proposal",
+                "round": 2,
+                "failed_round_evidence": failed_round_two_evidence,
+                "proposal": recovery_proposal_hash.as_str(),
+            }
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(
+                SeatBindingId::parse(&caller).expect("the live LSA SeatBinding"),
+                1,
+            ),
+    )
+    .with_key("committee-round-three-lsa-proposal")
+    .send(world)
+    .await;
+    assert_eq!(recovery_proposed.status, 200, "{}", recovery_proposed.body);
+    assert_eq!(
+        recovery_proposed.json()["state"]["phase"]["phase"],
+        "needs_human"
+    );
+
+    let recovery_routed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
+        &serde_json::json!({
+            "expected_revision": needs_human_revision,
+            "action": {
+                "action": "tpm_route",
+                "round": 2,
+                "route": ContentHash::of(b"route the global round-three recovery").as_str(),
+            }
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(
+                SeatBindingId::parse(&tpm).expect("the live TPM SeatBinding"),
+                1,
+            ),
+    )
+    .with_key("committee-round-three-tpm-route")
+    .send(world)
+    .await;
+    assert_eq!(recovery_routed.status, 200, "{}", recovery_routed.body);
+    assert_eq!(
+        recovery_routed.json()["state"]["phase"]["phase"],
+        "remediation"
+    );
+    assert_eq!(recovery_routed.json()["state"]["phase"]["round"], 2);
+
+    let recovery_integrated = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": recovery_routed.json()["receipt"]["revision"],
+            "evidence": {
+                "phase": "integration",
+                "repositories": [{
+                    "repository": "asma-rs-kontor",
+                    "pull_request": "ASMA-8001-round-three",
+                    "module_revision": "9ce24aa",
+                    "root_pointer_revision": "round-three-root"
+                }]
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-round-three-recovery-integrated")
+    .send(world)
+    .await;
+    assert_eq!(
+        recovery_integrated.status, 200,
+        "{}",
+        recovery_integrated.body
+    );
+    assert_eq!(
+        recovery_integrated.json()["state"]["phase"]["phase"],
+        "verdict"
+    );
+    assert_eq!(recovery_integrated.json()["state"]["phase"]["round"], 3);
+    assert_eq!(
+        recovery_integrated.json()["state"]["remediations"][1]["authorization"]["needs_human_recovery"],
+        true
+    );
+    let round_three_completion_revision = recovery_integrated.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the round-three completion revision");
+    let round_three_integration_receipt =
+        recovery_integrated.json()["state"]["remediations"][1]["integration"]["receipt"]
+            .as_str()
+            .expect("the human recovery integration receipt")
+            .to_owned();
+    let round_three_provenance = serde_json::json!({
+        "completion_round": 2,
+        "completion_revision": round_three_completion_revision,
+        "failed_committee_run_id": re_review_run,
+        "failed_result_hash": clean_settled.json()["result_hash"],
+        "remediation_hash": recovery_proposal_hash.as_str(),
+        "remediation_integration_receipt": round_three_integration_receipt,
+    });
+    let round_three_invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &serde_json::json!({
+            "profile": {
+                "id": "01991c00-0000-7000-8000-000000000001",
+                "version": 1
+            },
+            "question": "Does the human-authorized recovery satisfy the gate?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+            "re_review": round_three_provenance,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-global-round-three-invoke")
+    .send(world)
+    .await;
+    assert_eq!(
+        round_three_invoked.status, 200,
+        "{}",
+        round_three_invoked.body
+    );
+    assert_eq!(round_three_invoked.json()["round"], 3);
+    assert_eq!(round_three_invoked.json()["state"], "running");
+    let round_three_run = round_three_invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("the global round-three Committee run")
+        .to_owned();
+    let frozen_round_three = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(
+                project_id,
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&round_three_run)
+                        .expect("the global round-three Committee id"),
+                ),
+            )
+            .expect("the global round-three Committee reads")
+            .expect("the global round-three Committee is durable")
+    });
+    assert!(
+        frozen_round_three.context["re_review_evidence"]["committee_remediation"].is_null(),
+        "needs-human recovery must use the identity-bound LSA proposal"
+    );
+    assert_eq!(
+        frozen_round_three.context["re_review_evidence"]["completion_freeze"]["approvals"]["lsa_proposal_hash"],
+        recovery_proposal_hash.as_str()
+    );
+    assert_eq!(
+        frozen_round_three.context["re_review_evidence"]["completion_freeze"]["approvals"]["needs_human_recovery"],
+        true
+    );
+
+    let round_three_seats = round_three_invoked.json()["seats"]
+        .as_array()
+        .expect("the global round-three seats")
+        .clone();
+    let round_three_reviewers = round_three_seats
+        .iter()
+        .filter(|seat| {
+            seat["role_slot_id"]
+                .as_str()
+                .is_some_and(|slot| slot.starts_with("reviewer"))
+        })
+        .map(|seat| {
+            seat["seat_binding_id"]
+                .as_str()
+                .expect("a global round-three reviewer")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let round_three_judge = round_three_seats
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the global round-three Judge")
+        .to_owned();
+    let mut round_three_revision = round_three_invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the global round-three run revision");
+    for (index, reviewer) in round_three_reviewers.iter().enumerate() {
+        let finding = Call::post(
+            format!("/v1/projects/{project}/committee-runs/{round_three_run}/findings:record"),
+            &serde_json::json!({
+                "round": 3,
+                "verdict": "compliant",
+                "evidence_complete": true,
+                "rationale": format!("global round-three reviewer {} verified recovery", index + 1),
+                "evidence_refs": [format!("evidence:round-three-reviewer-{}", index + 1)],
+                "expected_revision": round_three_revision,
+            }),
+        )
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(reviewer).expect("a round-three reviewer SeatBinding"),
+                ),
+        )
+        .with_key(format!(
+            "committee-global-round-three-reviewer-{}",
+            index + 1
+        ))
+        .send(world)
+        .await;
+        assert_eq!(finding.status, 200, "{}", finding.body);
+        round_three_revision = finding.json()["receipt"]["revision"]
+            .as_u64()
+            .expect("the round-three reviewer revision");
+    }
+    let round_three_judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{round_three_run}/findings:record"),
+        &serde_json::json!({
+            "round": 3,
+            "verdict": "compliant",
+            "evidence_complete": true,
+            "rationale": "The human-authorized global round three passes conjunctively.",
+            "evidence_refs": [
+                "evidence:round-three-reviewer-1",
+                "evidence:round-three-reviewer-2"
+            ],
+            "expected_revision": round_three_revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&round_three_judge)
+                    .expect("the round-three Judge SeatBinding"),
+            ),
+    )
+    .with_key("committee-global-round-three-judge")
+    .send(world)
+    .await;
+    assert_eq!(
+        round_three_judged.status, 200,
+        "{}",
+        round_three_judged.body
+    );
+    let round_three_settled = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{round_three_run}/settle"),
+        &serde_json::json!({
+            "expected_revision": round_three_judged.json()["receipt"]["revision"]
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-global-round-three-settle")
+    .send(world)
+    .await;
+    assert_eq!(
+        round_three_settled.status, 200,
+        "{}",
+        round_three_settled.body
+    );
+    assert_eq!(round_three_settled.json()["round"], 3);
+    assert_eq!(round_three_settled.json()["state"], "settled");
+    assert_eq!(round_three_settled.json()["outcome"], "compliant");
+
+    let recovered_completion = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": round_three_completion_revision}),
+    )
+    .signed_as(world, "operator")
+    .with_key("completion-consume-global-round-three")
+    .send(world)
+    .await;
+    assert_eq!(
+        recovered_completion.status, 200,
+        "{}",
+        recovered_completion.body
+    );
+    assert_eq!(
+        recovered_completion.json()["state"]["phase"]["phase"],
+        "closeout"
+    );
+    assert_eq!(
+        recovered_completion.json()["state"]["rounds"][2]["verdict"],
+        "pass"
+    );
+    assert_eq!(
+        recovered_completion.json()["state"]["rounds"][2]["committee_run_id"],
+        round_three_run
     );
 
     // The provenance participates in the command identity. Reusing the key
