@@ -31,7 +31,7 @@ written only in this vocabulary.
 | Dimension | What it measures | How it is established |
 |---|---|---|
 | **Reasoning class** | Depth on novel, multi-constraint problems: `frontier` (best available judgment), `strong` (reliable on hard but bounded work), `mid` (competent on well-specified work), `floor` (cheap breadth, low trust) | Public benchmarks are a *screen*, never an admission: class is confirmed by seat-class trial (§6) |
-| **Context class** | Usable window under real seat load | Deterministic classes per the seat context/compaction policy; measured, not vendor-quoted |
+| **Context class** | Usable window under real seat load | Deterministic classes per the seat context/compaction policy — `lean` (128K) / `standard` (256K) / `large` (400K) / `deep` (512K) / `extended` (720K) / `native` (explicit escape hatch only); measured, not vendor-quoted. Per-seat recommendations: §2.6 |
 | **Vision** | Can it *judge pixels* — screenshots, layout, contrast, state | **Attested only**: a vendor "multimodal" claim or a null capability flag is not vision; a calibration receipt with real screenshot judgments is |
 | **Tool/agentic reliability** | Long tool chains, edit discipline, no drift, no fabricated tool results | Trial tickets with transcript audit |
 | **Verdict trust** | The audit-class trait: false-pass rate on seeded defects; does it assert clean sweeps that are not clean | Calibration with deliberately seeded defects (mutation-style); a model that misses a seeded P0, or asserts a false negative sweep, may work but may not judge |
@@ -124,6 +124,37 @@ route outside the chain walk for the truly exceptional case).
   Reviewer): inherit the caller's chain until given explicit chains, **except**
   independence binds inside the mechanism — the Research Judge never shares a
   researcher's actually-run model.
+
+### 2.6 Recommended context class per seat
+
+Classes are auto-compaction trigger targets, not model-window declarations —
+the runtime never overrides a model's physical window. A seat gets the
+smallest class that fits its evidence discipline: durable state belongs in the
+control plane, verdict evidence outside the transcript; chat history is not a
+database. `extended` and `native` always require an explicit work-profile,
+role-slot or authorized run override — a model may not promote itself because
+it judges the task hard.
+
+| Seat | Default class | Max automatic class | Rationale |
+|---|---|---|---|
+| TPM / Orchestrator | `lean` | `standard` | Scheduler/reconciliation state is durable in the control plane, not chat |
+| Advisor (every domain) | `lean` | `standard` | One bounded second opinion on a bounded evidence bundle |
+| Builder — chore | `lean` | `standard` | Narrow mechanical work |
+| Builder — standard / Prototype Build | `standard` | `deep` | Normal code-and-test surface |
+| Builder — high-stakes | `deep` | `extended` | Security, tenancy, migrations: the whole blast radius must fit |
+| Architect (Scope & ADR) | `deep` | `extended` | Cross-ticket decisions and integration surface |
+| LSA (epic architect) | `deep` | `extended` | The epic-wide narrative; the largest sustained context need in the fleet |
+| UX Research & Design | `deep` | `extended` | Design systems plus long intent documents |
+| QA / Verify (incl. UX browser Verify) | `standard` | `deep` | Preserve current defect evidence, not all exploration noise |
+| Spec Audit / Inspector / PR Gatekeeper / Manual Test Lead | `standard` | `deep` | Verdict evidence is durable outside the transcript |
+| PR-check (static) | `lean` | `standard` | One diff plus the owning module's checks |
+| Committee Seat A / Seat B / Judge | `standard` | `deep` | Each receives the bounded evidence bundle, never every source transcript |
+| Research mechanism / Analyst | `deep` | `extended` | Large source sets, only when the work profile declares them |
+| QA Bot (mechanism) | `lean` | `standard` | Snapshot evidence in, verdict out |
+
+When scoring a candidate model (§6), its *measured* usable window must cover
+the seat's **max automatic class**, not just the default — otherwise the seat
+cannot legally grow into its own ceiling under load.
 
 ## 3. Team blueprints — what each team is for
 
