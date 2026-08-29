@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 69;
+pub const SCHEMA_VERSION: i64 = 70;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -274,6 +274,11 @@ const MIGRATIONS: &[&str] = &[
     // beyond the ordinary two-round template, so every durable global round
     // field follows the scheduler's positive u8 domain.
     include_str!("../migrations/0069_global_committee_recovery_rounds.sql"),
+    // Schema v70. Reconcile deployments that observed the v69 generation from
+    // an intermediate build whose round checks admitted only round three. The
+    // rebuild is deliberately safe over both that partial projection and the
+    // published v69 projection, and restores the full positive u8 domain.
+    include_str!("../migrations/0070_reconcile_global_committee_rounds.sql"),
 ];
 
 const _: () = assert!(
