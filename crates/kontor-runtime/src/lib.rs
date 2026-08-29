@@ -52,8 +52,9 @@ pub use adapter::{
     ConsultationLaunchRequest, ConsultationMessageRequest, ConsultationRouteProvenance,
     ConsultationRouteSource, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
-    HostedSeatClaimRequest, HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck,
-    RuntimeAdapter, RuntimeError, RuntimeResult, ScopedSeatCredential,
+    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection, HostedSeatNativeState,
+    HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, RuntimeAdapter,
+    RuntimeError, RuntimeResult, ScopedSeatCredential,
 };
 pub use admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,

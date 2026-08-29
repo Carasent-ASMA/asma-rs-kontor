@@ -32,7 +32,8 @@ use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatInspectRequest, HostedSeatInspection, HostedSeatLaunchRequest,
+    HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatNativeState,
     HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
     RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
@@ -498,6 +499,8 @@ struct FakeState {
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Terminal hosted natives retained so retirement and recovery are replayable.
+    archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Actual routes of already-running sessions made claimable by a test.
     hosted_claim_routes: BTreeMap<ExternalId, ModelRung>,
     /// Native id -> (container id, provider session id, visible title).
@@ -968,6 +971,7 @@ impl ScriptedFakeRuntime {
                 containers: BTreeMap::new(),
                 consultations: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                archived_hosted_seats: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
@@ -1353,7 +1357,27 @@ impl ScriptedFakeRuntime {
     /// durable Kontor identity. This is a test-only reproduction of a runtime
     /// that no longer returns a persisted native session.
     pub fn forget_seat(&self, native_id: &ExternalId) {
-        self.lock().seat_titles.remove(native_id);
+        let mut state = self.lock();
+        state.seat_titles.remove(native_id);
+        state
+            .hosted_seats
+            .retain(|_, seat| &seat.identity.native_id != native_id);
+        state
+            .archived_hosted_seats
+            .retain(|_, seat| &seat.identity.native_id != native_id);
+    }
+
+    /// Reproduce a native archive that Kontor has not yet reconciled into its
+    /// persisted hosted-seat route.
+    pub fn archive_hosted_seat(&self, native_id: &ExternalId) {
+        let mut state = self.lock();
+        let found = state.hosted_seats.iter().find_map(|(binding, seat)| {
+            (&seat.identity.native_id == native_id).then_some((*binding, seat.clone()))
+        });
+        if let Some((binding, seat)) = found {
+            state.hosted_seats.remove(&binding);
+            state.archived_hosted_seats.insert(binding, seat);
+        }
     }
 
     /// Everything the fake has been asked to do, in order.
@@ -2151,6 +2175,39 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(outcome)
     }
 
+    async fn inspect_hosted_seat(
+        &self,
+        request: &HostedSeatInspectRequest,
+    ) -> RuntimeResult<HostedSeatInspection> {
+        let state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        if request.identity.runtime_kind != state.runtime_kind
+            || request.identity.host != state.host
+            || request.identity.generation > state.generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the hosted topology predecessor belongs to another runtime",
+            });
+        }
+        let disposition = match state.hosted_seats.get(&request.seat_binding_id) {
+            Some(held) if held.identity == request.identity => HostedSeatNativeState::Live,
+            Some(_) => return Err(RuntimeError::CorrelationFailed),
+            None => match state.archived_hosted_seats.get(&request.seat_binding_id) {
+                Some(held) if held.identity == request.identity => HostedSeatNativeState::Archived,
+                Some(_) => return Err(RuntimeError::CorrelationFailed),
+                None => HostedSeatNativeState::Missing,
+            },
+        };
+        Ok(HostedSeatInspection {
+            identity: request.identity.clone(),
+            state: disposition,
+            observed_at: request.requested_at,
+        })
+    }
+
     async fn preview_hosted_seat_claim(
         &self,
         request: &HostedSeatClaimRequest,
@@ -2360,20 +2417,25 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         request: &HostedSeatRetireRequest,
     ) -> RuntimeResult<HostedSeatRetireOutcome> {
         let mut state = self.lock();
-        let held =
+        if let Some(held) = state.hosted_seats.get(&request.seat_binding_id) {
+            if held.identity != request.identity {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            let held = held.clone();
+            state.hosted_seats.remove(&request.seat_binding_id);
             state
-                .hosted_seats
-                .get(&request.seat_binding_id)
-                .ok_or(RuntimeError::StaleBinding {
-                    rule: "the hosted topology seat is absent",
-                })?;
-        if held.identity != request.identity {
+                .archived_hosted_seats
+                .insert(request.seat_binding_id, held);
+            state
+                .calls
+                .push(AdapterCall::RetireHostedSeat(request.seat_binding_id));
+        } else if state
+            .archived_hosted_seats
+            .get(&request.seat_binding_id)
+            .is_some_and(|held| held.identity != request.identity)
+        {
             return Err(RuntimeError::CorrelationFailed);
         }
-        state.hosted_seats.remove(&request.seat_binding_id);
-        state
-            .calls
-            .push(AdapterCall::RetireHostedSeat(request.seat_binding_id));
         Ok(HostedSeatRetireOutcome {
             identity: request.identity.clone(),
             archived_at: request.requested_at,
@@ -3094,6 +3156,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 mod retitle_seat_generation_tests {
     use super::*;
     use crate::capability::{RuntimeLimits, TrustGrade};
+    use kontor_core::spec::{ModelRef, ProviderRef};
 
     fn capabilities() -> RuntimeCapabilities {
         RuntimeCapabilities {
@@ -3188,5 +3251,90 @@ mod retitle_seat_generation_tests {
             1,
             "the future-generation refusal performs no mutation"
         );
+    }
+
+    #[tokio::test]
+    async fn hosted_seat_inspection_distinguishes_live_archived_and_missing_without_effects() {
+        let runtime = ScriptedFakeRuntime::new(capabilities());
+        let seat_binding_id = SeatBindingId::generate();
+        let identity = runtime
+            .lock()
+            .identity(ExternalId::parse("native-hosted-seat-inspection").expect("native id"));
+        runtime.lock().hosted_seats.insert(
+            seat_binding_id,
+            ConsultationLaunchOutcome {
+                identity: identity.clone(),
+                provider_session_id: None,
+                observed_at: "2026-08-20T12:00:00Z"
+                    .parse::<Timestamp>()
+                    .expect("timestamp"),
+                created: true,
+            },
+        );
+        let request = HostedSeatInspectRequest {
+            seat_binding_id,
+            identity: identity.clone(),
+            model_rung: ModelRung {
+                provider: ProviderRef("fake".to_owned()),
+                model: ModelRef("fake-model".to_owned()),
+                effort: None,
+            },
+            requested_at: "2026-08-20T12:01:00Z"
+                .parse::<Timestamp>()
+                .expect("timestamp"),
+        };
+
+        assert_eq!(
+            runtime
+                .inspect_hosted_seat(&request)
+                .await
+                .expect("live exact native is inspectable")
+                .state,
+            HostedSeatNativeState::Live
+        );
+
+        runtime.archive_hosted_seat(&identity.native_id);
+        assert_eq!(
+            runtime
+                .inspect_hosted_seat(&request)
+                .await
+                .expect("archived exact native is inspectable")
+                .state,
+            HostedSeatNativeState::Archived
+        );
+        runtime
+            .retire_hosted_seat(&HostedSeatRetireRequest {
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                model_rung: request.model_rung.clone(),
+                requested_at: request.requested_at,
+            })
+            .await
+            .expect("retirement of an archived native is replay-safe");
+        assert!(runtime.calls().iter().all(
+            |call| !matches!(call, AdapterCall::RetireHostedSeat(id) if *id == seat_binding_id)
+        ));
+
+        runtime.forget_seat(&identity.native_id);
+        assert_eq!(
+            runtime
+                .inspect_hosted_seat(&request)
+                .await
+                .expect("an exact absent native is a successful census result")
+                .state,
+            HostedSeatNativeState::Missing
+        );
+        runtime
+            .retire_hosted_seat(&HostedSeatRetireRequest {
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                model_rung: request.model_rung.clone(),
+                requested_at: request.requested_at,
+            })
+            .await
+            .expect("retirement of a missing native is replay-safe");
+        assert!(runtime.calls().iter().all(
+            |call| !matches!(call, AdapterCall::RetireHostedSeat(id) if *id == seat_binding_id)
+        ));
     }
 }

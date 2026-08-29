@@ -184,8 +184,8 @@ use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationFallbackDisposition, ConsultationLaunchRequest,
     ConsultationRouteProvenance, ConsultationRouteSource, ConsultationSeatRetireRequest,
     HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatRetireRequest, RetitleSeatRequest,
-    RuntimeAdapter, RuntimeError,
+    HostedSeatInspectRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
+    HostedSeatRetireRequest, RetitleSeatRequest, RuntimeAdapter, RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -432,7 +432,15 @@ struct CoreTeamRoutePlan {
     predecessor: StoredHostedTopologySeat,
     successor: Option<StoredHostedTopologySeat>,
     desired: ModelRung,
+    stale_native_recovery: bool,
     preview_hash: ContentHash,
+}
+
+impl CoreTeamRoutePlan {
+    fn needs_native_replacement(&self) -> bool {
+        self.successor.is_none()
+            && (self.predecessor.model_rung != self.desired || self.stale_native_recovery)
+    }
 }
 
 struct CoreTeamSeatClaimPlan {
@@ -4507,7 +4515,7 @@ impl Services {
         })
     }
 
-    fn core_team_route_plan(
+    async fn core_team_route_plan(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
@@ -4602,6 +4610,32 @@ impl Services {
             }
             (predecessor, Some(active))
         };
+        let native_is_live = if successor.is_some() {
+            true
+        } else {
+            let adapter = state
+                .runtimes()
+                .get(&predecessor.native_identity.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the hosted-seat runtime is not configured in this daemon",
+                    )
+                })?;
+            adapter
+                .inspect_hosted_seat(&HostedSeatInspectRequest {
+                    seat_binding_id: binding.id,
+                    identity: predecessor.native_identity.clone(),
+                    model_rung: predecessor.model_rung.clone(),
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                .state
+                .is_live()
+        };
+        let stale_native_recovery =
+            predecessor.model_rung == desired && (successor.is_some() || !native_is_live);
         let runtime_kind = self.node_runtime_kind()?;
         let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
             self.deny(
@@ -4617,7 +4651,7 @@ impl Services {
                 },
             ));
         }
-        let preview_hash = self.preview_hash(&serde_json::json!({
+        let mut preview_document = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_route_correction",
             "project": project_id.to_string(),
@@ -4632,7 +4666,11 @@ impl Services {
                 "model": predecessor.model_rung,
             },
             "desired": desired,
-        }))?;
+        });
+        if stale_native_recovery {
+            preview_document["stale_native_recovery"] = serde_json::Value::Bool(true);
+        }
+        let preview_hash = self.preview_hash(&preview_document)?;
         Ok(CoreTeamRoutePlan {
             epic,
             roster,
@@ -4640,6 +4678,7 @@ impl Services {
             predecessor,
             successor,
             desired,
+            stale_native_recovery,
             preview_hash,
         })
     }
@@ -6486,29 +6525,68 @@ impl Services {
             .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
             .is_some();
 
-        // The runtime is read back through the node's stored container binding,
-        // which is the only native identity Kontor holds for this seat. A seat
-        // whose node was never placed has nothing to observe, and saying so is
-        // the honest answer — not an empty reading a caller would read as "the
-        // runtime replied and found nothing".
+        // A hosted Core Team seat has its own persisted native identity, distinct
+        // from the control-plane container. Attention must inspect that exact
+        // native or an archived/missing worker would be falsely refreshed merely
+        // because its container remains live.
         let container = state
             .with_store(|store| {
                 store.get_topology_node_container(project_id, seat.topology_node_id)
             })
             .map_err(|error| self.refuse(&error))?;
-        let observed = container.as_ref().map(|binding| ObservedBindingDto {
-            runtime_kind: binding.identity.runtime_kind.clone(),
-            native_id: binding.identity.native_id.clone(),
-            // The four-part native identity carries no display name; the
-            // container's own name is not something Kontor stores, and
-            // inventing one from the id would be a second answer.
-            native_name: None,
-            cwd: binding
-                .canonical_cwd
-                .as_ref()
-                .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok()),
-            observed_at: binding.last_readback_at,
-        });
+        let hosted = if act == SeatAct::Observe && seat.team_run_id.is_none() {
+            state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+        } else {
+            None
+        };
+        let (observed, readback) = if let Some(hosted) = hosted {
+            let adapter = state
+                .runtimes()
+                .get(&hosted.native_identity.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the hosted-seat runtime is not configured in this daemon",
+                    )
+                })?;
+            let inspection = adapter
+                .inspect_hosted_seat(&HostedSeatInspectRequest {
+                    seat_binding_id,
+                    identity: hosted.native_identity.clone(),
+                    model_rung: hosted.model_rung,
+                    requested_at: now,
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let live = inspection.state.is_live();
+            let observed = live.then(|| ObservedBindingDto {
+                runtime_kind: inspection.identity.runtime_kind,
+                native_id: inspection.identity.native_id,
+                native_name: None,
+                cwd: container.as_ref().and_then(|binding| {
+                    binding
+                        .canonical_cwd
+                        .as_ref()
+                        .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok())
+                }),
+                observed_at: inspection.observed_at,
+            });
+            (observed, live)
+        } else {
+            let observed = container.as_ref().map(|binding| ObservedBindingDto {
+                runtime_kind: binding.identity.runtime_kind.clone(),
+                native_id: binding.identity.native_id.clone(),
+                native_name: None,
+                cwd: binding
+                    .canonical_cwd
+                    .as_ref()
+                    .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok()),
+                observed_at: binding.last_readback_at,
+            });
+            (observed, container.is_some())
+        };
 
         let seat = if replayed {
             seat
@@ -6518,7 +6596,7 @@ impl Services {
                     store.observe_seat_binding(
                         project_id,
                         seat_binding_id,
-                        &act.observation(container.is_some(), now),
+                        &act.observation(readback, now),
                         now,
                     )
                 })
@@ -14813,14 +14891,16 @@ impl ApplicationOperations for Services {
         })
     }
 
-    fn preview_core_team_route(
+    async fn preview_core_team_route(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
         request: &CoreTeamRoutePreviewRequest,
     ) -> Result<CoreTeamRoutePreviewDto, ApiError> {
         let state = self.state()?;
-        let plan = self.core_team_route_plan(project_id, epic_id, request)?;
+        let plan = self
+            .core_team_route_plan(project_id, epic_id, request)
+            .await?;
         Ok(CoreTeamRoutePreviewDto {
             realm_id: state.realm_id(),
             project_id,
@@ -14829,8 +14909,7 @@ impl ApplicationOperations for Services {
             predecessor_native_id: plan.predecessor.native_identity.native_id.clone(),
             current_model_route: runtime_model_route_dto(&plan.predecessor.model_rung),
             desired_model_route: runtime_model_route_dto(&plan.desired),
-            would_replace_native: plan.successor.is_none()
-                && plan.predecessor.model_rung != plan.desired,
+            would_replace_native: plan.needs_native_replacement(),
             preview_hash: plan.preview_hash,
             snapshot_cursor: self.cursor()?,
         })
@@ -14844,7 +14923,9 @@ impl ApplicationOperations for Services {
         request: &CoreTeamRouteApplyRequest,
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
         let state = self.state()?;
-        let plan = self.core_team_route_plan(project_id, epic_id, &request.correction())?;
+        let plan = self
+            .core_team_route_plan(project_id, epic_id, &request.correction())
+            .await?;
         if plan.preview_hash != request.preview_hash {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -14865,9 +14946,10 @@ impl ApplicationOperations for Services {
         };
         let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
 
+        let replaced_native = plan.needs_native_replacement();
         let successor = if let Some(successor) = plan.successor.clone() {
             successor
-        } else if plan.predecessor.model_rung == plan.desired {
+        } else if !replaced_native {
             plan.predecessor.clone()
         } else {
             let runtime_kind = plan.predecessor.native_identity.runtime_kind.clone();
@@ -15018,7 +15100,7 @@ impl ApplicationOperations for Services {
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
-                applied: if replayed || plan.predecessor.model_rung == plan.desired {
+                applied: if replayed || !replaced_native {
                     AppliedDto::Unchanged
                 } else {
                     AppliedDto::Updated

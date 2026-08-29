@@ -507,6 +507,50 @@ pub struct HostedSeatMessageOutcome {
     pub accepted_at: Timestamp,
 }
 
+/// What a fresh exact native read says about one persisted hosted seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedSeatNativeState {
+    /// The exact native session still exists and is driveable.
+    Live,
+    /// The exact native session exists only as terminal archive evidence.
+    Archived,
+    /// A successful exact and include-archived census found no such native id.
+    Missing,
+}
+
+impl HostedSeatNativeState {
+    /// Whether the persisted native occupant may still receive work.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Live)
+    }
+}
+
+/// Address for a fresh read of one exact persisted hosted native.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatInspectRequest {
+    /// Logical persistent SeatBinding whose native occupant is being checked.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact persisted native identity; names and directory position are never
+    /// accepted as substitutes.
+    pub identity: NativeRuntimeIdentity,
+    /// Persisted route that a live native must still report.
+    pub model_rung: ModelRung,
+    /// Inspection instant.
+    pub requested_at: Timestamp,
+}
+
+/// Fresh runtime inspection of one exact persistent Core Team native session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatInspection {
+    /// The unchanged persisted identity that was inspected.
+    pub identity: NativeRuntimeIdentity,
+    /// Authoritative native disposition at the inspection instant.
+    pub state: HostedSeatNativeState,
+    /// When the runtime census was taken.
+    pub observed_at: Timestamp,
+}
+
 /// Retire the exact native session currently filling one persistent Core Team
 /// SeatBinding before a provider/model route correction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -818,6 +862,20 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Inspect the exact native session persisted for a hosted topology seat.
+    ///
+    /// Missing is a successful authoritative census result, not a transport
+    /// failure. Implementations must still refuse an identity that belongs to
+    /// another runtime or a found native whose seat correlation has drifted.
+    async fn inspect_hosted_seat(
+        &self,
+        _request: &HostedSeatInspectRequest,
+    ) -> RuntimeResult<HostedSeatInspection> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Inspect,
         })
     }
 
