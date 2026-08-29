@@ -77,6 +77,7 @@ const CLAUDE_AUTH_FILE: &str = ".credentials.json";
 /// SHA-256 digest of `CLAUDE_CONFIG_DIR`. The unsuffixed service belongs to the
 /// default home; custom homes use the suffix, which is what lets two logins
 /// coexist in one macOS keychain.
+#[cfg(any(target_os = "macos", test))]
 const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 /// The beta the Claude OAuth usage endpoint requires. Omitting it is a 4xx.
@@ -271,6 +272,7 @@ fn token_from_document(bytes: &[u8], path: &[&str]) -> Result<SecretString, Usag
 }
 
 /// The keychain service Claude Code derives for one custom config home.
+#[cfg(any(target_os = "macos", test))]
 fn claude_keychain_service(home: &Path) -> Result<String, UsageFailure> {
     let path = home.to_str().ok_or(UsageFailure::NoCredential)?;
     let digest = ContentHash::of(path.as_bytes());
