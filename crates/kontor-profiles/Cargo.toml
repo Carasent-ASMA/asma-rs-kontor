@@ -18,7 +18,7 @@ workspace = true
 # Canonicalization and hashing come from `kontor-core`'s `CanonicalDocument`,
 # so this crate needs no direct `sha2`/`hex` edge: a second hashing path would
 # be a second way for the same document to get two digests.
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
-kontor-teams = { path = "../kontor-teams", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+kontor-teams = { path = "../kontor-teams", version = "=0.2.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }

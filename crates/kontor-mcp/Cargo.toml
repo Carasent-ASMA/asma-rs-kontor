@@ -27,7 +27,7 @@ clap = { workspace = true }
 # hex): depending on it gives this crate the real parsers instead of hand-rolled
 # copies, and gives it no store, no scheduler and no runtime adapter. It is the
 # only Kontor crate this one links, which is what the dependency audit asserts.
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 # The loopback transport. `default-features = false` upstream, so there is no
 # native-tls; redirects and proxies are disabled at the builder. `stream` is what
 # makes an SSE body readable as it arrives rather than only when it ends.

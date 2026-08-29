@@ -14,14 +14,14 @@ workspace = true
 [dependencies]
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
-kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 # KON-MVP-07's admission and resolver, reused rather than reimplemented: this
 # adapter owns no credential resolution of its own. It never sees a secret value
 # — `ResolvedAccountEnvironment::apply` writes straight into the child's
 # environment block — and the one value it reads back is the config home it is
 # about to hand the child, so it can verify the non-secret marker inside it.
-kontor-accounts = { path = "../kontor-accounts", version = "=0.2.0" }
+kontor-accounts = { path = "../kontor-accounts", version = "=0.2.1" }
 async-trait = { workspace = true }
 # The usage probe's transport. Already pinned at the workspace root and used by
 # other members, so this adds a member edge rather than a new dependency: the
@@ -48,7 +48,7 @@ uuid = { workspace = true }
 # The capability-aware shared contract, so this adapter is judged by the same
 # assertions as the scripted fake and its sibling adapters rather than by a copy
 # of them. The dependency runs test-crate -> adapter only in this direction.
-kontor-tests-contract = { path = "../../tests/contract", version = "=0.2.0" }
+kontor-tests-contract = { path = "../../tests/contract", version = "=0.2.1" }
 # The suite resolves its two fixture config homes through the *real*
 # `AccountResolver`, which needs a `KeychainBackend` implementation, which is
 # stated in `SecretString`. Stubbing the resolved environment instead would have

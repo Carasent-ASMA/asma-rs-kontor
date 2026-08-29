@@ -12,14 +12,14 @@ description = "Ready-set planning, durable leases, budgets and explanations."
 workspace = true
 
 [dependencies]
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 # KON-MVP-09: the module-isolation rule is decided in `kontor-policy` and called
 # from here rather than restated, so a scheduler's answer and a guardrail's answer
 # cannot drift apart.
-kontor-policy = { path = "../kontor-policy", version = "=0.2.0" }
+kontor-policy = { path = "../kontor-policy", version = "=0.2.1" }
 # The runtime capability, trust-grade and limit vocabulary a launch is admitted
 # against. This crate consumes those values; it never contacts a runtime.
-kontor-runtime = { path = "../kontor-runtime", version = "=0.2.0" }
+kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

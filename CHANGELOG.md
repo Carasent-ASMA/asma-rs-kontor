@@ -7,6 +7,20 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-30
+
+### Fixed
+
+- Recovered stale or missing hosted Core Team natives on their governed model
+  route while preserving the stable logical seat and fenced native history.
+- Extended durable global Committee rounds through the scheduler's full
+  positive round domain so a needs-human recovery can enter round three.
+- Persisted exact-occupancy Completion-wake delivery, canonical timeline
+  acknowledgement, restart reconciliation, and newest-projection handover to
+  a replacement TPM without duplicate native effects.
+- Refreshed the console's development-only OpenAPI dependency chain to consume
+  the patched `js-yaml` release.
+
 ## [0.2.0] - 2026-08-26
 
 ### Added
@@ -30,5 +44,6 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Marked calendar exposure, post-delivery profile packs, automatic stale-evidence
   rejection and the supervision engine as unfinished capabilities.
 
-[Unreleased]: https://github.com/Carasent-ASMA/asma-rs-kontor/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Carasent-ASMA/asma-rs-kontor/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Carasent-ASMA/asma-rs-kontor/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Carasent-ASMA/asma-rs-kontor/releases/tag/v0.2.0

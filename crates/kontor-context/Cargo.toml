@@ -15,11 +15,11 @@ workspace = true
 # Canonical JSON, SHA-256, realm envelopes, sensitive scanning and every id are
 # `kontor-core`'s; this crate never recreates them, so the scaffold's direct
 # sha2/hex/uuid/thiserror pins are gone.
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 # Integration tests link the crate, not its dependencies.
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 serde_json = { workspace = true }

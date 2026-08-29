@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-accounts"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "jiff",
  "keyring",
@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-calendar"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "icalendar",
  "jiff",
@@ -3103,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -3122,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-context"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "kontor-core",
  "serde",
@@ -3131,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "jiff",
@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-daemon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-intake"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "kontor-core",
@@ -3209,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-jira"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -3228,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-policy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "kontor-core",
  "serde",
@@ -3258,7 +3258,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-profiles"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "kontor-core",
  "kontor-teams",
@@ -3268,7 +3268,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "kontor-core",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-runtime-ao"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "kontor-core",
@@ -3296,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-runtime-codex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "kontor-accounts",
@@ -3315,7 +3315,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-runtime-paseo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-scheduler"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "jiff",
  "kontor-core",
@@ -3350,7 +3350,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "jiff",
  "kontor-calendar",
@@ -3370,7 +3370,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-teams"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "kontor-context",
@@ -3383,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-tests-contract"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "insta",
@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "kontor-tests-e2e"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "axum",
