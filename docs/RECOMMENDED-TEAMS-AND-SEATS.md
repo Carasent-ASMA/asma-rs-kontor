@@ -93,6 +93,32 @@ table counts capabilities, not exclusive slots. A current working
 instantiation of this sizing (six budget domains, ten models) lives in the
 deployment repo referenced above; treat it as an existence proof, not a quota.
 
+**Within a class, diversity is counted in vendors, not in models.** Two
+sibling models from the same vendor count as *one* toward every floor in the
+table above, for three reasons that compound:
+
+1. **Availability correlation.** Siblings share a budget domain and usually a
+   platform — one billing lapse, quota event or outage removes all of them in
+   the same instant, which is exactly the event the floors exist to survive.
+2. **Collision amplification.** The vendor-collision rule (§4.4) skips by
+   *vendor*, not by model: a class stocked entirely with one vendor's siblings
+   is erased from a review chain by a single collision with the builder's
+   vendor, no matter how many models it contains.
+3. **Behavioral correlation.** Same-vendor models share training lineage,
+   alignment style, tokenizer and blind spots, so their *errors* correlate —
+   they tend to miss the same defects and accept the same bad arguments. A
+   review or committee seat is valuable precisely for its decorrelation:
+   agreement between two siblings is weak evidence, agreement across vendors
+   is the signal. This is why committee seats and judges should never be
+   siblings of each other or of the seat under review, even when the letter of
+   the collision rule would allow a same-vendor different-model pairing.
+
+Holding several models from one vendor is still legitimate — as cost/latency
+tiers inside a class for worker seats (a frontier and a fast variant from the
+same house), and as quota headroom. They add **capacity**, never **coverage**.
+Rule of thumb: at most two models per vendor within a class, and never satisfy
+a class's coverage floor from a single vendor.
+
 ## 2. Recommended seats
 
 A **seat** is a role slot in a team run: stable id, one non-terminal session at
