@@ -57,6 +57,42 @@ Two axes deserve emphasis because they are independent and both matter:
 against outage. A chain diversified on one can still be concentrated on the
 other. Every chain must state its known correlations rather than hide them.
 
+### 1.1 Recommended fleet size — how many vendors, how many models
+
+If you can run multiple vendors and multiple models (and today almost everyone
+can), size the fleet from the rules it must satisfy rather than from taste.
+The minimums below are *derived*, not aesthetic: a four-seat team needs a
+different vendor on every rung 1 (§4.3), every chain needs four distinct
+budgets on at least three platforms (§4.2), and verdict seats must survive the
+collision rule (§4.4) — an audit excluded from the builder's vendor must still
+have an admissible model left.
+
+| Resource | Minimum viable | Recommended | Why |
+|---|---|---|---|
+| **Budget domains ("vendors")** | 4 | **5–6** | 4 is forced by team composition + chain grammar; the 5th and 6th buy outage slack — with exactly 4, one vendor outage plus one collision skip can leave a verdict seat below rung 2, parking the work. (The v4 review recorded precisely this as an accepted residual on its own Judge chain.) |
+| **Platforms** | 3 | **4+** | ≥3 per chain is the grammar; a 4th decorrelates the chains that share a platform behind distinct budgets |
+| **Models total** | ~7 | **8–12** | Enough to cover every class below twice; capped by what your periodic model review can genuinely re-score — an uncalibrated model in the catalog is a liability, not capacity |
+
+Per capability class, hold **coverage**, not just counts — the invariant is:
+*every capability class that any mandatory seat requires at rung 1 must have at
+least two admissible models on two different budget domains (and ideally two
+platforms), so that no single outage, quota event or collision skip removes the
+class from the fleet.*
+
+| Capability class | Hold at least | Why |
+|---|---|---|
+| `frontier` reasoning | **2, on different budget domains** | Final gates and judges need it, and the self-review ban means a committee judging frontier output needs a *different* frontier model |
+| `strong` reasoning | **2** | Architect/audit fallback rungs; collision skips land here |
+| Cost-elastic `mid` (fast/flash class) | **2–3** | The volume seats (build, verify, pr-check) live here; this is where cheaper weekly arrivals usually slot first |
+| `floor` (free/near-free) | 0–2, floor rungs only | Optional; mind shared account caps on free tiers — a per-account daily cap shared by four seats is one budget, not four |
+| **Vision-attested** | **2, on different budget domains** | Browser-verifying seats need one at rung 1 *and* an admissible fallback that isn't the same vendor |
+| Very-large-context (`extended`-capable) | **1+** | LSA / research / high-stakes build ceilings |
+
+Overlap is expected — one model may be both `strong` and vision-attested; the
+table counts capabilities, not exclusive slots. A current working
+instantiation of this sizing (six budget domains, ten models) lives in the
+deployment repo referenced above; treat it as an existence proof, not a quota.
+
 ## 2. Recommended seats
 
 A **seat** is a role slot in a team run: stable id, one non-terminal session at
