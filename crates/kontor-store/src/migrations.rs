@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 68;
+pub const SCHEMA_VERSION: i64 = 69;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -270,6 +270,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v68. A failed pre-native Committee launch may be rerouted under
     // immutable Admin-authorized lineage without changing logical identity.
     include_str!("../migrations/0068_unmaterialized_consultation_seat_reroutes.sql"),
+    // Schema v69. Governed needs-human recovery can produce Committee rounds
+    // beyond the ordinary two-round template, so every durable global round
+    // field follows the scheduler's positive u8 domain.
+    include_str!("../migrations/0069_global_committee_recovery_rounds.sql"),
 ];
 
 const _: () = assert!(

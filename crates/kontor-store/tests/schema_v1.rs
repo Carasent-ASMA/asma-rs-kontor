@@ -470,10 +470,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v67 adds immutable exact-account provider-report freshness
-    // evidence beside the mutable quota projection; v68 adds immutable
-    // native-less materialization reroute lineage and receipt authority.
-    assert_eq!(SCHEMA_VERSION, 68);
+    // side effect. v68 adds immutable native-less materialization reroute
+    // lineage and receipt authority; v69 widens global Committee recovery
+    // rounds to the scheduler's positive u8 domain.
+    assert_eq!(SCHEMA_VERSION, 69);
 }
 
 #[test]
@@ -915,6 +915,276 @@ fn v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_aut
             ],
         )
         .expect("the distinct reroute command kind is accepted");
+}
+
+#[test]
+fn v69_preserves_global_round_rows_and_opens_the_positive_u8_domain() {
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000001";
+    const EPIC: &str = "0193f000-0000-7000-8000-000000000002";
+    const RUN_TWO: &str = "0193f000-0000-7000-8000-000000000003";
+    const RUN_THREE: &str = "0193f000-0000-7000-8000-000000000004";
+    const CALLER: &str = "0193f000-0000-7000-8000-000000000005";
+    const NODE_TWO: &str = "0193f000-0000-7000-8000-000000000006";
+    const NODE_THREE: &str = "0193f000-0000-7000-8000-000000000007";
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id),
+                 UNIQUE (project_id, id)
+             ) STRICT;
+             CREATE TABLE consultation_profile_revisions (
+                 project_id TEXT NOT NULL, family TEXT NOT NULL,
+                 profile_id TEXT NOT NULL, version INTEGER NOT NULL,
+                 PRIMARY KEY (project_id, family, profile_id, version)
+             ) STRICT;
+             CREATE TABLE topology_nodes (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE seat_bindings (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE consultation_runs (
+                 run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                 mini_project_id TEXT NOT NULL, family TEXT NOT NULL,
+                 profile_id TEXT NOT NULL, profile_version INTEGER NOT NULL,
+                 definition_hash TEXT NOT NULL, question TEXT NOT NULL,
+                 question_hash TEXT NOT NULL, context TEXT NOT NULL,
+                 context_hash TEXT NOT NULL, caller_seat_binding_id TEXT NOT NULL,
+                 topology_node_id TEXT NOT NULL UNIQUE,
+                 invoke_key TEXT NOT NULL UNIQUE, invoke_intent_hash TEXT NOT NULL,
+                 state TEXT NOT NULL, round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 2),
+                 result TEXT NULL, result_hash TEXT NULL, revision INTEGER NOT NULL,
+                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, settled_at TEXT NULL,
+                 UNIQUE (project_id, run_id)
+             ) STRICT;
+             CREATE INDEX ix_consultation_runs_epic
+                 ON consultation_runs(project_id, mini_project_id, family, created_at, run_id);
+             CREATE TRIGGER consultation_run_inputs_are_frozen
+             BEFORE UPDATE ON consultation_runs
+             WHEN OLD.context <> NEW.context
+             BEGIN SELECT RAISE(ABORT, 'old frozen run'); END;
+             CREATE TABLE consultation_seats (
+                 run_id TEXT NOT NULL, role_slot_id TEXT NOT NULL,
+                 seat_binding_id TEXT NOT NULL, native_id TEXT NULL,
+                 PRIMARY KEY (run_id, role_slot_id),
+                 FOREIGN KEY (run_id) REFERENCES consultation_runs(run_id)
+             ) STRICT;
+             CREATE TABLE advisor_advice_artifacts (
+                 advisor_run_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                 seat_binding_id TEXT NOT NULL
+             ) STRICT;
+             CREATE TRIGGER advisor_advice_belongs_to_its_attested_seat
+             BEFORE INSERT ON advisor_advice_artifacts
+             WHEN NOT EXISTS (
+                 SELECT 1 FROM consultation_runs AS run
+                 JOIN consultation_seats AS seat ON seat.run_id = run.run_id
+                 WHERE run.project_id = NEW.project_id
+                   AND run.run_id = NEW.advisor_run_id
+                   AND run.family = 'advisor'
+                   AND seat.seat_binding_id = NEW.seat_binding_id
+                   AND seat.native_id IS NOT NULL
+             )
+             BEGIN SELECT RAISE(ABORT, 'old Advisor attestation guard'); END;
+             CREATE TABLE committee_findings (
+                 committee_run_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                 round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 2),
+                 role_slot_id TEXT NOT NULL, role TEXT NOT NULL, verdict TEXT NOT NULL,
+                 evidence_complete INTEGER NOT NULL, document TEXT NOT NULL,
+                 document_hash TEXT NOT NULL, recorded_at TEXT NOT NULL,
+                 PRIMARY KEY (committee_run_id, round, role_slot_id)
+             ) STRICT;
+             CREATE TRIGGER committee_findings_are_immutable
+             BEFORE UPDATE ON committee_findings
+             BEGIN SELECT RAISE(ABORT, 'old immutable finding'); END;
+             CREATE TRIGGER committee_findings_are_permanent
+             BEFORE DELETE ON committee_findings
+             BEGIN SELECT RAISE(ABORT, 'old permanent finding'); END;
+             CREATE TABLE epic_completion_remediation_command_claims (
+                 project_id TEXT NOT NULL, mini_project_id TEXT NOT NULL,
+                 round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 2),
+                 action TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+                 intent_hash TEXT NOT NULL, effect_revision INTEGER NULL,
+                 claimed_at TEXT NOT NULL,
+                 PRIMARY KEY (project_id, mini_project_id, round, action)
+             ) STRICT;
+             CREATE TRIGGER epic_completion_remediation_command_claims_are_immutable
+             BEFORE UPDATE ON epic_completion_remediation_command_claims
+             BEGIN SELECT RAISE(ABORT, 'old immutable claim'); END;
+             CREATE TRIGGER epic_completion_remediation_command_claims_are_permanent
+             BEFORE DELETE ON epic_completion_remediation_command_claims
+             BEGIN SELECT RAISE(ABORT, 'old permanent claim'); END;
+             CREATE TABLE run_children (
+                 project_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                 FOREIGN KEY (project_id, run_id)
+                     REFERENCES consultation_runs(project_id, run_id)
+             ) STRICT;",
+        )
+        .expect("the v68 round-bearing schema is reproduced");
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO projects VALUES ('{PROJECT}');
+             INSERT INTO mini_projects VALUES ('{EPIC}', '{PROJECT}');
+             INSERT INTO consultation_profile_revisions
+                 VALUES ('{PROJECT}', 'committee', 'independent-review', 1);
+             INSERT INTO topology_nodes VALUES ('{NODE_TWO}'), ('{NODE_THREE}');
+             INSERT INTO seat_bindings VALUES ('{CALLER}');
+             INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash,
+                  revision, created_at, updated_at, settled_at)
+             VALUES ('{RUN_TWO}', '{PROJECT}', '{EPIC}', 'committee',
+                     'independent-review', 1, '{HASH_A}', 'round two', '{HASH_A}',
+                     '{{}}', '{HASH_A}', '{CALLER}', '{NODE_TWO}', 'invoke-two',
+                     '{HASH_A}', 'running', 2, NULL, NULL, 1,
+                     '2026-08-29T20:00:00Z', '2026-08-29T20:00:00Z', NULL);
+             INSERT INTO consultation_seats
+                 (run_id, role_slot_id, seat_binding_id, native_id)
+                 VALUES ('{RUN_TWO}', 'reviewer-a', '{CALLER}', 'native-two');
+             INSERT INTO committee_findings
+                 VALUES ('{RUN_TWO}', '{PROJECT}', 2, 'reviewer-a', 'reviewer',
+                         'non_compliant', 1, '{{}}', '{HASH_A}', '2026-08-29T20:01:00Z');
+             INSERT INTO epic_completion_remediation_command_claims
+                 VALUES ('{PROJECT}', '{EPIC}', 2, 'tpm_route', 'route-two',
+                         '{HASH_A}', 7, '2026-08-29T20:02:00Z');
+             INSERT INTO run_children VALUES ('{PROJECT}', '{RUN_TWO}');"
+        ))
+        .expect("the published round-two rows are seeded");
+
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys disable around the table rebuilds");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0069_global_committee_recovery_rounds.sql"
+        ))
+        .expect("the v69 round-domain migration applies");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys re-enable after the isolated rebuild");
+
+    let foreign_key_violations: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .expect("the foreign-key graph is readable");
+    assert_eq!(foreign_key_violations, 0);
+    let retained: (i64, i64, i64, i64) = connection
+        .query_row(
+            "SELECT
+                 (SELECT count(*) FROM consultation_runs WHERE round = 2),
+                 (SELECT count(*) FROM committee_findings WHERE round = 2),
+                 (SELECT count(*) FROM epic_completion_remediation_command_claims WHERE round = 2),
+                 (SELECT count(*) FROM run_children WHERE run_id = ?1)",
+            [RUN_TWO],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the migrated rows are readable");
+    assert_eq!(retained, (1, 1, 1, 1));
+
+    for table in [
+        "consultation_runs",
+        "committee_findings",
+        "epic_completion_remediation_command_claims",
+    ] {
+        let definition: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("the rebuilt definition reads");
+        assert!(
+            definition.contains("round BETWEEN 1 AND 255"),
+            "{table} retained a narrower global round domain: {definition}"
+        );
+    }
+    let run_child_parent: String = connection
+        .query_row(
+            "SELECT \"table\" FROM pragma_foreign_key_list('run_children') LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the child foreign key reads");
+    assert_eq!(run_child_parent, "consultation_runs");
+    let run_index: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema
+             WHERE type = 'index' AND name = 'ix_consultation_runs_epic'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the run index catalogue reads");
+    assert_eq!(run_index, 1);
+
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash,
+                  revision, created_at, updated_at, settled_at)
+             VALUES ('{RUN_THREE}', '{PROJECT}', '{EPIC}', 'committee',
+                     'independent-review', 1, '{HASH_B}', 'round three', '{HASH_B}',
+                     '{{}}', '{HASH_B}', '{CALLER}', '{NODE_THREE}', 'invoke-three',
+                     '{HASH_B}', 'running', 3, NULL, NULL, 1,
+                     '2026-08-29T21:00:00Z', '2026-08-29T21:00:00Z', NULL);
+             INSERT INTO consultation_seats
+                 (run_id, role_slot_id, seat_binding_id, native_id)
+                 VALUES ('{RUN_THREE}', 'reviewer-a', '{CALLER}', 'native-three');
+             INSERT INTO committee_findings
+                 VALUES ('{RUN_THREE}', '{PROJECT}', 3, 'reviewer-a', 'reviewer',
+                         'compliant', 1, '{{}}', '{HASH_B}', '2026-08-29T21:01:00Z');
+             INSERT INTO epic_completion_remediation_command_claims
+                 VALUES ('{PROJECT}', '{EPIC}', 3, 'lsa_proposal', 'proposal-three',
+                         '{HASH_B}', NULL, '2026-08-29T21:02:00Z');"
+        ))
+        .expect("a repeated needs-human recovery round persists globally");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE consultation_runs SET context = '{\"changed\":true}'",
+                []
+            )
+            .is_err(),
+        "the run input-freeze trigger must survive the rebuild"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM committee_findings WHERE round = 3", [])
+            .is_err(),
+        "the finding permanence trigger must survive the rebuild"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE epic_completion_remediation_command_claims
+                 SET intent_hash = intent_hash WHERE round = 3",
+                [],
+            )
+            .is_err(),
+        "the command-claim immutability trigger must survive the rebuild"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO advisor_advice_artifacts VALUES ('missing', ?1, ?2)",
+                [PROJECT, CALLER],
+            )
+            .is_err(),
+        "the cross-table Advisor attestation trigger must survive the rebuild"
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the schema version reads"),
+        69
+    );
 }
 
 #[test]
