@@ -152,9 +152,21 @@ it judges the task hard.
 | Research mechanism / Analyst | `deep` | `extended` | Large source sets, only when the work profile declares them |
 | QA Bot (mechanism) | `lean` | `standard` | Snapshot evidence in, verdict out |
 
+**Where `large` (400K) fits.** No seat defaults to it, deliberately: it is the
+explicit pricing-boundary / provider-tier selection *between* `standard` and
+`deep`. An operator (or work profile) picks it in two situations: a
+`standard→deep` seat whose evidence bundle keeps overflowing 256K but whose
+provider prices the next tier punitively — `large` buys the headroom without
+paying the deep tier; or a model whose **measured** usable window sits near
+400K, which can hold a `deep`-default seat only at `large` with that ceiling
+recorded on the seat as a documented override, never silently.
+
 When scoring a candidate model (§6), its *measured* usable window must cover
 the seat's **max automatic class**, not just the default — otherwise the seat
-cannot legally grow into its own ceiling under load.
+cannot legally grow into its own ceiling under load. A window landing between
+classes maps **down** to the class it fully covers (a ~400K model is a `large`
+model, not a `deep` one); rounding up is how a seat ends up compacting in the
+middle of the work it was sized for.
 
 ## 3. Team blueprints — what each team is for
 
