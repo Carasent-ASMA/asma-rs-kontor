@@ -5710,16 +5710,15 @@ impl SqliteStore {
                 "the acknowledgement does not name the frozen delivery",
             ));
         }
-        if let Some(existing_at) = existing.acknowledged_at {
-            if existing_at != acknowledged_at
+        if let Some(existing_at) = existing.acknowledged_at
+            && (existing_at != acknowledged_at
                 || existing.timeline_epoch != Some(timeline_epoch)
-                || existing.timeline_sequence != Some(timeline_sequence)
-            {
-                return Err(conflict(
-                    "completion wake delivery",
-                    "canonical acknowledgement evidence cannot be replaced",
-                ));
-            }
+                || existing.timeline_sequence != Some(timeline_sequence))
+        {
+            return Err(conflict(
+                "completion wake delivery",
+                "canonical acknowledgement evidence cannot be replaced",
+            ));
         }
         let changed = transaction
             .execute(

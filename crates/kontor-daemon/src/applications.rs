@@ -9338,9 +9338,7 @@ fn has_fresh_provider_reported_headroom(
     let mut selectable = accounts
         .iter()
         .filter(|account| account.selectable_providers.contains(&rung.provider.0));
-    let Some(account) = selectable.next() else {
-        return None;
-    };
+    let account = selectable.next()?;
     if selectable.next().is_some() {
         // The runtime launch request freezes a governed provider alias but not
         // an account id. More than one profile able to select the same alias
@@ -16987,7 +16985,7 @@ impl ApplicationOperations for Services {
         let attempt = if let Some(attempt) = pending_attempt {
             attempt
         } else {
-            let attempt = state
+            state
                 .with_store(|store| {
                     store.prepare_consultation_recovery_attempt(&NewConsultationRecoveryAttempt {
                         project_id,
@@ -17000,8 +16998,7 @@ impl ApplicationOperations for Services {
                         prepared_at: kontor_api::now(),
                     })
                 })
-                .map_err(|error| self.refuse(&error))?;
-            attempt
+                .map_err(|error| self.refuse(&error))?
         };
         if attempt.recovery_profile_hash != *recovery_profile.hash() {
             return Err(self.deny(
