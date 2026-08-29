@@ -253,6 +253,25 @@ struct CommitteeInvocation<'a> {
     re_review_evidence: Option<&'a serde_json::Value>,
 }
 
+/// Select the immutable remediation identity a clean re-review must present.
+///
+/// Ordinary bounded remediation is born with a Committee remediation document.
+/// A terminal `needs_human` verdict deliberately is not: it can be reopened only
+/// by a later identity-bound LSA proposal and distinct TPM route. In that shape
+/// the LSA proposal is the durable remediation identity, while the completion
+/// revision and integration receipt fence the rest of the recovery freeze.
+fn re_review_remediation_identity<'a>(
+    committee_remediation_hash: Option<&'a ContentHash>,
+    needs_human_recovery: bool,
+    lsa_proposal: &'a ContentHash,
+) -> Option<&'a ContentHash> {
+    match (committee_remediation_hash, needs_human_recovery) {
+        (Some(hash), false) => Some(hash),
+        (None, true) => Some(lsa_proposal),
+        _ => None,
+    }
+}
+
 /// One admissible initial Committee route with the policy evidence that chose
 /// it. Only `model_rung` reaches the runtime; the account is retained solely as
 /// the headroom basis and is never claimed as execution identity.
@@ -10440,7 +10459,6 @@ impl Services {
         if failed_round.verdict != CommitteeVerdict::Fail
             || failed_round.committee_run_id != Some(provenance.failed_committee_run_id)
             || failed_round.result_hash.as_ref() != Some(&provenance.failed_result_hash)
-            || failed_round.remediation_hash.as_ref() != Some(&provenance.remediation_hash)
         {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -10478,6 +10496,23 @@ impl Services {
                 "the re-review does not name the completion's remediation evidence freeze",
             ));
         }
+        let expected_remediation_identity = re_review_remediation_identity(
+            failed_round.remediation_hash.as_ref(),
+            remediation.authorization.needs_human_recovery,
+            &remediation.authorization.lsa_proposal,
+        )
+        .ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the completion remediation shape contradicts its recovery authority",
+            )
+        })?;
+        if expected_remediation_identity != &provenance.remediation_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the re-review does not name the completion's immutable remediation identity",
+            ));
+        }
         let failed_run = self
             .state()?
             .with_store(|store| {
@@ -10513,17 +10548,6 @@ impl Services {
                 "the failed Committee result cannot be reproduced from its immutable evidence",
             ));
         }
-        let verified_remediation_hash = self.verify_committee_remediation(
-            &failed_run,
-            u32::from(provenance.completion_round),
-            &reconstructed,
-        )?;
-        if verified_remediation_hash != provenance.remediation_hash {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "the re-review remediation bytes do not match their stored digest",
-            ));
-        }
         let expected_template =
             normalize_committee_reference(compiled.profile.verdict_committee.as_str());
         let actual_template = normalize_committee_reference(&format!(
@@ -10537,7 +10561,7 @@ impl Services {
                 "the clean re-review uses a template other than the completion's pinned Committee",
             ));
         }
-        let (committee_remediation, stored_remediation_hash) = self
+        let stored_committee_remediation = self
             .state()?
             .with_store(|store| {
                 store.get_committee_remediation_with_hash(
@@ -10545,19 +10569,42 @@ impl Services {
                     provenance.failed_committee_run_id,
                 )
             })
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
+            .map_err(|error| self.refuse(&error))?;
+        let committee_remediation = if remediation.authorization.needs_human_recovery {
+            if stored_committee_remediation.is_some() {
+                return Err(self.deny(
                     ApiErrorCode::Unavailable,
-                    "the failed Committee remediation disappeared after validation",
-                )
-            })?;
-        if stored_remediation_hash != verified_remediation_hash {
-            return Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "the failed Committee remediation changed during validation",
-            ));
-        }
+                    "a terminal needs_human recovery unexpectedly has a Committee remediation document",
+                ));
+            }
+            None
+        } else {
+            let verified_remediation_hash = self.verify_committee_remediation(
+                &failed_run,
+                u32::from(provenance.completion_round),
+                &reconstructed,
+            )?;
+            if verified_remediation_hash != provenance.remediation_hash {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the re-review remediation bytes do not match their stored digest",
+                ));
+            }
+            let (committee_remediation, stored_remediation_hash) = stored_committee_remediation
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the failed Committee remediation disappeared after validation",
+                    )
+                })?;
+            if stored_remediation_hash != verified_remediation_hash {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the failed Committee remediation changed during validation",
+                ));
+            }
+            Some(committee_remediation)
+        };
         Ok(serde_json::json!({
             "schema_version": 1,
             "failed_committee": {
@@ -10575,6 +10622,7 @@ impl Services {
                     "tpm_routing_hash": remediation.authorization.tpm_routing,
                     "lsa_actor": remediation.authorization.lsa_actor,
                     "tpm_actor": remediation.authorization.tpm_actor,
+                    "needs_human_recovery": remediation.authorization.needs_human_recovery,
                 },
                 "integration": remediation.integration,
             },
@@ -11075,14 +11123,18 @@ impl Services {
                                 "completion's failed round has no immutable result hash",
                             )
                         })?,
-                        remediation_hash: failed_round.remediation_hash.clone().ok_or_else(
-                            || {
-                                self.deny(
-                                    ApiErrorCode::Unavailable,
-                                    "completion's failed round has no remediation hash",
-                                )
-                            },
-                        )?,
+                        remediation_hash: re_review_remediation_identity(
+                            failed_round.remediation_hash.as_ref(),
+                            remediation.authorization.needs_human_recovery,
+                            &remediation.authorization.lsa_proposal,
+                        )
+                        .cloned()
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "completion's failed round has no valid remediation identity",
+                            )
+                        })?,
                         remediation_integration_receipt: remediation.integration.receipt.clone(),
                     })
                 } else {
@@ -25143,7 +25195,8 @@ mod tests {
     use super::{
         FrozenCommitteeRoute, QuotaOutlook, consultation_account_rungs, counts_towards_completion,
         eligible_roots, ensure_unambiguous_generic_consultation_routes,
-        render_legacy_container_name, seat_block, select_committee_allocation, slot_prompt,
+        re_review_remediation_identity, render_legacy_container_name, seat_block,
+        select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -25169,6 +25222,36 @@ mod tests {
             profile_hash: ContentHash::of(b"fixture"),
             headroom_basis_account_id: None,
         }
+    }
+
+    #[test]
+    fn clean_re_review_uses_the_committee_remediation_for_a_bounded_round() {
+        let committee = ContentHash::of(b"committee-remediation");
+        let lsa = ContentHash::of(b"lsa-proposal");
+
+        assert_eq!(
+            re_review_remediation_identity(Some(&committee), false, &lsa),
+            Some(&committee)
+        );
+    }
+
+    #[test]
+    fn clean_re_review_uses_the_lsa_proposal_after_needs_human_recovery() {
+        let lsa = ContentHash::of(b"needs-human-lsa-proposal");
+
+        assert_eq!(re_review_remediation_identity(None, true, &lsa), Some(&lsa));
+    }
+
+    #[test]
+    fn clean_re_review_refuses_contradictory_remediation_shapes() {
+        let committee = ContentHash::of(b"committee-remediation");
+        let lsa = ContentHash::of(b"lsa-proposal");
+
+        assert_eq!(
+            re_review_remediation_identity(Some(&committee), true, &lsa),
+            None
+        );
+        assert_eq!(re_review_remediation_identity(None, false, &lsa), None);
     }
 
     #[test]

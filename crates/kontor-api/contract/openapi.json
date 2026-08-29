@@ -10470,7 +10470,7 @@
           },
           "remediation_hash": {
             "type": "string",
-            "description": "Hash of the immutable Committee remediation document."
+            "description": "Hash of the immutable Committee remediation document. For an explicit\nrecovery after the bounded Committee rounds are exhausted, no Committee\nremediation document exists; this instead names the identity-bound LSA\nproposal frozen into the completion recovery."
           },
           "remediation_integration_receipt": {
             "type": "string",

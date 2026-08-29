@@ -3602,7 +3602,12 @@ export interface components {
             failed_committee_run_id: string;
             /** @description Hash of the exact failed result document, not its evidence digest. */
             failed_result_hash: string;
-            /** @description Hash of the immutable Committee remediation document. */
+            /**
+             * @description Hash of the immutable Committee remediation document. For an explicit
+             *     recovery after the bounded Committee rounds are exhausted, no Committee
+             *     remediation document exists; this instead names the identity-bound LSA
+             *     proposal frozen into the completion recovery.
+             */
             remediation_hash: string;
             /**
              * @description Frozen integration-evidence content digest from the completion's
