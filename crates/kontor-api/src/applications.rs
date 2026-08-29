@@ -1252,7 +1252,10 @@ pub struct CommitteeReReviewProvenance {
     /// Hash of the exact failed result document, not its evidence digest.
     #[schema(value_type = String)]
     pub failed_result_hash: ContentHash,
-    /// Hash of the immutable Committee remediation document.
+    /// Hash of the immutable Committee remediation document. For an explicit
+    /// recovery after the bounded Committee rounds are exhausted, no Committee
+    /// remediation document exists; this instead names the identity-bound LSA
+    /// proposal frozen into the completion recovery.
     #[schema(value_type = String)]
     pub remediation_hash: ContentHash,
     /// Frozen integration-evidence content digest from the completion's
