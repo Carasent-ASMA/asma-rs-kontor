@@ -472,8 +472,276 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // Pinned deliberately: appending a migration must be a decision, not a
     // side effect. v67 adds immutable exact-account provider-report freshness
     // evidence beside the mutable quota projection; v68 adds immutable
-    // native-less materialization reroute lineage and receipt authority.
-    assert_eq!(SCHEMA_VERSION, 68);
+    // native-less materialization reroute lineage and receipt authority; v69
+    // admits the clean third Committee run an explicit needs-human recovery
+    // can authorize.
+    assert_eq!(SCHEMA_VERSION, 69);
+}
+
+#[test]
+fn v69_preserves_immutable_consultations_and_admits_clean_round_three() {
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("the store migration procedure lifts reference enforcement");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (
+                 id TEXT NOT NULL PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 UNIQUE (project_id, id)
+             ) STRICT;
+             CREATE TABLE consultation_profile_revisions (
+                 project_id TEXT NOT NULL,
+                 family TEXT NOT NULL,
+                 profile_id TEXT NOT NULL,
+                 version INTEGER NOT NULL,
+                 PRIMARY KEY (project_id, family, profile_id, version)
+             ) STRICT;
+             CREATE TABLE seat_bindings (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE topology_nodes (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE consultation_runs (
+                 run_id TEXT NOT NULL PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 mini_project_id TEXT NOT NULL REFERENCES mini_projects(id) ON DELETE RESTRICT,
+                 family TEXT NOT NULL CHECK (family IN ('advisor', 'committee')),
+                 profile_id TEXT NOT NULL,
+                 profile_version INTEGER NOT NULL CHECK (profile_version >= 1),
+                 definition_hash TEXT NOT NULL,
+                 question TEXT NOT NULL,
+                 question_hash TEXT NOT NULL,
+                 context TEXT NOT NULL CHECK (json_valid(context)),
+                 context_hash TEXT NOT NULL,
+                 caller_seat_binding_id TEXT NOT NULL REFERENCES seat_bindings(id) ON DELETE RESTRICT,
+                 topology_node_id TEXT NOT NULL UNIQUE REFERENCES topology_nodes(id) ON DELETE RESTRICT,
+                 invoke_key TEXT NOT NULL UNIQUE,
+                 invoke_intent_hash TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 2),
+                 result TEXT NULL,
+                 result_hash TEXT NULL,
+                 revision INTEGER NOT NULL,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 settled_at TEXT NULL,
+                 FOREIGN KEY (project_id, family, profile_id, profile_version)
+                     REFERENCES consultation_profile_revisions(project_id, family, profile_id, version),
+                 UNIQUE (project_id, run_id)
+             ) STRICT;
+             CREATE INDEX ix_consultation_runs_epic
+                 ON consultation_runs(project_id, mini_project_id, family, created_at, run_id);
+             CREATE TRIGGER consultation_run_inputs_are_frozen
+             BEFORE UPDATE ON consultation_runs
+             WHEN OLD.question <> NEW.question
+             BEGIN
+                 SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
+             END;
+             CREATE TABLE consultation_seats (
+                 run_id TEXT NOT NULL REFERENCES consultation_runs(run_id) ON DELETE RESTRICT,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 role_slot_id TEXT NOT NULL,
+                 seat_binding_id TEXT NOT NULL UNIQUE REFERENCES seat_bindings(id) ON DELETE RESTRICT,
+                 native_id TEXT NULL,
+                 PRIMARY KEY (run_id, role_slot_id),
+                 FOREIGN KEY (project_id, run_id)
+                     REFERENCES consultation_runs(project_id, run_id) ON DELETE RESTRICT
+             ) STRICT;
+             CREATE TABLE advisor_advice_artifacts (
+                 advisor_run_id TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 seat_binding_id TEXT NOT NULL
+             ) STRICT;
+             CREATE TRIGGER advisor_advice_belongs_to_its_attested_seat
+             BEFORE INSERT ON advisor_advice_artifacts
+             WHEN NOT EXISTS (
+                 SELECT 1
+                   FROM consultation_runs AS run
+                   JOIN consultation_seats AS seat ON seat.run_id = run.run_id
+                  WHERE run.project_id = NEW.project_id
+                    AND run.run_id = NEW.advisor_run_id
+                    AND run.family = 'advisor'
+                    AND seat.seat_binding_id = NEW.seat_binding_id
+                    AND seat.native_id IS NOT NULL
+             )
+             BEGIN
+                 SELECT RAISE(ABORT, 'Advisor advice requires its own attested seat');
+             END;
+             CREATE TABLE committee_findings (
+                 committee_run_id TEXT NOT NULL REFERENCES consultation_runs(run_id) ON DELETE RESTRICT,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 2),
+                 role_slot_id TEXT NOT NULL,
+                 role TEXT NOT NULL CHECK (role IN ('reviewer', 'judge')),
+                 verdict TEXT NOT NULL CHECK (verdict IN ('compliant', 'non_compliant')),
+                 evidence_complete INTEGER NOT NULL CHECK (evidence_complete IN (0, 1)),
+                 document TEXT NOT NULL CHECK (json_valid(document)),
+                 document_hash TEXT NOT NULL,
+                 recorded_at TEXT NOT NULL,
+                 PRIMARY KEY (committee_run_id, round, role_slot_id),
+                 FOREIGN KEY (project_id, committee_run_id)
+                     REFERENCES consultation_runs(project_id, run_id) ON DELETE RESTRICT,
+                 FOREIGN KEY (committee_run_id, role_slot_id)
+                     REFERENCES consultation_seats(run_id, role_slot_id) ON DELETE RESTRICT
+             ) STRICT;
+             CREATE TRIGGER committee_findings_are_immutable
+             BEFORE UPDATE ON committee_findings
+             BEGIN
+                 SELECT RAISE(ABORT, 'a Committee finding is immutable');
+             END;
+             CREATE TRIGGER committee_findings_are_permanent
+             BEFORE DELETE ON committee_findings
+             BEGIN
+                 SELECT RAISE(ABORT, 'a Committee finding cannot be withdrawn');
+             END;
+             INSERT INTO projects VALUES ('0193f000-0000-7000-8000-000000000001');
+             INSERT INTO mini_projects VALUES
+                 ('0193f000-0000-7000-8000-000000000002',
+                  '0193f000-0000-7000-8000-000000000001');
+             INSERT INTO consultation_profile_revisions VALUES
+                 ('0193f000-0000-7000-8000-000000000001', 'committee',
+                  '0193f000-0000-7000-8000-000000000003', 1);
+             INSERT INTO seat_bindings VALUES
+                 ('0193f000-0000-7000-8000-000000000004'),
+                 ('0193f000-0000-7000-8000-000000000005'),
+                 ('0193f000-0000-7000-8000-000000000006');
+             INSERT INTO topology_nodes VALUES
+                 ('0193f000-0000-7000-8000-000000000007'),
+                 ('0193f000-0000-7000-8000-000000000008'),
+                 ('0193f000-0000-7000-8000-000000000009');
+             INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash,
+                  revision, created_at, updated_at, settled_at)
+             VALUES
+                 ('0193f000-0000-7000-8000-000000000010',
+                  '0193f000-0000-7000-8000-000000000001',
+                  '0193f000-0000-7000-8000-000000000002', 'committee',
+                  '0193f000-0000-7000-8000-000000000003', 1,
+                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  'preserve round two',
+                  'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                  '{}',
+                  'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                  '0193f000-0000-7000-8000-000000000004',
+                  '0193f000-0000-7000-8000-000000000007', 'round-two-key',
+                  'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                  'running', 2, NULL, NULL, 1,
+                  '2026-08-29T20:00:00Z', '2026-08-29T20:00:00Z', NULL);
+             INSERT INTO consultation_seats VALUES
+                 ('0193f000-0000-7000-8000-000000000010',
+                  '0193f000-0000-7000-8000-000000000001', 'reviewer-a',
+                  '0193f000-0000-7000-8000-000000000005', NULL);
+             INSERT INTO committee_findings VALUES
+                 ('0193f000-0000-7000-8000-000000000010',
+                  '0193f000-0000-7000-8000-000000000001', 2, 'reviewer-a',
+                  'reviewer', 'non_compliant', 1, '{\"preserve\":true}',
+                  'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                  '2026-08-29T20:01:00Z');
+             PRAGMA user_version = 68;",
+        )
+        .expect("the schema-68 fixture seeds");
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0069_extended_committee_rounds.sql"
+        ))
+        .expect("the supported v69 migration installs");
+
+    let preserved: (i64, String, String) = connection
+        .query_row(
+            "SELECT consultation_runs.round, consultation_runs.question,
+                    committee_findings.document
+             FROM consultation_runs
+             JOIN committee_findings
+               ON committee_findings.committee_run_id = consultation_runs.run_id
+             WHERE consultation_runs.run_id = '0193f000-0000-7000-8000-000000000010'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("the historical run and finding survive");
+    assert_eq!(preserved.0, 2);
+    assert_eq!(preserved.1, "preserve round two");
+    assert_eq!(preserved.2, r#"{"preserve":true}"#);
+
+    connection
+        .execute_batch(
+            "INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash,
+                  revision, created_at, updated_at, settled_at)
+             SELECT '0193f000-0000-7000-8000-000000000011', project_id,
+                    mini_project_id, family, profile_id, profile_version,
+                    definition_hash, 'clean round three', question_hash, context,
+                    context_hash, caller_seat_binding_id,
+                    '0193f000-0000-7000-8000-000000000008', 'round-three-key',
+                    invoke_intent_hash, 'running', 3, NULL, NULL, 1,
+                    '2026-08-29T20:02:00Z', '2026-08-29T20:02:00Z', NULL
+             FROM consultation_runs
+             WHERE run_id = '0193f000-0000-7000-8000-000000000010';
+             INSERT INTO consultation_seats VALUES
+                 ('0193f000-0000-7000-8000-000000000011',
+                  '0193f000-0000-7000-8000-000000000001', 'reviewer-a',
+                  '0193f000-0000-7000-8000-000000000006', NULL);
+             INSERT INTO committee_findings VALUES
+                 ('0193f000-0000-7000-8000-000000000011',
+                  '0193f000-0000-7000-8000-000000000001', 3, 'reviewer-a',
+                  'reviewer', 'compliant', 1, '{\"round\":3}',
+                  'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                  '2026-08-29T20:03:00Z');",
+        )
+        .expect("a clean third run and its seat-authored finding persist");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE consultation_runs SET question = 'rewritten' WHERE round = 2",
+                [],
+            )
+            .is_err(),
+        "the run-input immutability trigger survives"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE committee_findings SET verdict = 'non_compliant' WHERE round = 3",
+                [],
+            )
+            .is_err(),
+        "the finding immutability trigger survives"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM committee_findings WHERE round = 3", [])
+            .is_err(),
+        "the finding permanence trigger survives"
+    );
+    let too_large = connection
+        .execute(
+            "UPDATE consultation_runs SET round = 256 WHERE round = 3",
+            [],
+        )
+        .expect_err("the stored round remains bounded to the domain's u8 range");
+    assert!(too_large.to_string().contains("round BETWEEN 1 AND 255"));
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("reference enforcement restores after migration");
+    let stranded: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .expect("the migrated references are checkable");
+    assert_eq!(stranded, 0, "the table rebuild must strand no child row");
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the schema version reads"),
+        69
+    );
 }
 
 #[test]
