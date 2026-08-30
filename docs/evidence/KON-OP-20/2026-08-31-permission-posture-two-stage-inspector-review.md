@@ -8,7 +8,7 @@
 - **Reviewed:** `feat/KON-OP-20-permission-posture-at-spawn` at `e2863bb`
   (one commit beyond the `32fccde` named in the handoff), baseline `e814661`.
   Outer repo `7832934f`.
-- **Verdict:** **BLOCKED.** Six blocking findings. The first is the load-bearing
+- **Verdict:** **BLOCKED.** Eight blocking findings. The first is the load-bearing
   external fact the builder asked to be pressed on, and it does not hold.
 
 ## B1 — BLOCKING, decisive · the rendered permission never reaches OpenCode
@@ -220,6 +220,71 @@ intra-doc links are a rustdoc lint, and the acceptance ran clippy and fmt only.
 justification for each retained surface, and add the rustdoc gate above to CI so
 the next retirement cannot leave the same trail. It is a cheap check that would
 have caught all four today.
+
+## B7 — BLOCKING · the launch intent does not cover the prompt it launches
+
+`LaunchIntent` (posture.rs:354) digests `binding_id`, `agent_run_id`,
+`workspace_id`, `role_slot_id` and `config`, and its doc argues at length that
+hashing the whole create config beats "a hand-listed subset". That argument is
+right and the implementation honours it — but the design deliberately sends **no
+`initialPrompt`**, so the prompt is not in the create config, and is therefore
+outside the digest by construction. `prove_first_turn` then derives
+
+```rust
+let message_id = format!("kontor-first-turn-{}-{}", request.agent_run_id(), request.binding_id());
+```
+
+which likewise carries no prompt content. `LaunchAuthority` covers only
+ticket/slot/run/binding.
+
+**Failure scenario.** A replay with the same ids and authority but a changed
+prompt produces an identical intent digest, so the census adopts the existing
+agent; `prove_first_turn` then sends the *changed* body under a message id that
+may already exist. `first_turn_on_timeline` matches on `client_message_id` alone,
+so a stale turn satisfies the proof for a turn whose content is different — or the
+send collides with an earlier ambiguous one.
+
+**Required.** Bind the prompt content hash into the two-stage launch intent and
+the message receipt, and refuse a changed intent; or prove at the public
+constructor/store boundary that one run+binding can never present different
+prompt bytes. Either way with a mutation test — the current suite would not
+notice.
+
+## B8 — BLOCKING · every post-create exit before binding strands a live native
+
+Compensation is wired to exactly one failure. In `launch_admitted`:
+
+```rust
+let native_id = ... self.create_opencode_seat(delivery).await?;   // the seat now exists
+let agent = self.fetch_agent(&native_id).await?;                  // (1) `?` — no compensation
+self.verify_agent_placement(&agent, &workspace_id, &labels)?;     // (2) `?` — no compensation
+Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?; // (3) `?` — none
+if delivery.is_some() && let Err(unproved) = self.prove_first_turn(...).await {
+    self.compensate_unproved_seat(&native_id).await?;             // only here
+    return Err(unproved);
+}
+```
+
+A readback transport loss or not-found at (1), or a placement or route/mode
+mismatch at (2)/(3), leaves a **known created native** unbound and unarchived.
+`launch` then releases the admission (B2), so a retry can duplicate it or adopt
+the same bad live native again and again. This is the same defect class as B2 and
+B3, and it is the widest instance: the seat's existence is known here, which is
+precisely when compensation is cheapest and most obligatory.
+
+**Required.** A durable, quarantined create-to-bind state, with governed archive
+plus terminal readback (or exact recovery) on **every** post-create exit, and
+failpoints for agent-readback loss and for each verification failure — not only
+first-turn refusal.
+
+Note also that the comment introducing `prove_first_turn` states the B1 claim as
+the admission rationale in current source: *"the daemon has taken a turn, which it
+runs by replaying the agent's persisted `providerOptions.permission` into
+`session.promptAsync` — so the turn that was accepted is a turn that ran under the
+policy Kontor sent."* That sentence is the whole soundness argument, and B1
+falsifies it. The following comment — "no drift window, because there is nothing
+on disk for anything to drift from" — is true about disk and beside the point:
+given B1 there is no policy anywhere.
 
 ## The fixture-unreachable shape generalizes
 
