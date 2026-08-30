@@ -272,35 +272,43 @@ fn merge_json(
     std::fs::write(path, rendered)
 }
 
-/// Every configuration layer OpenCode merges for one seat, lowest precedence
-/// first within `global`, then the repository's root config, then the block
-/// Kontor composed.
+/// Every configuration file OpenCode merges for one seat.
 ///
 /// Named explicitly rather than resolved inline so a test can present an exact
-/// three-layer shape without depending on the machine it runs on — and so the
-/// set of layers this verification believes in is reviewable in one place.
+/// layer stack without depending on the machine it runs on, and so the set of
+/// layers this verification believes in is reviewable in one place.
 #[derive(Debug, Clone)]
 pub struct ConfigLayers {
-    /// Machine and provider-home configuration. **Read only, never written.**
-    pub global: Vec<PathBuf>,
-    /// The repository's own committed `opencode.json` at the seat's cwd.
-    pub root: PathBuf,
-    /// The block this composition wrote.
+    /// Files merged in order, lowest precedence first, ending with the block
+    /// Kontor composed. **Read only** apart from the seat-local file.
+    pub merged: Vec<PathBuf>,
+    /// Files whose precedence relative to the composed block is *not* proven,
+    /// and which therefore may not declare a `permission` at all.
+    ///
+    /// The `.jsonc` siblings. The installed 1.18.15 reads both spellings in a
+    /// directory, and which one wins over the other is not something this code
+    /// can demonstrate — so rather than guess an order and risk approving a
+    /// stack the evaluator resolves differently, a `permission` declared in one
+    /// of these refuses the launch outright.
+    pub unordered: Vec<PathBuf>,
+    /// The file Kontor composed; it must exist and state the block.
     pub seat_local: PathBuf,
 }
 
 impl ConfigLayers {
     /// The layers a seat spawned in `cwd` will actually read.
     ///
-    /// `OPENCODE_CONFIG` names a single file and is merged under everything
-    /// else; `OPENCODE_CONFIG_DIR`, `XDG_CONFIG_HOME` and `HOME` each resolve a
+    /// `OPENCODE_CONFIG` names a single file merged under everything else;
+    /// `OPENCODE_CONFIG_DIR`, `XDG_CONFIG_HOME` and `HOME` resolve the
     /// configuration directory, whose `opencode.json` and `opencode.jsonc` are
-    /// both read — the installed 1.18.15 accepts either spelling.
+    /// both read. Then the repository's own root config, then the seat-local
+    /// block. Both `.jsonc` siblings inside the worktree are treated as
+    /// unordered rather than merged — see [`Self::unordered`].
     #[must_use]
     pub fn for_seat(cwd: &Path) -> Self {
-        let mut global = Vec::new();
+        let mut merged = Vec::new();
         if let Some(file) = std::env::var_os("OPENCODE_CONFIG") {
-            global.push(PathBuf::from(file));
+            merged.push(PathBuf::from(file));
         }
         let directory = std::env::var_os("OPENCODE_CONFIG_DIR")
             .map(PathBuf::from)
@@ -312,13 +320,19 @@ impl ConfigLayers {
                     .map(|home| PathBuf::from(home).join(".config").join("opencode"))
             });
         if let Some(directory) = directory {
-            global.push(directory.join("opencode.json"));
-            global.push(directory.join("opencode.jsonc"));
+            merged.push(directory.join("opencode.json"));
+            merged.push(directory.join("opencode.jsonc"));
         }
+        let seat_local = cwd.join(".opencode/opencode.json");
+        merged.push(cwd.join("opencode.json"));
+        merged.push(seat_local.clone());
         Self {
-            global,
-            root: cwd.join("opencode.json"),
-            seat_local: cwd.join(".opencode/opencode.json"),
+            merged,
+            unordered: vec![
+                cwd.join("opencode.jsonc"),
+                cwd.join(".opencode/opencode.jsonc"),
+            ],
+            seat_local,
         }
     }
 }
@@ -332,12 +346,12 @@ impl ConfigLayers {
 /// by last match. Comparing only the file Kontor wrote therefore proves nothing:
 /// an operator's machine-global config carrying `edit: allow`, `task: allow` or
 /// `external_directory: {"*": "allow"}` merges *underneath* the composed block
-/// and survives for every key the block does not name, and a rule committed in
-/// the repository's own root `opencode.json` survives the same way. Both were
-/// reproduced against the installed 1.18.15. So the whole stack is merged here
-/// in the same order OpenCode merges it, and the result must equal the rendered
-/// posture exactly — any surviving rule that the posture did not state, widening
-/// or not, refuses the launch.
+/// and survives for every key the block does not name; a rule committed in the
+/// repository's root `opencode.json` survives the same way; and a `.jsonc`
+/// sibling of either is read too. Each was reproduced against the installed
+/// 1.18.15. So the whole stack is merged here in OpenCode's own order and the
+/// result must equal the rendered posture exactly — any surviving rule the
+/// posture did not state refuses the launch, widening or not.
 ///
 /// # What it does and does not prove
 ///
@@ -348,10 +362,10 @@ impl ConfigLayers {
 /// the launch path runs it again after placement.
 ///
 /// # Errors
-/// A missing, unreadable, unparseable or non-object layer; an effective
-/// `permission` differing in any way from the rendered posture; or a floor
-/// pattern that is not denied and was not exactly relaxed by a declared
-/// allowance. Each refuses before the seat is spawned.
+/// A missing, unreadable, unparseable or non-object layer; a `permission`
+/// declared in a file whose precedence is unproven; an effective `permission`
+/// differing in any way from the rendered posture; or a floor pattern that is
+/// not denied and was not exactly relaxed by a declared allowance.
 pub fn verify_composed_posture(
     posture: &SeatPosture,
     allowances: &[PermissionAllowance],
@@ -372,6 +386,18 @@ pub fn verify_composed_posture_in(
     let Some(rendered) = posture.permission.as_ref() else {
         return Ok(());
     };
+    for path in &layers.unordered {
+        if permission_of(path)?.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} declares a permission whose precedence over the composed block is not \
+                     proven; refusing to spawn",
+                    path.display()
+                ),
+            ));
+        }
+    }
     let effective = effective_permission(layers)?;
     if effective != *rendered {
         return Err(io::Error::new(
@@ -406,24 +432,142 @@ pub fn verify_composed_posture_in(
     Ok(())
 }
 
+/// Strip JSONC to JSON: line and block comments, and trailing commas.
+///
+/// OpenCode accepts `opencode.jsonc`, and `serde_json` does not. Written out
+/// rather than taken as a dependency because the job is small and exactly
+/// specified, and because a config this refuses to read refuses a launch — the
+/// behaviour has to be inspectable here.
+fn strip_jsonc(source: &str) -> String {
+    /// Remove line and block comments that are not inside a string.
+    fn without_comments(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut out = String::with_capacity(source.len());
+        let mut index = 0;
+        let mut in_string = false;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                out.push(byte as char);
+                if byte == b'\\' && index + 1 < bytes.len() {
+                    out.push(bytes[index + 1] as char);
+                    index += 2;
+                    continue;
+                }
+                if byte == b'"' {
+                    in_string = false;
+                }
+                index += 1;
+                continue;
+            }
+            match (byte, bytes.get(index + 1)) {
+                (b'"', _) => {
+                    in_string = true;
+                    out.push('"');
+                    index += 1;
+                }
+                (b'/', Some(b'/')) => {
+                    while index < bytes.len() && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                }
+                (b'/', Some(b'*')) => {
+                    index += 2;
+                    while index + 1 < bytes.len()
+                        && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                    {
+                        index += 1;
+                    }
+                    index = (index + 2).min(bytes.len());
+                }
+                _ => {
+                    out.push(byte as char);
+                    index += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Drop a comma whose next meaningful character closes its container.
+    ///
+    /// Run *after* comments are gone, so a comment sitting between the comma and
+    /// the brace cannot hide the fact that the comma is trailing.
+    fn without_trailing_commas(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut out = String::with_capacity(source.len());
+        let mut index = 0;
+        let mut in_string = false;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                out.push(byte as char);
+                if byte == b'\\' && index + 1 < bytes.len() {
+                    out.push(bytes[index + 1] as char);
+                    index += 2;
+                    continue;
+                }
+                if byte == b'"' {
+                    in_string = false;
+                }
+                index += 1;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = true;
+                out.push('"');
+                index += 1;
+                continue;
+            }
+            if byte == b',' {
+                let mut lookahead = index + 1;
+                while lookahead < bytes.len() && bytes[lookahead].is_ascii_whitespace() {
+                    lookahead += 1;
+                }
+                if matches!(bytes.get(lookahead), Some(b'}' | b']')) {
+                    index += 1;
+                    continue;
+                }
+            }
+            out.push(byte as char);
+            index += 1;
+        }
+        out
+    }
+
+    without_trailing_commas(&without_comments(source))
+}
+
+/// The `permission` one configuration file declares, if it declares one.
+fn permission_of(path: &Path) -> io::Result<Option<serde_json::Value>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let source = if path
+        .extension()
+        .is_some_and(|extension| extension == "jsonc")
+    {
+        strip_jsonc(&text)
+    } else {
+        text.into_owned()
+    };
+    match serde_json::from_str::<serde_json::Value>(&source) {
+        Ok(serde_json::Value::Object(document)) => Ok(document.get("permission").cloned()),
+        Ok(_) | Err(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is not a JSON object; the effective permission cannot be proved",
+                path.display()
+            ),
+        )),
+    }
+}
+
 /// The `permission` OpenCode resolves from these layers, merged in its order.
 fn effective_permission(layers: &ConfigLayers) -> io::Result<serde_json::Value> {
-    fn permission_of(path: &Path) -> io::Result<Option<serde_json::Value>> {
-        match std::fs::read(path) {
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Ok(serde_json::Value::Object(document)) => Ok(document.get("permission").cloned()),
-                Ok(_) | Err(_) => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "{} is not a JSON object; the effective permission cannot be proved",
-                        path.display()
-                    ),
-                )),
-            },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
     /// OpenCode deep-merges nested objects, the later document winning per key.
     fn merge(under: &serde_json::Value, over: &serde_json::Value) -> serde_json::Value {
         match (under, over) {
@@ -450,14 +594,9 @@ fn effective_permission(layers: &ConfigLayers) -> io::Result<serde_json::Value> 
             ),
         ));
     }
-    let ordered = layers
-        .global
-        .iter()
-        .cloned()
-        .chain([layers.root.clone(), layers.seat_local.clone()]);
     let mut effective = serde_json::Value::Null;
-    for path in ordered {
-        if let Some(permission) = permission_of(&path)? {
+    for path in &layers.merged {
+        if let Some(permission) = permission_of(path)? {
             effective = if effective.is_null() {
                 permission
             } else {
@@ -561,10 +700,21 @@ mod tests {
     /// The layers a test presents: no global unless one is named explicitly, so
     /// a suite never depends on the machine it happens to run on.
     fn layers(cwd: &Path) -> ConfigLayers {
+        layers_with_global(cwd, Vec::new())
+    }
+
+    fn layers_with_global(cwd: &Path, global: Vec<PathBuf>) -> ConfigLayers {
+        let seat_local = cwd.join(".opencode/opencode.json");
+        let mut merged = global;
+        merged.push(cwd.join("opencode.json"));
+        merged.push(seat_local.clone());
         ConfigLayers {
-            global: Vec::new(),
-            root: cwd.join("opencode.json"),
-            seat_local: cwd.join(".opencode/opencode.json"),
+            merged,
+            unordered: vec![
+                cwd.join("opencode.jsonc"),
+                cwd.join(".opencode/opencode.jsonc"),
+            ],
+            seat_local,
         }
     }
 
@@ -1282,14 +1432,10 @@ mod tests {
             let posture = crate::posture::seat_posture("opencode", autonomy, &[]).expect("posture");
             compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
 
-            let layered = ConfigLayers {
-                global: vec![global],
-                root: cwd.join("opencode.json"),
-                seat_local: cwd.join(".opencode/opencode.json"),
-            };
-            verify_composed_posture_in(&layered, &posture, &[]).unwrap_or_else(|error| {
-                panic!("{autonomy:?} must survive a permissive global unchanged: {error}")
-            });
+            verify_composed_posture_in(&layers_with_global(cwd, vec![global]), &posture, &[])
+                .unwrap_or_else(|error| {
+                    panic!("{autonomy:?} must survive a permissive global unchanged: {error}")
+                });
         }
     }
 
@@ -1310,16 +1456,8 @@ mod tests {
         .expect("seeded");
         compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
         assert!(
-            verify_composed_posture_in(
-                &ConfigLayers {
-                    global: vec![global],
-                    root: cwd.join("opencode.json"),
-                    seat_local: cwd.join(".opencode/opencode.json"),
-                },
-                &posture,
-                &[]
-            )
-            .is_err(),
+            verify_composed_posture_in(&layers_with_global(cwd, vec![global]), &posture, &[])
+                .is_err(),
             "a global rule the posture never stated must refuse the launch"
         );
 
@@ -1336,5 +1474,71 @@ mod tests {
             verify_composed_posture_in(&layers(cwd), &posture, &[]).is_err(),
             "a repository-committed rule that survives the merge must refuse the launch"
         );
+    }
+
+    /// OpenCode reads `opencode.jsonc` beside `opencode.json` in both the
+    /// worktree root and `.opencode/`. Reproduced against the installed 1.18.15:
+    /// a `browser: allow` in either sibling survived into the resolved config
+    /// alongside the composed block. Kontor cannot prove which of the two
+    /// spellings wins inside one directory, so a `permission` declared in either
+    /// refuses the launch rather than being merged in a guessed order.
+    #[test]
+    fn a_jsonc_sibling_declaring_a_permission_refuses_the_launch() {
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+
+        for sibling in ["opencode.jsonc", ".opencode/opencode.jsonc"] {
+            let repo = repo();
+            let cwd = repo.path();
+            compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+            verify_composed_posture_in(&layers(cwd), &posture, &[])
+                .expect("clean before the sibling exists");
+
+            std::fs::create_dir_all(cwd.join(".opencode")).expect("directory");
+            std::fs::write(
+                cwd.join(sibling),
+                "{\n  // a comment, which is why this spelling exists\n  \"permission\": { \"browser\": \"allow\" },\n}",
+            )
+            .expect("seeded");
+
+            let error = verify_composed_posture_in(&layers(cwd), &posture, &[])
+                .expect_err("a widening sibling must refuse the launch");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                error
+                    .to_string()
+                    .contains(sibling.rsplit('/').next().expect("a name")),
+                "the refusal names the file: {error}"
+            );
+        }
+    }
+
+    /// A `.jsonc` that declares no permission is not a problem, comments and
+    /// trailing commas included.
+    #[test]
+    fn a_jsonc_sibling_without_a_permission_is_harmless() {
+        let repo = repo();
+        let cwd = repo.path();
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+        std::fs::write(
+            cwd.join("opencode.jsonc"),
+            "{\n  /* block */ \"model\": \"deepseek/deepseek-v4-flash\", // trailing\n}",
+        )
+        .expect("seeded");
+        verify_composed_posture_in(&layers(cwd), &posture, &[])
+            .expect("a jsonc that says nothing about permissions changes nothing");
+    }
+
+    /// The JSONC reader strips what the spelling allows and nothing else.
+    #[test]
+    fn jsonc_stripping_leaves_strings_alone() {
+        let stripped = strip_jsonc(
+            "{\n  // line\n  /* block */\n  \"url\": \"https://example.test//not-a-comment\",\n  \"list\": [1, 2,],\n}",
+        );
+        let document: serde_json::Value = stripped.parse().expect("valid JSON after stripping");
+        assert_eq!(document["url"], "https://example.test//not-a-comment");
+        assert_eq!(document["list"], serde_json::json!([1, 2]));
     }
 }
