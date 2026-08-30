@@ -329,6 +329,13 @@ current fail-closed state depends on: no seat reaches this code today.
 
 # CURRENT DISPOSITION — 2026-08-31 (supersedes every status above)
 
+> **RETRACTED 2026-08-31.** This section is false and is kept only as a record
+> of what was tried. `providerOptions.permission` never reaches a seat — Paseo's
+> v2-SDK `promptAsync` allow-lists its body keys and drops it, and OpenCode's
+> `SessionPrompt.prompt` reads only `t.tools`. OpenCode delivery is fail-closed
+> and the two-stage path is deleted. See the second-revision disposition at the
+> end of this file.
+
 **OpenCode delivery is reachable, in two proved stages, and is no longer
 fail-closed.** Every earlier disposition in this file — the environment
 approach, the owned configuration root, the spawn-environment attestation and
