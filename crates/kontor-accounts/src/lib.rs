@@ -56,6 +56,7 @@ mod pin;
 mod profile;
 mod quota;
 mod resolver;
+mod signals;
 mod usage;
 
 pub use admission::{AdaptivePosition, fold};
@@ -76,6 +77,10 @@ pub use profile::{
     AccountEnvironmentMap, AccountError, AccountProfileDraft, AccountService, ENVIRONMENT_SCHEMA,
 };
 pub use quota::{ObservedQuota, QuotaBasis, QuotaSignal, classify};
+pub use signals::{
+    QUOTA_SIGNALS_FILE, QuotaSignalsDocument, QuotaSignalsError,
+    parse as parse_quota_signals, read as read_quota_signals,
+};
 pub use resolver::{
     AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,

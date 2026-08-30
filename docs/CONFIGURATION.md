@@ -17,6 +17,7 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/kontor.db` | Every versioned specification published through `/v1`: topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs |
 | `<state-root>/runtimes.json` | Runtime family, plane endpoint and per-account provider aliases. Schema generation `4`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
 | `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
+| `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -51,6 +52,52 @@ provider behavior; no adapter is dispatched from this policy today.
 > nothing currently acts on a configured watchdog. Absent configuration correctly
 > invents no behaviour; present configuration also does nothing until
 > `KON-OP-21` wires it. This is recorded rather than implied.
+
+## Provider quota signals
+
+Copy [`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml)
+to `<state-root>/quota-signals.yml` to tell Kontor how each vendor words an
+exhaustion refusal. The sentences are data on purpose: a vendor rewords its
+message far more often than Kontor ships, and encoding them as Rust constants
+would make tracking a copy change a rebuild.
+
+Install and read it back:
+
+```sh
+cp config/examples/quota-signals.yml "$KONTOR_STATE_ROOT/quota-signals.yml"
+$EDITOR "$KONTOR_STATE_ROOT/quota-signals.yml"
+# Readback: the daemon refuses to start on a present-but-invalid document, so a
+# clean start is the readback. Confirm what it now classifies with:
+kontor --state-root "$KONTOR_STATE_ROOT" provider-quota-states-list
+```
+
+Each signal carries the provider as the catalog spells it, whether the vendor
+charges a plan allowance or a prepaid credit balance, the markers that must all
+appear before text is read as a refusal, and — for a plan allowance that states
+one — the text preceding the reset instant and the IANA zone a bare wall clock
+is printed in. A vendor that prints local time without naming a zone cannot be
+read correctly without that field, and guessing wrong shifts the reset by hours.
+
+**Order is significant.** Classification returns the first signal whose markers
+all appear, so a vendor with more specific markers must precede one whose
+markers its own text would also satisfy. The shipped example lists `claude`
+before `codex` for exactly that reason.
+
+**An absent document is valid and changes nothing.** Reactive classification is
+an addition to the 300-second usage poll, never a replacement for it: with no
+document the poll stays the sole source of truth and no refusal is ever read as
+a quota state. A *present* document that cannot be parsed or validated is
+refused rather than ignored, because it states an intent that cannot be honoured
+and silently dropping it would leave an operator believing classification is
+armed when it is not.
+
+> **Status:** the `claude` entry in the shipped example is **provisional** — no
+> live Claude refusal has been captured into this repository, so its markers are
+> stated from observed phrasing rather than verified against a recorded message,
+> and it declares no `reset_prefix`. A Claude refusal therefore records a
+> blocking state with **no** stated reset instant until a real message is
+> captured and the document corrected. The Codex entry is verified against the
+> message recorded on 2026-08-21.
 
 ## Seat MCP surface
 

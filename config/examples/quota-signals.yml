@@ -1,0 +1,61 @@
+# Vendor exhaustion wording, as data.
+#
+# Install at <state-root>/quota-signals.yml. An absent document is valid and
+# leaves reactive classification inert: the 300-second usage poll stays the sole
+# source of truth, exactly as it was before this file existed. A *present* but
+# invalid document is refused, because it states an intent that cannot be
+# honoured.
+#
+# Order matters. `classify` returns the first signal whose markers all appear,
+# so a vendor with more specific markers must precede one whose markers its own
+# text would also satisfy. `claude` is listed before `codex` for that reason:
+# a Claude refusal contains the words "usage limit", which is the whole of the
+# Codex marker set.
+
+schema_version: 1
+
+signals:
+  # Claude Code, authenticated by a claude.ai account.
+  #
+  # PROVISIONAL: no live Claude refusal has been captured into the repository,
+  # so these markers are stated from the product's observed phrasing and have
+  # not been verified against a recorded message. They are deliberately narrow
+  # — both must appear — so the failure mode is a missed classification rather
+  # than a Codex refusal misattributed to Claude.
+  #
+  # No `reset_prefix` is declared on purpose. `parse_wall_clock` requires a full
+  # `<Month> <day>, <year> <HH:MM> [AM|PM]`, and Claude is understood to print a
+  # bare time of day. Declaring a prefix that cannot parse would record the same
+  # `Unknown` as declaring none, while implying a verification that has not
+  # happened. A refusal therefore records `Unknown` — blocking, with no stated
+  # instant — which is the classifier's own "fix the signal" prompt. Add the
+  # prefix and zone in the same edit that records a real captured message.
+  - provider: claude
+    basis: plan_allowance
+    markers:
+      - claude
+      - usage limit
+
+  # Codex, authenticated by a ChatGPT account.
+  #
+  # Verified against the message Codex produced on 2026-08-21:
+  #   "[System Error] You've hit your usage limit. Visit
+  #    https://chatgpt.com/codex/settings/usage to purchase more credits or try
+  #    again at Aug 23rd, 2026 9:35 AM."
+  # Codex prints the seat's local wall clock and names no zone, so the zone is
+  # supplied here. Reading it as UTC would move the reset by the offset.
+  - provider: codex
+    basis: plan_allowance
+    markers:
+      - usage limit
+    reset_prefix: 'try again at '
+    reset_zone: Europe/Oslo
+
+  # OpenRouter free credits: a prepaid balance, not a plan allowance. No clock
+  # lifts it, so it is recorded as drained rather than exhausted and carries no
+  # reset instant.
+  - provider: openrouter
+    basis: credit_balance
+    markers:
+      - insufficient
+      - credits

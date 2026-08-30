@@ -21,9 +21,11 @@ use jiff::civil;
 use jiff::tz::TimeZone;
 use kontor_core::id::Timestamp;
 use kontor_core::spec::ProviderQuotaKind;
+use serde::{Deserialize, Serialize};
 
 /// How a provider charges, which decides what an unresolved refusal means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum QuotaBasis {
     /// A plan allowance that returns at an instant.
     PlanAllowance,
@@ -32,7 +34,8 @@ pub enum QuotaBasis {
 }
 
 /// One vendor's exhaustion wording.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuotaSignal {
     /// The provider this wording belongs to, spelled as the catalog spells it.
     pub provider: String,
@@ -45,6 +48,7 @@ pub struct QuotaSignal {
     pub markers: Vec<String>,
     /// The text immediately preceding a stated reset instant, when the vendor
     /// states one. Matched case-insensitively.
+    #[serde(default)]
     pub reset_prefix: Option<String>,
     /// The IANA zone a bare wall-clock reset is stated in. `None` reads it as
     /// UTC.
@@ -56,6 +60,7 @@ pub struct QuotaSignal {
     /// provider-outage refusal sends it back — where the next observation
     /// records the instant again. Being late merely wastes the tail of an
     /// outage.
+    #[serde(default)]
     pub reset_zone: Option<String>,
 }
 
