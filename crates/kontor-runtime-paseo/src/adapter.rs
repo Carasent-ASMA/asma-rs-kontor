@@ -3225,23 +3225,12 @@ impl PaseoAdapter {
         request: &LaunchRequest,
         declared: &RuntimeCapabilities,
         generation: u64,
+        posture: &crate::posture::SeatPosture,
+        allowances: &[crate::posture::PermissionAllowance],
     ) -> RuntimeResult<LaunchOutcome> {
         self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
-        // Resolved before any transport call, so a provider whose posture cannot
-        // be proved is refused without spending a census, a placement lookup or
-        // anything else on it. Both inputs are local: the request carries its own
-        // task id, and the ticket's declared exceptions are configuration.
-        let allowances = self
-            .config
-            .scope
-            .configured_task_scope(request.task_id())
-            .map(|configured| configured.permission_overrides)
-            .unwrap_or_default();
-        let posture = crate::posture::seat_posture(
-            request.model_rung().provider.0.as_str(),
-            request.autonomy(),
-            &allowances,
-        )?;
+        // The posture arrives already resolved, from `launch` — see there for why
+        // it has to be decided before this function is reachable at all.
         let effective_scope = self.effective_scope(request.scope())?;
         let project = self.require_project_for(&effective_scope)?;
         // Whichever way the place was keyed, the presented binding must be the
@@ -3339,7 +3328,7 @@ impl PaseoAdapter {
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
-            &posture,
+            posture,
             std::path::Path::new(task_scope.worktree.as_str()),
         )
         .map_err(|error| {
@@ -3356,8 +3345,8 @@ impl PaseoAdapter {
         // permission block is the only thing that does. Verified here, a seat
         // that would have started without its floor never starts at all.
         crate::seat_mcp::verify_composed_posture(
-            &posture,
-            &allowances,
+            posture,
+            allowances,
             std::path::Path::new(task_scope.worktree.as_str()),
         )
         .map_err(|error| {
@@ -3404,8 +3393,8 @@ impl PaseoAdapter {
         // still the one that was composed. Cheap, and it closes the window
         // between composition and the process actually starting.
         crate::seat_mcp::verify_composed_posture(
-            &posture,
-            &allowances,
+            posture,
+            allowances,
             std::path::Path::new(task_scope.worktree.as_str()),
         )
         .map_err(|error| {
@@ -5215,6 +5204,28 @@ impl RuntimeAdapter for PaseoAdapter {
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        // First of all, and deliberately: before the transport is touched and
+        // before the seat is claimed. `declared()` below asks the transport for
+        // its gated server identity, which can establish a connection, and the
+        // claim that follows takes the seat and would have to give it back. A
+        // provider whose posture Kontor cannot prove is refused having spent
+        // nothing and having held nothing.
+        //
+        // Both inputs are local: the request carries its own task id, and the
+        // ticket's declared exceptions are configuration. Resolved once here and
+        // handed down, so launch and composition cannot render it differently.
+        let allowances = self
+            .config
+            .scope
+            .configured_task_scope(request.task_id())
+            .map(|configured| configured.permission_overrides)
+            .unwrap_or_default();
+        let posture = crate::posture::seat_posture(
+            request.model_rung().provider.0.as_str(),
+            request.autonomy(),
+            &allowances,
+        )?;
+
         let declared = self.declared().await?;
 
         // The seat is taken here: before the readbacks, long before `agent run`,
@@ -5240,7 +5251,9 @@ impl RuntimeAdapter for PaseoAdapter {
             state.generation
         };
 
-        let outcome = self.launch_admitted(request, &declared, generation).await;
+        let outcome = self
+            .launch_admitted(request, &declared, generation, &posture, &allowances)
+            .await;
         if outcome.is_err() {
             self.lock().admissions.release(request);
         }

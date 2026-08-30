@@ -50,6 +50,7 @@
 use crate::client::{built_in_provider, paseo_mode};
 use kontor_core::spec::SeatAutonomy;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
+use std::path::{Path, PathBuf};
 
 /// The destructive bash patterns a composed opencode seat always refuses.
 ///
@@ -196,6 +197,12 @@ pub fn seat_posture(
     allowances: &[PermissionAllowance],
 ) -> RuntimeResult<SeatPosture> {
     if built_in_provider(provider) == "opencode" {
+        // Still closed. The owned per-seat configuration root below is the
+        // verified way to make an OpenCode posture deterministic, and it is
+        // built and tested — but nothing launches through it yet: the capability
+        // gate on `agent run --env` and the installed-binary preflight are not
+        // wired. Until both are, a delivery launch is refused rather than run
+        // under a posture nothing has checked.
         return Err(RuntimeError::PermissionModeUnsupported {
             provider: provider.to_owned(),
         });
@@ -216,15 +223,15 @@ pub(crate) fn render_posture(
 ) -> RuntimeResult<SeatPosture> {
     let mode = paseo_mode(provider, autonomy)?;
     let harness = built_in_provider(provider);
+    let permission = (harness == "opencode")
+        .then(|| opencode_permission(autonomy, allowances))
+        .flatten();
     // Only opencode reads a written permission block. Cursor and Claude spell
     // every posture they have as a mode, and Codex the same; giving them a block
     // would be a second statement of a rule their mode already makes.
-    let opencode = harness == "opencode";
     Ok(SeatPosture {
         mode,
-        permission: opencode
-            .then(|| opencode_permission(autonomy, allowances))
-            .flatten(),
+        permission,
         // Reported only where the provider actually exposes the toggle —
         // verified live against Paseo 0.6.1, that is opencode and cursor;
         // claude and codex expose no features at all.
@@ -324,6 +331,127 @@ fn opencode_permission(
         SeatAutonomy::Advisory => Some(block("deny", &[])),
     }
 }
+
+/// The Kontor-owned OpenCode configuration root one seat is launched against.
+///
+/// # Why a whole root, and why one per seat
+///
+/// OpenCode *merges* configuration rather than replacing it, at every layer and
+/// through every environment variable that carries configuration. Measured
+/// against the installed 1.18.15: `OPENCODE_PERMISSION` and
+/// `OPENCODE_CONFIG_CONTENT` merge over what is already there, so a late-sorting
+/// nested rule such as `bash: {"*git*": "allow"}` survives them and — because
+/// permissions resolve by last match — beats the destructive floor.
+/// `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` merge the ambient global too.
+///
+/// What does hold is redirecting the configuration root itself, so there is no
+/// ambient layer left to merge: a directory Kontor owns, named by
+/// `XDG_CONFIG_HOME` *and* by both `OPENCODE_CONFIG*` path variables, with the
+/// content also passed inline, and project configuration switched off. Verified
+/// end to end against a host whose real global allowed `edit`, `task` and
+/// `bash *`, and a worktree carrying three hostile project layers: the resolved
+/// permission came back byte-identical to the rendered block.
+///
+/// **One root per seat.** Two seats in one worktree get two roots, so neither
+/// can rewrite the other's posture — which is also why no posture is written
+/// into the worktree at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatConfigRoot {
+    base: PathBuf,
+}
+
+impl SeatConfigRoot {
+    /// A root at `base`, which the caller must make unique to one seat.
+    #[must_use]
+    pub fn new(base: impl Into<PathBuf>) -> Self {
+        Self { base: base.into() }
+    }
+
+    /// The directory `XDG_CONFIG_HOME` and `OPENCODE_CONFIG_DIR` name.
+    #[must_use]
+    pub fn directory(&self) -> PathBuf {
+        self.base.join("opencode")
+    }
+
+    /// The file `OPENCODE_CONFIG` names.
+    #[must_use]
+    pub fn config_file(&self) -> PathBuf {
+        self.directory().join("opencode.json")
+    }
+
+    /// The base the caller owns, for materialization and cleanup.
+    #[must_use]
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+}
+
+/// The complete configuration document a seat is launched against.
+///
+/// Complete because the owned root *replaces* the operator's: anything the seat
+/// needs and this document omits, the seat does not get. `mcp` is threaded
+/// through for that reason rather than composed separately.
+#[must_use]
+pub fn owned_config(
+    permission: &serde_json::Value,
+    mcp: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut document = serde_json::Map::new();
+    document.insert(
+        "$schema".to_owned(),
+        serde_json::Value::from("https://opencode.ai/config.json"),
+    );
+    document.insert("permission".to_owned(), permission.clone());
+    if let Some(mcp) = mcp {
+        document.insert("mcp".to_owned(), mcp.clone());
+    }
+    serde_json::Value::Object(document)
+}
+
+/// The variables named by [`SEAT_ENVIRONMENT_KEYS`], and nothing else.
+///
+/// A **closed internal set**: never operator input, and never a credential.
+/// Emitted as repeated `paseo agent run --env key=value`, which sets the
+/// environment of the *agent* process — not of the CLI invocation, which is a
+/// separate thing already carrying `KONTOR_CALLER_AGENT_ID`.
+///
+/// `XDG_DATA_HOME` and `XDG_STATE_HOME` are deliberately **absent**: provider
+/// authentication lives under them, and a seat that cannot authenticate is not a
+/// seat. Only configuration is redirected.
+#[must_use]
+pub fn seat_environment(
+    root: &SeatConfigRoot,
+    config: &serde_json::Value,
+) -> Vec<(&'static str, String)> {
+    // Canonical JSON: `serde_json::Map` is a `BTreeMap` in this workspace, so
+    // the same posture renders the same bytes on every host — which is what lets
+    // the preflight compare them and a test pin them.
+    let canonical = config.to_string();
+    let permission = config
+        .get("permission")
+        .map_or_else(|| "{}".to_owned(), ToString::to_string);
+    vec![
+        ("OPENCODE_CONFIG", root.config_file().display().to_string()),
+        ("OPENCODE_CONFIG_CONTENT", canonical),
+        (
+            "OPENCODE_CONFIG_DIR",
+            root.directory().display().to_string(),
+        ),
+        ("OPENCODE_DISABLE_PROJECT_CONFIG", "true".to_owned()),
+        ("OPENCODE_PERMISSION", permission),
+        ("XDG_CONFIG_HOME", root.base().display().to_string()),
+    ]
+}
+
+/// Every variable [`seat_environment`] may set. Nothing else is ever emitted.
+pub const SEAT_ENVIRONMENT_KEYS: &[&str] = &[
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_DISABLE_PROJECT_CONFIG",
+    "OPENCODE_PERMISSION",
+    "XDG_CONFIG_HOME",
+];
 
 #[cfg(test)]
 mod tests {
@@ -996,6 +1124,138 @@ mod tests {
                 posture.permission.is_some(),
                 "{autonomy:?} still renders a block"
             );
+        }
+    }
+
+    fn owned_root() -> SeatConfigRoot {
+        SeatConfigRoot::new("/realm/state/seats/agent-1")
+    }
+
+    /// The closed set is exactly six variables, named, deduplicated, and
+    /// pointing only where Kontor owns.
+    #[test]
+    fn the_seat_environment_is_a_closed_set_of_six() {
+        let root = owned_root();
+        let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+        let environment = seat_environment(&root, &config);
+
+        let names: Vec<&str> = environment.iter().map(|(key, _)| *key).collect();
+        assert_eq!(
+            names, SEAT_ENVIRONMENT_KEYS,
+            "exactly the declared set, in a stable order"
+        );
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "no key is emitted twice");
+    }
+
+    /// Provider authentication lives under the data and state homes. Redirect
+    /// those and the seat cannot log in, so they are never named.
+    #[test]
+    fn the_seat_environment_never_touches_the_data_or_state_home() {
+        let config = owned_config(&opencode(SeatAutonomy::Advisory, &[]), None);
+        for (key, value) in seat_environment(&owned_root(), &config) {
+            assert!(
+                !matches!(key, "XDG_DATA_HOME" | "XDG_STATE_HOME" | "HOME"),
+                "`{key}` must not be redirected: provider auth lives there"
+            );
+            assert!(
+                !value.contains("hunter2") && !value.to_lowercase().contains("secret"),
+                "no value carries anything credential-shaped"
+            );
+        }
+    }
+
+    /// Every path points inside the seat's own root, and the disable flag is the
+    /// exact spelling the installed binary treats as true.
+    #[test]
+    fn the_seat_environment_points_only_at_the_owned_root() {
+        let root = owned_root();
+        let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+        let environment = seat_environment(&root, &config);
+        let value = |name: &str| {
+            environment
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.clone())
+                .expect("the key is present")
+        };
+        assert_eq!(value("XDG_CONFIG_HOME"), "/realm/state/seats/agent-1");
+        assert_eq!(
+            value("OPENCODE_CONFIG_DIR"),
+            "/realm/state/seats/agent-1/opencode"
+        );
+        assert_eq!(
+            value("OPENCODE_CONFIG"),
+            "/realm/state/seats/agent-1/opencode/opencode.json"
+        );
+        assert_eq!(value("OPENCODE_DISABLE_PROJECT_CONFIG"), "true");
+    }
+
+    /// The two carriers state the same posture, canonically, and parse back to
+    /// exactly what the renderer produced.
+    #[test]
+    fn the_carried_config_and_permission_are_canonical_and_agree() {
+        let root = owned_root();
+        let rendered = opencode(SeatAutonomy::Supervised, &[]);
+        let config = owned_config(&rendered, None);
+        let environment = seat_environment(&root, &config);
+        let value = |name: &str| {
+            environment
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.clone())
+                .expect("present")
+        };
+
+        let carried: serde_json::Value = value("OPENCODE_CONFIG_CONTENT")
+            .parse()
+            .expect("canonical JSON");
+        assert_eq!(carried["permission"], rendered);
+        let permission: serde_json::Value = value("OPENCODE_PERMISSION")
+            .parse()
+            .expect("canonical JSON");
+        assert_eq!(permission, rendered, "both carriers state one posture");
+
+        // Deterministic bytes: the same posture renders identically every time,
+        // which is what the preflight compares against.
+        let again = seat_environment(&root, &owned_config(&rendered, None));
+        assert_eq!(environment, again);
+    }
+
+    /// The owned config replaces the operator's, so it must carry everything the
+    /// seat needs — its MCP surface included.
+    #[test]
+    fn the_owned_config_carries_the_seats_mcp_surface() {
+        let mcp = serde_json::json!({ "kontor": { "type": "local" } });
+        let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), Some(&mcp));
+        assert_eq!(config["mcp"]["kontor"]["type"], "local");
+        assert_eq!(config["$schema"], "https://opencode.ai/config.json");
+        assert!(config["permission"]["bash"]["*rm -rf *"] == "deny");
+    }
+
+    /// Two seats in one worktree get two roots, so neither can rewrite the
+    /// other's posture — the shared-file race cannot arise.
+    #[test]
+    fn two_seats_get_two_roots() {
+        let first = SeatConfigRoot::new("/realm/state/seats/agent-1");
+        let second = SeatConfigRoot::new("/realm/state/seats/agent-2");
+        assert_ne!(first.config_file(), second.config_file());
+        assert_ne!(first.directory(), second.directory());
+
+        let autonomous = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+        let advisory = owned_config(&opencode(SeatAutonomy::Advisory, &[]), None);
+        let one = seat_environment(&first, &autonomous);
+        let other = seat_environment(&second, &advisory);
+        assert_ne!(one, other);
+        for (key, value) in &one {
+            if key.starts_with("XDG") || key.ends_with("DIR") || *key == "OPENCODE_CONFIG" {
+                assert!(
+                    value.contains("agent-1") && !value.contains("agent-2"),
+                    "each seat names only its own root"
+                );
+            }
         }
     }
 }
