@@ -29,6 +29,7 @@
 //!   wire is a count rather than an inference.
 //! * [`adapter`] — hierarchy, admission, continuity and session content.
 //! * [`posture`] — the one renderer from a declared posture to a native one.
+//! * [`preflight`] — proving that posture against the installed binary.
 //! * [`seat_mcp`] — worktree-local MCP composition for Claude seats.
 
 pub mod adapter;
@@ -37,6 +38,7 @@ pub mod client;
 pub mod fixture;
 pub mod mcp;
 pub mod posture;
+pub mod preflight;
 pub mod seat_mcp;
 pub mod wire;
 
