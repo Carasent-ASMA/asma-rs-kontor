@@ -123,7 +123,7 @@ later checks cannot drift apart.
 | --- | --- | --- | --- |
 | `claude` | `bypassPermissions` | `auto` | `plan` |
 | `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
-| `opencode` | *refused* | *refused* | *refused* |
+| `opencode` | `build` + proved block | `build` + proved block | `plan` + proved block |
 | `cursor` | `agent` | *refused* | *refused* |
 
 Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
@@ -133,54 +133,77 @@ consultation. A mode label is not a permission boundary, and a posture Kontor
 cannot enforce is refused before launch rather than reported as held. `agent`
 means what `autonomous` means, so that one stays.
 
-OpenCode is **refused for delivery entirely**, at every posture, and that is an
-interim safe state rather than the shape of this feature. Its mode is not its
-posture — `build` is documented by the provider as "executes tools based on
-configured permissions", and `plan` is behavioural guidance whose canary showed
-shell writes proceeding — so its posture has to be a written permission block.
-Kontor cannot prove which block the spawned process will resolve:
+OpenCode carries its posture in configuration rather than in a mode — `build` is
+documented by the provider as "executes tools based on configured permissions",
+and `plan` is behavioural guidance whose canary showed shell writes proceeding —
+so an OpenCode seat is admitted only behind a proof, and refused whenever that
+proof cannot be made.
 
-| Input | Why it defeats verification |
+### How an OpenCode seat is proved
+
+Before anything native is created, and in this order:
+
+1. **The daemon must apply per-agent environment.** Read from the server
+   identity Kontor already fetched. A release below `0.6.1` would accept
+   `agent run --env` and drop it, launching a seat with none of its
+   configuration and no error to say so.
+2. **The binary is the one Paseo resolves.** `paseo provider diagnostic
+   <provider> --json` reports the absolute path and version the daemon itself
+   will spawn; resolving `opencode` from Kontor would answer a different
+   question, since the Paseo daemon runs from an application bundle with its own
+   `PATH`. A version outside the proved set refuses.
+3. **A Kontor-owned configuration root is materialized** under the realm state
+   root — one per seat, never the worktree, never `HOME`, never a directory
+   shared with a provider. Directories `0700`, file `0600`, read back and hashed.
+4. **That binary resolves the configuration**, in the seat's own working
+   directory, under exactly the environment `agent run` will carry, and its
+   **complete** permission object must equal the rendered block.
+
+Only then is the seat created, carrying the same environment on `--env`.
+
+### Why a whole configuration root, and not a few variables
+
+OpenCode merges configuration; it does not replace it. The installed 1.18.15
+resolves layers in this order:
+
+```text
+global -> OPENCODE_CONFIG -> project -> OPENCODE_CONFIG_DIR
+       -> OPENCODE_CONFIG_CONTENT -> active-org remote config
+       -> managed config/preferences -> OPENCODE_PERMISSION
+```
+
+So injecting a permission block is not enough: merging is per key *and per
+nested key*, and a rule the block does not name — a `bash: {"*git*": "allow"}`
+from an auth-backed active-org config or a system managed profile, both of which
+sort after the owned content — survives and, because permissions resolve by last
+match, beats the destructive floor.
+
+What holds is redirecting the configuration root itself, so there is no ambient
+layer left to merge, and then **comparing the complete resolved object** to catch
+anything that still arrives. The six variables Kontor sets are:
+
+| Variable | Purpose |
 | --- | --- |
-| `OPENCODE_CONFIG_CONTENT` | injects a whole configuration inline, outranking project files |
-| `OPENCODE_PERMISSION` | injects a permission block directly |
-| `OPENCODE_DISABLE_PROJECT_CONFIG` | makes OpenCode ignore the composed file entirely |
+| `XDG_CONFIG_HOME` | the owned per-seat root |
+| `OPENCODE_CONFIG` | the owned `opencode.json` |
+| `OPENCODE_CONFIG_DIR` | the owned `opencode` directory |
+| `OPENCODE_CONFIG_CONTENT` | the exact configuration, canonical JSON |
+| `OPENCODE_PERMISSION` | the exact permission object, canonical JSON |
+| `OPENCODE_DISABLE_PROJECT_CONFIG` | `true` — no repository layer is read |
 
-All three are read by the *spawned* process, which Paseo creates. `paseo agent
-run` exposes no way to set or read that process's environment (verified against
-Paseo 0.6.1), so reading configuration files from the daemon cannot establish
-what the seat resolves, and resolving them in the daemon's own environment
-answers a different question.
+`HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` are **never** redirected: provider
+credentials live under them, and a seat that cannot authenticate is not a seat.
+Because the owned root replaces the operator's configuration rather than layering
+over it, the seat's MCP surface travels inside it.
 
-A delivery launch that names OpenCode is therefore refused with
-`PermissionModeUnsupported` before any transport call — no census, no placement
-lookup, no spawn — rather than started under a posture nothing verified.
+One root per seat, so two seats in one worktree cannot overwrite one another —
+and an OpenCode launch writes nothing into the worktree at all.
 
-**The dependency.** This lifts when Paseo exposes either an attested resolved
-configuration per agent, or a seat environment Kontor can verify. The
-translation, the destructive floor, the exact-floor allowance rule and the
-composition and readback surfaces are all kept and kept under test, because they
-are what that surface switches back on.
-
-Consultation is unaffected: it runs through its own route policy, which already
-refuses OpenCode except for one operator-accepted recovery route. Readback of
-seats already running is unaffected too — it resolves a mode, not a block.
-
-### What the composition would verify, once it is reachable
-
-The composed posture is read back out of the seat's configuration before the
-seat is spawned, and again after placement, and must equal the rendered posture
-exactly. That check is retained for the re-enabled path. It is **not** a proof
-of the seat's effective policy today, for the reason above: it cannot see the
-environment the spawned process is given.
-
-> **Operational note.** OpenCode merges configuration layers rather than
-> replacing them, so a machine-global config — such as the 2026-08-22 stopgap
-> some operator hosts still carry, which allows `edit`, `task`, `webfetch` and
-> `external_directory` — survives for every tool a block does not name. Blocks
-> therefore name every known tool. This matters for the re-enabled path; while
-> OpenCode delivery is refused, the stopgap governs any OpenCode process started
-> outside Kontor, and removing it from operator hosts is still worthwhile.
+> **Operational note.** A machine-global config — such as the 2026-08-22 stopgap
+> some operator hosts still carry — no longer reaches a Kontor-launched OpenCode
+> seat: the owned root displaces it and the preflight would refuse anything that
+> survived. It still governs any OpenCode process started outside Kontor, so
+> removing it remains worthwhile.
 
 > **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
 > Kontor derives the intended value alongside the mode, but nothing sets it:

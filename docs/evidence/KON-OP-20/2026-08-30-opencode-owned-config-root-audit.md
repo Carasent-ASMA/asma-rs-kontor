@@ -67,3 +67,73 @@ Hostile inputs used: this host's real global (`edit: allow`, `task: allow`,
 used multiple times)`. This is distinct from `PaseoCommand::env`, which sets the
 environment of the CLI invocation itself and already carries
 `KONTOR_CALLER_AGENT_ID`.
+
+---
+
+## Delivered path (2026-08-30)
+
+OpenCode delivery is reachable again, and only behind the proof below. The
+earlier fail-closed refusal remains as the fallback for a Paseo that cannot
+carry per-agent environment.
+
+### Order of operations, before anything native exists
+
+1. Daemon capability — `supports_seat_environment()`, pinned at Paseo `0.6.1`,
+   read from the **daemon's** reported version. `paseo agent run --help` on 0.6.1
+   documents `--env <key=value>`, repeatable. This is distinct from
+   `PaseoCommand::env`, which sets the CLI invocation's own environment.
+2. Binary identity — `paseo provider diagnostic <provider> --json` reports
+   `Resolved path: /opt/homebrew/bin/opencode` and `Version: 1.18.15`. Only a
+   version in the proved set is admitted.
+3. Owned root materialized under the realm state root: one plain path component
+   per seat, symlinked components refused, `0700`/`0600`, read back and hashed.
+4. Preflight — that binary, that working directory, that environment; the
+   complete resolved permission object must equal the renderer.
+5. `agent run --env` carries the identical six variables, and the posture digest
+   travels in the labels the recovery census matches on.
+
+### Corrections this pass made to earlier claims
+
+- Three variables were **not** enough. The permission carriers merge rather than
+  replace, so a nested `bash: {"*git*": "allow"}` survived them.
+- The six keys do **not** erase every ambient layer by construction either: the
+  load order places an auth-backed active-org config and a system managed layer
+  *after* `OPENCODE_CONFIG_CONTENT`. Full-object comparison is the guarantee;
+  `managed_configuration_survives_and_is_caught_by_full_comparison` proves that
+  detection is load-bearing rather than decorative.
+- `OPENCODE_PURE` disables external plugins only and is not containment.
+- `XDG_CONFIG_HOME` and `OPENCODE_PERMISSION` are redundant with
+  `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG_CONTENT` on the host measured, in
+  that dropping either changed no resolved value. They are retained — which layer
+  wins is the installed build's choice — and the boundary suite pins the set so a
+  silent removal fails.
+
+### Mutation proof (10/10 killed)
+
+Dropping each of the six variables; a block that stops naming the effectful
+tools; a preflight that compares only `bash`, skips the comparison, or accepts
+any version; an adapter without the capability gate; and an argv validator that
+accepts a partial set.
+
+### Retired with this change
+
+The worktree composer for OpenCode is deleted, not merely bypassed: with project
+configuration disabled the file would not be read, writing it would reintroduce
+the shared-worktree race, and a reader with no caller is history waiting to be
+mistaken for authority. Claude composition is untouched, and a launch-boundary
+test asserts an OpenCode launch leaves the worktree and its git excludes alone.
+
+The post-placement re-read went with it. The environment is carried on the create
+call itself and the owned root sits outside anything the seat can write, so there
+is no window between the proof and the spawn for a compensating archive to cover.
+
+### Known limits, stated rather than claimed away
+
+- **Equality is narrow.** Binary identity and version, working directory, the
+  six-key environment and the owned files by hash. `HOME` and the data and state
+  roots are *inherited*, not asserted equal; `prove_preserved_roots` bridges that
+  by checking the data root holds the credentials the diagnostic names.
+- **`paseo agent update` exposes no mode or environment update**, so a posture is
+  fixed at spawn and a plan-mode reserve cannot be promoted through Kontor's CLI
+  port.
+- **No live authenticating seat has been launched** through this path yet.
