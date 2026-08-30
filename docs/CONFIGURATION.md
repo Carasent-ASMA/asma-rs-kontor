@@ -128,7 +128,11 @@ later checks cannot drift apart.
 
 OpenCode is the exception because its mode is not its posture: `build` is
 documented by the provider as "executes tools based on configured permissions",
-so the posture has to be written where opencode reads permissions. Kontor
+so the posture has to be written where opencode reads permissions. OpenCode
+evaluates a call by **last match** over the rules in the order the file gives
+them, defaulting an unmatched tool to `ask`; Kontor's block serializes its keys
+lexicographically, and `*` — a prefix of every floor pattern — therefore precedes
+all of them, which is what lets the specific denials win. Kontor
 composes it into `<cwd>/.opencode/opencode.json` at spawn — merged, so an
 unrelated key in that file survives, and kept out of the seat's own diff through
 the worktree's `info/exclude`. The repository's own committed `opencode.json` is
@@ -161,10 +165,30 @@ its task scope:
 }
 ```
 
-Allow-only, and named: a wildcard is refused when the fleet is composed, because
-an exception that can be spelled `*` is not an exception. An override reaches the
-permission block alone — never the mode — so a task-scoped relaxation can never
-make a seat verify as something it is not.
+An override must name a floor pattern **exactly**. Allow-only, and a pattern that
+is merely broader — `*git*`, `*rm*`, `*submodule*` — is refused along with
+wildcards, near-misses, case variants and unknown patterns, at the type and again
+when the fleet is composed. The reason is the evaluation order: OpenCode resolves
+a call by *last* match, the block reaches it in lexicographic key order, and a
+broader pattern sorts after the deny it overlaps. `"permission_overrides":
+["*git*"]` would therefore be evaluated after both git denies and erase them —
+one line that never spells `*`. Restricting an exception to an exact floor key
+means it can only flip a deny that already exists, in the position it already
+occupies, so the set of rules never changes and the order cannot be exploited.
+
+An override reaches the permission block alone — never the mode — so a
+task-scoped relaxation can never make a seat verify as something it is not.
+
+> **Operational precondition.** OpenCode *merges* configuration rather than
+> replacing it, and the `ask` block deliberately names only `bash` — so on a host
+> that still carries the machine-local 2026-08-22 stopgap in
+> `~/.config/opencode/opencode.json`, every other tool resolves from that ambient
+> config, and an `ask` seat will still edit files without asking. On a clean host
+> the unlisted tools fall to OpenCode's own default, which its evaluator gives as
+> `ask`, and the posture means what this page says for every tool. Until the
+> stopgap is removed from operator machines, `ask` is guaranteed for `bash` only.
+> This is a strict improvement on the prior state, where `bash` was ambient too;
+> removing the stopgap is out of scope here and tracked with it.
 
 > **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
 > Kontor derives the intended value alongside the mode, but nothing sets it:
