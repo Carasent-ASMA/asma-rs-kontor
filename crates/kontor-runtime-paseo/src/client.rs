@@ -1167,6 +1167,77 @@ impl PaseoRpc {
         )
     }
 
+    /// `create_agent_request` for one delivery seat, carrying its posture.
+    ///
+    /// # Why the posture rides in `providerOptions` and not in a file
+    ///
+    /// The installed Paseo 0.6.1 accepts a typed, zod-validated per-agent
+    /// `providerOptions.permission` — OpenCode's own `Config.permission` shape —
+    /// persists it on the agent record, and on every turn rebuilds it into
+    /// `{permission, pattern, action}` rules that it passes to
+    /// `session.promptAsync`. OpenCode installs those on the session before it
+    /// evaluates any tool call. The policy is therefore delivered
+    /// **provider-natively into the running session**, not merged out of files
+    /// or environment variables that ambient configuration can outrank.
+    ///
+    /// A provider whose definition declares no `validateOptions` is *refused* by
+    /// the daemon when options are sent, so this only ever sends them for a
+    /// posture that renders a block — which today is OpenCode alone.
+    ///
+    /// # Why there is no `initialPrompt`
+    ///
+    /// The acceptance of the first real turn is what proves the policy was
+    /// applied. A prompt carried on the create would start that turn before
+    /// Kontor has an agent id to compensate against, so the create is made
+    /// bare, the id is read from `agent_created`, and the prompt is a second,
+    /// separately correlated call.
+    ///
+    /// # Errors
+    /// As [`paseo_mode`]: a provider that cannot express the declared posture is
+    /// refused rather than launched under a different one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn delivery_agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        autonomy: SeatAutonomy,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        posture: &crate::posture::SeatPosture,
+        mcp_servers: Option<&serde_json::Value>,
+    ) -> RuntimeResult<Self> {
+        let mode = paseo_mode(model_rung.provider.0.as_str(), autonomy)?;
+        let mut config = serde_json::json!({
+            "provider": model_rung.provider.0,
+            "cwd": canonical_cwd,
+            "model": model_rung.model.0,
+            "title": title,
+        });
+        if let Some(mode) = mode {
+            config["modeId"] = serde_json::json!(mode);
+        }
+        if let Some(effort) = model_rung.effort {
+            config["thinkingOptionId"] = serde_json::json!(effort.as_str());
+        }
+        if let Some(permission) = posture.permission.as_ref() {
+            config["providerOptions"] = serde_json::json!({ "permission": permission });
+        }
+        if let Some(mcp_servers) = mcp_servers {
+            config["mcpServers"] = mcp_servers.clone();
+        }
+        Ok(Self::mutate(
+            "create_agent_request",
+            "status",
+            request_id,
+            serde_json::json!({
+                "config": config,
+                "workspaceId": workspace_id,
+                "labels": labels,
+            }),
+        ))
+    }
+
     /// `create_agent_request` for one persistent hosted leadership seat. The
     /// credential uses the same secret-only frame channel as consultation
     /// credentials, while the seat retains its supervised provider mode.
@@ -2894,6 +2965,182 @@ mod tests {
             ))
             .is_some()
         );
+    }
+
+    // ---- the delivery create contract, pinned to installed Paseo 0.6.1 -------
+
+    fn delivery_create(
+        autonomy: SeatAutonomy,
+        provider: &str,
+        mcp: Option<&serde_json::Value>,
+    ) -> PaseoRpc {
+        let posture = crate::posture::render_posture(provider, autonomy, &[]).expect("a posture");
+        PaseoRpc::delivery_agent_create(
+            "req-1".to_owned(),
+            "wks_1",
+            "/w/task-1",
+            &route(provider, "deepseek/deepseek-v4-flash", None),
+            autonomy,
+            "Implement",
+            &labels(),
+            &posture,
+            mcp,
+        )
+        .expect("the provider expresses this posture")
+    }
+
+    /// The exact shape `CreateAgentRequestMessageSchema` accepts in 0.6.1, and
+    /// the posture in the field the daemon actually persists and replays.
+    #[test]
+    fn a_delivery_create_carries_the_posture_in_provider_options() {
+        let request = delivery_create(SeatAutonomy::Bounded, "opencode", None);
+        assert_eq!(request.request_type, "create_agent_request");
+        assert!(request.mutates);
+
+        let config = &request.message["config"];
+        assert_eq!(config["provider"], "opencode");
+        assert_eq!(config["modeId"], "build");
+        let permission = &config["providerOptions"]["permission"];
+        assert_eq!(permission["bash"]["*"], "allow");
+        assert_eq!(permission["edit"], "allow");
+        for pattern in crate::posture::DESTRUCTIVE_BASH_DENIES {
+            assert_eq!(
+                permission["bash"][*pattern], "deny",
+                "the floor travels in the payload: `{pattern}`"
+            );
+        }
+    }
+
+    /// No prompt on the create: the id has to exist, and be compensable, before
+    /// any turn starts.
+    #[test]
+    fn a_delivery_create_carries_no_initial_prompt() {
+        let request = delivery_create(SeatAutonomy::Bounded, "opencode", None);
+        assert!(
+            request.message.get("initialPrompt").is_none(),
+            "the first turn is a separate, separately correlated call"
+        );
+        assert!(request.message.get("clientMessageId").is_none());
+    }
+
+    /// A provider whose definition declares no `validateOptions` is refused by
+    /// the daemon when options are sent, so they are only ever sent for a
+    /// posture that renders a block.
+    #[test]
+    fn only_a_posture_with_a_block_sends_provider_options() {
+        for provider in ["claude", "codex"] {
+            let request = delivery_create(SeatAutonomy::Bounded, provider, None);
+            assert!(
+                request.message["config"].get("providerOptions").is_none(),
+                "{provider} must not be sent providerOptions"
+            );
+        }
+        assert!(
+            delivery_create(SeatAutonomy::Bounded, "opencode", None).message["config"]
+                .get("providerOptions")
+                .is_some()
+        );
+    }
+
+    /// Each posture maps to its own payload, exactly.
+    #[test]
+    fn each_posture_renders_its_own_provider_options_payload() {
+        let bounded = delivery_create(SeatAutonomy::Bounded, "opencode", None);
+        let ask = delivery_create(SeatAutonomy::Supervised, "opencode", None);
+        let plan = delivery_create(SeatAutonomy::Advisory, "opencode", None);
+
+        let permission =
+            |r: &PaseoRpc| r.message["config"]["providerOptions"]["permission"].clone();
+        assert_eq!(permission(&bounded)["bash"]["*"], "allow");
+        assert_eq!(permission(&ask)["bash"]["*"], "ask");
+        assert_eq!(permission(&plan)["bash"]["*"], "deny");
+        assert_eq!(permission(&plan)["*"], "deny");
+        assert_eq!(bounded.message["config"]["modeId"], "build");
+        assert_eq!(plan.message["config"]["modeId"], "plan");
+
+        assert_ne!(permission(&bounded), permission(&ask));
+        assert_ne!(permission(&ask), permission(&plan));
+    }
+
+    /// The MCP surface belongs in the create config, never in a worktree file.
+    #[test]
+    fn the_seat_mcp_surface_travels_in_the_create_config() {
+        let mcp = serde_json::json!({ "kontor": { "type": "local" } });
+        let request = delivery_create(SeatAutonomy::Bounded, "opencode", Some(&mcp));
+        assert_eq!(
+            request.message["config"]["mcpServers"]["kontor"]["type"],
+            "local"
+        );
+    }
+
+    /// The exact-floor allowance invariant survives into the payload: an
+    /// exception flips one existing key and adds none.
+    #[test]
+    fn an_allowance_flips_one_floor_key_in_the_payload() {
+        let allowance =
+            crate::posture::PermissionAllowance::parse("*git rm --cached*").expect("floor member");
+        let posture = crate::posture::render_posture(
+            "opencode",
+            SeatAutonomy::Bounded,
+            std::slice::from_ref(&allowance),
+        )
+        .expect("a posture");
+        let request = PaseoRpc::delivery_agent_create(
+            "req-1".to_owned(),
+            "wks_1",
+            "/w/task-1",
+            &route("opencode", "deepseek/deepseek-v4-flash", None),
+            SeatAutonomy::Bounded,
+            "Implement",
+            &labels(),
+            &posture,
+            None,
+        )
+        .expect("a posture");
+
+        let bash = &request.message["config"]["providerOptions"]["permission"]["bash"];
+        assert_eq!(bash["*git rm --cached*"], "allow");
+        assert_eq!(bash["*rm -rf *"], "deny");
+        let plain = delivery_create(SeatAutonomy::Bounded, "opencode", None);
+        let keys = |v: &serde_json::Value| {
+            v.as_object()
+                .expect("map")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(bash),
+            keys(&plain.message["config"]["providerOptions"]["permission"]["bash"]),
+            "an exception changes a value, never the key set"
+        );
+    }
+
+    /// The payload carries the renderer's block verbatim.
+    ///
+    /// This is what makes hostile ambient configuration irrelevant: the rules
+    /// are built in memory from [`crate::posture::render_posture`] and sent to
+    /// the daemon, which persists them on the agent record and replays them into
+    /// `session.promptAsync` every turn. Nothing on this path reads a file or an
+    /// environment variable, so there is no layer for a global, project, managed
+    /// or active-org configuration to win from — the payload is the policy.
+    #[test]
+    fn the_payload_carries_the_renderers_block_verbatim() {
+        for autonomy in [
+            SeatAutonomy::Bounded,
+            SeatAutonomy::Supervised,
+            SeatAutonomy::Advisory,
+        ] {
+            let rendered = crate::posture::render_posture("opencode", autonomy, &[])
+                .expect("a posture")
+                .permission
+                .expect("opencode renders a block");
+            let request = delivery_create(autonomy, "opencode", None);
+            assert_eq!(
+                request.message["config"]["providerOptions"]["permission"], rendered,
+                "{autonomy:?}: the payload is the renderer's output and nothing else's"
+            );
+        }
     }
 
     // ---- seat environment, provider diagnostic, daemon contract -------------
