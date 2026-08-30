@@ -3227,6 +3227,21 @@ impl PaseoAdapter {
         generation: u64,
     ) -> RuntimeResult<LaunchOutcome> {
         self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
+        // Resolved before any transport call, so a provider whose posture cannot
+        // be proved is refused without spending a census, a placement lookup or
+        // anything else on it. Both inputs are local: the request carries its own
+        // task id, and the ticket's declared exceptions are configuration.
+        let allowances = self
+            .config
+            .scope
+            .configured_task_scope(request.task_id())
+            .map(|configured| configured.permission_overrides)
+            .unwrap_or_default();
+        let posture = crate::posture::seat_posture(
+            request.model_rung().provider.0.as_str(),
+            request.autonomy(),
+            &allowances,
+        )?;
         let effective_scope = self.effective_scope(request.scope())?;
         let project = self.require_project_for(&effective_scope)?;
         // Whichever way the place was keyed, the presented binding must be the
@@ -3314,18 +3329,6 @@ impl PaseoAdapter {
         // `PaseoCommand::agent_run` and `verify_agent_route`, decides the
         // `--mode` this seat launches and is verified under — so what the seat
         // reads on disk and what Kontor later checks cannot disagree.
-        let allowances = self
-            .config
-            .scope
-            .configured_task_scope(task_scope.task_id)
-            .map(|configured| configured.permission_overrides)
-            .unwrap_or_default();
-        let posture = crate::posture::seat_posture(
-            request.model_rung().provider.0.as_str(),
-            request.autonomy(),
-            &allowances,
-        )?;
-
         // Compose the seat's worktree-local config before anything is spawned:
         // a Claude seat starts with exactly one kontor server at operator tier
         // under the consultation profile, and an opencode seat starts with its

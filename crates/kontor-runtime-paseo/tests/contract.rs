@@ -995,15 +995,16 @@ async fn preparation_reuses_an_existing_workspace_without_creating_one() {
     );
 }
 
-/// A declared posture that does not read back refuses the launch **before** the
-/// one native effect this path has.
+/// An OpenCode delivery launch is refused before **any** native call.
 ///
-/// The floor is composed into the seat's worktree and then read back out of the
-/// effective project config. Here the repository itself commits a rule that
-/// survives OpenCode's merge and widens what the seat could run, so the readback
-/// disagrees with the posture that was rendered — and the seat is never spawned.
+/// Its posture is carried by a written permission block, and what the spawned
+/// process actually resolves depends on environment variables Paseo owns —
+/// `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION` and
+/// `OPENCODE_DISABLE_PROJECT_CONFIG` — which `agent run` neither sets nor
+/// reports. Rather than spawn a seat under a posture nothing verifies, the
+/// launch fails closed, and this pins that nothing at all was spent doing it.
 #[tokio::test]
-async fn a_posture_that_does_not_read_back_refuses_before_any_native_effect() {
+async fn an_opencode_delivery_launch_is_refused_before_any_native_call() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-9001-posture-readback";
     let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
@@ -1048,15 +1049,6 @@ async fn a_posture_that_does_not_read_back_refuses_before_any_native_effect() {
         .expect("the task worktree is prepared")
         .snapshot;
 
-    // The repository commits a permission rule of its own. OpenCode merges it
-    // *under* the seat-local block, so the key survives into the effective
-    // configuration and widens what the floor would otherwise refuse.
-    std::fs::write(
-        worktree.join("opencode.json"),
-        r#"{"permission": {"bash": {"*git*": "allow"}}}"#,
-    )
-    .expect("the repository's own config is written");
-
     let agent_run_id = run(RUN_IMPLEMENT);
     let binding_id = RuntimeBindingId::generate();
     let authority = adapter
@@ -1093,33 +1085,35 @@ async fn a_posture_that_does_not_read_back_refuses_before_any_native_effect() {
         requested_at: at("2026-08-10T09:00:00Z"),
     });
 
+    let before = recorded.calls().len();
     let error = adapter
         .launch(&request)
         .await
-        .expect_err("a posture that does not read back must not spawn a seat");
+        .expect_err("an unverifiable posture must not spawn a seat");
     assert!(
-        matches!(error, RuntimeError::LaunchNotAdmitted { .. }),
-        "refused as a launch admission failure, not as a runtime outage: {error:?}"
+        matches!(
+            error,
+            RuntimeError::PermissionModeUnsupported { ref provider } if provider == "opencode"
+        ),
+        "refused as an unsupported posture, typed, not as a runtime outage: {error:?}"
     );
     assert_eq!(
-        recorded.count("agent run"),
-        0,
-        "zero native effects: the seat was never spawned"
+        recorded.calls().len(),
+        before,
+        "zero native calls of any kind were spent on the refused launch"
     );
-    // The floor *was* composed first — the refusal is the readback, not a
-    // missing composition.
+    assert_eq!(recorded.count("agent run"), 0, "and no seat was spawned");
     assert!(
-        worktree.join(".opencode/opencode.json").is_file(),
-        "the block is composed before it is verified"
+        !worktree.join(".opencode/opencode.json").exists(),
+        "the refusal precedes composition, so nothing was written into the worktree either"
     );
 }
 
-/// The control for the test above: with no widening rule committed, the same
-/// launch passes the readback and reaches the native effect. Without this, the
-/// refusal test would pass even if the launch had failed for some unrelated
-/// reason before composition.
+/// The control: the same launch on a provider whose posture *is* carried by its
+/// mode still reaches the native effect. Without this, the refusal test above
+/// would pass even if launches were broken for some unrelated reason.
 #[tokio::test]
-async fn the_same_posture_reaches_the_native_effect_when_it_does_read_back() {
+async fn a_claude_launch_in_the_same_worktree_still_reaches_the_native_effect() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-9002-posture-control";
     let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
@@ -1190,43 +1184,18 @@ async fn the_same_posture_reaches_the_native_effect_when_it_does_read_back() {
         cwd: task_scope.worktree.clone(),
         account_profile_id: None,
         prompt: text("bootstrap the role"),
-        model_rung: ModelRung {
-            provider: ProviderRef("opencode".to_owned()),
-            model: ModelRef("deepseek/deepseek-v4-flash".to_owned()),
-            effort: None,
-        },
+        model_rung: model_rung(),
         context_policy: standard_context_policy(),
         autonomy: kontor_core::spec::SeatAutonomy::Bounded,
         requested_at: at("2026-08-10T09:00:00Z"),
     });
 
-    // The launch still fails further on — these fixtures answer for a Claude
-    // agent, so the route readback disagrees — but it gets *past* the posture
-    // readback and spends the native effect, which is the point being pinned.
     let _ = adapter.launch(&request).await;
     assert_eq!(
         recorded.count("agent run"),
         1,
-        "a posture that reads back cleanly does not block the spawn"
+        "a provider whose posture is its mode is not gated"
     );
-
-    let composed: serde_json::Value =
-        std::fs::read_to_string(worktree.join(".opencode/opencode.json"))
-            .expect("the floor is composed")
-            .parse()
-            .expect("JSON");
-    for pattern in [
-        "*submodule update*",
-        "*submodule deinit*",
-        "*git rm --cached*",
-        "*git clean -*",
-        "*rm -rf *",
-    ] {
-        assert_eq!(
-            composed["permission"]["bash"][pattern], "deny",
-            "`{pattern}` is on disk before the seat is spawned"
-        );
-    }
 }
 
 #[tokio::test]

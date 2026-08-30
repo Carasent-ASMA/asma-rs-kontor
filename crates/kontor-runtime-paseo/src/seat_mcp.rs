@@ -1037,7 +1037,7 @@ mod tests {
 
     /// Render a real posture the way the adapter does, then compose it.
     fn compose_opencode_seat(cwd: &Path, autonomy: SeatAutonomy) -> serde_json::Value {
-        let posture = crate::posture::seat_posture("opencode", autonomy, &[]).expect("a posture");
+        let posture = crate::posture::render_posture("opencode", autonomy, &[]).expect("a posture");
         compose_for_seat(Some(&seat("/realm/state")), "opencode", &posture, cwd)
             .expect("composition");
         let raw = std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
@@ -1174,8 +1174,8 @@ mod tests {
     fn the_kill_switch_withdraws_mcp_scaffolding_but_never_the_floor() {
         let repo = repo();
         let cwd = repo.path();
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
 
         compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
 
@@ -1212,7 +1212,7 @@ mod tests {
     fn an_ask_floor_is_composed_with_no_seat_mcp_configured() {
         let repo = repo();
         let cwd = repo.path();
-        let posture = crate::posture::seat_posture("opencode", SeatAutonomy::Supervised, &[])
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Supervised, &[])
             .expect("posture");
         compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
 
@@ -1239,8 +1239,8 @@ mod tests {
     fn a_worktree_reused_for_plan_does_not_keep_the_previous_allow_block() {
         let repo = repo();
         let cwd = repo.path();
-        let autonomous =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let autonomous = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
         compose_for_seat(None, "opencode", &autonomous, cwd).expect("first seat");
         assert_eq!(
             read_permission(cwd)["bash"]["*"],
@@ -1248,8 +1248,8 @@ mod tests {
             "the first seat may act"
         );
 
-        let advisory =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        let advisory = crate::posture::render_posture("opencode", SeatAutonomy::Advisory, &[])
+            .expect("posture");
         compose_for_seat(None, "opencode", &advisory, cwd).expect("second seat");
 
         let permission = read_permission(cwd);
@@ -1286,8 +1286,8 @@ mod tests {
 
         // Nor does an OpenCode seat get to replace it: deciding a posture is
         // this code's job, but the block sitting there is not one it wrote.
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
         assert_eq!(
             compose_for_seat(None, "opencode", &posture, cwd)
                 .expect_err("a foreign block is nobody else's to replace")
@@ -1309,7 +1309,8 @@ mod tests {
         let repo = repo();
         let cwd = repo.path();
         let carries_a_block =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+            crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+                .expect("posture");
         assert!(
             carries_a_block.permission.is_some(),
             "the fixture must actually carry a block for this to prove anything"
@@ -1328,8 +1329,8 @@ mod tests {
     /// The readback refuses everything that would let a seat start unprotected.
     #[test]
     fn the_readback_refuses_a_config_that_is_not_what_was_rendered() {
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
 
         {
             // missing
@@ -1383,8 +1384,8 @@ mod tests {
     fn the_readback_refuses_a_root_config_that_widens_the_effective_permission() {
         let repo = repo();
         let cwd = repo.path();
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
         compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
         verify_composed_posture_in(&layers(cwd), &posture, &[]).expect("clean worktree reads back");
 
@@ -1408,7 +1409,7 @@ mod tests {
         let allowance =
             crate::posture::PermissionAllowance::parse("*git rm --cached*").expect("floor member");
         let allowances = std::slice::from_ref(&allowance);
-        let posture = crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, allowances)
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, allowances)
             .expect("posture");
         compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
 
@@ -1427,7 +1428,7 @@ mod tests {
         let cwd = repo.path();
         let allowance =
             crate::posture::PermissionAllowance::parse("*git rm --cached*").expect("named");
-        let posture = crate::posture::seat_posture(
+        let posture = crate::posture::render_posture(
             "opencode",
             SeatAutonomy::Bounded,
             std::slice::from_ref(&allowance),
@@ -1486,7 +1487,8 @@ mod tests {
             let global = cwd.join("operator-global.json");
             std::fs::write(&global, LIVE_GLOBAL).expect("the operator's config");
 
-            let posture = crate::posture::seat_posture("opencode", autonomy, &[]).expect("posture");
+            let posture =
+                crate::posture::render_posture("opencode", autonomy, &[]).expect("posture");
             compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
 
             verify_composed_posture_in(&layers_with_global(cwd, vec![global]), &posture, &[])
@@ -1499,8 +1501,8 @@ mod tests {
     /// A rule that survives the merge from *any* layer refuses the launch.
     #[test]
     fn a_widening_rule_in_any_layer_refuses_the_launch() {
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Advisory, &[])
+            .expect("posture");
 
         // (1) the machine-global names a tool the posture does not
         let global_case = repo();
@@ -1541,8 +1543,8 @@ mod tests {
     /// refuses the launch rather than being merged in a guessed order.
     #[test]
     fn a_jsonc_sibling_declaring_a_permission_refuses_the_launch() {
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Advisory, &[])
+            .expect("posture");
 
         for sibling in ["opencode.jsonc", ".opencode/opencode.jsonc"] {
             let repo = repo();
@@ -1576,8 +1578,8 @@ mod tests {
     fn a_jsonc_sibling_without_a_permission_is_harmless() {
         let repo = repo();
         let cwd = repo.path();
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
         compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
         std::fs::write(
             cwd.join("opencode.jsonc"),
@@ -1620,8 +1622,8 @@ mod tests {
             assert!(status.success(), "git {arguments:?}");
         }
 
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
         let error = compose_for_seat(None, "opencode", &posture, cwd)
             .expect_err("committed configuration is not Kontor's to rewrite");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
@@ -1642,8 +1644,8 @@ mod tests {
         let theirs = "{\n  \"permission\": { \"bash\": { \"*\": \"allow\" } },\n  \"model\": \"theirs\"\n}\n";
         std::fs::write(cwd.join(".opencode/opencode.json"), theirs).expect("seeded");
 
-        let posture =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        let posture = crate::posture::render_posture("opencode", SeatAutonomy::Advisory, &[])
+            .expect("posture");
         let error = compose_for_seat(None, "opencode", &posture, cwd)
             .expect_err("a block with no Kontor receipt is not ours");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
@@ -1660,13 +1662,13 @@ mod tests {
     fn kontor_replaces_the_block_it_can_prove_it_composed() {
         let repo = repo();
         let cwd = repo.path();
-        let autonomous =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let autonomous = crate::posture::render_posture("opencode", SeatAutonomy::Bounded, &[])
+            .expect("posture");
         compose_for_seat(None, "opencode", &autonomous, cwd).expect("first composition");
         assert_eq!(read_permission(cwd)["bash"]["*"], "allow");
 
-        let advisory =
-            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        let advisory = crate::posture::render_posture("opencode", SeatAutonomy::Advisory, &[])
+            .expect("posture");
         compose_for_seat(None, "opencode", &advisory, cwd).expect("its own block is replaceable");
         assert_eq!(read_permission(cwd)["bash"]["*"], "deny");
 

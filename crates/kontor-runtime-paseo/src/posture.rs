@@ -49,7 +49,7 @@
 
 use crate::client::{built_in_provider, paseo_mode};
 use kontor_core::spec::SeatAutonomy;
-use kontor_runtime::adapter::RuntimeResult;
+use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 
 /// The destructive bash patterns a composed opencode seat always refuses.
 ///
@@ -152,7 +152,33 @@ impl SeatPosture {
     }
 }
 
-/// Render one declared posture for one provider.
+/// The posture a delivery seat launches under, or a refusal.
+///
+/// # Why OpenCode is refused here
+///
+/// OpenCode carries its posture in a written permission block rather than in a
+/// mode, and Kontor cannot prove what block the spawned process will actually
+/// resolve. The deciding inputs include environment variables read by that
+/// process — `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` both inject
+/// permissions, and `OPENCODE_DISABLE_PROJECT_CONFIG` makes it ignore the
+/// composed file entirely — and the process is created by Paseo, whose
+/// `agent run` exposes no way to set or read its environment (verified against
+/// Paseo 0.6.1). Reading configuration files from the daemon therefore cannot
+/// establish the seat's effective policy, and resolving them in the daemon's own
+/// environment answers a different question than the one that matters.
+///
+/// So an OpenCode delivery launch is refused before any native effect rather
+/// than reported as running under a posture nobody verified. This is an interim
+/// safe state, not the shape of the feature: it lifts as soon as Paseo exposes
+/// an attested resolved configuration, or a seat environment Kontor can verify.
+/// The composition, the floor and the readback below are kept and kept tested
+/// because they are what that surface switches back on.
+///
+/// Consultation is unaffected — it runs through
+/// [`consultation_route_permission_mode`](crate::client::consultation_route_permission_mode),
+/// which already refuses OpenCode except for one operator-accepted recovery
+/// route — and so is readback of seats that are already running, which resolves
+/// its mode through [`paseo_mode`] rather than through this gate.
 ///
 /// `allowances` flips floor entries inside the permission block — it can only
 /// ever change an existing deny's action, never add a key — and **cannot reach
@@ -165,6 +191,25 @@ impl SeatPosture {
 /// when the provider cannot express the declared posture — the same fail-closed
 /// refusal `paseo_mode` already makes, unchanged.
 pub fn seat_posture(
+    provider: &str,
+    autonomy: SeatAutonomy,
+    allowances: &[PermissionAllowance],
+) -> RuntimeResult<SeatPosture> {
+    if built_in_provider(provider) == "opencode" {
+        return Err(RuntimeError::PermissionModeUnsupported {
+            provider: provider.to_owned(),
+        });
+    }
+    render_posture(provider, autonomy, allowances)
+}
+
+/// Render one declared posture for one provider, without the delivery gate.
+///
+/// This is the translation itself: it stays complete, and stays tested, because
+/// it is what an attested OpenCode surface would switch back on. Nothing on the
+/// delivery path calls it directly — [`seat_posture`] does, after deciding
+/// whether the provider may be delivered to at all.
+pub(crate) fn render_posture(
     provider: &str,
     autonomy: SeatAutonomy,
     allowances: &[PermissionAllowance],
@@ -290,7 +335,7 @@ mod tests {
     }
 
     fn opencode(autonomy: SeatAutonomy, allowances: &[PermissionAllowance]) -> serde_json::Value {
-        seat_posture("opencode", autonomy, allowances)
+        render_posture("opencode", autonomy, allowances)
             .expect("opencode expresses every posture")
             .permission
             .expect("a block")
@@ -345,7 +390,7 @@ mod tests {
     /// seat is contained by the block or it is not contained at all.
     #[test]
     fn plan_is_contained_by_the_block_not_by_the_mode() {
-        let posture = seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("plan");
+        let posture = render_posture("opencode", SeatAutonomy::Advisory, &[]).expect("plan");
         assert_eq!(posture.mode, Some("plan"), "the mode is still pinned");
         let permission = posture.permission.expect("plan is contained by a block");
 
@@ -369,8 +414,8 @@ mod tests {
     /// not relax anything for a seat declared unable to.
     #[test]
     fn an_allowance_cannot_weaken_an_advisory_seat() {
-        let plain = seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("plan");
-        let pressed = seat_posture(
+        let plain = render_posture("opencode", SeatAutonomy::Advisory, &[]).expect("plan");
+        let pressed = render_posture(
             "opencode",
             SeatAutonomy::Advisory,
             &[allowance("*git rm --cached*"), allowance("*rm -rf *")],
@@ -564,8 +609,8 @@ mod tests {
             SeatAutonomy::Supervised,
             SeatAutonomy::Advisory,
         ] {
-            let plain = seat_posture("opencode", autonomy, &[]).expect("posture");
-            let relaxed = seat_posture(
+            let plain = render_posture("opencode", autonomy, &[]).expect("posture");
+            let relaxed = render_posture(
                 "opencode",
                 autonomy,
                 &[allowance("*git rm --cached*"), allowance("*git clean -*")],
@@ -599,7 +644,10 @@ mod tests {
             // in `ask`, which is why consultation refuses it outright. A mode
             // label is not a permission boundary.
             ("cursor", Some("agent"), None, None),
-            ("opencode", Some("build"), Some("build"), Some("plan")),
+            // OpenCode's own row is asserted through `render_posture` in
+            // `each_opencode_posture_still_renders`; at the delivery gate it is
+            // refused, which `opencode_delivery_is_refused_until_it_can_be_proved`
+            // pins.
         ];
         for (provider, bounded, supervised, advisory) in expected {
             assert_eq!(
@@ -660,7 +708,7 @@ mod tests {
             );
         }
         assert!(
-            seat_posture("opencode", SeatAutonomy::Bounded, &[])
+            render_posture("opencode", SeatAutonomy::Bounded, &[])
                 .expect("a posture")
                 .permission
                 .is_some()
@@ -672,7 +720,7 @@ mod tests {
     fn the_feature_intent_follows_the_providers_that_have_one() {
         for provider in ["opencode", "cursor"] {
             assert_eq!(
-                seat_posture(provider, SeatAutonomy::Bounded, &[])
+                render_posture(provider, SeatAutonomy::Bounded, &[])
                     .expect("a posture")
                     .auto_accept,
                 Some(true),
@@ -694,8 +742,8 @@ mod tests {
     #[test]
     fn an_account_alias_renders_like_its_harness() {
         assert_eq!(
-            seat_posture("opencode-work", SeatAutonomy::Bounded, &[]).expect("alias"),
-            seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("harness"),
+            render_posture("opencode-work", SeatAutonomy::Bounded, &[]).expect("alias"),
+            render_posture("opencode", SeatAutonomy::Bounded, &[]).expect("harness"),
         );
         assert_eq!(
             seat_posture("cursor-personal", SeatAutonomy::Bounded, &[])
@@ -882,5 +930,72 @@ mod tests {
             PermissionAllowance::parse("*git*").is_none(),
             "which is exactly why the type refuses to build it"
         );
+    }
+
+    /// An OpenCode delivery seat is refused until its posture can be proved.
+    ///
+    /// The deciding inputs — `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION`,
+    /// `OPENCODE_DISABLE_PROJECT_CONFIG` — are read by the spawned process,
+    /// which Paseo creates and whose environment `agent run` neither sets nor
+    /// reports. Until that surface exists, claiming a verified posture would be
+    /// claiming something nothing checks.
+    #[test]
+    fn opencode_delivery_is_refused_until_it_can_be_proved() {
+        for autonomy in [
+            SeatAutonomy::Bounded,
+            SeatAutonomy::Supervised,
+            SeatAutonomy::Advisory,
+        ] {
+            for provider in ["opencode", "opencode-work"] {
+                assert!(
+                    matches!(
+                        seat_posture(provider, autonomy, &[]),
+                        Err(RuntimeError::PermissionModeUnsupported { .. })
+                    ),
+                    "{provider} {autonomy:?} must be refused at the delivery gate"
+                );
+            }
+        }
+    }
+
+    /// The gate is OpenCode's alone: every other provider still resolves.
+    #[test]
+    fn the_delivery_gate_does_not_touch_other_providers() {
+        assert_eq!(
+            seat_posture("claude", SeatAutonomy::Bounded, &[])
+                .expect("claude is unaffected")
+                .mode,
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            seat_posture("codex", SeatAutonomy::Supervised, &[])
+                .expect("codex is unaffected")
+                .mode,
+            Some("auto-review")
+        );
+        assert_eq!(
+            seat_posture("cursor", SeatAutonomy::Bounded, &[])
+                .expect("cursor autonomous is unaffected")
+                .mode,
+            Some("agent")
+        );
+    }
+
+    /// The translation itself stays complete and stays tested: it is what an
+    /// attested Paseo surface switches back on, and it must not rot meanwhile.
+    #[test]
+    fn each_opencode_posture_still_renders() {
+        for (autonomy, mode) in [
+            (SeatAutonomy::Bounded, "build"),
+            (SeatAutonomy::Supervised, "build"),
+            (SeatAutonomy::Advisory, "plan"),
+        ] {
+            let posture = render_posture("opencode", autonomy, &[]).expect("the renderer");
+            assert_eq!(posture.mode, Some(mode));
+            assert!(
+                posture.permission.is_some(),
+                "{autonomy:?} still renders a block"
+            );
+        }
     }
 }
