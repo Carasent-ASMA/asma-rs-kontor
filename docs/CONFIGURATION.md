@@ -15,7 +15,7 @@ system behaviour instead of instructions somebody has to remember.
 | Location | Holds |
 | --- | --- |
 | `<state-root>/kontor.db` | Every versioned specification published through `/v1`: topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs |
-| `<state-root>/runtimes.json` | Runtime family, plane endpoint and per-account provider aliases. Schema generation `4`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
+| `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases and the plane's default seat posture. Schema generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
 | `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
@@ -88,6 +88,90 @@ provider behavior; no adapter is dispatched from this policy today.
 > nothing currently acts on a configured watchdog. Absent configuration correctly
 > invents no behaviour; present configuration also does nothing until
 > `KON-OP-21` wires it. This is recorded rather than implied.
+
+## Seat permission posture
+
+What a seat may do before it has to ask a human is declared, not inherited from
+whatever the machine's harness config happens to carry. Operators write one of
+three words; Kontor maps each to one internal `SeatAutonomy`.
+
+| Written in `runtimes.json` | Means | Internally |
+| --- | --- | --- |
+| `autonomous` | Act within what Kontor already authorized, without asking again per tool call | `Bounded` |
+| `ask` | Ask a human before each guarded action — the default, and what every seat did before this field existed | `Supervised` |
+| `plan` | Read and propose, never act | `Advisory` |
+
+`permission_posture` on a Paseo plane is a **default**, and it is resolved
+most-specific-first:
+
+1. the role slot's own `autonomy`, when the frozen team template declared one;
+2. the plane's `permission_posture`;
+3. `ask`.
+
+A template that already decided keeps deciding, even when the plane default is
+the wider one. A realm that declares nothing at either level behaves exactly as
+it did before the field existed, which is why a generation-4 document can be read
+without migrating it: absence resolves to `ask` and never widens a seat.
+
+### How each provider is told
+
+Posture is translated once, by a single renderer shared between the launch and
+the readback that verifies it, so what a seat is spawned under and what Kontor
+later checks cannot drift apart.
+
+| Provider | `autonomous` | `ask` | `plan` |
+| --- | --- | --- | --- |
+| `claude` | `bypassPermissions` | `auto` | `plan` |
+| `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
+| `cursor` | `agent` | `ask` | `plan` |
+| `opencode` | `build` + permission block | `build` + permission block | `plan` |
+
+OpenCode is the exception because its mode is not its posture: `build` is
+documented by the provider as "executes tools based on configured permissions",
+so the posture has to be written where opencode reads permissions. Kontor
+composes it into `<cwd>/.opencode/opencode.json` at spawn — merged, so an
+unrelated key in that file survives, and kept out of the seat's own diff through
+the worktree's `info/exclude`. The repository's own committed `opencode.json` is
+never edited: git applies no ignore rule to a tracked file, and opencode reads
+`.opencode/` at higher precedence anyway.
+
+### The destructive floor
+
+Under every posture that writes a block, these patterns are **denied**, never
+asked:
+
+`*submodule update*`, `*submodule deinit*`, `*git rm --cached*`, `*git clean -*`,
+`*rm -rf *`
+
+`deny` and `ask` are not interchangeable here. `ask` blocks and waits for a
+human — on 2026-08-22 that stalled an eleven-ticket epic for about two and a half
+hours, with twelve of fifteen seats wedged on prompts nobody was watching, while
+Kontor recorded them as running. `deny` refuses instantly and the seat keeps
+working. Autonomy and guardrails stop being in tension once the patterns that
+would earn a refusal are refused rather than escalated.
+
+A ticket whose actual job collides with the floor declares a bounded exception on
+its task scope:
+
+```json
+"task_scopes": {
+  "<task-id>": {
+    "permission_overrides": ["*git rm --cached*"]
+  }
+}
+```
+
+Allow-only, and named: a wildcard is refused when the fleet is composed, because
+an exception that can be spelled `*` is not an exception. An override reaches the
+permission block alone — never the mode — so a task-scoped relaxation can never
+make a seat verify as something it is not.
+
+> **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
+> Kontor derives the intended value alongside the mode, but nothing sets it:
+> verified against Paseo 0.6.1, neither `paseo agent run` nor `paseo agent update`
+> exposes a flag for it, and Kontor drives the CLI rather than the MCP surface
+> where it is settable. The permission block is the mechanism that actually
+> holds. Recorded rather than implied.
 
 ## Seat MCP surface
 
