@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
 use kontor_core::authority::{AuthoritySubject, SubjectAuthority};
+use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
@@ -167,6 +168,9 @@ pub struct EpicApplication<'a> {
     pub project_id: ProjectId,
     /// The epic's name, which is its natural identity inside the project.
     pub name: ExternalName,
+    /// Optional manual selection for the immutable project-scoped backlog code.
+    /// Omission allocates deterministically from `name`.
+    pub epic_backlog_code: Option<&'a EpicBacklogCode>,
     /// Runtime-facing epic identity. Omission preserves an existing declaration
     /// and keeps old apply requests byte-compatible.
     pub execution_scope: Option<&'a EpicExecutionScopeDeclaration>,
@@ -326,6 +330,8 @@ pub struct AppliedLink {
 pub struct AppliedEpic {
     /// The goal that carries the epic.
     pub mini_project_id: MiniProjectId,
+    /// Kontor's immutable project-scoped epic namespace.
+    pub epic_backlog_code: EpicBacklogCode,
     /// Whether this call created it.
     pub applied: Applied,
     /// The revision a write must present.
@@ -414,6 +420,49 @@ pub struct StoredComment {
 }
 
 impl SqliteStore {
+    /// Assign or replay one epic's immutable project-scoped backlog namespace.
+    ///
+    /// Omission selects the deterministic title-derived candidate. The
+    /// `IMMEDIATE` transaction owns both allocation and the case-insensitive
+    /// unique insert, so racing allocators observe one another serially.
+    pub fn assign_epic_backlog_code(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        manual_override: Option<&EpicBacklogCode>,
+        assigned_at: Timestamp,
+    ) -> RepositoryResult<EpicBacklogCode> {
+        let transaction = self.begin()?;
+        let code = ensure_epic_backlog_code(
+            &transaction,
+            project_id,
+            mini_project_id,
+            manual_override,
+            assigned_at,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(code)
+    }
+
+    /// Read one active epic backlog namespace.
+    pub fn epic_backlog_code(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<EpicBacklogCode>> {
+        let found: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT code FROM epic_backlog_codes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(found.as_deref().map(EpicBacklogCode::parse).transpose()?)
+    }
+
     /// Every reconciliation conflict recorded against one task's links.
     ///
     /// # Errors
@@ -1333,6 +1382,7 @@ impl SqliteStore {
         let application = EpicApplication {
             project_id,
             name: ExternalName::parse("selection").map_err(RepositoryError::Domain)?,
+            epic_backlog_code: None,
             execution_scope: None,
             tasks: &[],
             profile: &request.snapshot,
@@ -1455,6 +1505,7 @@ impl SqliteStore {
         let application = EpicApplication {
             project_id,
             name: ExternalName::parse("selection").map_err(RepositoryError::Domain)?,
+            epic_backlog_code: None,
             execution_scope: None,
             tasks: &[],
             profile: &request.workflow.snapshot,
@@ -1909,6 +1960,13 @@ fn evaluate_epic_in(
     store_specifications(transaction, request)?;
 
     let (mini_project, epic_applied) = ensure_mini_project(transaction, request)?;
+    let epic_backlog_code = ensure_epic_backlog_code(
+        transaction,
+        request.project_id,
+        mini_project.id,
+        request.epic_backlog_code,
+        request.applied_at,
+    )?;
     let execution_scope = ensure_epic_execution_scope(
         transaction,
         request.project_id,
@@ -1951,6 +2009,7 @@ fn evaluate_epic_in(
     };
     Ok(AppliedEpic {
         mini_project_id: mini_project.id,
+        epic_backlog_code,
         applied: epic_applied,
         revision: mini_project.revision,
         execution_scope,
@@ -2381,6 +2440,94 @@ fn ensure_epic_execution_scope(
         ai_short_name: declaration.ai_short_name.clone(),
         created_at,
     }))
+}
+
+fn ensure_epic_backlog_code(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+    manual_override: Option<&EpicBacklogCode>,
+    assigned_at: Timestamp,
+) -> RepositoryResult<EpicBacklogCode> {
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT code FROM epic_backlog_codes
+             WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+            params![project_id.to_string(), mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if let Some(code) = existing {
+        let code = EpicBacklogCode::parse(code)?;
+        if manual_override.is_some_and(|declared| declared != &code) {
+            return Err(conflict(
+                "epic backlog code",
+                "the epic already has a different durable backlog code",
+            ));
+        }
+        return Ok(code);
+    }
+
+    let title: Option<String> = transaction
+        .query_row(
+            "SELECT name FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let title = title.ok_or(RepositoryError::NotFound {
+        subject: "mini project",
+    })?;
+    let mut statement = transaction
+        .prepare(
+            "SELECT code FROM epic_backlog_codes
+             WHERE project_id = ?1 AND status = 'active' ORDER BY code COLLATE NOCASE",
+        )
+        .map_err(backend)?;
+    let used = statement
+        .query_map([project_id.to_string()], |row| row.get::<_, String>(0))
+        .map_err(backend)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(backend)?;
+    drop(statement);
+
+    let (code, provenance) = if let Some(manual) = manual_override {
+        if used
+            .iter()
+            .any(|current| current.eq_ignore_ascii_case(manual.as_str()))
+        {
+            return Err(conflict(
+                "epic backlog code",
+                "the requested code is already assigned in this project",
+            ));
+        }
+        (manual.clone(), "manual")
+    } else {
+        (
+            EpicBacklogCode::allocate(
+                &ExternalName::parse(&title)?,
+                used.iter().map(String::as_str),
+            )?,
+            "automatic",
+        )
+    };
+    transaction
+        .execute(
+            "INSERT INTO epic_backlog_codes
+                 (project_id, mini_project_id, code, provenance, status, assigned_at)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            params![
+                project_id.to_string(),
+                mini_project_id.to_string(),
+                code.as_str(),
+                provenance,
+                text(assigned_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(code)
 }
 
 fn ensure_task(

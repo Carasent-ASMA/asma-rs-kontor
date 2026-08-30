@@ -43,6 +43,7 @@ use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
+use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
@@ -3444,6 +3445,11 @@ pub struct ApplyEpicRequest {
     /// The epic's name, which is its identity inside the project.
     #[schema(value_type = String)]
     pub name: ExternalName,
+    /// Kontor-owned immutable namespace for this epic. Omission allocates the
+    /// first deterministic project-scoped code from the epic title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub epic_backlog_code: Option<EpicBacklogCode>,
     /// Durable identity used to place this epic and its tasks in a runtime.
     /// Omission preserves an existing declaration for wire compatibility.
     #[serde(default)]
@@ -3590,6 +3596,11 @@ pub struct AppliedEpicDto {
     /// The goal that carries the epic.
     #[schema(value_type = String)]
     pub epic_id: MiniProjectId,
+    /// Kontor-owned immutable namespace for this epic. Legacy receipt replays
+    /// created before schema v72 remain readable until an explicit epic apply
+    /// assigns the namespace.
+    #[schema(value_type = Option<String>)]
+    pub epic_backlog_code: Option<EpicBacklogCode>,
     /// Whether this call created it.
     pub applied: AppliedDto,
     /// The revision a write must present.
@@ -3659,6 +3670,9 @@ pub struct PreviewEpicDto {
     /// The durable epic id when this preview matched an existing epic.
     #[schema(value_type = Option<String>)]
     pub epic_id: Option<MiniProjectId>,
+    /// Kontor-owned immutable namespace apply would preserve or allocate.
+    #[schema(value_type = String)]
+    pub epic_backlog_code: EpicBacklogCode,
     /// Whether apply would create the epic or find it unchanged.
     pub applied: AppliedDto,
     /// The runtime-facing identity apply would preserve or create.
@@ -3850,6 +3864,10 @@ pub struct EpicProjectionDto {
     /// The goal that carries the epic.
     #[schema(value_type = String)]
     pub epic_id: MiniProjectId,
+    /// Kontor-owned immutable namespace for this epic, once assigned. Legacy
+    /// epics remain operable and readable while they await explicit assignment.
+    #[schema(value_type = Option<String>)]
+    pub epic_backlog_code: Option<EpicBacklogCode>,
     /// Its name.
     #[schema(value_type = String)]
     pub name: ExternalName,

@@ -9098,6 +9098,13 @@
             "type": "string",
             "description": "A stable digest of the graph this call applied.\n\nIt covers the *content* — the epic and its revision, the pinned profile\nand team revisions, and every task's identity, title, state, dependency\nset and ticket links — and nothing about the call that applied it. So a\nbyte-identical reapply of an unchanged graph returns the same digest, and\na caller diffing it to detect drift sees drift only when the graph\nactually moved.\n\nIt is deliberately *not* the resolved bundle's digest: that one covers the\nresolution, including when it happened, and therefore differs on every\ncall. Reporting it here made drift detection fire on every replay."
           },
+          "epic_backlog_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kontor-owned immutable namespace for this epic. Legacy receipt replays\ncreated before schema v72 remain readable until an explicit epic apply\nassigns the namespace."
+          },
           "epic_id": {
             "type": "string",
             "description": "The goal that carries the epic."
@@ -9418,6 +9425,13 @@
               "null"
             ],
             "description": "The provider-account profile to pin, if any."
+          },
+          "epic_backlog_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kontor-owned immutable namespace for this epic. Omission allocates the\nfirst deterministic project-scoped code from the epic title."
           },
           "execution_scope": {
             "oneOf": [
@@ -12724,6 +12738,13 @@
             },
             "description": "Every arming decision that touches this epic."
           },
+          "epic_backlog_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kontor-owned immutable namespace for this epic, once assigned. Legacy\nepics remain operable and readable while they await explicit assignment."
+          },
           "epic_id": {
             "type": "string",
             "description": "The goal that carries the epic."
@@ -14462,6 +14483,7 @@
         "required": [
           "realm_id",
           "project_id",
+          "epic_backlog_code",
           "applied",
           "work_profile",
           "tasks"
@@ -14470,6 +14492,10 @@
           "applied": {
             "$ref": "#/components/schemas/AppliedDto",
             "description": "Whether apply would create the epic or find it unchanged."
+          },
+          "epic_backlog_code": {
+            "type": "string",
+            "description": "Kontor-owned immutable namespace apply would preserve or allocate."
           },
           "epic_id": {
             "type": [

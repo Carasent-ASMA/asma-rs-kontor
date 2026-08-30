@@ -2938,6 +2938,12 @@ export interface components {
              *     call. Reporting it here made drift detection fire on every replay.
              */
             bundle_hash: string;
+            /**
+             * @description Kontor-owned immutable namespace for this epic. Legacy receipt replays
+             *     created before schema v72 remain readable until an explicit epic apply
+             *     assigns the namespace.
+             */
+            epic_backlog_code?: string | null;
             /** @description The goal that carries the epic. */
             epic_id: string;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
@@ -3078,6 +3084,11 @@ export interface components {
         ApplyEpicRequest: {
             /** @description The provider-account profile to pin, if any. */
             account_profile_id?: string | null;
+            /**
+             * @description Kontor-owned immutable namespace for this epic. Omission allocates the
+             *     first deterministic project-scoped code from the epic title.
+             */
+            epic_backlog_code?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             /**
              * Format: int64
@@ -4613,6 +4624,11 @@ export interface components {
         EpicProjectionDto: {
             /** @description Every arming decision that touches this epic. */
             authorizations: components["schemas"]["AuthorizationProjectionDto"][];
+            /**
+             * @description Kontor-owned immutable namespace for this epic, once assigned. Legacy
+             *     epics remain operable and readable while they await explicit assignment.
+             */
+            epic_backlog_code?: string | null;
             /** @description The goal that carries the epic. */
             epic_id: string;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
@@ -5462,6 +5478,8 @@ export interface components {
         PreviewEpicDto: {
             /** @description Whether apply would create the epic or find it unchanged. */
             applied: components["schemas"]["AppliedDto"];
+            /** @description Kontor-owned immutable namespace apply would preserve or allocate. */
+            epic_backlog_code: string;
             /** @description The durable epic id when this preview matched an existing epic. */
             epic_id?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];

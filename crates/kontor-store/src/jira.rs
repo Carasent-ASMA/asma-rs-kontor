@@ -236,6 +236,64 @@ impl SqliteStore {
         Ok(items)
     }
 
+    /// Return the externally read-back Jira epic key, never an imported or
+    /// merely requested execution-scope value.
+    pub fn confirmed_jira_epic_key(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> RepositoryResult<Option<ExternalId>> {
+        let key: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT external_issue_key FROM jira_epic_bindings
+                 WHERE project_id = ?1 AND epic_id = ?2",
+                params![project_id.to_string(), epic_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(key.as_deref().map(ExternalId::parse).transpose()?)
+    }
+
+    /// Return the one externally read-back Jira task key.
+    ///
+    /// Multiple confirmed Jira links for the same task are an ambiguous
+    /// identity and are refused instead of selecting one by row order.
+    pub fn confirmed_jira_task_key(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Option<ExternalId>> {
+        let (key, count): (Option<String>, i64) = self
+            .connection
+            .query_row(
+                "SELECT MIN(link.external_issue_key), COUNT(*)
+                 FROM jira_links AS link
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = link.project_id
+                  AND confirmation.link_id = link.id
+                 WHERE link.project_id = ?1 AND link.task_id = ?2
+                   AND link.connector = 'connector.jira'",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(backend)?;
+        match count {
+            0 => Ok(None),
+            1 => Ok(Some(ExternalId::parse(key.as_deref().ok_or(
+                RepositoryError::Conflict {
+                    subject: "confirmed Jira task binding",
+                    rule: "the unique confirmed binding has no issue key",
+                },
+            )?)?)),
+            _ => Err(RepositoryError::Conflict {
+                subject: "confirmed Jira task binding",
+                rule: "more than one confirmed Jira issue is bound to the task",
+            }),
+        }
+    }
+
     /// Atomically confirm one exact Jira readback and its durable binding.
     pub fn confirm_jira_materialization_item(
         &self,
@@ -245,6 +303,42 @@ impl SqliteStore {
         confirmed_at: Timestamp,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
+        let stored: Option<(String, Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT status, confirmed_key, readback_hash
+                 FROM jira_materialization_items
+                 WHERE project_id = ?1 AND id = ?2",
+                params![item.project_id.to_string(), item.id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        match stored {
+            Some((status, stored_key, stored_hash)) if status == "confirmed" => {
+                if stored_key.as_deref() == Some(key.as_str())
+                    && stored_hash.as_deref() == Some(readback_hash.as_str())
+                {
+                    transaction.commit().map_err(backend)?;
+                    return Ok(());
+                }
+                return Err(RepositoryError::Conflict {
+                    subject: "Jira materialization item",
+                    rule: "the item is already confirmed with another Jira readback",
+                });
+            }
+            Some((status, _, _)) if status == "planned" => {}
+            Some(_) => {
+                return Err(RepositoryError::Conflict {
+                    subject: "Jira materialization item",
+                    rule: "the item is not confirmable in its current state",
+                });
+            }
+            None => {
+                return Err(RepositoryError::NotFound {
+                    subject: "Jira materialization item",
+                });
+            }
+        }
         match item.item_kind {
             JiraItemKind::Epic => {
                 transaction
@@ -270,43 +364,96 @@ impl SqliteStore {
                 let task_id = item.task_id.ok_or_else(|| {
                     kontor_core::DomainError::invalid("Jira task item", "stored without a task")
                 })?;
-                let link_id = item.link_id.ok_or_else(|| {
+                let planned_link_id = item.link_id.ok_or_else(|| {
                     kontor_core::DomainError::invalid(
                         "Jira task item",
                         "stored without a link identity",
                     )
                 })?;
-                transaction
-                    .execute(
-                        "INSERT OR IGNORE INTO jira_links
-                         (id, project_id, task_id, connector, external_issue_key, revision, created_at)
-                         VALUES (?1, ?2, ?3, 'connector.jira', ?4, 1, ?5)",
-                        params![
-                            link_id.to_string(),
-                            item.project_id.to_string(),
-                            task_id.to_string(),
-                            key.as_str(),
-                            format_utc_timestamp(confirmed_at),
-                        ],
+                let existing_for_key: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT id, task_id FROM jira_links
+                         WHERE project_id = ?1 AND connector = 'connector.jira'
+                           AND external_issue_key = ?2",
+                        params![item.project_id.to_string(), key.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(backend)?;
+                let jira_links_for_task: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM jira_links
+                         WHERE project_id = ?1 AND task_id = ?2
+                           AND connector = 'connector.jira'",
+                        params![item.project_id.to_string(), task_id.to_string()],
+                        |row| row.get(0),
                     )
                     .map_err(backend)?;
-                let linked: Option<String> = transaction
+                let effective_link_id = match existing_for_key {
+                    Some((link_id, linked_task_id))
+                        if linked_task_id == task_id.to_string() && jira_links_for_task == 1 =>
+                    {
+                        link_id
+                    }
+                    Some(_) => {
+                        return Err(RepositoryError::Conflict {
+                            subject: "Jira task binding",
+                            rule: "the confirmed Jira issue is bound ambiguously or to another task",
+                        });
+                    }
+                    None if jira_links_for_task > 0 => {
+                        return Err(RepositoryError::Conflict {
+                            subject: "Jira task binding",
+                            rule: "the task already has another Jira binding",
+                        });
+                    }
+                    None => {
+                        transaction
+                            .execute(
+                                "INSERT INTO jira_links
+                                 (id, project_id, task_id, connector, external_issue_key, revision, created_at)
+                                 VALUES (?1, ?2, ?3, 'connector.jira', ?4, 1, ?5)",
+                                params![
+                                    planned_link_id.to_string(),
+                                    item.project_id.to_string(),
+                                    task_id.to_string(),
+                                    key.as_str(),
+                                    format_utc_timestamp(confirmed_at),
+                                ],
+                            )
+                            .map_err(backend)?;
+                        planned_link_id.to_string()
+                    }
+                };
+                if effective_link_id != planned_link_id.to_string() {
+                    transaction
+                        .execute(
+                            "UPDATE jira_materialization_items
+                             SET link_id = ?1
+                             WHERE project_id = ?2 AND id = ?3 AND status = 'planned'
+                               AND link_id = ?4",
+                            params![
+                                effective_link_id,
+                                item.project_id.to_string(),
+                                item.id.as_str(),
+                                planned_link_id.to_string(),
+                            ],
+                        )
+                        .map_err(backend)?;
+                }
+                let stored_link_id: Option<String> = transaction
                     .query_row(
-                        "SELECT external_issue_key FROM jira_links
-                         WHERE project_id = ?1 AND id = ?2 AND task_id = ?3",
-                        params![
-                            item.project_id.to_string(),
-                            link_id.to_string(),
-                            task_id.to_string(),
-                        ],
+                        "SELECT link_id FROM jira_materialization_items
+                         WHERE project_id = ?1 AND id = ?2",
+                        params![item.project_id.to_string(), item.id.as_str()],
                         |row| row.get(0),
                     )
                     .optional()
                     .map_err(backend)?;
-                if linked.as_deref() != Some(key.as_str()) {
+                if stored_link_id.as_deref() != Some(effective_link_id.as_str()) {
                     return Err(RepositoryError::Conflict {
                         subject: "Jira task binding",
-                        rule: "the confirmed Jira task binding names another issue",
+                        rule: "the durable materialization item names another Jira link",
                     });
                 }
                 transaction
@@ -319,7 +466,7 @@ impl SqliteStore {
                            confirmed_at = excluded.confirmed_at",
                         params![
                             item.project_id.to_string(),
-                            link_id.to_string(),
+                            effective_link_id,
                             readback_hash.as_str(),
                             format_utc_timestamp(confirmed_at),
                         ],

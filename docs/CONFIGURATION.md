@@ -26,6 +26,37 @@ Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
 specification cannot change between the two.
 
+## Jira-derived backlog and topology names
+
+An epic apply accepts `epic_backlog_code`. Omit it to allocate from the epic
+title or set it explicitly when the business namespace differs from initials —
+for example `KOP` for “Kontor Operational MVP”. The value is immutable and
+case-insensitively unique within that Kontor project. Jira continues to own full
+issue keys such as `ASMA-8001`. Epics created before schema v72 remain readable
+without a code; reapply them through the preview/apply pair to assign one before
+selecting topology v2.
+
+Operational topology v2 (`01936f5a-1000-7000-8000-000000000001`, revision `2`)
+uses the typed `ITEM_CODE` projection and renders centered-dot names. Enable it
+in this order:
+
+1. Preview/apply the epic graph and read back its active epic backlog code.
+2. Preview/apply Jira materialization and confirm the epic and task issue
+   readbacks. A requested or imported key alone is insufficient.
+3. Preview/apply the project topology selection to revision 2, which controls
+   what new epics inherit.
+4. Preview/apply each existing epic's topology upgrade to revision 2.
+5. Preview/apply native-name reconciliation for containers or seats that were
+   already materialized under revision 1.
+
+The corresponding `/v1` operations are `epics:preview` / `epics:apply`,
+`jira:preview` / `jira:apply`, `topology-selection:preview` /
+`topology-selection:apply`, `topology:upgrade-preview` /
+`topology:upgrade-apply`, and `native-names:preview` / `native-names:apply`.
+Revision 1 is never rewritten. Revision 2 refuses placement before a runtime
+mutation when the active epic namespace or one unambiguous confirmed Jira
+binding is missing.
+
 ## Seat supervision
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)

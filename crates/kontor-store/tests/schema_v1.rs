@@ -64,6 +64,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
     "epic_completion_wake_deliveries",
+    "epic_backlog_codes",
     "epic_native_name_tokens",
     "epic_execution_scopes",
     "epic_rosters",
@@ -474,8 +475,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // side effect. v68 adds immutable native-less materialization reroute;
     // v69 widens global Committee recovery rounds; v70 reconciles intermediate
     // v69 projections; and v71 adds exact-occupancy durable Completion-wake
-    // delivery evidence.
-    assert_eq!(SCHEMA_VERSION, 71);
+    // delivery evidence; and v72 adds durable project-scoped epic namespaces.
+    assert_eq!(SCHEMA_VERSION, 72);
 }
 
 #[test]

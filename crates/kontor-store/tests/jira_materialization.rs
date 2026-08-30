@@ -1,12 +1,13 @@
 //! Durable Jira materialization and activation behavior.
 
 use kontor_core::id::{
-    AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId,
+    AggregateRevision, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash, ExternalId,
     IdempotencyKey, MiniProjectId, ProjectId, TaskId, TicketLinkId, Timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    CommandRepository, NewLocalCommand, NewMiniProject, NewProject, NewTask, ProjectRepository,
+    CommandRepository, NewLocalCommand, NewMiniProject, NewProject, NewTask, NewTicketLink,
+    ProjectRepository, TicketRepository,
 };
 use kontor_core::state::TaskState;
 use kontor_store::{
@@ -18,10 +19,7 @@ fn external(value: impl AsRef<str>) -> ExternalId {
     ExternalId::parse(value.as_ref()).expect("external id")
 }
 
-#[test]
-fn activation_requires_every_confirmed_binding_and_survives_readback() {
-    let root = tempfile::tempdir().expect("state root");
-    let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
+fn seed_graph(store: &SqliteStore) -> (ProjectId, MiniProjectId, TaskId, Timestamp) {
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
     let task_id = TaskId::generate();
@@ -53,6 +51,14 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
             created_at: now,
         })
         .expect("task");
+    (project_id, epic_id, task_id, now)
+}
+
+#[test]
+fn activation_requires_every_confirmed_binding_and_survives_readback() {
+    let root = tempfile::tempdir().expect("state root");
+    let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
 
     let batch_id = external(uuid::Uuid::now_v7().to_string());
     let link_id = TicketLinkId::generate();
@@ -101,6 +107,18 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
     let items = store
         .jira_materialization_items(project_id, &batch_id)
         .expect("planned items");
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("epic binding query"),
+        None
+    );
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("task binding query"),
+        None
+    );
     assert!(
         store
             .activate_asma_epic(project_id, epic_id, CommandReceiptId::generate(), now)
@@ -116,9 +134,44 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
             )
             .expect("readback is confirmed");
     }
+    assert!(
+        store
+            .confirm_jira_materialization_item(
+                &items[0],
+                &external("ASMA-999"),
+                &ContentHash::of(b"different-readback"),
+                now,
+            )
+            .is_err(),
+        "a confirmed item cannot be rebound by a stale or hostile retry"
+    );
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("preserved epic binding")
+            .as_ref()
+            .map(ExternalId::as_str),
+        Some("ASMA-1")
+    );
     store
         .confirm_jira_materialization_batch(project_id, &batch_id, now)
         .expect("batch confirms");
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("confirmed epic key")
+            .as_ref()
+            .map(ExternalId::as_str),
+        Some("ASMA-1")
+    );
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("confirmed task key")
+            .as_ref()
+            .map(ExternalId::as_str),
+        Some("ASMA-2")
+    );
     let receipt_id = CommandReceiptId::generate();
     store
         .record_local_command(&NewLocalCommand {
@@ -151,4 +204,84 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
         .expect("task link");
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].external_issue_key.as_str(), "ASMA-2");
+}
+
+#[test]
+fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery() {
+    let root = tempfile::tempdir().expect("state root");
+    let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let batch_id = external(uuid::Uuid::now_v7().to_string());
+    let planned_link_id = TicketLinkId::generate();
+    let recovered_link_id = TicketLinkId::generate();
+
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "materialize-recovery".to_owned(),
+                preview_hash: ContentHash::of(b"recovery-preview"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: Some(task_id),
+                link_id: Some(planned_link_id),
+                ordinal: 0,
+                item_kind: JiraItemKind::Task,
+                intent_kind: JiraIntentKind::Create,
+                requested_key: None,
+                marker: external("kontor-task-recovery-fixture"),
+            }],
+        )
+        .expect("plan is durable before transport");
+    store
+        .create_ticket_link(&NewTicketLink {
+            id: recovered_link_id,
+            project_id,
+            task_id,
+            connector: ConnectorKey::parse("connector.jira").expect("Jira connector"),
+            external_issue_key: external("ASMA-8050"),
+            created_at: now,
+        })
+        .expect("bounded recovery persisted the exact Jira binding");
+
+    let planned = store
+        .jira_materialization_items(project_id, &batch_id)
+        .expect("planned item")
+        .into_iter()
+        .next()
+        .expect("task item");
+    assert_eq!(planned.link_id, Some(planned_link_id));
+    store
+        .confirm_jira_materialization_item(
+            &planned,
+            &external("ASMA-8050"),
+            &ContentHash::of(b"ASMA-8050-readback"),
+            now,
+        )
+        .expect("the exact recovered binding is adopted");
+
+    let confirmed = store
+        .jira_materialization_items(project_id, &batch_id)
+        .expect("confirmed item")
+        .into_iter()
+        .next()
+        .expect("task item");
+    assert_eq!(confirmed.link_id, Some(recovered_link_id));
+    assert_eq!(
+        confirmed.confirmed_key.as_ref().map(ExternalId::as_str),
+        Some("ASMA-8050")
+    );
+    let links = store
+        .list_task_ticket_links(project_id, task_id)
+        .expect("task links");
+    assert_eq!(links.len(), 1, "recovery never creates a duplicate link");
+    assert_eq!(links[0].id, recovered_link_id);
 }

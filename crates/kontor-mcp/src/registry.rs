@@ -108,6 +108,8 @@ pub enum ArgType {
     /// Unicode and may contain spaces, so it belongs in a body and never in a path
     /// segment.
     ExternalId,
+    /// A canonical, project-scoped epic backlog namespace.
+    EpicBacklogCode,
     /// A caller's stable idempotency key.
     IdempotencyKey,
     /// Free text the daemon interprets.
@@ -210,6 +212,7 @@ impl ArgType {
             | Self::OpenKey
             | Self::ExternalName
             | Self::ExternalId
+            | Self::EpicBacklogCode
             | Self::IdempotencyKey
             | Self::Text
             | Self::Timestamp
@@ -231,6 +234,9 @@ impl ArgType {
         let mut fragment = serde_json::Map::new();
         fragment.insert("type".into(), self.json_type().into());
         match self {
+            Self::EpicBacklogCode => {
+                fragment.insert("pattern".into(), "^[A-Z0-9]{2,32}$".into());
+            }
             Self::Enum(allowed) => {
                 fragment.insert("enum".into(), allowed.iter().copied().collect());
             }
@@ -1119,6 +1125,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Object(EPIC_EXECUTION_SCOPE),
                 "The epic's durable runtime-facing tracker key and compact title.",
             ),
+            opt(
+                "epic_backlog_code",
+                Place::Body,
+                ArgType::EpicBacklogCode,
+                "A manual immutable project-scoped epic backlog namespace; omit it to allocate one from the title.",
+            ),
             req(
                 "work_profile_category",
                 Place::Body,
@@ -1183,6 +1195,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Object(EPIC_EXECUTION_SCOPE),
                 "The epic's durable runtime-facing tracker key and compact title.",
+            ),
+            opt(
+                "epic_backlog_code",
+                Place::Body,
+                ArgType::EpicBacklogCode,
+                "A manual immutable project-scoped epic backlog namespace; omit it to allocate one from the title.",
             ),
             req(
                 "work_profile_category",

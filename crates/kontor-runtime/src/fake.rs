@@ -518,6 +518,9 @@ struct FakeState {
     /// Container retitles whose native effect succeeds but acknowledgement is
     /// deliberately dropped once, modelling a transport loss after commit.
     lose_retitle_ack_once: BTreeSet<TopologyNodeId>,
+    /// Container retitles a runtime silently ignores once, so callers must
+    /// reject the unchanged native readback instead of recording success.
+    ignore_retitle_once: BTreeSet<TopologyNodeId>,
     /// The ticket scope this plane can render a title from, per task.
     ///
     /// Stands in for what a real plane reads out of its own configuration. A task
@@ -981,6 +984,7 @@ impl ScriptedFakeRuntime {
                 seat_titles: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
+                ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 permissions: PermissionLedger::new(),
@@ -1328,6 +1332,12 @@ impl ScriptedFakeRuntime {
     /// already committed its native effect.
     pub fn lose_next_retitle_ack(&self, topology_node_id: TopologyNodeId) {
         self.lock().lose_retitle_ack_once.insert(topology_node_id);
+    }
+
+    /// Silently ignore the next requested container title change and return
+    /// the unchanged native title as readback.
+    pub fn ignore_next_retitle(&self, topology_node_id: TopologyNodeId) {
+        self.lock().ignore_retitle_once.insert(topology_node_id);
     }
 
     /// The visible title held by one persistent native seat.
@@ -1920,9 +1930,12 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             request,
             AdapterCall::RetitleContainer(request.topology_node_id),
         )?;
-        state
-            .container_titles
-            .insert(request.topology_node_id, desired.as_str().to_owned());
+        let ignored = state.ignore_retitle_once.remove(&request.topology_node_id);
+        if !ignored {
+            state
+                .container_titles
+                .insert(request.topology_node_id, desired.as_str().to_owned());
+        }
         // Read back rather than echoed: a caller must be able to tell a silently
         // ignored rename from one that happened.
         let observed_title = state

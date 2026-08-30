@@ -720,6 +720,14 @@ exported_tables! {
         ai_short_name: Option<String>,
         declared_at: String,
     }
+    epic_backlog_codes: EpicBacklogCodesRow from "epic_backlog_codes" key(project_id, mini_project_id, status) {
+        project_id: String,
+        mini_project_id: String,
+        code: String,
+        provenance: String,
+        status: String,
+        assigned_at: String,
+    }
     task_ai_short_names: TaskAiShortNamesRow from "task_ai_short_names" key(project_id, task_id) {
         project_id: String,
         task_id: String,
