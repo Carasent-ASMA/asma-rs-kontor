@@ -87,16 +87,24 @@ mode spelling is refused at spawn and strands the seat (Paseo 0.4.0 rejecting
 
 ## What was built
 
-| Plan step | Where |
-| --- | --- |
-| Abstract `autonomous\|ask\|plan` vocabulary mapped to `SeatAutonomy` | `kontor-daemon/src/runtimes.rs` — `PermissionPosture` + `From` both ways |
-| Versioned migration, back-compatible default | `RUNTIMES_SCHEMA = 5`, `READABLE_SCHEMAS = [4, 5]`; absence resolves to `ask` |
-| One shared renderer for launch and readback | `kontor-runtime-paseo/src/posture.rs` — `seat_posture` |
-| Native translation, Claude/Codex/Cursor/OpenCode | `client.rs` mode tables (Cursor added) + `posture.rs` |
-| Guaranteed OpenCode permission block | `seat_mcp.rs` — `<cwd>/.opencode/opencode.json` |
-| Bounded per-task override | `PaseoTaskSetting.permission_overrides` → `PermissionAllowance` |
-| Destructive patterns deny, not ask | `DESTRUCTIVE_BASH_DENIES`, applied under every writing posture |
-| Consultation stays read-only | `SeatPosture::read_only()` at the consultation launch |
+Status is stated per row: OP-20's deterministic-posture feature is **not
+delivered**, because its intended provider is refused (see the disposition
+section at the end of this file).
+
+| Plan step | Where | Status |
+| --- | --- | --- |
+| Abstract `autonomous\|ask\|plan` vocabulary mapped to `SeatAutonomy` | `kontor-daemon/src/runtimes.rs` — `PermissionPosture` + `From` both ways | delivered |
+| Versioned migration, back-compatible default | `RUNTIMES_SCHEMA = 5`, `READABLE_SCHEMAS = [4, 5]`; absence resolves to `ask` | delivered |
+| Resolution order slot → plane default → `ask` | `applications.rs` `freeze_seat_autonomy` + `RuntimeAdapter::declared_autonomy` | delivered |
+| One shared renderer for launch and readback | `posture.rs` — `render_posture`, behind the `seat_posture` gate | delivered |
+| Native translation for Claude and Codex | `client.rs` mode tables | delivered |
+| Cursor correction — `ask`/`plan` refused, `agent` kept | `client.rs` | delivered |
+| Destructive floor, `deny` never `ask` | `DESTRUCTIVE_BASH_DENIES` | delivered (renderer) |
+| Bounded per-task override, exact floor keys only | `PaseoTaskSetting.permission_overrides` → `PermissionAllowance` | delivered (renderer) |
+| Consultation stays read-only | `SeatPosture::read_only()` at the consultation launch | delivered |
+| OpenCode permission block composed at spawn | `seat_mcp.rs` — `<cwd>/.opencode/opencode.json` | **not reachable** — OpenCode delivery is refused |
+| OpenCode posture verified before spawn | `seat_mcp.rs` — `verify_composed_posture` | **not sound** — see the disposition; retained for the re-enabled path |
+| `auto_accept` where the spawn surface exposes it | derived in `SeatPosture`, unconsumed | **not wired** — no Paseo CLI surface (OQ-OP20-2) |
 
 The resolution order is slot → plane default → `ask`, so a template that already
 declared a seat's autonomy is never overruled by a plane-wide default.

@@ -125,7 +125,6 @@ later checks cannot drift apart.
 | `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
 | `opencode` | *refused* | *refused* | *refused* |
 | `cursor` | `agent` | *refused* | *refused* |
-| `opencode` | `build` + permission block | `build` + permission block | `plan` |
 
 Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
 names. Its ACP runtime permits shell writes in `plan`, and shell *and* file
