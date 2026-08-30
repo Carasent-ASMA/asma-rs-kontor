@@ -4677,6 +4677,38 @@ pub struct ReplaceSeatRequest {
     /// idle-seat reuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_provider: Option<UnavailableProviderSeatRequest>,
+    /// Exact evidence authorizing succession of a seat that ran and then hit a
+    /// provider usage limit.
+    ///
+    /// Distinct from `unavailable_provider`, and deliberately not a widening of
+    /// it: that arm means *the provider was down when we tried to start*, and
+    /// its launch-only fence is load-bearing for that meaning. This one means
+    /// *it ran for an hour and then hit the wall*, which is a different fact
+    /// with different evidence — the predecessor is still reachable, and a
+    /// recorded quota state is what authorizes retiring it anyway.
+    ///
+    /// Mutually exclusive with `unavailable_provider`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_exhausted: Option<QuotaExhaustedSeatRequest>,
+}
+
+/// Exact identity and quota evidence for succeeding one usage-limited seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuotaExhaustedSeatRequest {
+    /// Kontor's immutable runtime binding id.
+    pub runtime_binding_id: String,
+    /// The exact native session id behind that binding.
+    pub native_id: String,
+    /// The provider whose allowance was exhausted.
+    pub provider: String,
+    /// The account whose recorded quota state authorizes the succession.
+    ///
+    /// Named rather than derived: the caller states which account it believes
+    /// is blocked, and the server refuses if that is not the account the run
+    /// actually claims. Deriving it would let a stale caller succeed against
+    /// whichever account the run happened to hold.
+    pub account_profile_id: String,
 }
 
 /// Exact identity and outage evidence for retiring one unused native seat.

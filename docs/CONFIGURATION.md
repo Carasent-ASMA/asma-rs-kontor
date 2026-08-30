@@ -97,6 +97,24 @@ both eligible for one account, which is why the shipped example lists the Claude
 aliases before the Codex ones: the whole of the Codex marker set is the words
 "usage limit", which a Claude refusal also contains.
 
+**A stated zone is the provenance of a captured message, not the host's
+clock.** `reset_zone` qualifies the wall clock *that vendor's message printed*,
+recorded alongside the wording it belongs to. It is never inferred from the
+daemon's own timezone: a host that later moves to another zone is a fact about
+now, and letting it reinterpret a historical fingerprint would silently move
+every reset derived from it. The shipped Codex entry states `Europe/Oslo`
+because that is where the 2026-08-21/23 incident message was captured — not
+because any particular machine runs there.
+
+**Only an exact, distinctive system-refusal fingerprint may activate a signal.**
+A bare phrase like `usage limit` is not sufficient: an ordinary assistant
+message *discussing* limit handling contains it, and this configuration has the
+authority to archive a live seat. Require the vendor's framing, its settings
+URL and its retry wording together. A vendor whose refusal has not been captured
+stays commented out rather than shipped on unverified copy — a false negative
+falls back to the poll and the operator, while a false positive retires work
+that was running.
+
 **Absent, unreadable and invalid are three different outcomes.** Only the first
 is inert:
 

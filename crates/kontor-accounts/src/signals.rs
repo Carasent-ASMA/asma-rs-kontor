@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::quota::QuotaSignal;
+use crate::quota::{QuotaBasis, QuotaSignal};
 
 /// The optional signals document inside a Realm state root.
 pub const QUOTA_SIGNALS_FILE: &str = "quota-signals.yml";
@@ -86,6 +86,24 @@ impl QuotaSignalsDocument {
             if signal.markers.iter().any(|marker| marker.trim().is_empty()) {
                 return invalid("a marker must not be blank");
             }
+            // The matcher scans ASCII-case-insensitively over the original
+            // message so its byte offsets stay valid char boundaries. That is
+            // exact only while the needles are ASCII, so the vendor grammar is
+            // enforced here rather than assumed there.
+            if signal
+                .markers
+                .iter()
+                .any(|marker| !marker.is_ascii())
+            {
+                return invalid("a marker must be ASCII vendor wording");
+            }
+            if signal
+                .reset_prefix
+                .as_ref()
+                .is_some_and(|prefix| !prefix.is_ascii())
+            {
+                return invalid("a reset_prefix must be ASCII vendor wording");
+            }
             // A blank prefix would capture from offset zero and read the whole
             // message as an instant, so it is a configuration error rather than
             // an absent prefix.
@@ -102,6 +120,29 @@ impl QuotaSignalsDocument {
                 .is_some_and(|zone| zone.trim().is_empty())
             {
                 return invalid("a stated reset_zone must not be blank");
+            }
+            // A zone that does not resolve is not a near-miss: every reset for
+            // this vendor silently degrades to `Unknown`, which reads as "the
+            // vendor stated no instant" when in fact the deployment named a
+            // zone that does not exist. Refuse it while an operator is looking
+            // at the file.
+            if let Some(zone) = signal.reset_zone.as_deref()
+                && jiff::tz::TimeZone::get(zone).is_err()
+            {
+                return invalid("a stated reset_zone must be a known IANA zone");
+            }
+            // Contradictory intent is refused rather than silently ignored. A
+            // prepaid balance has no reset instant to parse, so reset fields on
+            // one are configuration an operator believes is doing something.
+            if signal.basis == QuotaBasis::CreditBalance
+                && (signal.reset_prefix.is_some() || signal.reset_zone.is_some())
+            {
+                return invalid("a credit balance declares no reset_prefix or reset_zone");
+            }
+            // A zone qualifies a parsed instant, and nothing is parsed without
+            // a prefix, so a zone alone is intent that never applies.
+            if signal.reset_zone.is_some() && signal.reset_prefix.is_none() {
+                return invalid("a reset_zone requires a reset_prefix");
             }
         }
         Ok(())
@@ -142,7 +183,7 @@ fn invalid<T>(rule: &'static str) -> Result<T, QuotaSignalsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quota::{QuotaBasis, classify};
+    use crate::quota::classify;
     use kontor_core::spec::ProviderQuotaKind;
 
     const EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
@@ -161,42 +202,29 @@ mod tests {
             .iter()
             .map(|signal| signal.provider.as_str())
             .collect();
-        // An account routes `codex-work`, never the bare family `codex`. A
-        // signal naming the family matches no account and is silently inert.
-        for alias in [
-            "claude-work",
-            "claude-personal",
-            "codex-work",
-            "codex-personal",
-        ] {
+        for alias in ["codex-work", "codex-personal", "opencode"] {
             assert!(providers.contains(&alias), "missing {alias}: {providers:?}");
         }
         assert!(
             !providers.contains(&"codex") && !providers.contains(&"claude"),
             "a bare vendor family can never be selected by an account: {providers:?}",
         );
+        // Unverified vendor copy must not ship as active authority: a false
+        // positive archives live work, a false negative costs nothing.
+        assert!(
+            !providers.iter().any(|p| p.starts_with("claude")),
+            "no Claude refusal has been captured, so no Claude signal is active: {providers:?}",
+        );
     }
 
-    /// Every alias the example declares must actually classify something, or
-    /// the entry is decoration. This is the per-alias inertness guard.
     #[test]
-    fn every_declared_alias_classifies_its_own_vendor_wording() {
+    fn every_active_alias_classifies_its_own_vendor_wording() {
         let document = parse(EXAMPLE).expect("valid document");
         for (alias, text) in [
             ("codex-work", CODEX_LIMIT),
             ("codex-personal", CODEX_LIMIT),
-            (
-                "claude-work",
-                "Claude usage limit reached. Your limit will reset at 9:35 AM.",
-            ),
-            (
-                "claude-personal",
-                "Claude usage limit reached. Your limit will reset at 9:35 AM.",
-            ),
             ("opencode", "insufficient credits remaining"),
         ] {
-            // The daemon filters to one account's aliases before classifying,
-            // so this is the eligible set a seat on that account would see.
             let eligible: Vec<QuotaSignal> = document
                 .signals
                 .iter()
@@ -207,6 +235,30 @@ mod tests {
             let observed =
                 classify(text, &eligible).unwrap_or_else(|| panic!("{alias} classifies nothing"));
             assert_eq!(observed.provider, alias);
+        }
+    }
+
+    /// The false positive that motivated the full fingerprint: an assistant
+    /// merely *discussing* usage limits is not a refusal, and misreading one
+    /// archives a seat that was working.
+    #[test]
+    fn an_assistant_discussing_usage_limits_is_not_a_refusal() {
+        let document = parse(EXAMPLE).expect("valid document");
+        let codex: Vec<QuotaSignal> = document
+            .signals
+            .iter()
+            .filter(|signal| signal.provider == "codex-work")
+            .cloned()
+            .collect();
+        for innocuous in [
+            "I'll add handling for the provider usage limit case and try again at the next step.",
+            "The usage limit error should be retried; see the settings page for details.",
+            "[System Error] the tool call failed; try again at your convenience.",
+        ] {
+            assert!(
+                classify(innocuous, &codex).is_none(),
+                "ordinary prose must never retire a seat: {innocuous:?}",
+            );
         }
     }
 
@@ -224,26 +276,77 @@ mod tests {
         assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
     }
 
-    /// For an account able to select both families, order still decides: the
-    /// whole of the Codex marker set is the words "usage limit", which a Claude
-    /// refusal also contains.
+    /// The historical fingerprint keeps the zone of the message it was captured
+    /// from. A host that later sits elsewhere must not move the instant.
     #[test]
-    fn a_claude_refusal_is_not_attributed_to_codex_when_both_are_eligible() {
+    fn the_recorded_codex_reset_is_read_in_its_captured_zone() {
         let document = parse(EXAMPLE).expect("valid document");
-        let both: Vec<QuotaSignal> = document
+        let eligible: Vec<QuotaSignal> = document
             .signals
             .iter()
-            .filter(|signal| {
-                signal.provider == "claude-work" || signal.provider == "codex-work"
-            })
+            .filter(|signal| signal.provider == "codex-work")
             .cloned()
             .collect();
-        let observed = classify(
-            "Claude usage limit reached. Your limit will reset at 9:35 AM.",
-            &both,
-        )
-        .expect("a quota refusal");
-        assert_eq!(observed.provider, "claude-work");
+        assert_eq!(
+            eligible[0].reset_zone.as_deref(),
+            Some("Europe/Oslo"),
+            "the captured 2026-08-21/23 message is Oslo-authored provenance",
+        );
+        let observed = classify(CODEX_LIMIT, &eligible).expect("a quota refusal");
+        // 09:35 in Oslo during August is CEST, two hours ahead of UTC.
+        assert_eq!(
+            observed.resets_at,
+            Some(
+                kontor_core::id::parse_utc_timestamp("2026-08-23T07:35:00Z")
+                    .expect("a canonical instant")
+            ),
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_marker_is_refused_because_the_matcher_is_ascii_exact() {
+        let document = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['brukergrense']\n";
+        assert!(parse(document).is_ok(), "plain ASCII is fine");
+        let non_ascii = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['kvote overskredet \u{e5}']\n";
+        assert!(matches!(
+            parse(non_ascii),
+            Err(QuotaSignalsError::Invalid {
+                rule: "a marker must be ASCII vendor wording"
+            })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_iana_zone_is_refused_rather_than_degrading_every_reset() {
+        let document = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: 'try again at '\n    reset_zone: 'Europe/Nowhere'\n";
+        assert!(matches!(
+            parse(document),
+            Err(QuotaSignalsError::Invalid {
+                rule: "a stated reset_zone must be a known IANA zone"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_credit_balance_declaring_reset_fields_is_refused_as_contradictory() {
+        let document = "schema_version: 1\nsignals:\n  - provider: opencode\n    basis: credit_balance\n    markers: ['insufficient']\n    reset_prefix: 'try again at '\n";
+        assert!(matches!(
+            parse(document),
+            Err(QuotaSignalsError::Invalid {
+                rule: "a credit balance declares no reset_prefix or reset_zone"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_zone_without_a_prefix_is_refused_as_intent_that_never_applies() {
+        let document = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_zone: Europe/Oslo\n";
+        assert!(matches!(
+            parse(document),
+            Err(QuotaSignalsError::Invalid {
+                rule: "a reset_zone requires a reset_prefix"
+            })
+        ));
     }
 
     #[test]

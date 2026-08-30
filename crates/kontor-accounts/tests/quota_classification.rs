@@ -120,3 +120,30 @@ fn a_signal_with_no_markers_never_matches() {
     };
     assert!(classify(CODEX_LIMIT, &[empty]).is_none());
 }
+
+/// The head-boundary defect: lowercasing is not length-preserving, so a byte
+/// offset found in a lowercased copy does not address the same position in the
+/// original. A single non-ASCII character *before* the prefix was enough to
+/// shift the slice and lose — or corrupt — the instant the vendor stated.
+#[test]
+fn a_non_ascii_character_before_the_prefix_does_not_shift_the_reset() {
+    // `İ` is one char that lowercases to two, so every byte offset after it
+    // moves in the lowercased copy.
+    let text = "\u{130} [System Error] You've hit your usage limit. Try again at \
+                Aug 23rd, 2026 9:35 AM.";
+    let observed = classify(text, &[codex()]).expect("a quota refusal");
+    assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
+    assert_eq!(
+        observed.resets_at,
+        Some(parse_utc_timestamp("2026-08-23T07:35:00Z").expect("a canonical instant")),
+        "the instant is read from the original text, not a shifted copy",
+    );
+}
+
+/// The same defect on the marker side: containment must find ASCII wording
+/// regardless of surrounding non-ASCII content.
+#[test]
+fn markers_match_through_surrounding_non_ascii_content() {
+    let text = "\u{130}\u{130}\u{130} you've hit your USAGE LIMIT \u{e5}\u{f8}";
+    assert!(classify(text, &[codex()]).is_some());
+}

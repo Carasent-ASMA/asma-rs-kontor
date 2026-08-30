@@ -80,7 +80,7 @@ use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationFinding, ReconciliationReport, reconcile,
 };
-use kontor_runtime::refusal::TransientRefusal;
+use kontor_runtime::refusal::{RefusalProvenance, TransientRefusal};
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
@@ -89,7 +89,8 @@ use kontor_runtime::request::{
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
-    PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition, SessionEventKind,};
+    PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition,
+};
 use kontor_runtime::workspace::{
     WorkspaceBinding, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence, WorkspaceLabel,
     WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
@@ -104,8 +105,8 @@ use crate::wire::{
     PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
     PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
-    PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
-    label, classify_item, normalize_entry, stream_permission_external_id,
+    PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
+    label, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -836,37 +837,100 @@ pub struct PaseoAdapter {
     state: Mutex<PaseoState>,
 }
 
+/// Native item types that are *observed* provider-produced content.
+///
+/// An allowlist, deliberately. `classify_item` maps every unrecognised type to
+/// `Log` so the timeline stays complete, which is right for preservation and
+/// wrong for authority: a future or toggled user-origin type would arrive as
+/// `Log` and be read as something the provider said. Quota authority fails
+/// closed on provenance, so an unknown type authorizes nothing.
+///
+/// Adding a type here requires a captured fixture showing the provider emits it.
+const PROVIDER_ORIGIN_ITEM_TYPES: &[&str] = &["assistant_message", "plain_text"];
+
+/// The native item type that ends one turn and begins the next.
+const TURN_BOUNDARY_ITEM_TYPE: &str = "user_message";
+
 /// The most timeline items one refusal probe reads.
 ///
-/// A provider refusal is the last thing said, so a short window finds it or it
-/// is not there. This is the cap that keeps an observation path from becoming
-/// proportional to session age.
+/// A transport bound, not a content bound. It caps the page; it never truncates
+/// the item that is classified, because the sensitive-material scan has to see
+/// a candidate whole.
 const REFUSAL_TAIL_ITEMS: u32 = 8;
 
-/// The most bytes one refusal probe will concatenate.
-const REFUSAL_TAIL_BYTES: usize = 8 * 1024;
-
-/// The probe may never ask for more than the adapter's own page ceiling, nor
-/// concatenate more than a refusal could plausibly be. Enforced at compile
-/// time so widening either constant is a build failure, not a review note.
-const _: () = {
-    assert!(REFUSAL_TAIL_ITEMS <= MAX_HISTORY_PAGE);
-    assert!(REFUSAL_TAIL_BYTES <= 16 * 1024);
-};
-
-/// Whether a native item type is content the *provider* produced.
-///
-/// `user_message` is excluded deliberately: it is Kontor's own prompt coming
-/// back, and classifying it would let an operator's text about a usage limit
-/// mark an account exhausted.
+/// Whether a native item type is observed provider-produced content.
 fn provider_originated(item_type: &str) -> bool {
-    match item_type {
-        "user_message" => false,
-        other => matches!(
-            classify_item(other),
-            SessionEventKind::Message | SessionEventKind::Log
-        ),
+    PROVIDER_ORIGIN_ITEM_TYPES.contains(&item_type)
+}
+
+/// Choose the one item that may authorize a quota conclusion, if any.
+///
+/// # The rules, and why each is strict
+///
+/// * **The newest entry must itself be the provider's response.** Skipping
+///   newer content to reach an older provider item would let a tool call or log
+///   that came *after* the answer hide the fact that the turn moved on.
+/// * **The turn boundary must be positively observed.** A `user_message` has to
+///   appear in the page, otherwise the window may simply have been too short
+///   and the "provider item" may belong to a previous turn — an old refusal
+///   re-blocking an account after a later successful turn. Absence of proof is
+///   inert, never authority.
+/// * **One item, never a concatenation.** Joining a window let two unrelated
+///   messages jointly satisfy a signal's markers when neither said anything of
+///   the kind.
+/// * **The item is passed whole.** Bounding happens inside
+///   [`TransientRefusal::parse`], *after* the sensitive-material scan, so a
+///   secret in a discarded head cannot escape the scan. A candidate too large
+///   to scan safely is refused rather than trimmed.
+///
+/// A false negative here costs nothing — the usage poll and the operator both
+/// still work. A false positive archives running work.
+fn select_terminal_refusal(
+    entries: &[PaseoTimelineEntry],
+    epoch: u64,
+    agent_run_id: AgentRunId,
+    binding_generation: u64,
+) -> Option<TransientRefusal> {
+    let terminal = entries.last()?;
+    if !provider_originated(&terminal.item.item_type) {
+        return None;
     }
+    // Positive proof that this response belongs to the current turn.
+    if !entries
+        .iter()
+        .any(|entry| entry.item.item_type == TURN_BOUNDARY_ITEM_TYPE)
+    {
+        return None;
+    }
+    let text = terminal.item.text.as_deref()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let mut source_sequences: Vec<(u64, u64)> = if terminal.source_seq_ranges.is_empty() {
+        vec![(terminal.seq_start, terminal.seq_end)]
+    } else {
+        terminal
+            .source_seq_ranges
+            .iter()
+            .map(|range| (range.start_seq, range.end_seq))
+            .collect()
+    };
+    source_sequences.sort_unstable();
+    source_sequences.dedup();
+    TransientRefusal::parse(
+        text,
+        RefusalProvenance {
+            agent_run_id,
+            binding_generation,
+            position: TimelinePosition {
+                epoch,
+                sequence: terminal.seq_start,
+            },
+            sequence_end: terminal.seq_end,
+            source_sequences,
+            item_type: terminal.item.item_type.clone(),
+        },
+    )
 }
 
 impl PaseoAdapter {
@@ -2079,6 +2143,8 @@ impl PaseoAdapter {
     async fn refusal_diagnostic(
         &self,
         native_id: &str,
+        agent_run_id: AgentRunId,
+        binding_generation: u64,
         state: ObservedRunState,
     ) -> Option<TransientRefusal> {
         if !matches!(
@@ -2097,29 +2163,8 @@ impl PaseoAdapter {
             )
             .await
             .ok()?;
-        let mut collected: Vec<&str> = Vec::new();
-        let mut budget = REFUSAL_TAIL_BYTES;
-        // Newest first, so the byte cap spends itself on the words nearest the
-        // stop rather than on whatever happened earliest in the window.
-        for entry in page.entries.iter().rev() {
-            if !provider_originated(&entry.item.item_type) {
-                continue;
-            }
-            let Some(text) = entry.item.text.as_deref() else {
-                continue;
-            };
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if trimmed.len() > budget {
-                break;
-            }
-            budget -= trimmed.len();
-            collected.push(trimmed);
-        }
-        collected.reverse();
-        TransientRefusal::parse(&collected.join("\n"))
+        let epoch = self.resolve_epoch(&page.epoch, None).ok()?;
+        select_terminal_refusal(&page.entries, epoch, agent_run_id, binding_generation)
     }
 
     fn observation(
@@ -5729,7 +5774,14 @@ impl RuntimeAdapter for PaseoAdapter {
         // The probe is bounded and takes no lock; `observe_permissions` above
         // released its own before this await is reached.
         let (state, _) = Self::normalize_agent(&agent);
-        let refusal = self.refusal_diagnostic(&native_id, state).await;
+        let refusal = self
+            .refusal_diagnostic(
+                &native_id,
+                binding.agent_run_id(),
+                binding.identity().generation,
+                state,
+            )
+            .await;
         Ok(self
             .observation(
                 binding.agent_run_id(),
@@ -7243,15 +7295,200 @@ mod governed_pin_tests {
 #[cfg(test)]
 mod refusal_probe_tests {
     use super::*;
+    use crate::wire::{PaseoSeqRange, PaseoTimelineItem};
 
-    #[test]
-    fn only_provider_content_is_selected() {
-        assert!(provider_originated("assistant_message"));
-        assert!(provider_originated("plain_text"));
-        // Kontor's own prompt coming back. Classifying it would let an operator
-        // writing about a usage limit mark the account exhausted.
-        assert!(!provider_originated("user_message"));
-        assert!(!provider_originated("tool_call"));
+    const CODEX_REFUSAL: &str = "[System Error] You've hit your usage limit. Visit \
+         https://chatgpt.com/codex/settings/usage to purchase more credits or try \
+         again at Aug 23rd, 2026 9:35 AM.";
+
+    fn entry(seq: u64, item_type: &str, text: Option<&str>) -> PaseoTimelineEntry {
+        PaseoTimelineEntry {
+            item: PaseoTimelineItem {
+                item_type: item_type.to_owned(),
+                client_message_id: None,
+                message_id: None,
+                call_id: None,
+                text: text.map(str::to_owned),
+            },
+            timestamp: "2026-08-23T09:00:00Z".to_owned(),
+            seq_start: seq,
+            seq_end: seq,
+            source_seq_ranges: Vec::new(),
+            collapsed: Vec::new(),
+        }
     }
 
+    fn select(entries: &[PaseoTimelineEntry]) -> Option<TransientRefusal> {
+        select_terminal_refusal(entries, 1, AgentRunId::generate(), 1)
+    }
+
+    #[test]
+    fn only_observed_provider_content_is_selected() {
+        assert!(provider_originated("assistant_message"));
+        assert!(provider_originated("plain_text"));
+        assert!(!provider_originated("user_message"));
+        assert!(!provider_originated("tool_call"));
+        // Fail closed on provenance: `classify_item` calls these `Log`, which
+        // is right for the timeline and wrong for authority.
+        assert!(!provider_originated("compaction"));
+        assert!(!provider_originated("some_future_user_origin_type"));
+        assert!(!provider_originated(""));
+    }
+
+    #[test]
+    fn a_terminal_provider_response_inside_an_observed_turn_is_selected() {
+        let entries = [
+            entry(1, "user_message", Some("do the thing")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        let refusal = select(&entries).expect("a terminal refusal");
+        assert!(refusal.as_str().contains("usage limit"));
+        assert_eq!(refusal.provenance().position.sequence, 2);
+        assert_eq!(refusal.provenance().item_type, "assistant_message");
+    }
+
+    #[test]
+    fn a_newer_tool_result_means_the_provider_item_is_not_terminal() {
+        let entries = [
+            entry(1, "user_message", Some("do the thing")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+            entry(3, "tool_call", Some("{}")),
+        ];
+        assert!(
+            select(&entries).is_none(),
+            "the turn moved on; the refusal is not the last word",
+        );
+    }
+
+    #[test]
+    fn an_unobserved_turn_boundary_is_inert_rather_than_authoritative() {
+        // The page filled up before reaching a `user_message`, so this response
+        // may belong to a previous turn.
+        let entries = [
+            entry(1, "assistant_message", Some("earlier work")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        assert!(
+            select(&entries).is_none(),
+            "absence of boundary proof is inert, never authority",
+        );
+    }
+
+    #[test]
+    fn an_old_refusal_followed_by_a_new_successful_turn_does_not_classify() {
+        let entries = [
+            entry(1, "user_message", Some("first task")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+            entry(3, "user_message", Some("second task")),
+            entry(4, "assistant_message", Some("Done, all tests pass.")),
+        ];
+        let refusal = select(&entries).expect("the newest response is selected");
+        assert!(
+            !refusal.as_str().contains("usage limit"),
+            "the current turn's answer is what is classified, not last turn's refusal",
+        );
+    }
+
+    /// Markers split across two messages must not jointly satisfy a signal.
+    /// One item is classified, never a concatenation.
+    #[test]
+    fn text_is_never_joined_across_items() {
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some("[System Error] you've hit your")),
+            entry(3, "assistant_message", Some("usage limit, try again at Aug 23rd, 2026 9:35 AM")),
+        ];
+        let refusal = select(&entries).expect("the terminal item");
+        assert_eq!(
+            refusal.as_str(),
+            "usage limit, try again at Aug 23rd, 2026 9:35 AM",
+            "only the terminal item's own text is carried",
+        );
+    }
+
+    /// A sensitive head must be scanned even though only the tail would survive
+    /// bounding — the scan sees the candidate whole, or nothing is classified.
+    #[test]
+    fn a_sensitive_head_is_scanned_before_any_tail_is_taken() {
+        let filler = "a".repeat(3_000);
+        let poisoned = format!("authorization: Bearer {filler} usage limit reached");
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(&poisoned)),
+        ];
+        assert!(
+            select(&entries).is_none(),
+            "the discarded head is still scanned, so the secret cannot ride the tail out",
+        );
+    }
+
+    #[test]
+    fn an_item_too_large_to_scan_safely_is_refused_rather_than_trimmed() {
+        let huge = "a".repeat(kontor_runtime::refusal::MAX_CANDIDATE_BYTES + 1);
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(&huge)),
+        ];
+        assert!(select(&entries).is_none());
+    }
+
+    #[test]
+    fn a_collapsed_range_carries_its_whole_span_in_provenance() {
+        let mut collapsed = entry(4, "assistant_message", Some(CODEX_REFUSAL));
+        collapsed.seq_end = 6;
+        collapsed.source_seq_ranges = vec![
+            PaseoSeqRange {
+                start_seq: 4,
+                end_seq: 5,
+            },
+            PaseoSeqRange {
+                start_seq: 6,
+                end_seq: 6,
+            },
+        ];
+        let entries = [entry(1, "user_message", Some("go")), collapsed];
+        let refusal = select(&entries).expect("a terminal refusal");
+        assert_eq!(refusal.provenance().sequence_end, 6);
+        assert_eq!(
+            refusal.provenance().source_sequences,
+            vec![(4, 5), (6, 6)],
+            "the collapsed span is provenance, not a single sequence",
+        );
+    }
+
+    #[test]
+    fn provenance_binds_the_digest_to_one_run_and_generation() {
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        let run = AgentRunId::generate();
+        let mine = select_terminal_refusal(&entries, 1, run, 1).expect("a refusal");
+        let other_generation = select_terminal_refusal(&entries, 1, run, 2).expect("a refusal");
+        let other_run =
+            select_terminal_refusal(&entries, 1, AgentRunId::generate(), 1).expect("a refusal");
+        assert_ne!(
+            mine.digest(),
+            other_generation.digest(),
+            "evidence cannot be transplanted across binding generations",
+        );
+        assert_ne!(
+            mine.digest(),
+            other_run.digest(),
+            "evidence cannot be transplanted onto a sibling seat",
+        );
+    }
+
+    #[test]
+    fn an_empty_or_textless_terminal_item_is_inert() {
+        assert!(select(&[entry(1, "user_message", Some("go")), entry(2, "assistant_message", None)]).is_none());
+        assert!(
+            select(&[
+                entry(1, "user_message", Some("go")),
+                entry(2, "assistant_message", Some("   "))
+            ])
+            .is_none()
+        );
+        assert!(select(&[]).is_none());
+    }
 }

@@ -31,35 +31,32 @@
 schema_version: 1
 
 signals:
-  # ---- Claude, one entry per login -------------------------------------
+  # ---- Claude, one entry per login ---------------------------------------
   #
-  # PROVISIONAL: no live Claude refusal has been captured into the repository,
-  # so these markers are stated from the product's observed phrasing and have
-  # not been verified against a recorded message. They are deliberately narrow
-  # -- both must appear -- so the failure mode is a missed classification rather
-  # than a Codex refusal misattributed to Claude.
+  # DELIBERATELY NOT SHIPPED ACTIVE. No live Claude refusal has been captured
+  # into this repository, so any marker set here would be unverified copy with
+  # the authority to archive a running seat. A false negative costs nothing --
+  # the 300-second poll and the operator still work -- while a false positive
+  # retires live work, so an unverified vendor fingerprint stays commented out
+  # until a real message is recorded.
   #
-  # No `reset_prefix` is declared on purpose. `parse_wall_clock` requires a full
-  # `<Month> <day>, <year> <HH:MM> [AM|PM]`, and Claude is understood to print a
-  # bare time of day. Declaring a prefix that cannot parse would record the same
-  # `Unknown` as declaring none, while implying a verification that has not
-  # happened. Add the prefix and zone in the same edit that records a real
-  # captured message.
+  # When one is captured, uncomment and replace the markers with the full
+  # distinctive framing of that message, not a phrase an assistant might use
+  # while *discussing* usage limits. `parse_wall_clock` needs a full
+  # `<Month> <day>, <year> <HH:MM> [AM|PM]`; declare `reset_prefix`/`reset_zone`
+  # only if the captured message actually states one.
   #
-  # Listed before Codex because the whole of the Codex marker set is the words
-  # "usage limit", which a Claude refusal also contains -- so for an account
-  # able to select both families, Claude must be tried first.
-  - provider: claude-work
-    basis: plan_allowance
-    markers:
-      - claude
-      - usage limit
-
-  - provider: claude-personal
-    basis: plan_allowance
-    markers:
-      - claude
-      - usage limit
+  # - provider: claude-work
+  #   basis: plan_allowance
+  #   markers:
+  #     - "<captured system-refusal framing>"
+  #     - "<captured distinctive phrase>"
+  #
+  # - provider: claude-personal
+  #   basis: plan_allowance
+  #   markers:
+  #     - "<captured system-refusal framing>"
+  #     - "<captured distinctive phrase>"
 
   # ---- Codex, one entry per login --------------------------------------
   #
@@ -69,17 +66,43 @@ signals:
   #    again at Aug 23rd, 2026 9:35 AM."
   # Codex prints the seat's local wall clock and names no zone, so the zone is
   # supplied here. Reading it as UTC would move the reset by the offset.
+  #
+  # Why Europe/Oslo, and why it is not read from the host:
+  #
+  # `Europe/Oslo` is the provenance of *this captured message*, not a property
+  # of whatever machine happens to run the daemon. The 2026-08-21/23 incident
+  # records and deploy reports are authored in Europe/Oslo, and PR #96's report
+  # reads the same "Aug 23rd, 2026 9:35 AM" as the personal-account incident.
+  # A host that later sits in another zone -- Europe/Chisinau, say -- is a fact
+  # about now and must not reinterpret a historical wall clock; doing so would
+  # silently move every reset derived from this fingerprint.
+  #
+  # So the zone is stated as data beside the wording it belongs to, and is never
+  # inferred from the daemon's own clock. A deployment whose Codex seats print a
+  # different local zone states that zone here, against its own captured
+  # message.
   - provider: codex-work
     basis: plan_allowance
+    # The *whole* distinctive fingerprint, not the phrase alone. "usage limit"
+    # by itself appears in any assistant message that merely discusses limit
+    # handling, and this signal has the authority to archive a live seat -- so
+    # it demands the system-error framing, the settings URL and the retry
+    # wording together. All markers must appear.
     markers:
+      - '[system error]'
       - usage limit
+      - chatgpt.com/codex/settings/usage
+      - try again at
     reset_prefix: 'try again at '
     reset_zone: Europe/Oslo
 
   - provider: codex-personal
     basis: plan_allowance
     markers:
+      - '[system error]'
       - usage limit
+      - chatgpt.com/codex/settings/usage
+      - try again at
     reset_prefix: 'try again at '
     reset_zone: Europe/Oslo
 

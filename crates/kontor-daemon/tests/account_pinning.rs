@@ -172,6 +172,17 @@ async fn a_legacy_unpinned_run_is_left_exactly_as_it_is() {
     // guessing an account to attribute a refusal to.
     let refusal = kontor_runtime::refusal::TransientRefusal::parse(
         "You've hit your usage limit. Try again later.",
+        kontor_runtime::refusal::RefusalProvenance {
+            agent_run_id: run,
+            binding_generation: 1,
+            position: kontor_runtime::timeline::TimelinePosition {
+                epoch: 1,
+                sequence: 7,
+            },
+            sequence_end: 7,
+            source_sequences: vec![(7, 7)],
+            item_type: "assistant_message".to_owned(),
+        },
     )
     .expect("a refusal");
     assert!(

@@ -93,13 +93,12 @@ pub struct ObservedQuota {
 ///   allowance as a drained balance would assert that money is the remedy.
 #[must_use]
 pub fn classify(text: &str, signals: &[QuotaSignal]) -> Option<ObservedQuota> {
-    let haystack = text.to_lowercase();
     let signal = signals.iter().find(|signal| {
         !signal.markers.is_empty()
             && signal
                 .markers
                 .iter()
-                .all(|marker| haystack.contains(&marker.to_lowercase()))
+                .all(|marker| find_ascii_ci(text, marker).is_some())
     })?;
 
     if signal.basis == QuotaBasis::CreditBalance {
@@ -113,7 +112,7 @@ pub fn classify(text: &str, signals: &[QuotaSignal]) -> Option<ObservedQuota> {
     let resets_at = signal
         .reset_prefix
         .as_deref()
-        .and_then(|prefix| after_prefix(text, &haystack, prefix))
+        .and_then(|prefix| after_prefix(text, prefix))
         .and_then(|tail| parse_wall_clock(tail, signal.reset_zone.as_deref()));
 
     Some(match resets_at {
@@ -130,10 +129,38 @@ pub fn classify(text: &str, signals: &[QuotaSignal]) -> Option<ObservedQuota> {
     })
 }
 
-/// The original-case remainder of `text` after the first case-insensitive hit of
-/// `prefix`.
-fn after_prefix<'a>(text: &'a str, haystack: &str, prefix: &str) -> Option<&'a str> {
-    let at = haystack.find(&prefix.to_lowercase())?;
+/// Byte offset of the first ASCII-case-insensitive occurrence of `needle`.
+///
+/// # Why not `to_lowercase().find(..)`
+///
+/// Because that is what this function used to do, and it was wrong. Unicode
+/// case mapping is not length-preserving — `İ` lowercases to two chars, and
+/// `ǅ` to one of different width — so a byte offset found in the *lowercased*
+/// copy does not address the same position in the original. Applying it to the
+/// original sliced at a shifted, possibly non-boundary index: a wrong reset
+/// instant on the good day and a panic-free `None` on the bad one, from a
+/// vendor message that merely contained a non-ASCII character anywhere before
+/// the prefix.
+///
+/// Markers and prefixes are validated ASCII at configuration load, so an
+/// ASCII-case-insensitive scan over the original bytes is exact *and* returns
+/// an offset that is always a real char boundary: every matched byte equals an
+/// ASCII byte, so none of them is a continuation byte.
+fn find_ascii_ci(text: &str, needle: &str) -> Option<usize> {
+    let (hay, nee) = (text.as_bytes(), needle.as_bytes());
+    if nee.is_empty() || nee.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - nee.len())
+        .find(|start| hay[*start..*start + nee.len()].eq_ignore_ascii_case(nee))
+}
+
+/// The original-case remainder of `text` after the first ASCII-case-insensitive
+/// hit of `prefix`.
+fn after_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let at = find_ascii_ci(text, prefix)?;
+    // `at + prefix.len()` lands immediately after bytes that are all ASCII, so
+    // it is a char boundary by construction.
     text.get(at + prefix.len()..)
 }
 
