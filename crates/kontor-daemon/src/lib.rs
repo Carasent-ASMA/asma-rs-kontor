@@ -46,6 +46,7 @@ pub mod credentials;
 pub mod endpoint;
 pub mod lock;
 pub mod logging;
+pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
 pub mod supervision;
@@ -140,6 +141,18 @@ pub enum StartupError {
         /// The domain's own refusal.
         #[source]
         source: kontor_core::DomainError,
+    },
+    /// A present `quota-signals.yml` could not be read or validated.
+    ///
+    /// Absence is valid and leaves classification inert. A document that exists
+    /// but will not parse is refused instead, because it states an intent the
+    /// Realm cannot honour, and starting anyway would leave an operator
+    /// believing reactive classification is armed when it is not.
+    #[error("the realm's quota signals document could not be used: {source}")]
+    QuotaSignals {
+        /// The accounts crate's own refusal.
+        #[source]
+        source: kontor_accounts::QuotaSignalsError,
     },
     /// The state root does not exist and could not be created.
     #[error("the state root could not be prepared: {source}")]
@@ -364,12 +377,21 @@ impl Daemon {
             .map_err(|source| StartupError::Connector { source })?;
         let usage_poller =
             usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));
+        // Absent is valid and leaves reactive classification inert. A *present*
+        // document that will not parse refuses the start, because serving a
+        // Realm whose operator believes classification is armed is worse than
+        // not starting.
+        let quota_signals = kontor_accounts::read_quota_signals(&config.state_root)
+            .map_err(|source| StartupError::QuotaSignals { source })?
+            .map(|document| document.signals)
+            .unwrap_or_default();
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
             jira,
             config.state_root.join("runtime-roots"),
             usage_poller.clone(),
+            quota_signals,
         )
         .map_err(|source| StartupError::Applications { source })?;
 

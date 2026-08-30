@@ -508,6 +508,15 @@ pub struct Services {
     /// Serializes explicit provider probes so concurrent first use of one
     /// global idempotency key cannot contact the vendor twice.
     provider_probe_guard: tokio::sync::Mutex<()>,
+    /// Vendor exhaustion wording, read once from the Realm's state root.
+    ///
+    /// Empty means the Realm configured no `quota-signals.yml`, and reactive
+    /// classification is inert: the usage poller stays the sole source of
+    /// truth, exactly as before the document existed. Read at construction for
+    /// the same reason `capacity` is — an observation path must not do
+    /// filesystem I/O, and a document that changed mid-flight would classify
+    /// two observations of one refusal differently.
+    quota_signals: Vec<kontor_accounts::QuotaSignal>,
 }
 
 impl std::fmt::Debug for Services {
@@ -543,6 +552,7 @@ impl Services {
         jira: JiraConnectors,
         runtime_roots: PathBuf,
         usage_poller: crate::usage::UsagePoller,
+        quota_signals: Vec<kontor_accounts::QuotaSignal>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -555,6 +565,7 @@ impl Services {
             runtime_roots,
             usage_poller,
             provider_probe_guard: tokio::sync::Mutex::new(()),
+            quota_signals,
         }))
     }
 
@@ -3332,6 +3343,22 @@ impl Services {
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        // Classify *before* the event is persisted, so the row an operator can
+        // act on never lags the observation that proved it. What crosses into
+        // the store is a `ProviderQuotaKind`, an optional instant and a digest;
+        // the sentence stays in the transient value and is dropped with it.
+        if let Some(refusal) = observation.refusal.as_ref()
+            && let Some(account_profile_id) = run.account_profile_id
+        {
+            crate::quota_observation::classify_and_record(
+                state,
+                project_id,
+                account_profile_id,
+                &self.quota_signals,
+                refusal,
+                now,
+            );
+        }
         let payload = self.intent(&serde_json::json!({
             "schema_version": 1,
             "observed_state": observation.state.as_str(),
