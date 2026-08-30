@@ -51,11 +51,17 @@ signals:
   # looked.
   #
   # The message states its own zone in trailing parentheses. That annotation is
-  # recognised and skipped rather than parsed as part of the clock, and the
-  # authoritative zone is the declared one below. Keep the two in agreement:
-  # the captured message and this field both say Europe/Chisinau, and 22:40
-  # there in August is EEST, three hours ahead of UTC -- which is the
-  # 2026-08-30T19:40:00Z reset the control plane recorded.
+  # never read as part of the clock, and it is **compared** against the declared
+  # zone below rather than skipped: *every* parenthesized token in the message
+  # is checked, and any that names a zone the tzdb knows must agree. A
+  # disagreement anywhere -- including one hidden behind an earlier
+  # unrecognised annotation such as `(EEST)` -- yields no instant at all, so the
+  # account blocks as `unknown` instead of blocking until an hour-wrong time.
+  # An annotation that is not an IANA name cannot be compared and is left alone.
+  #
+  # Keep the two in agreement: the captured message and this field both say
+  # Europe/Chisinau, and 22:40 there in August is EEST, three hours ahead of
+  # UTC -- which is the 2026-08-30T19:40:00Z reset the control plane recorded.
   - provider: claude-work
     basis: plan_allowance
     markers:

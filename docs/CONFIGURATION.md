@@ -99,9 +99,11 @@ aliases before the Codex ones: the whole of the Codex marker set is the words
 
 **A vendor that restates its zone is checked against the declared one.** Some
 messages print `… resets 10:40pm (Europe/Chisinau)`. That annotation is never
-read as part of the clock, and it is not silently dropped either: when it names
-a zone the tzdb knows, it must **agree** with `reset_zone`, and a disagreement
-yields no instant at all — the account still blocks, as `Unknown`, which is the
+read as part of the clock, and it is **compared** rather than skipped: *every*
+parenthesized token in the message is checked, and any that names a zone the
+tzdb knows must **agree** with `reset_zone`. A disagreement anywhere — including
+one hidden behind an earlier unrecognised annotation such as `(EEST)` — yields
+no instant at all — the account still blocks, as `Unknown`, which is the
 visible prompt to fix the signal. Ignoring it would let a message saying
 `(Europe/Oslo)` be converted as Chisinau and land an hour wrong with nothing to
 show for it. An abbreviation like `(EEST)` is not an IANA name, cannot be

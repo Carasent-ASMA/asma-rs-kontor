@@ -399,3 +399,64 @@ fn a_non_iana_zone_abbreviation_is_left_alone() {
         .expect("a quota refusal");
     assert_eq!(observed.resets_at, Some(chisinau("2026-08-30T19:40:00Z")));
 }
+
+/// A message with several annotations must be checked in full. Taking only the
+/// first let an unrecognised one mask a later conflicting zone, and this signal
+/// can retire a live seat.
+#[test]
+fn an_unknown_annotation_cannot_mask_a_later_conflicting_zone() {
+    for masked in [
+        // The abbreviation is not an IANA name, so it used to short-circuit the
+        // comparison and the Oslo clock was converted as Chisinau.
+        "You've hit your individual spend limit · \
+         claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 10:40pm \
+         (EEST) (Europe/Oslo)",
+        // The same masking with a non-zone parenthetical.
+        "You've hit your individual spend limit · \
+         claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 10:40pm \
+         (note) (Europe/Oslo)",
+        // Conflicting zone before the clock rather than after it.
+        "You've hit your individual spend limit · \
+         claude.ai/settings/usage?from=cc_cli_limit_message · (Europe/Oslo) your session limit \
+         resets 10:40pm",
+    ] {
+        let observed = classify(masked, &[claude()], chisinau("2026-08-30T18:00:00Z"))
+            .expect("it is still recognisably a quota refusal");
+        assert_eq!(
+            observed.kind,
+            ProviderQuotaKind::Unknown,
+            "a disagreement anywhere in the tail is a disagreement: {masked:?}",
+        );
+        assert_eq!(observed.resets_at, None);
+        assert_ne!(
+            observed.resets_at,
+            Some(chisinau("2026-08-30T19:40:00Z")),
+            "the conflicting zone must never be converted as the declared one",
+        );
+    }
+}
+
+/// The positive side: several annotations that either agree or cannot be
+/// compared still yield the instant.
+#[test]
+fn multiple_agreeing_or_uncomparable_annotations_still_resolve() {
+    for benign in [
+        "You've hit your individual spend limit · \
+         claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 10:40pm \
+         (EEST) (Europe/Chisinau)",
+        "You've hit your individual spend limit · \
+         claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 10:40pm \
+         (Europe/Chisinau) (local time)",
+        "You've hit your individual spend limit · \
+         claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 10:40pm \
+         (note) (EEST)",
+    ] {
+        let observed = classify(benign, &[claude()], chisinau("2026-08-30T18:00:00Z"))
+            .unwrap_or_else(|| panic!("a quota refusal: {benign:?}"));
+        assert_eq!(
+            observed.resets_at,
+            Some(chisinau("2026-08-30T19:40:00Z")),
+            "agreeing and uncomparable annotations do not block the parse: {benign:?}",
+        );
+    }
+}

@@ -125,7 +125,9 @@ pub fn classify(
                 // provider item's own timestamp, never the moment Kontor
                 // happened to read it: a probe running hours later would
                 // otherwise roll the reset forward a whole day.
-                .or_else(|| parse_time_of_day(tail, signal.reset_zone.as_deref(), observed_at))
+                .or_else(|| {
+                    parse_time_of_day(text, tail, signal.reset_zone.as_deref(), observed_at)
+                })
         });
 
     Some(match resets_at {
@@ -231,7 +233,12 @@ enum Meridiem {
 /// A spring-forward gap or a fall-back overlap is resolved by jiff's compatible
 /// rule, as the dated parser does: a reset an hour out beats no reset at all,
 /// which would record `Unknown` and block until a human intervened.
-fn parse_time_of_day(text: &str, zone_name: Option<&str>, basis: Timestamp) -> Option<Timestamp> {
+fn parse_time_of_day(
+    message: &str,
+    tail: &str,
+    zone_name: Option<&str>,
+    basis: Timestamp,
+) -> Option<Timestamp> {
     let zone = match zone_name {
         Some(name) => TimeZone::get(name).ok()?,
         None => TimeZone::UTC,
@@ -250,16 +257,25 @@ fn parse_time_of_day(text: &str, zone_name: Option<&str>, basis: Timestamp) -> O
     // records a blocking `Unknown` and is the visible prompt to fix the
     // signal. An annotation that is not an IANA name -- an abbreviation like
     // `(EEST)` -- cannot be compared and is left alone rather than guessed at.
-    if let Some(stated) = text
-        .split_whitespace()
-        .find_map(|word| word.strip_prefix('('))
-        .map(|word| word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/'))
-        && TimeZone::get(stated).is_ok()
-        && !zone_name.is_some_and(|declared| declared.eq_ignore_ascii_case(stated))
-    {
-        return None;
+    // **Every** parenthesized token, not the first. Taking only the first let an
+    // unrecognised annotation mask a later conflicting one -- `10:40pm (EEST)
+    // (Europe/Oslo)` short-circuited on `(EEST)`, never compared `(Europe/Oslo)`,
+    // and converted the clock as Chisinau anyway. This signal can retire a live
+    // seat, so a disagreement anywhere in the *message* is a disagreement --
+    // the whole message, not just the tail after the prefix, because a vendor
+    // may state its zone before the reset phrase as easily as after it.
+    for word in message.split_whitespace() {
+        let Some(inner) = word.strip_prefix('(') else {
+            continue;
+        };
+        let stated = inner.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/');
+        if TimeZone::get(stated).is_ok()
+            && !zone_name.is_some_and(|declared| declared.eq_ignore_ascii_case(stated))
+        {
+            return None;
+        }
     }
-    let mut words = text
+    let mut words = tail
         .split_whitespace()
         .filter(|word| !word.starts_with('('));
     // Trailing punctuation first: the vendor writes "…reset at 10:40pm." and a
