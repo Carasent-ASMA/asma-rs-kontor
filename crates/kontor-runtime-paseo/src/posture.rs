@@ -1577,6 +1577,35 @@ mod tests {
         }
     }
 
+    /// The anchor itself must be real: a state root that is a link would put
+    /// every seat's configuration wherever it pointed, and the walk below it
+    /// would never notice, because it starts *at* the anchor.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_state_root_is_refused() {
+        let scratch = tempfile::TempDir::new().expect("a scratch directory");
+        let real = scratch.path().join("real-state");
+        let elsewhere = scratch.path().join("elsewhere");
+        std::fs::create_dir_all(&real).expect("state root");
+        std::fs::create_dir_all(&elsewhere).expect("target");
+        let linked = scratch.path().join("linked-state");
+        std::os::unix::fs::symlink(&elsewhere, &linked).expect("planted");
+
+        let root = SeatConfigRoot::for_seat(&linked, "agent-1").expect("a root");
+        let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+        let error = root
+            .materialize(&config)
+            .expect_err("a linked state root is not an anchor");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            std::fs::read_dir(&elsewhere)
+                .expect("readable")
+                .next()
+                .is_none(),
+            "and nothing was written through it"
+        );
+    }
+
     /// A link *at the file itself* is replaced, not followed: `std::fs::write`
     /// would have put a seat's posture wherever it pointed.
     #[cfg(unix)]
