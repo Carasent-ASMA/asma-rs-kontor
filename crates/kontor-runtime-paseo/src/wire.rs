@@ -92,6 +92,24 @@ pub const PASEO_PROJECT_RENAME_VERSION: &str = "0.4.0";
 /// no error to say so.
 pub const PASEO_SEAT_ENVIRONMENT_VERSION: &str = "0.6.1";
 
+/// The release whose `create_agent_request` carries typed per-agent
+/// `providerOptions`.
+///
+/// A **separate contract** from [`PASEO_SEAT_ENVIRONMENT_VERSION`], and
+/// deliberately not folded into it: `--env` sets a process environment, while
+/// this is a validated provider-native policy the daemon persists and replays
+/// into every turn. A daemon could plausibly have one and not the other, and
+/// letting an environment capability stand in for provider-options support
+/// would be exactly the kind of substitution that launches a seat under a
+/// policy nothing carried.
+///
+/// Read out of the installed 0.6.1 bundle: `AgentSessionConfigSchema` carries
+/// `providerOptions`, `applyProviderConfiguration` validates it against the
+/// provider's own schema, and `opencode-agent.js` replays it into
+/// `session.promptAsync`. Earlier releases were not inspected, so the floor is
+/// the version this was actually read from and anything below it fails closed.
+pub const PASEO_PROVIDER_OPTIONS_VERSION: &str = "0.6.1";
+
 /// The client type this adapter announces in the hello.
 pub const PASEO_CLIENT_TYPE: &str = "cli";
 
@@ -342,6 +360,19 @@ impl PaseoServerInfo {
         self.version
             .as_deref()
             .is_some_and(|version| version_at_least(version, PASEO_SEAT_ENVIRONMENT_VERSION))
+    }
+
+    /// Whether this daemon accepts typed per-agent `providerOptions`.
+    ///
+    /// Fails closed on an absent, pre-release or unparseable version. Asked
+    /// separately from [`Self::supports_seat_environment`]: a seat whose policy
+    /// rides in `providerOptions` must not launch because the daemon happens to
+    /// support a different mechanism.
+    #[must_use]
+    pub fn supports_provider_options(&self) -> bool {
+        self.version
+            .as_deref()
+            .is_some_and(|version| version_at_least(version, PASEO_PROVIDER_OPTIONS_VERSION))
     }
 
     /// Every required feature this daemon does not advertise, in policy order.

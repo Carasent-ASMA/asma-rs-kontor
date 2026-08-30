@@ -1204,10 +1204,19 @@ impl PaseoRpc {
         autonomy: SeatAutonomy,
         title: &str,
         labels: &BTreeMap<String, String>,
-        posture: &crate::posture::SeatPosture,
-        mcp_servers: Option<&serde_json::Value>,
+        allowances: &[crate::posture::PermissionAllowance],
+        seat_mcp: Option<&crate::seat_mcp::SeatMcp>,
+        serve_profile: &str,
     ) -> RuntimeResult<Self> {
-        let mode = paseo_mode(model_rung.provider.0.as_str(), autonomy)?;
+        // Rendered here, from the declaration, rather than accepted alongside
+        // it. Taking a `SeatPosture` *and* an autonomy was two independent
+        // statements of one thing: a miswired caller could send `modeId: build`
+        // with a plan seat's deny block and every payload assertion would still
+        // have passed. The mode below comes from the same render, so the two
+        // halves of a posture cannot disagree by construction.
+        let posture =
+            crate::posture::render_posture(model_rung.provider.0.as_str(), autonomy, allowances)?;
+        let mode = posture.mode;
         let mut config = serde_json::json!({
             "provider": model_rung.provider.0,
             "cwd": canonical_cwd,
@@ -1223,8 +1232,8 @@ impl PaseoRpc {
         if let Some(permission) = posture.permission.as_ref() {
             config["providerOptions"] = serde_json::json!({ "permission": permission });
         }
-        if let Some(mcp_servers) = mcp_servers {
-            config["mcpServers"] = mcp_servers.clone();
+        if let Some(seat_mcp) = seat_mcp {
+            config["mcpServers"] = seat_mcp.server_config(serve_profile);
         }
         Ok(Self::mutate(
             "create_agent_request",
@@ -2972,9 +2981,17 @@ mod tests {
     fn delivery_create(
         autonomy: SeatAutonomy,
         provider: &str,
-        mcp: Option<&serde_json::Value>,
+        mcp: Option<&crate::seat_mcp::SeatMcp>,
     ) -> PaseoRpc {
-        let posture = crate::posture::render_posture(provider, autonomy, &[]).expect("a posture");
+        delivery_create_with(autonomy, provider, mcp, &[])
+    }
+
+    fn delivery_create_with(
+        autonomy: SeatAutonomy,
+        provider: &str,
+        mcp: Option<&crate::seat_mcp::SeatMcp>,
+        allowances: &[crate::posture::PermissionAllowance],
+    ) -> PaseoRpc {
         PaseoRpc::delivery_agent_create(
             "req-1".to_owned(),
             "wks_1",
@@ -2983,8 +3000,9 @@ mod tests {
             autonomy,
             "Implement",
             &labels(),
-            &posture,
+            allowances,
             mcp,
+            "worker",
         )
         .expect("the provider expresses this posture")
     }
@@ -3062,14 +3080,30 @@ mod tests {
         assert_ne!(permission(&ask), permission(&plan));
     }
 
-    /// The MCP surface belongs in the create config, never in a worktree file.
+    /// The MCP surface belongs in the create config, never in a worktree file —
+    /// and is built from the typed seat value rather than whatever JSON a caller
+    /// assembled.
     #[test]
     fn the_seat_mcp_surface_travels_in_the_create_config() {
-        let mcp = serde_json::json!({ "kontor": { "type": "local" } });
-        let request = delivery_create(SeatAutonomy::Bounded, "opencode", Some(&mcp));
+        let seat = crate::seat_mcp::SeatMcp {
+            command: "kontor-mcp".to_owned(),
+            state_root: std::path::PathBuf::from("/realm/state"),
+        };
+        let request = delivery_create(SeatAutonomy::Bounded, "opencode", Some(&seat));
+        let entry = &request.message["config"]["mcpServers"]["kontor"];
+        assert_eq!(entry["type"], "local");
         assert_eq!(
-            request.message["config"]["mcpServers"]["kontor"]["type"],
-            "local"
+            entry["command"],
+            serde_json::json!([
+                "kontor-mcp",
+                "--state-root",
+                "/realm/state",
+                "--credential-tier",
+                "operator",
+                "--serve-profile",
+                "worker"
+            ]),
+            "one server, at operator tier, under the profile the caller named"
         );
     }
 
@@ -3079,24 +3113,12 @@ mod tests {
     fn an_allowance_flips_one_floor_key_in_the_payload() {
         let allowance =
             crate::posture::PermissionAllowance::parse("*git rm --cached*").expect("floor member");
-        let posture = crate::posture::render_posture(
+        let request = delivery_create_with(
+            SeatAutonomy::Bounded,
             "opencode",
-            SeatAutonomy::Bounded,
-            std::slice::from_ref(&allowance),
-        )
-        .expect("a posture");
-        let request = PaseoRpc::delivery_agent_create(
-            "req-1".to_owned(),
-            "wks_1",
-            "/w/task-1",
-            &route("opencode", "deepseek/deepseek-v4-flash", None),
-            SeatAutonomy::Bounded,
-            "Implement",
-            &labels(),
-            &posture,
             None,
-        )
-        .expect("a posture");
+            std::slice::from_ref(&allowance),
+        );
 
         let bash = &request.message["config"]["providerOptions"]["permission"]["bash"];
         assert_eq!(bash["*git rm --cached*"], "allow");
@@ -3114,6 +3136,47 @@ mod tests {
             keys(&plain.message["config"]["providerOptions"]["permission"]["bash"]),
             "an exception changes a value, never the key set"
         );
+    }
+
+    /// Mode and permission always come from **one** render.
+    ///
+    /// The constructor takes no posture, so the two halves cannot be supplied
+    /// separately. This pins that they agree, and that the exact miswiring the
+    /// old signature allowed — a `build` seat carrying a plan seat's deny block,
+    /// or a `plan` seat carrying an allow-all one — cannot appear in any payload
+    /// it produces.
+    #[test]
+    fn the_mode_and_the_permission_come_from_one_render() {
+        for autonomy in [
+            SeatAutonomy::Bounded,
+            SeatAutonomy::Supervised,
+            SeatAutonomy::Advisory,
+        ] {
+            let rendered =
+                crate::posture::render_posture("opencode", autonomy, &[]).expect("a posture");
+            let request = delivery_create(autonomy, "opencode", None);
+            let config = &request.message["config"];
+            assert_eq!(
+                config["modeId"],
+                serde_json::json!(rendered.mode.expect("opencode names a mode")),
+                "{autonomy:?}: the mode is the rendered one"
+            );
+            assert_eq!(
+                config["providerOptions"]["permission"],
+                rendered.permission.expect("opencode renders a block"),
+                "{autonomy:?}: the permission is the rendered one"
+            );
+
+            let bash = &config["providerOptions"]["permission"]["bash"]["*"];
+            assert!(
+                !(config["modeId"] == "build" && bash == "deny"),
+                "{autonomy:?}: `build` must never carry a deny-all block"
+            );
+            assert!(
+                !(config["modeId"] == "plan" && bash == "allow"),
+                "{autonomy:?}: `plan` must never carry an allow-all block"
+            );
+        }
     }
 
     /// The payload carries the renderer's block verbatim.

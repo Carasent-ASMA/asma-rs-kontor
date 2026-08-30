@@ -121,18 +121,25 @@ impl PermissionAllowance {
 pub struct SeatPosture {
     /// The provider-native `--mode`, when the provider spells one.
     pub mode: Option<&'static str>,
-    /// The `permission` block to compose into the seat's worktree, when the
-    /// provider reads one. Only opencode does today.
+    /// The `permission` object the seat is created with, when the provider
+    /// takes one. Only OpenCode does today.
+    ///
+    /// It travels in `create_agent_request`'s
+    /// `config.providerOptions.permission`, which installed Paseo 0.6.1
+    /// validates against OpenCode's own `Config.permission` schema, persists on
+    /// the agent record, and replays into `session.promptAsync` on every turn —
+    /// where OpenCode installs it on the session before evaluating any tool
+    /// call. It is **not** written into the seat's worktree, and nothing about
+    /// it is resolved from files or environment.
     pub permission: Option<serde_json::Value>,
     /// Whether the harness should accept its own tool calls without asking.
     ///
-    /// Opencode's per-agent `auto_accept` feature, stated as intent. **Nothing
-    /// consumes it yet**: verified against Paseo 0.6.1, neither `paseo agent
-    /// run` nor `paseo agent update` exposes a flag for it, and the Kontor
-    /// runtime drives the CLI rather than the MCP surface where it is settable.
-    /// The permission block is the mechanism that actually holds; this is here
-    /// so the day a spawn-time surface appears, the value it needs is already
-    /// derived in the same place as everything else. See OQ-OP20-2.
+    /// OpenCode's per-agent `auto_accept` feature, stated as intent. **Nothing
+    /// consumes it, and nothing needs to**: the permission object carried in
+    /// `providerOptions` is what decides whether a seat is asked, and it is
+    /// applied per turn by the provider itself. This is retained only so a
+    /// future feature surface would find the value derived in the same place as
+    /// the rest of the posture. See OQ-OP20-2.
     pub auto_accept: Option<bool>,
 }
 

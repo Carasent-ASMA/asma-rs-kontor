@@ -114,6 +114,34 @@ impl SeatMcp {
     }
 }
 
+impl SeatMcp {
+    /// The `config.mcpServers` entry a delivery seat is created with.
+    ///
+    /// Built from this value rather than taken as JSON from a caller: the
+    /// create payload decides what a seat can reach, and "some object the
+    /// launch path happened to assemble" is not a thing to validate after the
+    /// fact. The shape mirrors what [`SeatMcp::compose`] writes into
+    /// `.mcp.json` for a Claude seat, so both surfaces name one server at one
+    /// tier under one profile.
+    #[must_use]
+    pub fn server_config(&self, serve_profile: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kontor": {
+                "type": "local",
+                "command": [
+                    self.command.clone(),
+                    "--state-root".to_owned(),
+                    self.state_root.display().to_string(),
+                    "--credential-tier".to_owned(),
+                    "operator".to_owned(),
+                    "--serve-profile".to_owned(),
+                    serve_profile.to_owned(),
+                ],
+            }
+        })
+    }
+}
+
 /// Compose for one seat: a no-op unless composition is configured **and** the
 /// provider is one this composes for.
 ///
