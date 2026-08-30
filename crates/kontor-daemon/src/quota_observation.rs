@@ -69,11 +69,20 @@ pub fn classify_and_record(
     if signals.is_empty() {
         return None;
     }
-    let observed = classify(refusal.as_str(), signals)?;
-
-    // A signal set is realm-wide, so a Claude wording could match on a seat
-    // pinned to a Codex account. Recording that would block the wrong account
-    // on evidence that was never about it.
+    // Eligibility first, classification second. A signal set is realm-wide and
+    // a deployment names *exact catalog aliases*, so one vendor's wording
+    // appears once per account: `codex-work` and `codex-personal` carry the
+    // identical sentence under different aliases.
+    //
+    // Classifying the whole set and rejecting an ineligible answer afterwards
+    // -- which is what this did first -- is wrong twice over. It is inert when
+    // no signal happens to name an alias this account can select, and worse, it
+    // is *masking*: `classify` returns the first signal whose markers match, so
+    // a seat on `codex-personal` matches the `codex-work` entry, gets it thrown
+    // away, and never reaches its own identical wording. Filtering to what this
+    // account may actually select, in the configured order, makes both
+    // impossible: every candidate is eligible by construction, and no
+    // ineligible entry can stand in front of an eligible one.
     let profile = match state
         .with_store(|store| store.get_account_profile(project_id, account_profile_id))
     {
@@ -84,21 +93,35 @@ pub fn classify_and_record(
             return None;
         }
     };
-    match kontor_accounts::selectable_providers(&profile) {
-        Ok(aliases) if aliases.contains(&observed.provider) => {}
-        Ok(_) => {
-            debug!(
-                account = %account_profile_id,
-                provider = %observed.provider,
-                "a refusal classified as a provider this account cannot select",
-            );
-            return None;
-        }
+    let selectable = match kontor_accounts::selectable_providers(&profile) {
+        Ok(aliases) => aliases,
         Err(error) => {
             warn!(account = %account_profile_id, detail = %error, "account routing could not be read");
             return None;
         }
+    };
+    if selectable.is_empty() {
+        // An account addressable under no alias cannot own a provider quota
+        // row, so there is nothing this refusal could truthfully say about it.
+        debug!(
+            account = %account_profile_id,
+            "the account declares no selectable provider; classification is inert for it",
+        );
+        return None;
     }
+    let eligible: Vec<QuotaSignal> = signals
+        .iter()
+        .filter(|signal| selectable.contains(&signal.provider))
+        .cloned()
+        .collect();
+    if eligible.is_empty() {
+        debug!(
+            account = %account_profile_id,
+            "no configured signal names an alias this account may select",
+        );
+        return None;
+    }
+    let observed = classify(refusal.as_str(), &eligible)?;
 
     let evidence_hash = refusal.digest();
     let existing = match state.with_store(|store| store.list_provider_quota_states(project_id)) {

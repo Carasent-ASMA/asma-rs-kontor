@@ -6,37 +6,62 @@
 # invalid document is refused, because it states an intent that cannot be
 # honoured.
 #
-# Order matters. `classify` returns the first signal whose markers all appear,
-# so a vendor with more specific markers must precede one whose markers its own
-# text would also satisfy. `claude` is listed before `codex` for that reason:
-# a Claude refusal contains the words "usage limit", which is the whole of the
-# Codex marker set.
+# ---------------------------------------------------------------------------
+# `provider` is an exact catalog alias, never a vendor family
+# ---------------------------------------------------------------------------
+#
+# A deployment addresses one login per alias -- `codex-work` and
+# `codex-personal` are two accounts of the same vendor, and each account's
+# routing document declares exactly which aliases it may select. A quota state
+# is keyed by `(account, provider)`, so a signal naming the bare family `codex`
+# matches no account that routes `codex-work`, and classification for that
+# account is silently inert.
+#
+# So one vendor's wording appears once **per alias**, and the identical sentence
+# repeating across two entries is correct rather than redundant.
+#
+# Duplicate wording is safe because eligibility is applied *before*
+# classification: the daemon filters this sequence to the aliases the seat's own
+# account may select and only then reads the text, so `codex-work`'s entry can
+# never stand in front of `codex-personal`'s for a seat running on the personal
+# login. Order still decides between two entries that are *both* eligible for
+# one account, which is why the more specific vendor precedes the more general
+# one below.
 
 schema_version: 1
 
 signals:
-  # Claude Code, authenticated by a claude.ai account.
+  # ---- Claude, one entry per login -------------------------------------
   #
   # PROVISIONAL: no live Claude refusal has been captured into the repository,
   # so these markers are stated from the product's observed phrasing and have
   # not been verified against a recorded message. They are deliberately narrow
-  # — both must appear — so the failure mode is a missed classification rather
+  # -- both must appear -- so the failure mode is a missed classification rather
   # than a Codex refusal misattributed to Claude.
   #
   # No `reset_prefix` is declared on purpose. `parse_wall_clock` requires a full
   # `<Month> <day>, <year> <HH:MM> [AM|PM]`, and Claude is understood to print a
   # bare time of day. Declaring a prefix that cannot parse would record the same
   # `Unknown` as declaring none, while implying a verification that has not
-  # happened. A refusal therefore records `Unknown` — blocking, with no stated
-  # instant — which is the classifier's own "fix the signal" prompt. Add the
-  # prefix and zone in the same edit that records a real captured message.
-  - provider: claude
+  # happened. Add the prefix and zone in the same edit that records a real
+  # captured message.
+  #
+  # Listed before Codex because the whole of the Codex marker set is the words
+  # "usage limit", which a Claude refusal also contains -- so for an account
+  # able to select both families, Claude must be tried first.
+  - provider: claude-work
     basis: plan_allowance
     markers:
       - claude
       - usage limit
 
-  # Codex, authenticated by a ChatGPT account.
+  - provider: claude-personal
+    basis: plan_allowance
+    markers:
+      - claude
+      - usage limit
+
+  # ---- Codex, one entry per login --------------------------------------
   #
   # Verified against the message Codex produced on 2026-08-21:
   #   "[System Error] You've hit your usage limit. Visit
@@ -44,17 +69,25 @@ signals:
   #    again at Aug 23rd, 2026 9:35 AM."
   # Codex prints the seat's local wall clock and names no zone, so the zone is
   # supplied here. Reading it as UTC would move the reset by the offset.
-  - provider: codex
+  - provider: codex-work
     basis: plan_allowance
     markers:
       - usage limit
     reset_prefix: 'try again at '
     reset_zone: Europe/Oslo
 
-  # OpenRouter free credits: a prepaid balance, not a plan allowance. No clock
-  # lifts it, so it is recorded as drained rather than exhausted and carries no
-  # reset instant.
-  - provider: openrouter
+  - provider: codex-personal
+    basis: plan_allowance
+    markers:
+      - usage limit
+    reset_prefix: 'try again at '
+    reset_zone: Europe/Oslo
+
+  # ---- Prepaid balances -------------------------------------------------
+  #
+  # A credit balance is not a plan allowance: no clock lifts it, so it records
+  # as drained rather than exhausted and carries no reset instant.
+  - provider: opencode
     basis: credit_balance
     markers:
       - insufficient

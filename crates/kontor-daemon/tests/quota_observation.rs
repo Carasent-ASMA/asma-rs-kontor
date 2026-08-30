@@ -30,9 +30,9 @@ const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
      https://chatgpt.com/codex/settings/usage to purchase more credits or try \
      again at Aug 23rd, 2026 9:35 AM.";
 
-fn codex_signal() -> QuotaSignal {
+fn codex_signal_for(alias: &str) -> QuotaSignal {
     QuotaSignal {
-        provider: "codex-work".to_owned(),
+        provider: alias.to_owned(),
         basis: QuotaBasis::PlanAllowance,
         markers: vec!["usage limit".to_owned()],
         reset_prefix: Some("try again at ".to_owned()),
@@ -76,7 +76,7 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
         &state,
         world.project,
         profile,
-        &[codex_signal()],
+        &[codex_signal_for("codex-work")],
         &refusal(CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -112,7 +112,7 @@ async fn the_same_limit_observed_three_times_writes_one_row() {
             &state,
             world.project,
             profile,
-            &[codex_signal()],
+            &[codex_signal_for("codex-work")],
             &refusal(CODEX_LIMIT),
             at(&format!("2026-08-21T10:0{minute}:00Z")),
         )
@@ -152,7 +152,7 @@ async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
                 &state,
                 world.project,
                 profile,
-                &[codex_signal()],
+                &[codex_signal_for("codex-work")],
                 &refusal(text),
                 at("2026-08-21T10:00:00Z"),
             )
@@ -209,7 +209,7 @@ async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
             &state,
             world.project,
             profile,
-            &[codex_signal()],
+            &[codex_signal_for("codex-work")],
             &refusal(CODEX_LIMIT),
             at("2026-08-21T10:00:00Z"),
         )
@@ -232,7 +232,7 @@ async fn the_refusal_sentence_never_reaches_the_store() {
         &state,
         world.project,
         profile,
-        &[codex_signal()],
+        &[codex_signal_for("codex-work")],
         &refusal(CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -266,4 +266,100 @@ async fn a_credential_shaped_refusal_is_refused_before_it_is_ever_classified() {
     assert!(TransientRefusal::parse("authorization: Bearer sk-livesecretvalue00").is_none());
     let carried = TransientRefusal::parse(CODEX_LIMIT).expect("an ordinary refusal");
     assert!(!format!("{carried:?}").contains("usage limit"));
+}
+
+/// Two logins of one vendor carry the *identical* sentence under different
+/// aliases. Each must record its own exact `(account, provider)` tuple.
+#[tokio::test]
+async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
+    let world = World::open().await;
+    let work = account(&world, "alias-work", "codex-work").await;
+    let personal = account(&world, "alias-personal", "codex-personal").await;
+    let state = world.daemon.state();
+    // The realm-wide configured sequence, work first.
+    let configured = [
+        codex_signal_for("codex-work"),
+        codex_signal_for("codex-personal"),
+    ];
+
+    for (profile, expected) in [(work, "codex-work"), (personal, "codex-personal")] {
+        let classified = classify_and_record(
+            &state,
+            world.project,
+            profile,
+            &configured,
+            &refusal(CODEX_LIMIT),
+            at("2026-08-21T10:00:00Z"),
+        )
+        .unwrap_or_else(|| panic!("{expected} classifies its own wording"));
+        assert_eq!(classified.provider, expected);
+        assert!(classified.recorded);
+    }
+
+    let stored = state
+        .with_store(|store| store.list_provider_quota_states(world.project))
+        .expect("quota states");
+    for (profile, expected) in [(work, "codex-work"), (personal, "codex-personal")] {
+        let row = stored
+            .iter()
+            .find(|entry| entry.account_profile_id == profile)
+            .unwrap_or_else(|| panic!("{expected} has a row"));
+        assert_eq!(row.provider, expected, "each login records its own alias");
+    }
+}
+
+/// The masking case. An ineligible entry earlier in the configured sequence
+/// must not consume the match and leave the eligible one unreached — which is
+/// exactly what classifying first and filtering afterwards did.
+#[tokio::test]
+async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
+    let world = World::open().await;
+    let personal = account(&world, "mask-personal", "codex-personal").await;
+    let state = world.daemon.state();
+    // `codex-work` is first and matches the same text, but this seat cannot
+    // select it.
+    let configured = [
+        codex_signal_for("codex-work"),
+        codex_signal_for("codex-personal"),
+    ];
+
+    let classified = classify_and_record(
+        &state,
+        world.project,
+        personal,
+        &configured,
+        &refusal(CODEX_LIMIT),
+        at("2026-08-21T10:00:00Z"),
+    )
+    .expect("the eligible signal is reached");
+    assert_eq!(
+        classified.provider, "codex-personal",
+        "an ineligible alias must not stand in front of an eligible one",
+    );
+}
+
+/// A deployment that names bare vendor families rather than catalog aliases
+/// classifies nothing, and says so by writing nothing at all.
+#[tokio::test]
+async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() {
+    let world = World::open().await;
+    let profile = account(&world, "family-only", "codex-work").await;
+    let state = world.daemon.state();
+
+    assert!(
+        classify_and_record(
+            &state,
+            world.project,
+            profile,
+            &[codex_signal_for("codex")],
+            &refusal(CODEX_LIMIT),
+            at("2026-08-21T10:00:00Z"),
+        )
+        .is_none(),
+        "`codex` is not an alias any account routes",
+    );
+    let stored = state
+        .with_store(|store| store.list_provider_quota_states(world.project))
+        .expect("quota states");
+    assert!(stored.iter().all(|entry| entry.account_profile_id != profile));
 }

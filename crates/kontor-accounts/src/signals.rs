@@ -153,43 +153,97 @@ mod tests {
          again at Aug 23rd, 2026 9:35 AM.";
 
     #[test]
-    fn the_shipped_example_is_valid() {
+    fn the_shipped_example_names_exact_catalog_aliases_not_vendor_families() {
         let document = parse(EXAMPLE).expect("the shipped example is valid");
         assert_eq!(document.schema_version, 1);
+        let providers: Vec<&str> = document
+            .signals
+            .iter()
+            .map(|signal| signal.provider.as_str())
+            .collect();
+        // An account routes `codex-work`, never the bare family `codex`. A
+        // signal naming the family matches no account and is silently inert.
+        for alias in [
+            "claude-work",
+            "claude-personal",
+            "codex-work",
+            "codex-personal",
+        ] {
+            assert!(providers.contains(&alias), "missing {alias}: {providers:?}");
+        }
         assert!(
-            document
+            !providers.contains(&"codex") && !providers.contains(&"claude"),
+            "a bare vendor family can never be selected by an account: {providers:?}",
+        );
+    }
+
+    /// Every alias the example declares must actually classify something, or
+    /// the entry is decoration. This is the per-alias inertness guard.
+    #[test]
+    fn every_declared_alias_classifies_its_own_vendor_wording() {
+        let document = parse(EXAMPLE).expect("valid document");
+        for (alias, text) in [
+            ("codex-work", CODEX_LIMIT),
+            ("codex-personal", CODEX_LIMIT),
+            (
+                "claude-work",
+                "Claude usage limit reached. Your limit will reset at 9:35 AM.",
+            ),
+            (
+                "claude-personal",
+                "Claude usage limit reached. Your limit will reset at 9:35 AM.",
+            ),
+            ("opencode", "insufficient credits remaining"),
+        ] {
+            // The daemon filters to one account's aliases before classifying,
+            // so this is the eligible set a seat on that account would see.
+            let eligible: Vec<QuotaSignal> = document
                 .signals
                 .iter()
-                .any(|signal| signal.provider == "claude")
-        );
-        assert!(
-            document
-                .signals
-                .iter()
-                .any(|signal| signal.provider == "codex")
-        );
+                .filter(|signal| signal.provider == alias)
+                .cloned()
+                .collect();
+            assert!(!eligible.is_empty(), "{alias} is not declared");
+            let observed =
+                classify(text, &eligible).unwrap_or_else(|| panic!("{alias} classifies nothing"));
+            assert_eq!(observed.provider, alias);
+        }
     }
 
     #[test]
     fn the_shipped_example_still_classifies_the_recorded_codex_refusal() {
         let document = parse(EXAMPLE).expect("valid document");
-        let observed = classify(CODEX_LIMIT, &document.signals).expect("a quota refusal");
-        assert_eq!(observed.provider, "codex");
+        let eligible: Vec<QuotaSignal> = document
+            .signals
+            .iter()
+            .filter(|signal| signal.provider == "codex-work")
+            .cloned()
+            .collect();
+        let observed = classify(CODEX_LIMIT, &eligible).expect("a quota refusal");
+        assert_eq!(observed.provider, "codex-work");
         assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
     }
 
-    /// The example lists `claude` before `codex` precisely so a Claude refusal
-    /// carrying the words "usage limit" is not attributed to Codex, whose own
-    /// marker those words alone satisfy.
+    /// For an account able to select both families, order still decides: the
+    /// whole of the Codex marker set is the words "usage limit", which a Claude
+    /// refusal also contains.
     #[test]
-    fn a_claude_refusal_is_not_attributed_to_codex() {
+    fn a_claude_refusal_is_not_attributed_to_codex_when_both_are_eligible() {
         let document = parse(EXAMPLE).expect("valid document");
+        let both: Vec<QuotaSignal> = document
+            .signals
+            .iter()
+            .filter(|signal| {
+                signal.provider == "claude-work" || signal.provider == "codex-work"
+            })
+            .cloned()
+            .collect();
         let observed = classify(
             "Claude usage limit reached. Your limit will reset at 9:35 AM.",
-            &document.signals,
+            &both,
         )
         .expect("a quota refusal");
-        assert_eq!(observed.provider, "claude");
+        assert_eq!(observed.provider, "claude-work");
     }
 
     #[test]
@@ -198,10 +252,68 @@ mod tests {
         assert!(classify("connection reset by peer", &document.signals).is_none());
     }
 
+    /// Absent, unreadable and invalid are **three** outcomes, not two. Only the
+    /// first is inert; collapsing the others into it would leave an operator
+    /// believing classification is armed when it is not.
     #[test]
     fn an_absent_document_leaves_classification_inert() {
         let root = tempfile::tempdir().expect("temporary state root");
         assert_eq!(read(root.path()).expect("absence is valid"), None);
+    }
+
+    #[test]
+    fn a_present_but_unreadable_document_fails_loudly_rather_than_going_inert() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("temporary state root");
+        let path = root.path().join(QUOTA_SIGNALS_FILE);
+        std::fs::write(&path, EXAMPLE).expect("the document is written");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .expect("permissions are set");
+        let outcome = read(root.path());
+        // Running as root defeats the permission bit; skip rather than assert a
+        // falsehood about the environment.
+        if let Ok(readable) = &outcome {
+            assert!(readable.is_some(), "a readable document still parses");
+            return;
+        }
+        assert!(
+            matches!(outcome, Err(QuotaSignalsError::Read { .. })),
+            "an unreadable document is a typed Read failure, never inert",
+        );
+    }
+
+    #[test]
+    fn a_present_but_invalid_document_fails_loudly_rather_than_going_inert() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        std::fs::write(
+            root.path().join(QUOTA_SIGNALS_FILE),
+            "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: []\n",
+        )
+        .expect("the document is written");
+        assert!(
+            matches!(
+                read(root.path()),
+                Err(QuotaSignalsError::Invalid {
+                    rule: "every signal must declare at least one marker"
+                })
+            ),
+            "an invalid document is refused, never treated as absent",
+        );
+    }
+
+    #[test]
+    fn a_present_but_unparsable_document_fails_loudly_rather_than_going_inert() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        std::fs::write(
+            root.path().join(QUOTA_SIGNALS_FILE),
+            "schema_version: 1\nsignals: [{",
+        )
+        .expect("the document is written");
+        assert!(
+            matches!(read(root.path()), Err(QuotaSignalsError::Document)),
+            "an unparsable document is refused, never treated as absent",
+        );
     }
 
     #[test]
