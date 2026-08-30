@@ -609,9 +609,19 @@ fn narrow_permissions(base: &Path, directory: &Path, file: &Path) -> io::Result<
 /// Everything that makes one launch *this* launch.
 ///
 /// Hashed into a label so a reconciling census can recognise the agent this
-/// launch created and refuse anything else. Named fields rather than a slice of
-/// strings, because the whole value of the digest is that nobody can quietly
-/// leave one of them out.
+/// launch created and refuse anything else.
+///
+/// The digest is taken over **the create configuration that is actually sent**,
+/// not over a hand-listed subset of it. Listing fields is how a digest quietly
+/// stops covering the thing it names: an earlier version of this covered only
+/// binding, run, place and slot, and so said nothing about provider, model, cwd,
+/// mode, thinking option, title or MCP surface — every one of which changes what
+/// the create does. Passing the config itself means a field added to the create
+/// is covered the day it is added, with nobody having to remember.
+///
+/// Excluded, necessarily: the correlation id, which differs per attempt and
+/// would make a retry's digest disagree with the agent it is looking for, and
+/// the intent label itself, which cannot contain its own hash.
 #[derive(Debug, Clone, Copy)]
 pub struct LaunchIntent<'a> {
     /// The Kontor session binding this seat is placed under.
@@ -622,25 +632,23 @@ pub struct LaunchIntent<'a> {
     pub workspace_id: &'a str,
     /// The role slot it fills.
     pub role_slot_id: &'a str,
-    /// The permission object it is to be created with, when it has one.
-    pub permission: Option<&'a serde_json::Value>,
+    /// The complete `create_agent_request.config` this launch will send.
+    pub config: &'a serde_json::Value,
 }
 
 impl LaunchIntent<'_> {
-    /// The digest that travels in [`label::LAUNCH_INTENT`](crate::wire::label::LAUNCH_INTENT).
+    /// The digest that travels in
+    /// [`label::LAUNCH_INTENT`](crate::wire::label::LAUNCH_INTENT).
     ///
     /// Field-separated so no two different intents can hash the same by
-    /// concatenation, and carrying no value of anything it covers.
+    /// concatenation, and carrying no value of anything it covers. The config is
+    /// serialized canonically — `serde_json::Map` is a `BTreeMap` here — so the
+    /// same intent digests identically on every host and on every attempt.
     #[must_use]
     pub fn digest(&self) -> ContentHash {
         let material = format!(
-            "binding={}\nagent_run={}\nworkspace={}\nrole_slot={}\npermission={}",
-            self.binding_id,
-            self.agent_run_id,
-            self.workspace_id,
-            self.role_slot_id,
-            self.permission
-                .map_or_else(|| "none".to_owned(), ToString::to_string),
+            "binding={}\nagent_run={}\nworkspace={}\nrole_slot={}\nconfig={}",
+            self.binding_id, self.agent_run_id, self.workspace_id, self.role_slot_id, self.config,
         );
         ContentHash::of(material.as_bytes())
     }
@@ -1741,74 +1749,108 @@ mod tests {
         );
     }
 
-    fn intent<'a>(
-        binding: &'a str,
-        run: &'a str,
-        workspace: &'a str,
-        slot: &'a str,
-        permission: Option<&'a serde_json::Value>,
-    ) -> LaunchIntent<'a> {
+    fn intent<'a>(config: &'a serde_json::Value) -> LaunchIntent<'a> {
         LaunchIntent {
-            binding_id: binding,
-            agent_run_id: run,
-            workspace_id: workspace,
-            role_slot_id: slot,
-            permission,
+            binding_id: "bind-1",
+            agent_run_id: "run-1",
+            workspace_id: "wks-1",
+            role_slot_id: "implement-a",
+            config,
         }
     }
 
-    /// Every field is load-bearing: change one and the census stops matching.
-    #[test]
-    fn a_launch_intent_digest_covers_every_field() {
-        let block = opencode(SeatAutonomy::Bounded, &[]);
-        let base = intent("bind-1", "run-1", "wks-1", "implement-a", Some(&block));
-        let baseline = base.digest();
+    fn create_config() -> serde_json::Value {
+        serde_json::json!({
+            "provider": "opencode",
+            "cwd": "/w/task-1",
+            "model": "deepseek/deepseek-v4-flash",
+            "title": "Implement",
+            "modeId": "build",
+            "thinkingOptionId": "max",
+            "providerOptions": { "permission": opencode(SeatAutonomy::Bounded, &[]) },
+            "mcpServers": { "kontor": { "type": "local" } },
+        })
+    }
 
+    /// **Every effective create field** moves the digest. A field the digest
+    /// does not cover is a field a reconciling census would accept a different
+    /// value of.
+    #[test]
+    fn a_launch_intent_digest_covers_every_effective_create_field() {
+        let base = create_config();
+        let baseline = intent(&base).digest();
+
+        for (field, value) in [
+            ("provider", serde_json::json!("claude")),
+            ("cwd", serde_json::json!("/w/other")),
+            ("model", serde_json::json!("other-model")),
+            ("title", serde_json::json!("Other")),
+            ("modeId", serde_json::json!("plan")),
+            ("thinkingOptionId", serde_json::json!("low")),
+            (
+                "providerOptions",
+                serde_json::json!({ "permission": opencode(SeatAutonomy::Advisory, &[]) }),
+            ),
+            (
+                "mcpServers",
+                serde_json::json!({ "kontor": { "type": "remote" } }),
+            ),
+        ] {
+            let mut changed = base.clone();
+            changed[field] = value;
+            assert_ne!(
+                baseline,
+                intent(&changed).digest(),
+                "`{field}` must move the launch-intent digest"
+            );
+        }
+
+        // And a field removed entirely, not merely changed.
+        let mut without = base.clone();
+        without.as_object_mut().expect("map").remove("mcpServers");
         assert_ne!(
             baseline,
-            intent("bind-2", "run-1", "wks-1", "implement-a", Some(&block)).digest()
+            intent(&without).digest(),
+            "dropping a field must move the digest too"
         );
-        assert_ne!(
-            baseline,
-            intent("bind-1", "run-2", "wks-1", "implement-a", Some(&block)).digest()
-        );
-        assert_ne!(
-            baseline,
-            intent("bind-1", "run-1", "wks-2", "implement-a", Some(&block)).digest()
-        );
-        assert_ne!(
-            baseline,
-            intent("bind-1", "run-1", "wks-1", "implement-b", Some(&block)).digest()
-        );
-        let other = opencode(SeatAutonomy::Advisory, &[]);
-        assert_ne!(
-            baseline,
-            intent("bind-1", "run-1", "wks-1", "implement-a", Some(&other)).digest(),
-            "a different posture is a different intent"
-        );
-        assert_ne!(
-            baseline,
-            intent("bind-1", "run-1", "wks-1", "implement-a", None).digest()
-        );
-        assert_eq!(baseline, base.digest(), "and it is stable");
+        assert_eq!(baseline, intent(&base).digest(), "and it is stable");
+    }
+
+    /// The identity fields are covered as well as the configuration.
+    #[test]
+    fn a_launch_intent_digest_covers_its_identity() {
+        let config = create_config();
+        let baseline = intent(&config).digest();
+        for mutate in [
+            |i: &mut LaunchIntent| i.binding_id = "bind-2",
+            |i: &mut LaunchIntent| i.agent_run_id = "run-2",
+            |i: &mut LaunchIntent| i.workspace_id = "wks-2",
+            |i: &mut LaunchIntent| i.role_slot_id = "implement-b",
+        ] {
+            let mut changed = intent(&config);
+            mutate(&mut changed);
+            assert_ne!(baseline, changed.digest());
+        }
     }
 
     /// Fields are separated, so no two intents collide by running together.
     #[test]
     fn a_launch_intent_digest_cannot_collide_by_concatenation() {
-        assert_ne!(
-            intent("a", "bc", "w", "s", None).digest(),
-            intent("ab", "c", "w", "s", None).digest()
-        );
+        let config = serde_json::json!({});
+        let mut first = intent(&config);
+        first.binding_id = "a";
+        first.agent_run_id = "bc";
+        let mut second = intent(&config);
+        second.binding_id = "ab";
+        second.agent_run_id = "c";
+        assert_ne!(first.digest(), second.digest());
     }
 
     /// It carries no value of what it covers.
     #[test]
     fn a_launch_intent_digest_carries_no_value() {
-        let block = opencode(SeatAutonomy::Bounded, &[]);
-        let rendered = intent("bind-1", "run-1", "wks-1", "implement-a", Some(&block))
-            .digest()
-            .to_string();
+        let config = create_config();
+        let rendered = intent(&config).digest().to_string();
         for secret in ["bind-1", "run-1", "wks-1", "implement-a", "deny", "allow"] {
             assert!(
                 !rendered.contains(secret),

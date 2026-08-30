@@ -832,6 +832,22 @@ pub struct PaseoMessageAccepted {
     pub error: Option<String>,
 }
 
+impl PaseoMessageAccepted {
+    /// Whether this answer authorizes binding the seat it was sent for.
+    ///
+    /// `accepted` alone is not enough. It is a boolean on a frame, and a frame
+    /// that belongs to a different send — a retry, a neighbouring seat, a
+    /// late-arriving answer to a request this launch already gave up on —
+    /// carries exactly the same `true`. Binding on that would admit a seat whose
+    /// first turn nobody watched. So the correlation is checked first, exactly:
+    /// the answer must name the request that was sent and the agent it was sent
+    /// to, and only then does acceptance mean anything.
+    #[must_use]
+    pub fn authorizes(&self, request_id: &str, agent_id: &str) -> bool {
+        self.request_id == request_id && self.agent_id == agent_id && self.accepted
+    }
+}
+
 /// The answer to `fetch_agent_request`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoAgentAnswer {
@@ -1798,5 +1814,41 @@ mod tests {
         .expect("Paseo 0.4 page info");
 
         assert_eq!(page_info.next(), Some("cur_2"));
+    }
+
+    /// Acceptance authorizes a binding only when the answer is *this* answer.
+    #[test]
+    fn acceptance_requires_exact_correlation() {
+        let answer = PaseoMessageAccepted {
+            request_id: "req-1".to_owned(),
+            agent_id: "agt-1".to_owned(),
+            accepted: true,
+            error: None,
+        };
+        assert!(answer.authorizes("req-1", "agt-1"));
+        assert!(
+            !answer.authorizes("req-2", "agt-1"),
+            "an answer to another request must not bind this seat"
+        );
+        assert!(
+            !answer.authorizes("req-1", "agt-2"),
+            "an answer about another agent must not bind this seat"
+        );
+
+        let refused = PaseoMessageAccepted {
+            accepted: false,
+            ..answer.clone()
+        };
+        assert!(!refused.authorizes("req-1", "agt-1"));
+
+        // A frame that carried no correlation at all deserializes to empty
+        // strings, and empty strings match nothing this launch sent.
+        let bare = PaseoMessageAccepted {
+            request_id: String::new(),
+            agent_id: String::new(),
+            accepted: true,
+            error: None,
+        };
+        assert!(!bare.authorizes("req-1", "agt-1"));
     }
 }

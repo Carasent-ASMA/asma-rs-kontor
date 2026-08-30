@@ -311,6 +311,54 @@ pub(crate) fn built_in_provider(provider: &str) -> &str {
 // CLI commands
 // ---------------------------------------------------------------------------
 
+/// Everything one delivery `create_agent_request` is built from.
+///
+/// A struct rather than thirteen positional arguments, because the digest below
+/// covers all of them and a call site that silently passed the wrong one for the
+/// right type is precisely what that digest exists to catch.
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveryCreate<'a> {
+    /// The correlation id for this attempt. Deliberately outside the digest: it
+    /// differs per attempt, and a retry must still recognise the agent the first
+    /// attempt may have created.
+    pub request_id: &'a str,
+    /// The native place the seat is created in.
+    pub workspace_id: &'a str,
+    /// The seat's canonical worktree.
+    pub canonical_cwd: &'a str,
+    /// The frozen route.
+    pub model_rung: &'a ModelRung,
+    /// The declared posture.
+    pub autonomy: SeatAutonomy,
+    /// The visible seat title.
+    pub title: &'a str,
+    /// The seat labels, before the launch-intent digest is added.
+    pub labels: &'a BTreeMap<String, String>,
+    /// The ticket's declared floor relaxations.
+    pub allowances: &'a [crate::posture::PermissionAllowance],
+    /// The seat's MCP surface, when the daemon composes one.
+    pub seat_mcp: Option<&'a crate::seat_mcp::SeatMcp>,
+    /// The serve profile that surface runs under.
+    pub serve_profile: &'a str,
+    /// The Kontor session binding.
+    pub binding_id: &'a str,
+    /// The agent run.
+    pub agent_run_id: &'a str,
+    /// The role slot.
+    pub role_slot_id: &'a str,
+}
+
+/// One built delivery create, with the labels a census must match.
+#[derive(Debug, Clone)]
+pub struct DeliveryCreateRequest {
+    /// The request to send.
+    pub rpc: PaseoRpc,
+    /// The exact labels the created agent will carry, digest included.
+    pub labels: BTreeMap<String, String>,
+    /// The launch-intent digest, for the reconciliation claim.
+    pub intent_digest: String,
+}
+
 /// One Paseo CLI invocation, as an argv array.
 ///
 /// `argv` never contains `--host`: the live transport appends it. The
@@ -1195,56 +1243,68 @@ impl PaseoRpc {
     /// # Errors
     /// As [`paseo_mode`]: a provider that cannot express the declared posture is
     /// refused rather than launched under a different one.
-    #[allow(clippy::too_many_arguments)]
     pub fn delivery_agent_create(
-        request_id: String,
-        workspace_id: &str,
-        canonical_cwd: &str,
-        model_rung: &ModelRung,
-        autonomy: SeatAutonomy,
-        title: &str,
-        labels: &BTreeMap<String, String>,
-        allowances: &[crate::posture::PermissionAllowance],
-        seat_mcp: Option<&crate::seat_mcp::SeatMcp>,
-        serve_profile: &str,
-    ) -> RuntimeResult<Self> {
+        parts: DeliveryCreate<'_>,
+    ) -> RuntimeResult<DeliveryCreateRequest> {
         // Rendered here, from the declaration, rather than accepted alongside
         // it. Taking a `SeatPosture` *and* an autonomy was two independent
         // statements of one thing: a miswired caller could send `modeId: build`
         // with a plan seat's deny block and every payload assertion would still
         // have passed. The mode below comes from the same render, so the two
         // halves of a posture cannot disagree by construction.
-        let posture =
-            crate::posture::render_posture(model_rung.provider.0.as_str(), autonomy, allowances)?;
-        let mode = posture.mode;
+        let posture = crate::posture::render_posture(
+            parts.model_rung.provider.0.as_str(),
+            parts.autonomy,
+            parts.allowances,
+        )?;
         let mut config = serde_json::json!({
-            "provider": model_rung.provider.0,
-            "cwd": canonical_cwd,
-            "model": model_rung.model.0,
-            "title": title,
+            "provider": parts.model_rung.provider.0,
+            "cwd": parts.canonical_cwd,
+            "model": parts.model_rung.model.0,
+            "title": parts.title,
         });
-        if let Some(mode) = mode {
+        if let Some(mode) = posture.mode {
             config["modeId"] = serde_json::json!(mode);
         }
-        if let Some(effort) = model_rung.effort {
+        if let Some(effort) = parts.model_rung.effort {
             config["thinkingOptionId"] = serde_json::json!(effort.as_str());
         }
         if let Some(permission) = posture.permission.as_ref() {
             config["providerOptions"] = serde_json::json!({ "permission": permission });
         }
-        if let Some(seat_mcp) = seat_mcp {
-            config["mcpServers"] = seat_mcp.server_config(serve_profile);
+        if let Some(seat_mcp) = parts.seat_mcp {
+            config["mcpServers"] = seat_mcp.server_config(parts.serve_profile);
         }
-        Ok(Self::mutate(
+
+        // Digested *after* the config is complete, so the label covers exactly
+        // what is about to be sent. The label is then added to a copy of the
+        // caller's labels — it cannot be inside its own digest.
+        let intent = crate::posture::LaunchIntent {
+            binding_id: parts.binding_id,
+            agent_run_id: parts.agent_run_id,
+            workspace_id: parts.workspace_id,
+            role_slot_id: parts.role_slot_id,
+            config: &config,
+        };
+        let digest = intent.digest().to_string();
+        let mut labels = parts.labels.clone();
+        labels.insert(crate::wire::label::LAUNCH_INTENT.to_owned(), digest.clone());
+
+        let rpc = Self::mutate(
             "create_agent_request",
             "status",
-            request_id,
+            parts.request_id.to_owned(),
             serde_json::json!({
                 "config": config,
-                "workspaceId": workspace_id,
+                "workspaceId": parts.workspace_id,
                 "labels": labels,
             }),
-        ))
+        );
+        Ok(DeliveryCreateRequest {
+            rpc,
+            labels,
+            intent_digest: digest,
+        })
     }
 
     /// `create_agent_request` for one persistent hosted leadership seat. The
@@ -2997,7 +3057,7 @@ mod tests {
         autonomy: SeatAutonomy,
         provider: &str,
         mcp: Option<&crate::seat_mcp::SeatMcp>,
-    ) -> PaseoRpc {
+    ) -> DeliveryCreateRequest {
         delivery_create_with(autonomy, provider, mcp, &[])
     }
 
@@ -3006,19 +3066,22 @@ mod tests {
         provider: &str,
         mcp: Option<&crate::seat_mcp::SeatMcp>,
         allowances: &[crate::posture::PermissionAllowance],
-    ) -> PaseoRpc {
-        PaseoRpc::delivery_agent_create(
-            "req-1".to_owned(),
-            "wks_1",
-            "/w/task-1",
-            &route(provider, "deepseek/deepseek-v4-flash", None),
+    ) -> DeliveryCreateRequest {
+        PaseoRpc::delivery_agent_create(DeliveryCreate {
+            request_id: "req-1",
+            workspace_id: "wks_1",
+            canonical_cwd: "/w/task-1",
+            model_rung: &route(provider, "deepseek/deepseek-v4-flash", None),
             autonomy,
-            "Implement",
-            &labels(),
+            title: "Implement",
+            labels: &labels(),
             allowances,
-            mcp,
-            "worker",
-        )
+            seat_mcp: mcp,
+            serve_profile: "worker",
+            binding_id: "bind-1",
+            agent_run_id: "run-1",
+            role_slot_id: "implement-a",
+        })
         .expect("the provider expresses this posture")
     }
 
@@ -3027,10 +3090,10 @@ mod tests {
     #[test]
     fn a_delivery_create_carries_the_posture_in_provider_options() {
         let request = delivery_create(SeatAutonomy::Bounded, "opencode", None);
-        assert_eq!(request.request_type, "create_agent_request");
-        assert!(request.mutates);
+        assert_eq!(request.rpc.request_type, "create_agent_request");
+        assert!(request.rpc.mutates);
 
-        let config = &request.message["config"];
+        let config = &request.rpc.message["config"];
         assert_eq!(config["provider"], "opencode");
         assert_eq!(config["modeId"], "build");
         let permission = &config["providerOptions"]["permission"];
@@ -3050,10 +3113,10 @@ mod tests {
     fn a_delivery_create_carries_no_initial_prompt() {
         let request = delivery_create(SeatAutonomy::Bounded, "opencode", None);
         assert!(
-            request.message.get("initialPrompt").is_none(),
+            request.rpc.message.get("initialPrompt").is_none(),
             "the first turn is a separate, separately correlated call"
         );
-        assert!(request.message.get("clientMessageId").is_none());
+        assert!(request.rpc.message.get("clientMessageId").is_none());
     }
 
     /// A provider whose definition declares no `validateOptions` is refused by
@@ -3064,12 +3127,16 @@ mod tests {
         for provider in ["claude", "codex"] {
             let request = delivery_create(SeatAutonomy::Bounded, provider, None);
             assert!(
-                request.message["config"].get("providerOptions").is_none(),
+                request.rpc.message["config"]
+                    .get("providerOptions")
+                    .is_none(),
                 "{provider} must not be sent providerOptions"
             );
         }
         assert!(
-            delivery_create(SeatAutonomy::Bounded, "opencode", None).message["config"]
+            delivery_create(SeatAutonomy::Bounded, "opencode", None)
+                .rpc
+                .message["config"]
                 .get("providerOptions")
                 .is_some()
         );
@@ -3082,14 +3149,15 @@ mod tests {
         let ask = delivery_create(SeatAutonomy::Supervised, "opencode", None);
         let plan = delivery_create(SeatAutonomy::Advisory, "opencode", None);
 
-        let permission =
-            |r: &PaseoRpc| r.message["config"]["providerOptions"]["permission"].clone();
+        let permission = |r: &DeliveryCreateRequest| {
+            r.rpc.message["config"]["providerOptions"]["permission"].clone()
+        };
         assert_eq!(permission(&bounded)["bash"]["*"], "allow");
         assert_eq!(permission(&ask)["bash"]["*"], "ask");
         assert_eq!(permission(&plan)["bash"]["*"], "deny");
         assert_eq!(permission(&plan)["*"], "deny");
-        assert_eq!(bounded.message["config"]["modeId"], "build");
-        assert_eq!(plan.message["config"]["modeId"], "plan");
+        assert_eq!(bounded.rpc.message["config"]["modeId"], "build");
+        assert_eq!(plan.rpc.message["config"]["modeId"], "plan");
 
         assert_ne!(permission(&bounded), permission(&ask));
         assert_ne!(permission(&ask), permission(&plan));
@@ -3105,7 +3173,7 @@ mod tests {
             state_root: std::path::PathBuf::from("/realm/state"),
         };
         let request = delivery_create(SeatAutonomy::Bounded, "opencode", Some(&seat));
-        let entry = &request.message["config"]["mcpServers"]["kontor"];
+        let entry = &request.rpc.message["config"]["mcpServers"]["kontor"];
         assert_eq!(entry["type"], "local");
         assert_eq!(
             entry["command"],
@@ -3135,7 +3203,7 @@ mod tests {
             std::slice::from_ref(&allowance),
         );
 
-        let bash = &request.message["config"]["providerOptions"]["permission"]["bash"];
+        let bash = &request.rpc.message["config"]["providerOptions"]["permission"]["bash"];
         assert_eq!(bash["*git rm --cached*"], "allow");
         assert_eq!(bash["*rm -rf *"], "deny");
         let plain = delivery_create(SeatAutonomy::Bounded, "opencode", None);
@@ -3148,7 +3216,7 @@ mod tests {
         };
         assert_eq!(
             keys(bash),
-            keys(&plain.message["config"]["providerOptions"]["permission"]["bash"]),
+            keys(&plain.rpc.message["config"]["providerOptions"]["permission"]["bash"]),
             "an exception changes a value, never the key set"
         );
     }
@@ -3170,7 +3238,7 @@ mod tests {
             let rendered =
                 crate::posture::render_posture("opencode", autonomy, &[]).expect("a posture");
             let request = delivery_create(autonomy, "opencode", None);
-            let config = &request.message["config"];
+            let config = &request.rpc.message["config"];
             assert_eq!(
                 config["modeId"],
                 serde_json::json!(rendered.mode.expect("opencode names a mode")),
@@ -3194,6 +3262,51 @@ mod tests {
         }
     }
 
+    /// The intent label is inserted by the constructor and digests the config
+    /// that is actually sent — not a subset a caller listed.
+    #[test]
+    fn the_create_carries_a_launch_intent_over_its_own_config() {
+        let request = delivery_create(SeatAutonomy::Bounded, "opencode", None);
+        let planted = request.rpc.message["labels"][crate::wire::label::LAUNCH_INTENT]
+            .as_str()
+            .expect("the label travels on the create");
+        assert_eq!(planted, request.intent_digest);
+        assert_eq!(
+            request.labels[crate::wire::label::LAUNCH_INTENT],
+            request.intent_digest,
+            "and the census labels are the ones the agent will carry"
+        );
+
+        let recomputed = crate::posture::LaunchIntent {
+            binding_id: "bind-1",
+            agent_run_id: "run-1",
+            workspace_id: "wks_1",
+            role_slot_id: "implement-a",
+            config: &request.rpc.message["config"],
+        }
+        .digest()
+        .to_string();
+        assert_eq!(
+            planted, recomputed,
+            "the digest is over the config on the wire, so no field escapes it"
+        );
+
+        // A different posture is a different intent, so a census cannot confuse
+        // two seats that differ only in what they may do.
+        let other = delivery_create(SeatAutonomy::Advisory, "opencode", None);
+        assert_ne!(request.intent_digest, other.intent_digest);
+
+        // The label cannot be inside its own digest.
+        let mut config_labels = request.rpc.message["config"].clone();
+        assert!(
+            config_labels
+                .get(crate::wire::label::LAUNCH_INTENT)
+                .is_none(),
+            "the digest is not a field of the thing it covers"
+        );
+        config_labels.as_object_mut().expect("map");
+    }
+
     /// The payload carries the renderer's block verbatim.
     ///
     /// This is what makes hostile ambient configuration irrelevant: the rules
@@ -3215,7 +3328,7 @@ mod tests {
                 .expect("opencode renders a block");
             let request = delivery_create(autonomy, "opencode", None);
             assert_eq!(
-                request.message["config"]["providerOptions"]["permission"], rendered,
+                request.rpc.message["config"]["providerOptions"]["permission"], rendered,
                 "{autonomy:?}: the payload is the renderer's output and nothing else's"
             );
         }
