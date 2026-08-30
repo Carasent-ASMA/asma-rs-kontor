@@ -81,6 +81,17 @@ pub const PASEO_APP_VERSION: &str = "0.3.1";
 /// flag remains authoritative too.
 pub const PASEO_PROJECT_RENAME_VERSION: &str = "0.4.0";
 
+/// The release that gained per-agent environment on `agent run`.
+///
+/// `paseo agent run --help` on 0.6.1 documents
+/// `--env <key=value>  Set environment variable(s) for the agent process (can be
+/// used multiple times)`. There is no `status/server_info` flag for it, so the
+/// release floor is the compatibility evidence — and it is read from the
+/// *daemon's* reported version, never from the CLI's: a CLI that accepts a flag
+/// an older daemon ignores would launch a seat with none of its environment and
+/// no error to say so.
+pub const PASEO_SEAT_ENVIRONMENT_VERSION: &str = "0.6.1";
+
 /// The client type this adapter announces in the hello.
 pub const PASEO_CLIENT_TYPE: &str = "cli";
 
@@ -170,6 +181,15 @@ pub mod label {
     pub const SEAT_BINDING: &str = "kontor.seat_binding_id";
     /// Persistent non-delivery topology seat (for example LSA/TPM).
     pub const HOSTED_SEAT: &str = "kontor.hosted_seat";
+    /// The digest of the posture, owned config and environment a seat launched
+    /// under.
+    ///
+    /// A hash, never the values: labels are readable by anyone who can list
+    /// agents. It exists so a launch whose acknowledgement was lost can only be
+    /// adopted by a census that finds *this* posture — an agent carrying the
+    /// right task and slot but no matching digest was launched under something
+    /// else, or by something else, and is not this seat.
+    pub const SEAT_POSTURE: &str = "kontor.seat_posture";
     /// The logical seat a still-live predecessor formerly filled.
     ///
     /// Paseo's public metadata update surface patches string values and cannot
@@ -310,6 +330,18 @@ impl PaseoServerInfo {
                 .version
                 .as_deref()
                 .is_some_and(|version| version_at_least(version, PASEO_PROJECT_RENAME_VERSION))
+    }
+
+    /// Whether this daemon applies per-agent environment given on `agent run`.
+    ///
+    /// Fails closed on an absent, pre-release or unparseable version: a seat
+    /// whose posture rides on `--env` must not launch where the flag might be
+    /// accepted and dropped.
+    #[must_use]
+    pub fn supports_seat_environment(&self) -> bool {
+        self.version
+            .as_deref()
+            .is_some_and(|version| version_at_least(version, PASEO_SEAT_ENVIRONMENT_VERSION))
     }
 
     /// Every required feature this daemon does not advertise, in policy order.
