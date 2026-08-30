@@ -1088,7 +1088,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Apply one still-current Core Team route correction without replacing its logical seat. */
+        /** Apply one still-current Core Team route correction or stale-native recovery. */
         post: operations["apply_core_team_route"];
         delete?: never;
         options?: never;
@@ -1105,7 +1105,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Preview an exact provider/model correction for one persistent Core Team seat. */
+        /** Preview an exact route correction or stale-native recovery for one persistent Core Team seat. */
         post: operations["preview_core_team_route"];
         delete?: never;
         options?: never;
@@ -4278,11 +4278,11 @@ export interface components {
             /** @description Active successor native identity; equal to predecessor for an unchanged route. */
             successor_native_id: string;
         };
-        /** @description Read-only route-correction plan for one persistent Core Team seat. */
+        /** @description Read-only route-correction or stale-native recovery plan for one persistent Core Team seat. */
         CoreTeamRoutePreviewDto: {
             /** @description Frozen current route. */
             current_model_route: components["schemas"]["RuntimeModelRouteRequest"];
-            /** @description Requested replacement route. */
+            /** @description Requested successor route, which may equal the current route during recovery. */
             desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Epic whose ECP hosts the seat. */
             epic_id: string;
@@ -4304,7 +4304,7 @@ export interface components {
             /** @description Whether a native archive/launch is required. */
             would_replace_native: boolean;
         };
-        /** @description Exact in-place correction requested for one persistent Core Team seat. */
+        /** @description Exact in-place route correction or stale-native recovery for one persistent Core Team seat. */
         CoreTeamRoutePreviewRequest: {
             /** @description Provider/model/effort that should fill the same logical seat afterwards. */
             desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
@@ -5403,7 +5403,7 @@ export interface components {
         ObservedBindingDto: {
             /** @description The working directory it reported. */
             cwd?: string | null;
-            /** @description The native container identity it reported. */
+            /** @description The exact native identity it reported. */
             native_id: string;
             /** @description The native display name it reported. */
             native_name?: string | null;
