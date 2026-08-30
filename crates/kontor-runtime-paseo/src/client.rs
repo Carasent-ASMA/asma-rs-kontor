@@ -49,7 +49,7 @@
 //! prompt is interpolated into, so a hostile display name is an argument and
 //! never a second command.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,78 +81,6 @@ const JSON_FLAG: &str = "--json";
 /// sets this variable. It remains here only for the optional command-level
 /// contract used by callers that deliberately request native parentage.
 const PARENT_AGENT_ENV: &str = "PASEO_AGENT_ID";
-
-/// The largest one seat environment value may be.
-///
-/// The rendered configuration is a few kilobytes; this is headroom, not a
-/// target. An unbounded value would reach the process table and the daemon's
-/// argv, where nothing else in this module puts unbounded input.
-const MAX_SEAT_ENVIRONMENT_VALUE: usize = 64 * 1024;
-
-/// Refuse anything that is not exactly the closed seat-environment set.
-///
-/// The values are Kontor's own, so this is defence in depth rather than input
-/// validation — which is the point: it is what keeps the set closed when a later
-/// caller has a reason to pass one more thing.
-///
-/// The credential check is **marker-based and narrow by construction**. It
-/// catches the shapes a secret is usually written in; it is not a proof that a
-/// value carries none, and is not relied on as one. The real guarantee is that
-/// only [`crate::posture::seat_environment`] builds these values.
-fn validate_seat_environment(entries: &[(&'static str, String)]) -> RuntimeResult<()> {
-    fn looks_like_a_credential(value: &str) -> bool {
-        const MARKERS: &[&str] = &[
-            "-----begin",
-            "api_key",
-            "apikey",
-            "authorization:",
-            "bearer ",
-            "password",
-            "secret",
-        ];
-        let lowered = value.to_ascii_lowercase();
-        MARKERS.iter().any(|marker| lowered.contains(marker))
-    }
-
-    if entries.len() != crate::posture::SEAT_ENVIRONMENT_KEYS.len() {
-        return Err(RuntimeError::LaunchNotAdmitted {
-            rule: "a seat environment carries the whole closed set or the launch is refused",
-        });
-    }
-    let mut seen = BTreeSet::new();
-    for (key, value) in entries {
-        if !crate::posture::SEAT_ENVIRONMENT_KEYS.contains(key) {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "a seat environment may only carry Kontor's own closed variable set",
-            });
-        }
-        if !seen.insert(*key) {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "a seat environment names each variable exactly once",
-            });
-        }
-        if key.contains('\0') || value.contains('\0') {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "a seat environment value contains no NUL",
-            });
-        }
-        if value.is_empty() || value.len() > MAX_SEAT_ENVIRONMENT_VALUE {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "a seat environment value is present and bounded",
-            });
-        }
-        if looks_like_a_credential(value) {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "a seat environment carries configuration, never a credential",
-            });
-        }
-    }
-    // Length and membership together are set equality: six unique keys, each
-    // drawn from the closed set. An omission is as refused as an addition —
-    // dropping `OPENCODE_DISABLE_PROJECT_CONFIG` alone would silently re-admit
-    // every project layer this posture exists to exclude.
-    Ok(())
-}
 
 /// Paseo's provider-specific spelling of one [`SeatAutonomy`].
 ///
@@ -407,24 +335,7 @@ impl std::fmt::Debug for PaseoCommand {
             }
             argv.push(part.clone());
         }
-        // `values` keeps foreign values apart from trusted words, and a seat's
-        // environment lands there as well — so the same redaction has to cover
-        // it. Missing this is how the first attempt still printed the whole
-        // rendered configuration while the argv looked clean.
-        let values: Vec<String> = self
-            .values
-            .iter()
-            .map(|value| {
-                if crate::posture::SEAT_ENVIRONMENT_KEYS
-                    .iter()
-                    .any(|key| value.starts_with(&format!("{key}=")))
-                {
-                    "<redacted>".to_owned()
-                } else {
-                    value.clone()
-                }
-            })
-            .collect();
+        let values = &self.values;
         formatter
             .debug_struct("PaseoCommand")
             .field("argv", &argv)
@@ -524,47 +435,6 @@ impl PaseoCommand {
         )
     }
 
-    /// `agent run` with a per-agent environment.
-    ///
-    /// The environment of the **agent process**, emitted as repeated
-    /// `--env key=value`. Deliberately not [`PaseoCommand::env`], which is the
-    /// environment of the CLI invocation itself and already carries
-    /// `KONTOR_CALLER_AGENT_ID`: setting a seat's posture there would configure
-    /// the wrong process entirely.
-    ///
-    /// # Errors
-    /// [`RuntimeError::LaunchNotAdmitted`] when the set is anything other than
-    /// *exactly* [`SEAT_ENVIRONMENT_KEYS`](crate::posture::SEAT_ENVIRONMENT_KEYS)
-    /// with one value each: an operator-supplied key, a duplicate, an embedded
-    /// NUL, an oversized value, or content shaped like a credential. This is a
-    /// closed internal set and the refusal is what keeps it closed.
-    #[allow(clippy::too_many_arguments)]
-    pub fn agent_run_with_environment(
-        workspace_id: &str,
-        canonical_cwd: &str,
-        model_rung: &ModelRung,
-        autonomy: SeatAutonomy,
-        title: &str,
-        labels: &BTreeMap<String, String>,
-        caller_agent_id: Option<&str>,
-        prompt: &str,
-        seat_environment: &[(&'static str, String)],
-    ) -> RuntimeResult<Self> {
-        validate_seat_environment(seat_environment)?;
-        let mode = paseo_mode(model_rung.provider.0.as_str(), autonomy)?;
-        Self::agent_run_with_mode_and_environment(
-            workspace_id,
-            canonical_cwd,
-            model_rung,
-            title,
-            labels,
-            caller_agent_id,
-            prompt,
-            mode,
-            seat_environment,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn agent_run_with_mode(
         workspace_id: &str,
@@ -575,31 +445,6 @@ impl PaseoCommand {
         caller_agent_id: Option<&str>,
         prompt: &str,
         permission_mode: Option<&str>,
-    ) -> RuntimeResult<Self> {
-        Self::agent_run_with_mode_and_environment(
-            workspace_id,
-            canonical_cwd,
-            model_rung,
-            title,
-            labels,
-            caller_agent_id,
-            prompt,
-            permission_mode,
-            &[],
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn agent_run_with_mode_and_environment(
-        workspace_id: &str,
-        canonical_cwd: &str,
-        model_rung: &ModelRung,
-        title: &str,
-        labels: &BTreeMap<String, String>,
-        caller_agent_id: Option<&str>,
-        prompt: &str,
-        permission_mode: Option<&str>,
-        seat_environment: &[(&'static str, String)],
     ) -> RuntimeResult<Self> {
         let mut argv = Argv::new(&["agent", "run", "--background"])
             .option("--workspace", workspace_id)
@@ -615,10 +460,6 @@ impl PaseoCommand {
         let mut argv = argv.option("--title", title);
         for (key, value) in labels {
             argv = argv.option("--label", &format!("{key}={value}"));
-        }
-        // Before the trailing prompt, which terminates the option list.
-        for (key, value) in seat_environment {
-            argv = argv.option("--env", &format!("{key}={value}"));
         }
         // Everything Paseo parses as a flag is already behind us, so the prompt
         // is positional and terminates the option list.
@@ -717,24 +558,6 @@ impl PaseoCommand {
             argv.push(trailing.clone());
         }
         argv
-    }
-
-    /// The daemon's own diagnostics for one provider: which binary it resolves,
-    /// at which version, on which `PATH`.
-    ///
-    /// Read-only, and the *authoritative* answer to "which OpenCode will this
-    /// daemon launch". Resolving `opencode` on the daemon's behalf would answer a
-    /// different question — the Paseo daemon runs from an application bundle with
-    /// its own `PATH`, so a binary Kontor finds is not necessarily the one Paseo
-    /// spawns.
-    #[must_use]
-    pub fn provider_diagnostic(provider: &str) -> Self {
-        Self::read(
-            // `--json` is appended by `build`, which is why it is not written
-            // here: `paseo provider diagnostic <provider> --json`.
-            Argv::new(&["provider", "diagnostic"]).value(provider),
-            "provider diagnostic".to_owned(),
-        )
     }
 
     /// The environment the child process is given.
@@ -2144,7 +1967,7 @@ pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::PaseoServerInfo;
+
     use kontor_core::id::ContentHash;
     use kontor_core::spec::{EffortLevel, ModelRef, ProviderRef};
     use kontor_runtime::adapter::{ConsultationFallbackDisposition, ConsultationRouteSource};
@@ -3332,194 +3155,6 @@ mod tests {
                 "{autonomy:?}: the payload is the renderer's output and nothing else's"
             );
         }
-    }
-
-    // ---- seat environment, provider diagnostic, daemon contract -------------
-
-    fn seat_env() -> Vec<(&'static str, String)> {
-        crate::posture::seat_environment(
-            &crate::posture::SeatConfigRoot::new("/realm/state/seats/agent-1"),
-            &crate::posture::owned_config(&serde_json::json!({"bash": {"*": "deny"}}), None),
-        )
-    }
-
-    /// The exact argv the installed CLI accepts. `--format json` is not a flag
-    /// `provider diagnostic` has; `--json` is.
-    #[test]
-    fn the_provider_diagnostic_argv_is_the_one_the_cli_accepts() {
-        let command = PaseoCommand::provider_diagnostic("opencode");
-        assert_eq!(
-            command.argv(),
-            ["provider", "diagnostic", "opencode", "--json"],
-            "pinned against `paseo provider diagnostic --help` on 0.6.1"
-        );
-        assert_eq!(command.route(), "provider diagnostic");
-        assert!(!command.mutates(), "a diagnostic reads and changes nothing");
-    }
-
-    /// All six variables reach the agent, exactly once each, before the prompt.
-    #[test]
-    fn a_seat_environment_reaches_the_agent_as_repeated_env_flags() {
-        let environment = seat_env();
-        let command = PaseoCommand::agent_run_with_environment(
-            "wks_1",
-            "/w/task-1",
-            &route("opencode", "deepseek/deepseek-v4-flash", None),
-            SeatAutonomy::Bounded,
-            "Implement",
-            &labels(),
-            None,
-            "bootstrap",
-            &environment,
-        )
-        .expect("the whole closed set is admitted");
-
-        let argv = command.argv();
-        let emitted: Vec<&String> = argv
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index > 0 && argv[index - 1] == "--env")
-            .map(|(_, value)| value)
-            .collect();
-        assert_eq!(
-            emitted.len(),
-            crate::posture::SEAT_ENVIRONMENT_KEYS.len(),
-            "one --env per declared variable, no more"
-        );
-        for key in crate::posture::SEAT_ENVIRONMENT_KEYS {
-            assert_eq!(
-                emitted
-                    .iter()
-                    .filter(|value| value.starts_with(&format!("{key}=")))
-                    .count(),
-                1,
-                "`{key}` is carried exactly once"
-            );
-        }
-        // The prompt is the trailing positional and never an argv word, so no
-        // `--env` can be parsed as part of it.
-        assert!(
-            !argv.iter().any(|part| part == "bootstrap"),
-            "the prompt stays out of the option list"
-        );
-    }
-
-    /// The closed set is *whole*: an omission is refused like an addition,
-    /// because dropping one variable silently re-admits what it excluded.
-    #[test]
-    fn a_seat_environment_that_is_not_the_whole_closed_set_is_refused() {
-        let whole = seat_env();
-        let attempt = |environment: &[(&'static str, String)]| {
-            PaseoCommand::agent_run_with_environment(
-                "wks_1",
-                "/w/task-1",
-                &route("opencode", "deepseek/deepseek-v4-flash", None),
-                SeatAutonomy::Bounded,
-                "Implement",
-                &labels(),
-                None,
-                "bootstrap",
-                environment,
-            )
-        };
-
-        assert!(attempt(&[]).is_err(), "an empty set is not the closed set");
-
-        for dropped in 0..whole.len() {
-            let mut short = whole.clone();
-            let (name, _) = short.remove(dropped);
-            assert!(
-                attempt(&short).is_err(),
-                "dropping `{name}` must refuse the launch"
-            );
-        }
-
-        let mut duplicated = whole.clone();
-        duplicated[1] = duplicated[0].clone();
-        assert!(attempt(&duplicated).is_err(), "a duplicate key is refused");
-
-        let mut foreign = whole.clone();
-        foreign[0] = ("PATH", "/tmp/evil".to_owned());
-        assert!(attempt(&foreign).is_err(), "a foreign key is refused");
-
-        let mut credential = whole.clone();
-        credential[1].1 = r#"{"token":"bearer hunter2","password":"x"}"#.to_owned();
-        assert!(
-            attempt(&credential).is_err(),
-            "configuration only, never a credential"
-        );
-
-        let mut oversized = whole.clone();
-        oversized[1].1 = "x".repeat(MAX_SEAT_ENVIRONMENT_VALUE + 1);
-        assert!(attempt(&oversized).is_err(), "values are bounded");
-    }
-
-    /// A seat's environment never reaches a log line.
-    #[test]
-    fn a_debug_rendering_redacts_every_env_value() {
-        let command = PaseoCommand::agent_run_with_environment(
-            "wks_1",
-            "/w/task-1",
-            &route("opencode", "deepseek/deepseek-v4-flash", None),
-            SeatAutonomy::Bounded,
-            "Implement",
-            &labels(),
-            None,
-            "bootstrap",
-            &seat_env(),
-        )
-        .expect("admitted");
-
-        let rendered = format!("{command:?}");
-        assert!(rendered.contains("--env"), "the shape stays visible");
-        assert!(
-            !rendered.contains("OPENCODE_PERMISSION="),
-            "no value is rendered: {rendered}"
-        );
-        assert!(
-            !rendered.contains("/realm/state/seats/agent-1"),
-            "not even a path: {rendered}"
-        );
-        assert_eq!(
-            rendered.matches("<redacted>").count(),
-            crate::posture::SEAT_ENVIRONMENT_KEYS.len() * 2,
-            "redacted in the argv and in the separate values list"
-        );
-        assert!(
-            !rendered.contains("opencode.ai/config.json"),
-            "the carried configuration is not rendered either: {rendered}"
-        );
-    }
-
-    /// The CLI accepting `--env` is not proof that the daemon applies it, so the
-    /// contract is read from the daemon's own reported version and fails closed
-    /// on anything it cannot read.
-    #[test]
-    fn per_agent_environment_is_gated_on_the_daemons_reported_version() {
-        let at = |version: Option<&str>| PaseoServerInfo {
-            server_id: "srv".to_owned(),
-            version: version.map(str::to_owned),
-            hostname: None,
-            features: BTreeMap::new(),
-        };
-        assert!(
-            !at(None).supports_seat_environment(),
-            "a daemon that reports no version has not agreed to anything"
-        );
-        assert!(!at(Some("")).supports_seat_environment());
-        assert!(!at(Some("not-a-version")).supports_seat_environment());
-        assert!(!at(Some("0.4.0")).supports_seat_environment());
-        assert!(!at(Some("0.6.0")).supports_seat_environment());
-        assert!(
-            !at(Some("0.6.1-beta.1")).supports_seat_environment(),
-            "a pre-release sorts below the release it is named for"
-        );
-        assert!(at(Some("0.6.1")).supports_seat_environment());
-        assert!(at(Some("0.7.0")).supports_seat_environment());
-        assert!(
-            at(Some("0.10.0")).supports_seat_environment(),
-            "compared numerically, not as text"
-        );
     }
 }
 

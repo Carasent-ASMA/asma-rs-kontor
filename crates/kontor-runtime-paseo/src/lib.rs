@@ -29,7 +29,6 @@
 //!   wire is a count rather than an inference.
 //! * [`adapter`] — hierarchy, admission, continuity and session content.
 //! * [`posture`] — the one renderer from a declared posture to a native one.
-//! * [`preflight`] — proving that posture against the installed binary.
 //! * [`seat_mcp`] — worktree-local MCP composition for Claude seats.
 
 pub mod adapter;
@@ -38,7 +37,6 @@ pub mod client;
 pub mod fixture;
 pub mod mcp;
 pub mod posture;
-pub mod preflight;
 pub mod seat_mcp;
 pub mod wire;
 
@@ -50,8 +48,8 @@ pub use adapter::{
 pub use client::{PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport};
 pub use fixture::RecordedPaseo;
 pub use posture::{
-    DESTRUCTIVE_BASH_DENIES, LaunchIntent, PermissionAllowance, SEAT_ENVIRONMENT_KEYS,
-    SeatConfigRoot, SeatPosture, owned_config, render_posture, seat_environment, seat_posture,
+    DESTRUCTIVE_BASH_DENIES, LaunchIntent, PermissionAllowance, SeatPosture, render_posture,
+    seat_posture,
 };
 pub use seat_mcp::SeatMcp;
 pub use wire::{

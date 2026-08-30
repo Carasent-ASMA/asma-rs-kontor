@@ -81,17 +81,6 @@ pub const PASEO_APP_VERSION: &str = "0.3.1";
 /// flag remains authoritative too.
 pub const PASEO_PROJECT_RENAME_VERSION: &str = "0.4.0";
 
-/// The release that gained per-agent environment on `agent run`.
-///
-/// `paseo agent run --help` on 0.6.1 documents
-/// `--env <key=value>  Set environment variable(s) for the agent process (can be
-/// used multiple times)`. There is no `status/server_info` flag for it, so the
-/// release floor is the compatibility evidence — and it is read from the
-/// *daemon's* reported version, never from the CLI's: a CLI that accepts a flag
-/// an older daemon ignores would launch a seat with none of its environment and
-/// no error to say so.
-pub const PASEO_SEAT_ENVIRONMENT_VERSION: &str = "0.6.1";
-
 /// The release whose `create_agent_request` carries typed per-agent
 /// `providerOptions`.
 ///
@@ -356,18 +345,6 @@ impl PaseoServerInfo {
                 .version
                 .as_deref()
                 .is_some_and(|version| version_at_least(version, PASEO_PROJECT_RENAME_VERSION))
-    }
-
-    /// Whether this daemon applies per-agent environment given on `agent run`.
-    ///
-    /// Fails closed on an absent, pre-release or unparseable version: a seat
-    /// whose posture rides on `--env` must not launch where the flag might be
-    /// accepted and dropped.
-    #[must_use]
-    pub fn supports_seat_environment(&self) -> bool {
-        self.version
-            .as_deref()
-            .is_some_and(|version| version_at_least(version, PASEO_SEAT_ENVIRONMENT_VERSION))
     }
 
     /// Whether this daemon accepts typed per-agent `providerOptions`.
