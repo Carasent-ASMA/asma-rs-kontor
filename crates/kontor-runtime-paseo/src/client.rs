@@ -103,6 +103,7 @@ pub(crate) fn paseo_mode(
             "claude" => Ok(Some("bypassPermissions")),
             "codex" => Ok(Some("full-access")),
             "copilot" => Ok(Some("allow-all")),
+            "cursor" => Ok(Some("agent")),
             "opencode" => Ok(Some("build")),
             "pi" => Ok(None),
             "omp" => Ok(Some("full")),
@@ -111,7 +112,7 @@ pub(crate) fn paseo_mode(
             }),
         },
         SeatAutonomy::Advisory => match built_in_provider(provider) {
-            "claude" | "opencode" => Ok(Some("plan")),
+            "claude" | "cursor" | "opencode" => Ok(Some("plan")),
             "copilot" => Ok(Some(
                 "https://agentclientprotocol.com/protocol/session-modes#plan",
             )),
@@ -135,6 +136,9 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
         "copilot" => Ok(Some(
             "https://agentclientprotocol.com/protocol/session-modes#agent",
         )),
+        // Cursor spells the asking posture as a mode; opencode does not, which
+        // is why opencode alone needs a written permission block to express it.
+        "cursor" => Ok(Some("ask")),
         "opencode" => Ok(Some("build")),
         "pi" => Ok(None),
         "omp" => Ok(Some("full")),
@@ -208,7 +212,7 @@ pub(crate) fn consultation_route_permission_mode(
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
 pub(crate) fn built_in_provider(provider: &str) -> &str {
-    const BUILT_INS: [&str; 6] = ["claude", "codex", "copilot", "opencode", "pi", "omp"];
+    const BUILT_INS: [&str; 7] = ["claude", "codex", "copilot", "cursor", "opencode", "pi", "omp"];
     for built_in in BUILT_INS {
         if provider == built_in {
             return built_in;
