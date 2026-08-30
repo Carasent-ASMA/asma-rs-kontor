@@ -3497,9 +3497,20 @@ impl PaseoAdapter {
     /// * one match — bind it; the command did land;
     /// * several — the plane has diverged, and picking one would bind a run to a
     ///   session that may belong to another. No launch.
-    /// * none — it is *not* known whether Paseo created an agent. The receipt
-    ///   stays confirmation-unknown and reconciliation looks again. A blind
-    ///   relaunch here is how one seat ends up with two agents editing one tree.
+    /// * none — it is *not* known whether Paseo created an agent, and this
+    ///   returns [`RuntimeError::Transport`] to say the attempt is unresolved.
+    ///   A blind relaunch here is how one seat ends up with two agents editing
+    ///   one tree.
+    ///
+    /// **Known hazard, pre-dating this task** (`e3b562c`, KON-MVP-11).
+    /// `Transport` is the variant callers retry, while `launch` releases the
+    /// admission on every error — so a retry after a create that did land, but
+    /// whose labels the census could not yet see, can create a second seat.
+    /// `DeliveryConfirmationUnknown` is the variant that says "unresolved, do
+    /// not retry blindly", and the AO adapter already uses it for this same
+    /// hazard. Changing it here would alter retry semantics for every provider
+    /// on this plane, so it is recorded rather than done in passing: see
+    /// `docs/evidence/KON-OP-20/2026-08-31-upstream-dependency-applied-permission.md`.
     async fn recover_launch(&self, labels: &BTreeMap<String, String>) -> RuntimeResult<String> {
         let agents = self.fetch_agents(labels, false).await?;
         let mut matches = agents
