@@ -1101,10 +1101,16 @@ async fn an_opencode_launch_without_per_agent_environment_is_refused_before_any_
         .launch(&request)
         .await
         .expect_err("a posture that cannot be carried must not spawn a seat");
-    assert!(
-        matches!(error, RuntimeError::LaunchNotAdmitted { .. }),
-        "refused as an admission failure, typed, not as a runtime outage: {error:?}"
-    );
+    // The *reason* matters: this must be the attestation gate, not some later
+    // refusal that happens to land first. Without naming it, removing the gate
+    // would leave the capability check refusing and this test still green.
+    match error {
+        RuntimeError::LaunchNotAdmitted { rule } => assert!(
+            rule.contains("attest"),
+            "refused for the attestation gap, not incidentally: {rule}"
+        ),
+        other => panic!("refused as an admission failure, typed: {other:?}"),
+    }
     let after = recorded.calls();
     assert_eq!(
         recorded.count("agent run"),
