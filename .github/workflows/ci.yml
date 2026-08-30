@@ -48,6 +48,20 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
+      # A broken intra-doc link is how a deleted mechanism keeps being cited.
+      # OP-20 shipped four of them pointing at a design that no longer existed,
+      # and clippy cannot see them because the items are `pub`.
+      #
+      # Scoped to the runtime adapter, which is where that happened and where
+      # the gate is green today. Widening it to `--workspace` needs eight
+      # pre-existing unresolved links fixed first, in kontor-core, kontor-store
+      # and kontor-calendar; they are unrelated to this crate and are not
+      # bundled in here.
+      - name: Rustdoc links resolve (kontor-runtime-paseo)
+        run: cargo doc -p kontor-runtime-paseo --no-deps
+        env:
+          RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
+
       - name: Dependency advisories
         run: cargo audit
 

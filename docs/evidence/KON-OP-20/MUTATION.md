@@ -254,3 +254,55 @@ the first and the collision the test claimed to rule out could not occur.
 Making the census report the seat that just launched turned the mutant into
 exactly the 2026-08-22 failure — `SlotAlreadyAdmitted` on a neighbour that
 shares nothing but a worktree.
+
+---
+
+# CURRENT DISPOSITION — 2026-08-31 (second revision; supersedes everything above)
+
+**OP-20 is in progress and is not delivered. OpenCode delivery is fail-closed.**
+
+The two-stage `providerOptions` path described in the 2026-08-31 disposition
+above **did not ship and has been deleted.** Its load-bearing claim — that the
+daemon persists the permission and replays it into every turn — is false:
+Paseo`\s v2-SDK `promptAsync` allow-lists its body keys and drops `permission`,
+and OpenCode 1.18.15`\s `SessionPrompt.prompt` reads only `t.tools`. The field
+is validated, persisted, and never reaches a seat.
+
+So every earlier disposition in this file is superseded, including the one that
+said the path had shipped. An OpenCode delivery launch is now refused before any
+transport call, native effect or worktree write.
+
+Source: inspector verdict BLOCKED, turn
+`01a054f9-7e66-7e71-ae96-b10f26cda005`, finding B1, confirmed by the operator.
+The blocking dependency is recorded in
+`2026-08-31-upstream-dependency-applied-permission.md`.
+
+Anything in this file describing a written block, an owned configuration root, a
+seat environment, a launch-intent digest, a first-turn proof or a create-to-bind
+compensation is **research, not delivery**. It is retained because it records
+what was tried and why it failed, not because it runs.
+
+## Fail-closed gate sweep — 2026-08-31 (4/4 killed)
+
+After B1, the only OpenCode delivery assertion left is that the launch is
+refused before anything native happens. All four mutants of that gate are
+caught by `an_opencode_delivery_launch_is_refused_with_no_native_effect`.
+
+| Mutation | Result |
+| --- | --- |
+| the gate call is deleted from `launch_admitted` | killed |
+| the gate stays but returns `Ok(())` for OpenCode | killed |
+| the refusal moves after the first native read | killed |
+| the refusal is typed as something other than the posture refusal | killed |
+
+The third matters as much as the first: a gate that refuses *after* a workspace
+read has already spent a native call, and the test measures effects, not just
+the error.
+
+The nine-mutant delivery sweep and the five-mutant boundary sweep recorded above
+are **void**. They exercised the two-stage path, which is deleted; several of
+them were assertions about guarantees that never held, and the inspector's own
+generalisation of the census-fixture defect applies to at least three
+(`a_lost_create_acknowledgement_is_never_answered_by_a_second_create` invoked
+`launch` once and asserted a create count of one, which one invocation cannot
+falsify). They are left in this file as a record of what was tried.
