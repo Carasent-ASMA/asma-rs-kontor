@@ -1029,6 +1029,82 @@ mod tests {
         );
     }
 
+    /// A ticket's exception must name a floor pattern exactly.
+    ///
+    /// The broad spellings are the dangerous ones: `*git*` never contains a `*`
+    /// of its own to catch the eye, sorts *after* both git denies under
+    /// lexicographic serialization, and would be evaluated last by OpenCode's
+    /// `findLast` — deleting the git half of the floor. Refused here, at fleet
+    /// composition, before the plane exists and therefore before any effect.
+    #[test]
+    fn a_broad_or_near_miss_task_exception_is_refused_at_composition() {
+        for refused in [
+            "*git*",
+            "*rm*",
+            "*submodule*",
+            "*",
+            "*git rm --cached",
+            "*GIT RM --CACHED*",
+            "*git rm --cache*",
+            "*curl *",
+            "",
+        ] {
+            let mut scopes = BTreeMap::new();
+            scopes.insert(
+                "01890000-0000-7000-8000-0000000000a1".to_owned(),
+                PaseoTaskSetting {
+                    plan_item_key: "KON-MVP-15".to_owned(),
+                    jira_issue_key: "ASMA-7759".to_owned(),
+                    ticket_short_code: "KON-15".to_owned(),
+                    canonical_worktree_cwd: "/w/task".to_owned(),
+                    permission_overrides: vec![refused.to_owned()],
+                },
+            );
+            let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+            setting.task_scopes = scopes;
+            assert!(
+                matches!(
+                    compose_paseo(&setting, None),
+                    Err(FleetError::Invalid {
+                        rule: "task_scopes permission_overrides",
+                        ..
+                    })
+                ),
+                "`{refused}` is not an exact floor pattern and must not compose"
+            );
+        }
+    }
+
+    /// Every published floor pattern is a legitimate exception, by literal name.
+    #[test]
+    fn each_published_floor_pattern_composes_as_an_exception() {
+        for accepted in [
+            "*submodule update*",
+            "*submodule deinit*",
+            "*git rm --cached*",
+            "*git clean -*",
+            "*rm -rf *",
+        ] {
+            let mut scopes = BTreeMap::new();
+            scopes.insert(
+                "01890000-0000-7000-8000-0000000000a1".to_owned(),
+                PaseoTaskSetting {
+                    plan_item_key: "KON-MVP-15".to_owned(),
+                    jira_issue_key: "ASMA-7759".to_owned(),
+                    ticket_short_code: "KON-15".to_owned(),
+                    canonical_worktree_cwd: "/w/task".to_owned(),
+                    permission_overrides: vec![accepted.to_owned()],
+                },
+            );
+            let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+            setting.task_scopes = scopes;
+            assert!(
+                compose_paseo(&setting, None).is_ok(),
+                "`{accepted}` is a floor member and is a legitimate exception"
+            );
+        }
+    }
+
     /// A ticket may name one exception; it may not spell allow-all as one.
     #[test]
     fn a_wildcard_task_exception_is_refused_at_composition() {

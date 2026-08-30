@@ -21,6 +21,24 @@
 //! ~2.5h — twelve of fifteen delivery seats blocked mid-turn on prompts no human
 //! was watching, while Kontor recorded them as running.
 //!
+//! # How the block is evaluated, and why key order matters
+//!
+//! Verified against the installed OpenCode 1.18.15: its `fromConfig` walks
+//! `Object.entries` for the outer map and each nested one, preserving the key
+//! order it is given, and `evaluate` resolves a call with `.findLast` — the
+//! **last** matching rule wins, and an unmatched tool defaults to `ask`.
+//!
+//! The order it is given is this workspace's serialization, not insertion order:
+//! `serde_json` is pinned at `=1.0.151` and its lock entry pulls in no
+//! `indexmap`, so `preserve_order` is off, `serde_json::Map` is a `BTreeMap`,
+//! and keys are written **lexicographically**. `*` is a prefix of every floor
+//! pattern and so sorts before all of them, which is what lets the specific
+//! denials beat the catch-all.
+//!
+//! This is why [`PermissionAllowance`] may only name a pattern the floor already
+//! contains: a merely-overlapping pattern sorts after the deny it overlaps and
+//! would be evaluated last.
+//!
 //! # `deny` is not `ask`
 //!
 //! [`DESTRUCTIVE_BASH_DENIES`] is denied, never asked, under every posture that
@@ -49,26 +67,43 @@ pub const DESTRUCTIVE_BASH_DENIES: &[&str] = &[
 
 /// One bounded, operator-declared relaxation of the floor, for one task.
 ///
-/// Allow-only and never a wildcard, and both halves of that are load-bearing.
-/// An override that could *deny* would let configuration narrow a seat below the
-/// posture it was launched under, which is a second authority surface; an
-/// override that could say `*` would be `allow-all` spelled as an exception, and
-/// the floor would hold only until somebody needed it not to.
+/// Allow-only, and **only ever an exact member of [`DESTRUCTIVE_BASH_DENIES`]**.
+/// That second rule is not tidiness; without it the type does not do its job.
+///
+/// OpenCode evaluates permissions by last match, and the block reaches it in
+/// lexicographic key order (see the module note on serialization). A pattern
+/// that merely *overlaps* a floor entry therefore sorts after it and wins: an
+/// allowance of `*git*` renders between `*git rm --cached*` and `*rm -rf *`,
+/// matches everything both git denies match, and is evaluated last — so one
+/// config line that never spells `*` silently deletes the git half of the floor.
+/// `*rm*` and `*submodule*` defeat their families the same way.
+///
+/// Restricting an allowance to an exact floor key makes the allowance set a
+/// subset of the floor by construction. An override can then only ever flip a
+/// deny that already exists, in the position it already occupies; it can never
+/// introduce a new, later-sorting rule. This subsumes the blank and wildcard
+/// refusals rather than enumerating them, and it costs nothing real — an
+/// allowance is only meaningful against a rule the floor otherwise denies.
+///
+/// Allowing a non-floor pattern later would require inserting it so that the
+/// floor still evaluates last, which lexicographic serialization cannot promise.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PermissionAllowance(String);
 
 impl PermissionAllowance {
     /// Read one declared pattern, or refuse it.
     ///
-    /// Refused: anything empty or blank, and anything made only of `*` — the
-    /// spellings of "allow everything" this deliberately cannot express.
+    /// Accepted only when the trimmed pattern is character-for-character one of
+    /// [`DESTRUCTIVE_BASH_DENIES`]. Blank, wildcard, broader (`*git*`), narrower,
+    /// prefixed, suffixed, case-variant and unknown patterns are all refused —
+    /// each of them would either widen the seat or land in the wrong place in the
+    /// evaluated order.
     #[must_use]
     pub fn parse(pattern: &str) -> Option<Self> {
         let pattern = pattern.trim();
-        if pattern.is_empty() || pattern.chars().all(|character| character == '*') {
-            return None;
-        }
-        Some(Self(pattern.to_owned()))
+        DESTRUCTIVE_BASH_DENIES
+            .contains(&pattern)
+            .then(|| Self(pattern.to_owned()))
     }
 
     /// The pattern as opencode reads it.
@@ -119,8 +154,9 @@ impl SeatPosture {
 
 /// Render one declared posture for one provider.
 ///
-/// `allowances` relaxes named patterns inside the permission block and **cannot
-/// reach `mode` or `auto_accept`**. That is what keeps launch and readback
+/// `allowances` flips floor entries inside the permission block — it can only
+/// ever change an existing deny's action, never add a key — and **cannot reach
+/// `mode` or `auto_accept`**. That is what keeps launch and readback
 /// honest: readback compares the mode, a task-scoped exception never moves it,
 /// and so an override can never make a seat verify as something it is not.
 ///
@@ -266,6 +302,141 @@ mod tests {
         assert_eq!(posture.auto_accept, Some(false));
     }
 
+    /// The floor's membership, written out.
+    ///
+    /// Deliberately a literal list rather than a loop over the constant: every
+    /// other floor assertion in this module iterates `DESTRUCTIVE_BASH_DENIES`
+    /// and so uses the floor as its own oracle — delete a pattern and those
+    /// loops simply stop checking it. `CONFIGURATION.md` publishes these five as
+    /// a contract, and this is the test that fails when one goes missing or is
+    /// silently respelled.
+    const REQUIRED_FLOOR: [&str; 5] = [
+        "*submodule update*",
+        "*submodule deinit*",
+        "*git rm --cached*",
+        "*git clean -*",
+        "*rm -rf *",
+    ];
+
+    #[test]
+    fn the_floor_is_exactly_the_five_published_patterns() {
+        assert_eq!(
+            DESTRUCTIVE_BASH_DENIES,
+            REQUIRED_FLOOR.as_slice(),
+            "the floor's membership is a published contract (CONFIGURATION.md); \
+             changing it is a decision, not a refactor"
+        );
+        assert_eq!(
+            DESTRUCTIVE_BASH_DENIES.len(),
+            5,
+            "the floor has exactly five members"
+        );
+        for required in REQUIRED_FLOOR {
+            assert!(
+                DESTRUCTIVE_BASH_DENIES.contains(&required),
+                "`{required}` is missing from the floor"
+            );
+        }
+    }
+
+    /// The rendered block denies each pattern *by name*, under both postures
+    /// that write one — again by literal, so a deletion from the constant cannot
+    /// take the assertion with it.
+    #[test]
+    fn every_published_pattern_is_denied_by_literal_name() {
+        for autonomy in [SeatAutonomy::Bounded, SeatAutonomy::Supervised] {
+            let permission = opencode(autonomy, &[]);
+            assert_eq!(permission["bash"]["*submodule update*"], "deny");
+            assert_eq!(permission["bash"]["*submodule deinit*"], "deny");
+            assert_eq!(permission["bash"]["*git rm --cached*"], "deny");
+            assert_eq!(permission["bash"]["*git clean -*"], "deny");
+            assert_eq!(permission["bash"]["*rm -rf *"], "deny");
+        }
+    }
+
+    /// An allowance may only name a pattern the floor already denies.
+    ///
+    /// A broader pattern is the dangerous case and the reason for the rule:
+    /// `*git*` sorts *after* both git denies under lexicographic serialization,
+    /// and OpenCode's `findLast` would evaluate it last — deleting the git half
+    /// of the floor from one config line that never spells `*`.
+    #[test]
+    fn an_allowance_must_name_an_exact_floor_pattern() {
+        for exact in REQUIRED_FLOOR {
+            assert_eq!(
+                PermissionAllowance::parse(exact)
+                    .expect("a floor member")
+                    .pattern(),
+                exact,
+                "an exact floor key is the one thing an exception may name"
+            );
+        }
+        for refused in [
+            // broader — the F5 hole: these sort after the denies they overlap
+            "*git*",
+            "*rm*",
+            "*submodule*",
+            "*",
+            "**",
+            // near-misses, prefixes, suffixes and case variants
+            "*git rm --cached",
+            "git rm --cached*",
+            "*git rm --cache*",
+            "*git rm --cached**",
+            "*GIT RM --CACHED*",
+            "*RM -RF *",
+            "*rm -rf*",
+            "*git clean*",
+            // blank and unknown
+            "",
+            "   ",
+            "\t",
+            "*curl *",
+            "*shutdown*",
+        ] {
+            assert!(
+                PermissionAllowance::parse(refused).is_none(),
+                "`{refused}` is not an exact floor pattern and must be refused"
+            );
+        }
+        assert_eq!(
+            allowance("  *git rm --cached*  ").pattern(),
+            "*git rm --cached*",
+            "a declared pattern is read without its surrounding whitespace"
+        );
+    }
+
+    /// The structural reason the fix works: an exception changes an entry's
+    /// action, never the set of entries — so it cannot land anywhere new in the
+    /// evaluated order, whatever that order turns out to be.
+    #[test]
+    fn an_allowance_can_only_flip_a_floor_key_never_add_one() {
+        fn bash_keys(permission: &serde_json::Value) -> Vec<String> {
+            permission["bash"]
+                .as_object()
+                .expect("a bash map")
+                .keys()
+                .cloned()
+                .collect()
+        }
+        let plain = opencode(SeatAutonomy::Bounded, &[]);
+        let relaxed = opencode(
+            SeatAutonomy::Bounded,
+            &[allowance("*git rm --cached*"), allowance("*rm -rf *")],
+        );
+        assert_eq!(
+            bash_keys(&plain),
+            bash_keys(&relaxed),
+            "an exception may change what a key says, never which keys exist"
+        );
+        assert_eq!(relaxed["bash"]["*git rm --cached*"], "allow");
+        assert_eq!(relaxed["bash"]["*rm -rf *"], "allow");
+        assert_eq!(
+            relaxed["bash"]["*git clean -*"], "deny",
+            "the rest of the floor is untouched"
+        );
+    }
+
     /// The floor holds under every posture that writes a block at all.
     #[test]
     fn the_destructive_floor_is_denied_under_every_writing_posture() {
@@ -298,23 +469,6 @@ mod tests {
                 "`{pattern}` is untouched by an unrelated exception"
             );
         }
-    }
-
-    /// An override cannot be spelled as "allow everything", in any of the ways
-    /// somebody would reach for if they wanted to.
-    #[test]
-    fn an_allowance_cannot_be_a_wildcard_or_blank() {
-        for refused in ["*", "**", "***", "", "   ", "\t"] {
-            assert!(
-                PermissionAllowance::parse(refused).is_none(),
-                "`{refused}` is allow-all or nothing, and is not an exception"
-            );
-        }
-        assert_eq!(
-            allowance("  *git rm --cached*  ").pattern(),
-            "*git rm --cached*",
-            "a declared pattern is read without its surrounding whitespace"
-        );
     }
 
     /// The invariant that keeps launch and readback honest: a task-scoped
