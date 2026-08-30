@@ -48,8 +48,10 @@
 //! earn a refusal are refused rather than escalated.
 
 use crate::client::{built_in_provider, paseo_mode};
+use kontor_core::id::ContentHash;
 use kontor_core::spec::SeatAutonomy;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// The destructive bash patterns a composed opencode seat always refuses.
@@ -384,6 +386,140 @@ impl SeatConfigRoot {
     pub fn base(&self) -> &Path {
         &self.base
     }
+
+    /// The root for one seat, under a Kontor-owned subtree of `state_root`.
+    ///
+    /// Never the worktree — the seat can write there — never `HOME`, and never a
+    /// directory shared with a provider. `seat_key` becomes one path component
+    /// and is refused if it could be anything else: an empty string, a separator,
+    /// a NUL, or a relative marker would each turn this into a write somewhere
+    /// nobody chose.
+    ///
+    /// # Errors
+    /// [`RuntimeError::LaunchNotAdmitted`] when `seat_key` is not a single plain
+    /// component.
+    pub fn for_seat(state_root: &Path, seat_key: &str) -> RuntimeResult<Self> {
+        let plain = !seat_key.is_empty()
+            && seat_key != "."
+            && seat_key != ".."
+            && !seat_key.contains(['/', '\\', '\0'])
+            && !seat_key.starts_with('.');
+        if !plain {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "a seat configuration root is named by one plain path component",
+            });
+        }
+        Ok(Self {
+            base: state_root.join("seats").join("opencode").join(seat_key),
+        })
+    }
+
+    /// Write the owned configuration, then read it back and prove what landed.
+    ///
+    /// Narrow permissions, because this file decides what a seat may do: the
+    /// directories are `0700` and the file `0600`, so nothing but this daemon's
+    /// user can read the posture or edit it between here and the spawn.
+    ///
+    /// Read back rather than trusted: a short write, a full disk or a racing
+    /// writer would otherwise leave a seat launching against a file nobody
+    /// checked. The digest returned is over the bytes that are actually on disk.
+    ///
+    /// # Errors
+    /// Any filesystem failure; a component of the path that is a symlink, which
+    /// could redirect the write outside the owned subtree; or a readback whose
+    /// bytes differ from what was written.
+    pub fn materialize(&self, config: &serde_json::Value) -> io::Result<ConfigEvidence> {
+        let directory = self.directory();
+        std::fs::create_dir_all(&directory)?;
+        // After creation, not before: a symlink planted earlier would otherwise
+        // be followed by the write below.
+        refuse_symlinked_path(&self.base, &directory)?;
+
+        let mut rendered = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
+        rendered.push('\n');
+        let path = self.config_file();
+        std::fs::write(&path, &rendered)?;
+        narrow_permissions(&self.base, &directory, &path)?;
+
+        let landed = std::fs::read(&path)?;
+        if landed != rendered.as_bytes() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} did not read back as written", path.display()),
+            ));
+        }
+        Ok(ConfigEvidence {
+            path,
+            digest: ContentHash::of(&landed),
+        })
+    }
+}
+
+/// What was written for one seat, and proof of what landed.
+///
+/// Path and digest only. The configuration itself is not carried here: this
+/// value is evidence, and evidence travels into records and logs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigEvidence {
+    /// The owned file the seat is launched against.
+    pub path: PathBuf,
+    /// The hash of the bytes that are on disk.
+    pub digest: ContentHash,
+}
+
+/// Refuse a path any component of which is a symbolic link.
+fn refuse_symlinked_path(base: &Path, directory: &Path) -> io::Result<()> {
+    for candidate in [base, directory] {
+        let metadata = std::fs::symlink_metadata(candidate)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} is a symbolic link; a seat's configuration root is a real directory",
+                    candidate.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `0700` on the directories, `0600` on the file. A no-op off unix.
+fn narrow_permissions(base: &Path, directory: &Path, file: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for candidate in [base, directory] {
+            std::fs::set_permissions(candidate, std::fs::Permissions::from_mode(0o700))?;
+        }
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (base, directory, file);
+    }
+    Ok(())
+}
+
+/// The non-sensitive digest of one seat's posture, owned config and environment.
+///
+/// A hash of the three things that decide what the seat may do, so a launch
+/// whose acknowledgement was lost can only be adopted by a census that finds
+/// *this* posture. It carries no value: labels are readable by anyone who can
+/// list agents, and the configuration is not theirs to read.
+#[must_use]
+pub fn posture_digest(
+    config: &serde_json::Value,
+    environment: &[(&'static str, String)],
+) -> ContentHash {
+    let mut material = config.to_string();
+    for (key, value) in environment {
+        material.push('\n');
+        material.push_str(key);
+        material.push('=');
+        material.push_str(value);
+    }
+    ContentHash::of(material.as_bytes())
 }
 
 /// The complete configuration document a seat is launched against.
@@ -1257,5 +1393,129 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A seat root is one plain component under a Kontor-owned subtree, and
+    /// anything that could escape it is refused.
+    #[test]
+    fn a_seat_root_cannot_be_named_out_of_its_subtree() {
+        let state = Path::new("/realm/state");
+        let root = SeatConfigRoot::for_seat(state, "01a0306e-cbce").expect("a plain key");
+        assert_eq!(
+            root.base(),
+            Path::new("/realm/state/seats/opencode/01a0306e-cbce")
+        );
+        assert!(root.base().starts_with(state), "inside the owned subtree");
+
+        for refused in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "a/b",
+            "a\\b",
+            ".hidden",
+            "with\0nul",
+        ] {
+            assert!(
+                SeatConfigRoot::for_seat(state, refused).is_err(),
+                "`{refused}` must not name a seat root"
+            );
+        }
+    }
+
+    /// The owned file is written, read back, hashed, and narrowly permissioned.
+    #[test]
+    fn materialization_reads_back_and_narrows_permissions() {
+        let scratch = tempfile::TempDir::new().expect("a scratch directory");
+        let root = SeatConfigRoot::for_seat(scratch.path(), "agent-1").expect("a root");
+        let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+
+        let evidence = root.materialize(&config).expect("materialized");
+        assert_eq!(evidence.path, root.config_file());
+
+        let landed: serde_json::Value = std::fs::read_to_string(&evidence.path)
+            .expect("written")
+            .parse()
+            .expect("JSON");
+        assert_eq!(landed, config, "what is on disk is what was rendered");
+        assert_eq!(
+            evidence.digest,
+            ContentHash::of(&std::fs::read(&evidence.path).expect("read")),
+            "the digest is over the bytes on disk"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| {
+                std::fs::metadata(path)
+                    .expect("exists")
+                    .permissions()
+                    .mode()
+                    & 0o777
+            };
+            assert_eq!(
+                mode(&evidence.path),
+                0o600,
+                "only this user reads a posture"
+            );
+            assert_eq!(mode(&root.directory()), 0o700);
+            assert_eq!(mode(root.base()), 0o700);
+        }
+
+        // Idempotent: a relaunch rewrites the same bytes and the same digest.
+        let again = root.materialize(&config).expect("materialized again");
+        assert_eq!(again, evidence);
+    }
+
+    /// A symlinked component could redirect the write out of the owned subtree.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_component_is_refused() {
+        let scratch = tempfile::TempDir::new().expect("a scratch directory");
+        let elsewhere = scratch.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("target");
+        let root = SeatConfigRoot::for_seat(scratch.path(), "agent-1").expect("a root");
+        std::fs::create_dir_all(root.base()).expect("base");
+        std::os::unix::fs::symlink(&elsewhere, root.directory()).expect("planted");
+
+        let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+        let error = root
+            .materialize(&config)
+            .expect_err("a symlinked configuration directory is refused");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            !elsewhere.join("opencode.json").exists(),
+            "and nothing was written through it"
+        );
+    }
+
+    /// The digest covers the posture *and* the environment that carries it, and
+    /// carries no value of either.
+    #[test]
+    fn the_posture_digest_changes_with_posture_and_environment() {
+        let root = SeatConfigRoot::new("/realm/state/seats/agent-1");
+        let bounded = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+        let advisory = owned_config(&opencode(SeatAutonomy::Advisory, &[]), None);
+
+        let one = posture_digest(&bounded, &seat_environment(&root, &bounded));
+        let two = posture_digest(&advisory, &seat_environment(&root, &advisory));
+        assert_ne!(one, two, "a different posture is a different digest");
+
+        let other_root = SeatConfigRoot::new("/realm/state/seats/agent-2");
+        let three = posture_digest(&bounded, &seat_environment(&other_root, &bounded));
+        assert_ne!(one, three, "a different root is a different digest");
+
+        assert_eq!(
+            one,
+            posture_digest(&bounded, &seat_environment(&root, &bounded)),
+            "and it is stable for the same inputs"
+        );
+        let rendered = one.to_string();
+        assert!(
+            !rendered.contains("opencode.json") && !rendered.contains("deny"),
+            "a digest carries no value from what it covers: {rendered}"
+        );
     }
 }

@@ -42,6 +42,7 @@
 //!   unsolicited stream rather than from history.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -310,6 +311,12 @@ pub struct PaseoConfig {
     /// is `false`, `kontor_runtime::capability::preflight` refuses every
     /// account-pinned launch on this plane, which is the v1.0 behaviour.
     pub provider_selects_account: bool,
+    /// The realm state root this plane's seat configuration is owned under.
+    ///
+    /// Kontor's own subtree, never the worktree — a seat can write there — and
+    /// never a directory shared with a provider. See
+    /// [`SeatConfigRoot::for_seat`](crate::posture::SeatConfigRoot::for_seat).
+    pub state_root: PathBuf,
     /// The posture seats on this plane get when their role slot declares none.
     ///
     /// A plane-wide default, subordinate to the role slot. `None` — the only
@@ -6751,6 +6758,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -6856,6 +6864,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers,
+                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -6941,6 +6950,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -7018,6 +7028,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -7148,6 +7159,7 @@ mod governed_pin_tests {
             provider_selects_account,
             provider_fallbacks: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
+            state_root: std::path::PathBuf::from("/realm/state"),
             permission_posture: None,
             seat_mcp: None,
         }

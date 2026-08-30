@@ -13,19 +13,38 @@
 //! be made correct, because the inputs include environment variables read by the
 //! spawned process.
 //!
-//! # What is not covered, and is instead detected
+//! # The load order, and what the six keys can and cannot do
 //!
-//! OpenCode also reads a **system managed** configuration —
-//! `/Library/Application Support/opencode` on darwin, `/etc/opencode`
-//! elsewhere — and macOS Managed Preferences profiles, keeping every key except
-//! MDM payload metadata. No environment variable Kontor may set neutralizes
-//! those; only `OPENCODE_TEST_MANAGED_CONFIG_DIR` redirects them, and a
-//! test-named variable is not a production control. They are therefore handled
-//! by *detection* rather than suppression: the production preflight compares the
-//! complete resolved permission object, so a managed profile that injects one
-//! makes the comparison fail and the launch is refused. Neither path exists on
-//! the host this was recorded on.
-
+//! Read from the installed 1.18.15 bundle, the layers merge in this order:
+//!
+//! ```text
+//! global -> OPENCODE_CONFIG -> project -> OPENCODE_CONFIG_DIR
+//!        -> OPENCODE_CONFIG_CONTENT -> active-org remote config
+//!        -> managed config/preferences -> OPENCODE_PERMISSION
+//! ```
+//!
+//! So the closed six-key set does **not** erase every ambient source by
+//! construction, and this suite does not claim it does. What it does establish:
+//!
+//! * the **user global** and **every project layer** are displaced — they sort
+//!   before the owned root and `OPENCODE_DISABLE_PROJECT_CONFIG` removes the
+//!   project ones outright;
+//! * `OPENCODE_PERMISSION` merges **last**, so it wins for every key the block
+//!   names — which is why the block names the whole tool vocabulary;
+//! * but merging is per key and per *nested* key, so an ambient rule the block
+//!   does not name — a `bash: {"*git*": "allow"}` from an **active-org remote
+//!   config** or a **managed profile**, both of which sort after
+//!   `OPENCODE_CONFIG_CONTENT` — still survives.
+//!
+//! Those last two are auth-backed and system-administered. No variable Kontor
+//! may set removes them: `OPENCODE_TEST_MANAGED_CONFIG_DIR` redirects the
+//! managed directory but a test-named variable is not a production control, and
+//! `OPENCODE_PURE` only disables external plugins. They are therefore handled by
+//! **detection**: the production preflight compares the *complete* resolved
+//! permission object, so anything that survives makes it unequal and the launch
+//! is refused. `managed_configuration_survives_and_is_caught_by_full_comparison`
+//! below is the proof that this detection is load-bearing rather than decorative.
+//!
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -227,6 +246,62 @@ fn two_seats_in_one_worktree_resolve_independently() {
 
 /// Auth and data roots are inherited, never redirected: a seat that cannot read
 /// its credentials is not a seat.
+/// A managed layer survives the six keys — and full-object comparison is what
+/// catches it.
+///
+/// Simulated through `OPENCODE_TEST_MANAGED_CONFIG_DIR`, which is how the
+/// installed binary lets a test stand in for `/Library/Application Support/
+/// opencode`. That variable is used *here* and never in production: the point of
+/// this test is that production cannot rely on removing this layer, only on
+/// noticing it.
+#[test]
+fn managed_configuration_survives_and_is_caught_by_full_comparison() {
+    let Some(binary) = opencode() else {
+        eprintln!("skipped: no installed opencode on this host");
+        return;
+    };
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let home = scratch.path().join("home");
+    let cwd = scratch.path().join("work");
+    std::fs::create_dir_all(&cwd).expect("worktree");
+    seed_hostile_layers(&home, &cwd);
+
+    let managed = scratch.path().join("managed");
+    write(
+        &managed.join("opencode.json"),
+        r#"{"permission":{"bash":{"*git*":"allow"}}}"#,
+    );
+
+    let posture = render_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+    let rendered = posture.permission.clone().expect("a block");
+    let root = SeatConfigRoot::new(scratch.path().join("seat"));
+    let config = owned_config(&rendered, None);
+    write(
+        &root.config_file(),
+        &serde_json::to_string_pretty(&config).expect("rendered"),
+    );
+
+    let mut environment = seat_environment(&root, &config);
+    environment.push((
+        "OPENCODE_TEST_MANAGED_CONFIG_DIR",
+        managed.display().to_string(),
+    ));
+    let effective = resolved_permission(&binary, &cwd, &environment);
+
+    assert_eq!(
+        effective["bash"]["*git*"], "allow",
+        "a managed layer is not removed by the six keys — this is the whole point"
+    );
+    assert_ne!(
+        effective, rendered,
+        "so the complete-object comparison is what refuses the launch"
+    );
+    // And every key the block *does* name still wins, because OPENCODE_PERMISSION
+    // merges last.
+    assert_eq!(effective["edit"], "deny");
+    assert_eq!(effective["bash"]["*"], "deny");
+}
+
 #[test]
 fn the_owned_root_never_redirects_the_auth_or_data_home() {
     let root = SeatConfigRoot::new("/realm/state/seats/agent-1");

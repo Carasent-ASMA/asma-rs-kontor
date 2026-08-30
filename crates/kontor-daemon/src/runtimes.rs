@@ -439,12 +439,13 @@ fn deferred_family(bytes: &[u8]) -> Option<&'static str> {
 pub fn build_registry(
     settings: &RuntimeSettings,
     seat_mcp: Option<&SeatMcp>,
+    state_root: &Path,
 ) -> Result<RuntimeRegistry, FleetError> {
     let mut registry = RuntimeRegistry::new();
     let mut claimed: BTreeSet<RuntimeKindKey> = BTreeSet::new();
     for setting in &settings.runtimes {
         let (family, adapter) = match setting {
-            RuntimeSetting::Paseo(paseo) => compose_paseo(paseo, seat_mcp)?,
+            RuntimeSetting::Paseo(paseo) => compose_paseo(paseo, seat_mcp, state_root)?,
         };
         if !claimed.insert(family.clone()) {
             return Err(FleetError::DuplicateFamily {
@@ -480,6 +481,7 @@ pub fn seat_mcp(state_root: &Path) -> Option<SeatMcp> {
 fn compose_paseo(
     setting: &PaseoSetting,
     seat_mcp: Option<&SeatMcp>,
+    state_root: &Path,
 ) -> Result<(RuntimeKindKey, Arc<dyn RuntimeAdapter>), FleetError> {
     let refuse = |rule: &'static str| FleetError::Invalid {
         family: setting.runtime_kind.clone(),
@@ -591,6 +593,7 @@ fn compose_paseo(
         // An empty map means this plane adopts nothing and creates what it
         // needs, which is right for a topology with one root above the seat.
         adopted_containers,
+        state_root: state_root.to_owned(),
         permission_posture: setting.permission_posture.map(SeatAutonomy::from),
         seat_mcp: seat_mcp.cloned(),
     };
@@ -673,7 +676,7 @@ mod tests {
         let settings = read(directory.path()).expect("an absent file is not a failure");
         assert!(settings.runtimes.is_empty());
         assert!(
-            build_registry(&settings, None)
+            build_registry(&settings, None, Path::new("/realm/state"))
                 .expect("an empty fleet composes")
                 .families()
                 .next()
@@ -687,7 +690,8 @@ mod tests {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![paseo("paseo.agent")],
         };
-        let registry = build_registry(&settings, None).expect("the lane composes");
+        let registry =
+            build_registry(&settings, None, Path::new("/realm/state")).expect("the lane composes");
         let families: Vec<String> = registry.families().map(ToString::to_string).collect();
         assert_eq!(families, vec!["paseo.agent".to_owned()]);
         assert!(
@@ -727,7 +731,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
         assert!(
-            build_registry(&settings, None).is_ok(),
+            build_registry(&settings, None, Path::new("/realm/state")).is_ok(),
             "a named adoption composes"
         );
 
@@ -742,7 +746,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(broken)],
         };
         assert!(
-            build_registry(&settings, None).is_err(),
+            build_registry(&settings, None, Path::new("/realm/state")).is_err(),
             "an unparseable topology node id is a configuration error"
         );
     }
@@ -755,7 +759,7 @@ mod tests {
         };
         assert!(
             matches!(
-                build_registry(&settings, None),
+                build_registry(&settings, None, Path::new("/realm/state")),
                 Err(FleetError::DuplicateFamily { .. })
             ),
             "the second would otherwise silently replace the first"
@@ -775,8 +779,8 @@ mod tests {
                 }
             })],
         };
-        let error =
-            build_registry(&settings, None).expect_err("a worktree root that is not absolute");
+        let error = build_registry(&settings, None, Path::new("/realm/state"))
+            .expect_err("a worktree root that is not absolute");
         let rendered = error.to_string();
         assert!(
             rendered.contains("canonical_worktree_cwd"),
@@ -804,7 +808,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
 
-        let error = build_registry(&settings, None)
+        let error = build_registry(&settings, None, Path::new("/realm/state"))
             .expect_err("a Jira key is not a durable Kontor MiniProjectId");
         assert!(
             matches!(
@@ -835,7 +839,7 @@ mod tests {
                 runtimes: vec![RuntimeSetting::Paseo(setting)],
             };
 
-            let error = build_registry(&settings, None)
+            let error = build_registry(&settings, None, Path::new("/realm/state"))
                 .expect_err("a runtime-only model route must fail closed");
             assert!(
                 matches!(
@@ -895,7 +899,8 @@ mod tests {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
-        let registry = build_registry(&settings, None).expect("the complete Paseo plane composes");
+        let registry = build_registry(&settings, None, Path::new("/realm/state"))
+            .expect("the complete Paseo plane composes");
         assert!(
             registry
                 .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
@@ -1064,7 +1069,7 @@ mod tests {
             setting.task_scopes = scopes;
             assert!(
                 matches!(
-                    compose_paseo(&setting, None),
+                    compose_paseo(&setting, None, Path::new("/realm/state")),
                     Err(FleetError::Invalid {
                         rule: "task_scopes permission_overrides",
                         ..
@@ -1099,7 +1104,7 @@ mod tests {
             let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
             setting.task_scopes = scopes;
             assert!(
-                compose_paseo(&setting, None).is_ok(),
+                compose_paseo(&setting, None, Path::new("/realm/state")).is_ok(),
                 "`{accepted}` is a floor member and is a legitimate exception"
             );
         }
@@ -1123,7 +1128,7 @@ mod tests {
         setting.task_scopes = refused;
         assert!(
             matches!(
-                compose_paseo(&setting, None),
+                compose_paseo(&setting, None, Path::new("/realm/state")),
                 Err(FleetError::Invalid {
                     rule: "task_scopes permission_overrides",
                     ..
@@ -1146,7 +1151,7 @@ mod tests {
         let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
         setting.task_scopes = named;
         assert!(
-            compose_paseo(&setting, None).is_ok(),
+            compose_paseo(&setting, None, Path::new("/realm/state")).is_ok(),
             "a named pattern is a legitimate, bounded exception"
         );
     }
