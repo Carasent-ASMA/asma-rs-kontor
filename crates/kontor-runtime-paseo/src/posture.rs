@@ -452,17 +452,25 @@ impl SeatConfigRoot {
     /// checked. The digest returned is over the bytes that are actually on disk.
     ///
     /// # Errors
-    /// Any filesystem failure; a component of the path that is a symlink, which
-    /// could redirect the write outside the owned subtree; or a readback whose
-    /// bytes differ from what was written.
+    /// Any filesystem failure; a component of the path that is **already** a
+    /// symlink, which could redirect the write outside the owned subtree; or a
+    /// readback whose bytes differ from what was written.
+    ///
+    /// Not race-safe: see [`create_refusing_existing_links`] for the concurrent
+    /// same-user replacement this does not close, and why that is recorded
+    /// rather than fixed while the delivery path is fail-closed.
     pub fn materialize(&self, config: &serde_json::Value) -> io::Result<ConfigEvidence> {
         // Every component from the trusted root down, created and checked one
-        // level at a time. Checking only the last two was not containment: a
-        // symlink planted at `seats` or `seats/opencode` sits *above* them and
+        // level at a time. Checking only the last two was not enough: a symlink
+        // planted at `seats` or `seats/opencode` sits *above* them and
         // `create_dir_all` would have followed it without a word.
+        //
+        // This refuses links that already exist. It does not survive a
+        // concurrent same-user replacement — see
+        // [`create_refusing_existing_links`].
         let directory = self.directory();
         let trusted = self.trusted_root()?;
-        create_unfollowed(&trusted, &directory)?;
+        create_refusing_existing_links(&trusted, &directory)?;
 
         let mut rendered = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
         rendered.push('\n');
@@ -470,7 +478,9 @@ impl SeatConfigRoot {
         // Written to a fresh name that must not already exist, then renamed onto
         // the target. `std::fs::write` follows a symlink at the destination and
         // would put a seat's posture wherever it pointed; `rename` replaces the
-        // link itself, so no write ever travels through one.
+        // link itself, so a *pre-existing* link is never written through. Both
+        // steps still address by pathname, so this is not proof against a
+        // concurrent swap.
         let staged = directory.join("opencode.json.staged");
         if staged.exists() || std::fs::symlink_metadata(&staged).is_ok() {
             std::fs::remove_file(&staged)?;
@@ -513,13 +523,28 @@ pub struct ConfigEvidence {
     pub digest: ContentHash,
 }
 
-/// Create every component from `trusted` down to `directory`, refusing links.
+/// Create every component from `trusted` down to `directory`, refusing any that
+/// **already** is a link.
 ///
-/// One level at a time, and each level checked with `symlink_metadata` — which
-/// reports the link rather than what it points at — so a link planted anywhere
+/// One level at a time, each checked with `symlink_metadata` — which reports the
+/// link rather than what it points at — so a link *planted beforehand* anywhere
 /// on the way down is refused instead of followed. `create_dir_all` cannot do
 /// this: it follows whatever it finds.
-fn create_unfollowed(trusted: &Path, directory: &Path) -> io::Result<()> {
+///
+/// # What this is not
+///
+/// It is **not** race-safe, and is deliberately not described as no-follow
+/// traversal. Each level is checked by pathname and then opened by pathname
+/// afterwards, so a writer running as the same Unix user — which an OpenCode
+/// seat does — could replace a checked directory with a link in between. Closing
+/// that needs fd-relative traversal (`openat`/`O_NOFOLLOW` throughout, and a
+/// rename anchored to a directory descriptor), which is not built here.
+///
+/// That is recorded as a prerequisite for re-enabling OpenCode delivery rather
+/// than fixed now: the delivery path is unconditionally fail-closed, so this
+/// code is scaffolding no seat reaches, and a partial hardening described as
+/// complete would be worse than an honest gap.
+fn create_refusing_existing_links(trusted: &Path, directory: &Path) -> io::Result<()> {
     let relative = directory.strip_prefix(trusted).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1551,7 +1576,7 @@ mod tests {
     /// subtree, so every component is checked — not just the last two.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_component_anywhere_is_refused() {
+    fn a_pre_existing_link_at_any_component_is_refused() {
         for planted in ["seats", "seats/opencode", "seats/opencode/agent-1"] {
             let scratch = tempfile::TempDir::new().expect("a scratch directory");
             let elsewhere = scratch.path().join("elsewhere");
@@ -1582,7 +1607,7 @@ mod tests {
     /// would never notice, because it starts *at* the anchor.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_state_root_is_refused() {
+    fn a_pre_existing_link_at_the_state_root_is_refused() {
         let scratch = tempfile::TempDir::new().expect("a scratch directory");
         let real = scratch.path().join("real-state");
         let elsewhere = scratch.path().join("elsewhere");
@@ -1610,7 +1635,7 @@ mod tests {
     /// would have put a seat's posture wherever it pointed.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_config_file_is_replaced_rather_than_followed() {
+    fn a_pre_existing_link_at_the_file_is_replaced_rather_than_followed() {
         let scratch = tempfile::TempDir::new().expect("a scratch directory");
         let outside = scratch.path().join("outside.json");
         std::fs::write(&outside, "operator's file\n").expect("seeded");

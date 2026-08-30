@@ -149,10 +149,24 @@ is created afterwards.
 **What is built and stays under test**, waiting on that dependency: the
 `autonomous|ask|plan` vocabulary, schema v5 and resolution order, the shared
 renderer and destructive floor, the exact-floor allowance rule, the Cursor
-correction, the owned per-seat configuration root with no-follow containment, the
+correction, the owned per-seat configuration root with pre-existing-link refusal, the
 typed six-key `agent run --env` surface with redaction, the daemon version pin,
 the posture digest for lost-acknowledgement recovery, and the installed-binary
 preflight.
 
 **Lifts when** Paseo can attest either the spawned process's environment or the
 configuration a created agent resolved.
+
+## Unresolved prerequisite — configuration-root races
+
+`SeatConfigRoot::materialize` refuses path components that are **already**
+symlinks, and stages-then-renames so a pre-existing link is never written
+through. It is **not race-safe**, and no evidence here should be read as saying
+it is: every check and every open addresses by pathname, so a writer running as
+the same Unix user — which an OpenCode seat does — could replace a checked
+directory between the check and the open.
+
+Closing it needs fd-relative traversal throughout (`openat`/`O_NOFOLLOW`, rename
+anchored to a directory descriptor) with a deterministic race or failpoint test.
+That is **a prerequisite for re-enabling OpenCode delivery**, not something the
+current fail-closed state depends on: no seat reaches this code today.

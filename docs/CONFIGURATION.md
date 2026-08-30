@@ -163,6 +163,8 @@ Before anything native is created, and in this order:
 3. **A Kontor-owned configuration root is materialized** under the realm state
    root — one per seat, never the worktree, never `HOME`, never a directory
    shared with a provider. Directories `0700`, file `0600`, read back and hashed.
+   Path components that are already links are refused; a concurrent same-user
+   replacement is not closed, and is a prerequisite for re-enabling delivery.
 4. **That binary resolves the configuration**, in the seat's own working
    directory, under exactly the environment `agent run` will carry, and its
    **complete** permission object must equal the rendered block.
