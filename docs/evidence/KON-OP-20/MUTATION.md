@@ -234,3 +234,23 @@ after; tree verified clean.
 The compensation mutant survived the first sweep: the existing test asserted the
 archive was *sent*, not that it read back terminal, so removing the confirmation
 left it green. `an_unconfirmed_archive_refuses_recoverably` closes that.
+
+## Boundary sweep — 2026-08-31 (5/5 killed)
+
+The two cases the delivery sweep left unproved: a lost first-turn
+acknowledgement, and two seats sharing one worktree.
+
+| Mutation | Result |
+| --- | --- |
+| a lost first-turn ack resends the prompt instead of reading the timeline | killed |
+| the timeline scan affirms without looking for the message id | killed |
+| an OpenCode seat writes a config file into the worktree it shares | killed |
+| the pre-create census keys on the team run rather than the role slot | killed |
+| adoption ignores the launch intent and takes any live agent | killed |
+
+The fourth survived its first run, and the reason is the finding: the
+recorded daemon answered every census empty, so the second seat never saw
+the first and the collision the test claimed to rule out could not occur.
+Making the census report the seat that just launched turned the mutant into
+exactly the 2026-08-22 failure — `SlotAlreadyAdmitted` on a neighbour that
+shares nothing but a worktree.

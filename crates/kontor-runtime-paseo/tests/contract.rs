@@ -1557,7 +1557,7 @@ async fn two_opencode_seats_in_one_worktree_are_created_independently() {
         (&second, opencode_seat_b(&second_intent), "agt_implement_b"),
     ];
 
-    for (request, agent, native_id) in &seats {
+    for (index, (request, agent, native_id)) in seats.iter().enumerate() {
         plane.daemon.set_answer_rpc(
             "create_agent_request",
             serde_json::json!({ "status": "agent_created", "agent": agent["agent"] }),
@@ -1574,6 +1574,15 @@ async fn two_opencode_seats_in_one_worktree_are_created_independently() {
             .launch(request)
             .await
             .unwrap_or_else(|error| panic!("{error:?} after {:?}", plane.daemon.calls()));
+
+        // The seat just launched is live and visible to every census that
+        // follows. Its neighbour must still get through: a census that keyed on
+        // anything broader than one slot would find this agent and refuse.
+        if index == 0 {
+            let mut census = v(AGENT_LIST_IMPLEMENT);
+            census["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+            plane.daemon.set_answer_rpc("fetch_agents_request", census);
+        }
     }
 
     assert_eq!(
