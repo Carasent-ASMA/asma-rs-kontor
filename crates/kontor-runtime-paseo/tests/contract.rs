@@ -1276,6 +1276,46 @@ async fn a_refused_first_turn_compensates_and_never_binds() {
     );
 }
 
+/// An archive whose effect cannot be confirmed leaves the seat recoverable and
+/// says so, rather than reporting a cleanup that may not have happened.
+#[tokio::test]
+async fn an_unconfirmed_archive_refuses_recoverably() {
+    let recorded = opencode_capable_daemon();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = expected_intent(binding_id, agent_run_id, SeatAutonomy::Bounded);
+
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        serde_json::json!({ "status": "agent_created", "agent": opencode_agent(&intent, false)["agent"] }),
+    );
+    plane.daemon.set_answer_rpc(
+        "send_agent_message_request",
+        serde_json::json!({ "agentId": AGENT_ID, "accepted": false, "error": "refused" }),
+    );
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    // Both readbacks report a *live* agent: the archive did not take, or cannot
+    // be shown to have taken.
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", opencode_agent(&intent, false));
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an unproved seat is never bound");
+
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "the refusal says the cleanup is unconfirmed, so the seat stays recoverable: {error:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc archive_agent_request"), 1);
+}
+
 /// An acceptance that does not name this send does not bind the seat.
 #[tokio::test]
 async fn an_uncorrelated_acceptance_does_not_bind() {
