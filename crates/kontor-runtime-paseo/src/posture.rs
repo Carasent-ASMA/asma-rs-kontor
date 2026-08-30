@@ -216,7 +216,7 @@ pub fn seat_posture(
 /// it is what an attested OpenCode surface would switch back on. Nothing on the
 /// delivery path calls it directly — [`seat_posture`] does, after deciding
 /// whether the provider may be delivered to at all.
-pub(crate) fn render_posture(
+pub fn render_posture(
     provider: &str,
     autonomy: SeatAutonomy,
     allowances: &[PermissionAllowance],
