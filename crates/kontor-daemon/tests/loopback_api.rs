@@ -13183,6 +13183,127 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     );
 }
 
+/// An idempotency key names one command, and the quota evidence *is* the
+/// command's authority: it is what permits retiring a seat that is still
+/// reachable and still answering.
+///
+/// So a key reused with different evidence must conflict **before** anything is
+/// retired, read or written. It did not: the canonical intent carried only
+/// `unavailable_provider`, so the same key replayed happily across a different
+/// account, provider, binding or native claim and would have archived a session
+/// the caller never named, under a receipt that said otherwise.
+#[tokio::test]
+async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the seat is bound").clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen route")
+        .provider
+        .0;
+    let account = run.account_profile_id.expect("a pinned seat");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+
+    let evidence = serde_json::json!({
+        "runtime_binding_id": binding.id,
+        "native_id": binding.identity.native_id,
+        "provider": provider,
+        "account_profile_id": account.to_string(),
+    });
+    let body = |quota: serde_json::Value| {
+        serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota,
+        })
+    };
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace");
+
+    // No blocking row yet, so the first call refuses on the merits -- but it
+    // records the intent under this key.
+    let first = Call::post(&route, &body(evidence.clone()))
+        .signed_as(&world, "admin")
+        .with_key("replace-quota-intent")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 422, "{}", first.body);
+
+    // The identical intent replays.
+    let replayed = Call::post(&route, &body(evidence.clone()))
+        .signed_as(&world, "admin")
+        .with_key("replace-quota-intent")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 422, "{}", replayed.body);
+
+    // Each field of the evidence is authority. Changing any one of them under
+    // the same key is a different command.
+    for (field, value) in [
+        ("account_profile_id", serde_json::json!(
+            kontor_core::id::AccountProfileId::generate().to_string()
+        )),
+        ("provider", serde_json::json!("codex-personal")),
+        ("native_id", serde_json::json!("another-native-session")),
+        (
+            "runtime_binding_id",
+            serde_json::json!(kontor_core::id::RuntimeBindingId::generate().to_string()),
+        ),
+    ] {
+        let mut changed = evidence.clone();
+        changed[field] = value;
+        let calls_before = world.fake.calls().len();
+        let conflict = Call::post(&route, &body(changed))
+            .signed_as(&world, "admin")
+            .with_key("replace-quota-intent")
+            .send(&world)
+            .await;
+        assert_eq!(
+            conflict.status, 409,
+            "changing {field} under the same key must conflict: {}",
+            conflict.body,
+        );
+        assert_eq!(
+            world.fake.calls().len(),
+            calls_before,
+            "the conflict is refused before the runtime is touched at all ({field})",
+        );
+        assert!(
+            !world
+                .fake
+                .calls()
+                .iter()
+                .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id)),
+            "nothing is retired under a conflicting key ({field})",
+        );
+    }
+}
+
 /// When *no* account is admissible the succession must not quietly fall back to
 /// the exhausted one. The walk answers with no placement, so no account is
 /// claimed at all and the adapter is left to emit its own provider refusal —

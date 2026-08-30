@@ -21244,6 +21244,31 @@ impl ApplicationOperations for Services {
                 "provider": evidence.provider,
             });
         }
+        // Every effect-bearing field belongs in the canonical intent, and the
+        // quota arm's evidence most of all: it is the authority to retire a
+        // seat that is still reachable and still answering. Omitting it let a
+        // used key replay across a *different* account, provider, binding or
+        // native claim -- the replay check below runs before any retire, so
+        // binding it here is what makes changed evidence conflict instead of
+        // quietly archiving the wrong session under an old receipt.
+        if let Some(evidence) = &request.quota_exhausted {
+            intent_document["quota_exhausted"] = serde_json::json!({
+                "runtime_binding_id": evidence.runtime_binding_id,
+                "native_id": evidence.native_id,
+                "provider": evidence.provider,
+                "account_profile_id": evidence.account_profile_id,
+            });
+        }
+        // The desired route is an operator decision that changes where the
+        // successor lands, so a key reused with a different one is a different
+        // command.
+        if let Some(route) = &request.model_route {
+            intent_document["model_route"] = serde_json::json!({
+                "provider": route.provider,
+                "model": route.model,
+                "effort": route.effort,
+            });
+        }
         let intent = self.intent(&intent_document)?;
         let target = AggregateRef::TeamRun {
             team_run_id: predecessor.team_run_id,
