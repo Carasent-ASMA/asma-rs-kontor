@@ -33,37 +33,46 @@ schema_version: 1
 signals:
   # ---- Claude, one entry per login ---------------------------------------
   #
-  # Captured 2026-08-30: all three ASMA-7869 builders received the same refusal
-  # when the `claude-work` allowance was spent, and the resume audit records its
-  # three distinctive components -- the individual-spend-limit wording, the
-  # provider settings endpoint, and the session-reset marker. All three must
-  # appear together, so an assistant merely *discussing* limits cannot retire a
+  # Captured verbatim 2026-08-30, repeated to all three ASMA-7869 builders when
+  # the `claude-work` allowance was spent:
+  #
+  #   You've hit your individual spend limit · ask your admin to raise it at
+  #   claude.ai/settings/usage?from=cc_cli_limit_message · your session limit
+  #   resets 10:40pm (Europe/Chisinau)
+  #
+  # All three markers must appear together. The middle one is the whole reason
+  # this is safe to act on: an assistant *discussing* spend limits will never
+  # emit that exact query string, and this configuration can archive a live
   # seat.
   #
-  # The reset this vendor states is a bare time of day, not a date. It is read
-  # as the next such instant *from the provider item's own timestamp* in the
-  # zone below -- never from when Kontor happened to look, which on a delayed
-  # probe would roll the reset forward a whole day.
+  # The reset is a bare time of day and the prefix has no "at" -- it reads
+  # "resets 10:40pm", not "will reset at". It is parsed as the next such
+  # instant from the provider item's own timestamp, never from when Kontor
+  # looked.
   #
-  # Listed before Codex: an account able to select both families must be tried
-  # against the more specific fingerprint first.
+  # The message states its own zone in trailing parentheses. That annotation is
+  # recognised and skipped rather than parsed as part of the clock, and the
+  # authoritative zone is the declared one below. Keep the two in agreement:
+  # the captured message and this field both say Europe/Chisinau, and 22:40
+  # there in August is EEST, three hours ahead of UTC -- which is the
+  # 2026-08-30T19:40:00Z reset the control plane recorded.
   - provider: claude-work
     basis: plan_allowance
     markers:
       - individual spend limit
-      - /settings/limits
-      - session limit will reset
-    reset_prefix: 'session limit will reset at '
-    reset_zone: Europe/Oslo
+      - claude.ai/settings/usage?from=cc_cli_limit_message
+      - your session limit resets
+    reset_prefix: 'your session limit resets '
+    reset_zone: Europe/Chisinau
 
   - provider: claude-personal
     basis: plan_allowance
     markers:
       - individual spend limit
-      - /settings/limits
-      - session limit will reset
-    reset_prefix: 'session limit will reset at '
-    reset_zone: Europe/Oslo
+      - claude.ai/settings/usage?from=cc_cli_limit_message
+      - your session limit resets
+    reset_prefix: 'your session limit resets '
+    reset_zone: Europe/Chisinau
 
   # ---- Codex, one entry per login --------------------------------------
   #

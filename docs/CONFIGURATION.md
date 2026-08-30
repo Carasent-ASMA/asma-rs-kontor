@@ -97,14 +97,26 @@ both eligible for one account, which is why the shipped example lists the Claude
 aliases before the Codex ones: the whole of the Codex marker set is the words
 "usage limit", which a Claude refusal also contains.
 
+**A vendor that restates its zone is checked against the declared one.** Some
+messages print `… resets 10:40pm (Europe/Chisinau)`. That annotation is never
+read as part of the clock, and it is not silently dropped either: when it names
+a zone the tzdb knows, it must **agree** with `reset_zone`, and a disagreement
+yields no instant at all — the account still blocks, as `Unknown`, which is the
+visible prompt to fix the signal. Ignoring it would let a message saying
+`(Europe/Oslo)` be converted as Chisinau and land an hour wrong with nothing to
+show for it. An abbreviation like `(EEST)` is not an IANA name, cannot be
+compared, and is left alone.
+
 **A stated zone is the provenance of a captured message, not the host's
 clock.** `reset_zone` qualifies the wall clock *that vendor's message printed*,
 recorded alongside the wording it belongs to. It is never inferred from the
 daemon's own timezone: a host that later moves to another zone is a fact about
 now, and letting it reinterpret a historical fingerprint would silently move
 every reset derived from it. The shipped Codex entry states `Europe/Oslo`
-because that is where the 2026-08-21/23 incident message was captured — not
-because any particular machine runs there.
+because that is where the 2026-08-21/23 incident message was captured, and the
+Claude entries state `Europe/Chisinau` because that is what their own
+2026-08-30 message printed — neither because any particular machine runs
+there.
 
 **Only an exact, distinctive system-refusal fingerprint may activate a signal.**
 A bare phrase like `usage limit` is not sufficient: an ordinary assistant

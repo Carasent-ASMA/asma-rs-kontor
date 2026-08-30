@@ -231,14 +231,37 @@ enum Meridiem {
 /// A spring-forward gap or a fall-back overlap is resolved by jiff's compatible
 /// rule, as the dated parser does: a reset an hour out beats no reset at all,
 /// which would record `Unknown` and block until a human intervened.
-fn parse_time_of_day(text: &str, zone: Option<&str>, basis: Timestamp) -> Option<Timestamp> {
-    let zone = match zone {
+fn parse_time_of_day(text: &str, zone_name: Option<&str>, basis: Timestamp) -> Option<Timestamp> {
+    let zone = match zone_name {
         Some(name) => TimeZone::get(name).ok()?,
         None => TimeZone::UTC,
     };
     // `10:40pm` arrives as one token, `10:40 PM` as two, and `22:40` with no
     // meridiem at all.
-    let mut words = text.split_whitespace();
+    //
+    // A vendor may also restate its zone in trailing parentheses --
+    // `10:40pm (Europe/Chisinau)`. That annotation is never part of the clock,
+    // but it is not ignored either: silently dropping it would let a message
+    // that says `(Europe/Oslo)` be converted as Chisinau and land an hour
+    // wrong, with nothing to show for it.
+    //
+    // So when the annotation names a zone the tzdb knows, it must **agree**
+    // with the declared one; a disagreement yields no instant at all, which
+    // records a blocking `Unknown` and is the visible prompt to fix the
+    // signal. An annotation that is not an IANA name -- an abbreviation like
+    // `(EEST)` -- cannot be compared and is left alone rather than guessed at.
+    if let Some(stated) = text
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix('('))
+        .map(|word| word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/'))
+        && TimeZone::get(stated).is_ok()
+        && !zone_name.is_some_and(|declared| declared.eq_ignore_ascii_case(stated))
+    {
+        return None;
+    }
+    let mut words = text
+        .split_whitespace()
+        .filter(|word| !word.starts_with('('));
     // Trailing punctuation first: the vendor writes "…reset at 10:40pm." and a
     // meridiem suffix check against `10:40PM.` silently fails, reading the
     // clock as 10:40 and then rolling it to the next morning.

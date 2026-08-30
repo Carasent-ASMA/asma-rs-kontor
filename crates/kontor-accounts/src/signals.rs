@@ -185,10 +185,10 @@ mod tests {
 
     const EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
 
-    /// The captured 2026-08-30 Claude refusal shape: the three components the
-    /// resume audit records, with the bare time-of-day session reset.
-    const CLAUDE_LIMIT: &str = "You've reached your individual spend limit. Manage it at \
-         https://console.anthropic.com/settings/limits — your session limit will reset at 10:40pm.";
+    /// The message Claude actually produced on 2026-08-30, verbatim.
+    const CLAUDE_LIMIT: &str = "You've hit your individual spend limit · ask your admin to raise \
+         it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets \
+         10:40pm (Europe/Chisinau)";
 
     /// The text Codex actually produced on 2026-08-21, from the report Igor filed.
     const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
