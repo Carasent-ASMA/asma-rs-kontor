@@ -367,3 +367,59 @@ process that ran it.
 
 No live authenticating seat has been launched through this path. That is a
 post-integration, post-deployment proof and is not asserted here.
+
+## OQ-OP20-5 resolved, and what now blocks the dispatch — 2026-08-31
+
+The prior inspector could not evidence an inspector agent run for this task and
+declined to settle rather than guess one. That run exists and is now named.
+
+**The inspector run is `01a0306f-0816-7ab3-a790-036a6ef11cdc`.** It was found on
+the native agent's own labels (`kontor.agent-run`) and confirmed by
+`kontor_run_get`: role `inspector`, team run
+`01a0306e-6de5-7bb2-a8b6-18a8dd01bbb9`, bound to Paseo agent
+`10fd5152-c9b9-499d-b9ec-1cec2876901b`, which is alive and idle in the OP-20
+worktree.
+
+Two corrections to OQ-OP20-5's reasoning, both mine to state because I ran the
+calls:
+
+* `01a0306e-8fda-75d2-9f47-5ce1add8016b` is not a Core Team seat binding. It is
+  the **TeamRun delivery** seat binding for `role_slot_id: inspector` on the
+  OP-20 TSW node. The server says so itself — `kontor_topology_seat_message_send`
+  refuses it with *"TeamRun delivery seats are messaged through the session
+  message surface"*. That surface is `kontor_session_message_send`, which keys on
+  the agent run, not the seat binding. The namespaces are indeed different; the
+  conclusion drawn from that was the wrong one.
+* `paseo ls` listing no OP-20 agent was a stale or mis-scoped read.
+  `list_agents` scoped to this worktree returns all five seats of the team run.
+
+The idempotency key on both surfaces must be a **UUIDv7**, not free text and not
+a v4 UUID; the handler parses it as a `MessageId`. A non-v7 key is refused with
+`invalid_request` / *"the identifier is not in canonical form"*, which names no
+field and is easy to misread as being about the path ids.
+
+### What blocks it now
+
+`kontor_session_message_send` refuses with **409 `stale_binding`** — *"this
+process holds no frozen capability snapshot for the session"*. The run reports
+`binding.attached: false`, `projection.freshness: stale`, last confirmed
+2026-08-23 at cursor 904 against snapshot cursor 1591, `gaps: []`,
+`closed_at: null`, `lifecycle: running`. This is
+`operational-gap-asma-7869-stale-runtime-binding-unsettleable-20260830`, which
+the plan's §5 puts outside this task's scope.
+
+The refusal names `kontor_runtime_settle` as the next action. **It was not
+called.** Settling resolves the run against the runtime's own verdict, and Paseo
+reports this agent `idle` with `attentionReason: finished` — so a settle may
+close the run rather than refresh it, and a closed inspector run cannot be
+dispatched without a replacement seat, which the standing instruction forbids.
+That is an operator decision, not a builder one.
+
+The plan's §5 names the other route: the bounded direct-prompt fallback, which
+prompts the existing native agent through Paseo and reconciles through Kontor
+once the binding is settleable. It creates no session and no workspace. It is
+also not "through the recorded topology", so it is not taken unasked either.
+
+Builder acceptance at the time of the attempt: paseo lib 107, paseo contract
+161, daemon lib 57, daemon integration 232, clippy 0, fmt clean, both trees
+clean, mutation 9/9 + 5/5.
