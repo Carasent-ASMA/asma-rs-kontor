@@ -123,72 +123,65 @@ later checks cannot drift apart.
 | --- | --- | --- | --- |
 | `claude` | `bypassPermissions` | `auto` | `plan` |
 | `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
-| `cursor` | `agent` | `ask` | `plan` |
+| `opencode` | *refused* | *refused* | *refused* |
+| `cursor` | `agent` | *refused* | *refused* |
 | `opencode` | `build` + permission block | `build` + permission block | `plan` |
 
-OpenCode is the exception because its mode is not its posture: `build` is
-documented by the provider as "executes tools based on configured permissions",
-so the posture has to be written where opencode reads permissions. OpenCode
-evaluates a call by **last match** over the rules in the order the file gives
-them, defaulting an unmatched tool to `ask`; Kontor's block serializes its keys
-lexicographically, and `*` — a prefix of every floor pattern — therefore precedes
-all of them, which is what lets the specific denials win. Kontor
-composes it into `<cwd>/.opencode/opencode.json` at spawn — merged, so an
-unrelated key in that file survives, and kept out of the seat's own diff through
-the worktree's `info/exclude`. The repository's own committed `opencode.json` is
-never edited: git applies no ignore rule to a tracked file, and opencode reads
-`.opencode/` at higher precedence anyway.
+Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
+names. Its ACP runtime permits shell writes in `plan`, and shell *and* file
+writes in `ask` — the same measured finding that keeps cursor out of
+consultation. A mode label is not a permission boundary, and a posture Kontor
+cannot enforce is refused before launch rather than reported as held. `agent`
+means what `autonomous` means, so that one stays.
 
-### The destructive floor
+OpenCode is **refused for delivery entirely**, at every posture, and that is an
+interim safe state rather than the shape of this feature. Its mode is not its
+posture — `build` is documented by the provider as "executes tools based on
+configured permissions", and `plan` is behavioural guidance whose canary showed
+shell writes proceeding — so its posture has to be a written permission block.
+Kontor cannot prove which block the spawned process will resolve:
 
-Under every posture that writes a block, these patterns are **denied**, never
-asked:
+| Input | Why it defeats verification |
+| --- | --- |
+| `OPENCODE_CONFIG_CONTENT` | injects a whole configuration inline, outranking project files |
+| `OPENCODE_PERMISSION` | injects a permission block directly |
+| `OPENCODE_DISABLE_PROJECT_CONFIG` | makes OpenCode ignore the composed file entirely |
 
-`*submodule update*`, `*submodule deinit*`, `*git rm --cached*`, `*git clean -*`,
-`*rm -rf *`
+All three are read by the *spawned* process, which Paseo creates. `paseo agent
+run` exposes no way to set or read that process's environment (verified against
+Paseo 0.6.1), so reading configuration files from the daemon cannot establish
+what the seat resolves, and resolving them in the daemon's own environment
+answers a different question.
 
-`deny` and `ask` are not interchangeable here. `ask` blocks and waits for a
-human — on 2026-08-22 that stalled an eleven-ticket epic for about two and a half
-hours, with twelve of fifteen seats wedged on prompts nobody was watching, while
-Kontor recorded them as running. `deny` refuses instantly and the seat keeps
-working. Autonomy and guardrails stop being in tension once the patterns that
-would earn a refusal are refused rather than escalated.
+A delivery launch that names OpenCode is therefore refused with
+`PermissionModeUnsupported` before any transport call — no census, no placement
+lookup, no spawn — rather than started under a posture nothing verified.
 
-A ticket whose actual job collides with the floor declares a bounded exception on
-its task scope:
+**The dependency.** This lifts when Paseo exposes either an attested resolved
+configuration per agent, or a seat environment Kontor can verify. The
+translation, the destructive floor, the exact-floor allowance rule and the
+composition and readback surfaces are all kept and kept under test, because they
+are what that surface switches back on.
 
-```json
-"task_scopes": {
-  "<task-id>": {
-    "permission_overrides": ["*git rm --cached*"]
-  }
-}
-```
+Consultation is unaffected: it runs through its own route policy, which already
+refuses OpenCode except for one operator-accepted recovery route. Readback of
+seats already running is unaffected too — it resolves a mode, not a block.
 
-An override must name a floor pattern **exactly**. Allow-only, and a pattern that
-is merely broader — `*git*`, `*rm*`, `*submodule*` — is refused along with
-wildcards, near-misses, case variants and unknown patterns, at the type and again
-when the fleet is composed. The reason is the evaluation order: OpenCode resolves
-a call by *last* match, the block reaches it in lexicographic key order, and a
-broader pattern sorts after the deny it overlaps. `"permission_overrides":
-["*git*"]` would therefore be evaluated after both git denies and erase them —
-one line that never spells `*`. Restricting an exception to an exact floor key
-means it can only flip a deny that already exists, in the position it already
-occupies, so the set of rules never changes and the order cannot be exploited.
+### What the composition would verify, once it is reachable
 
-An override reaches the permission block alone — never the mode — so a
-task-scoped relaxation can never make a seat verify as something it is not.
+The composed posture is read back out of the seat's configuration before the
+seat is spawned, and again after placement, and must equal the rendered posture
+exactly. That check is retained for the re-enabled path. It is **not** a proof
+of the seat's effective policy today, for the reason above: it cannot see the
+environment the spawned process is given.
 
-> **Operational precondition.** OpenCode *merges* configuration rather than
-> replacing it, and the `ask` block deliberately names only `bash` — so on a host
-> that still carries the machine-local 2026-08-22 stopgap in
-> `~/.config/opencode/opencode.json`, every other tool resolves from that ambient
-> config, and an `ask` seat will still edit files without asking. On a clean host
-> the unlisted tools fall to OpenCode's own default, which its evaluator gives as
-> `ask`, and the posture means what this page says for every tool. Until the
-> stopgap is removed from operator machines, `ask` is guaranteed for `bash` only.
-> This is a strict improvement on the prior state, where `bash` was ambient too;
-> removing the stopgap is out of scope here and tracked with it.
+> **Operational note.** OpenCode merges configuration layers rather than
+> replacing them, so a machine-global config — such as the 2026-08-22 stopgap
+> some operator hosts still carry, which allows `edit`, `task`, `webfetch` and
+> `external_directory` — survives for every tool a block does not name. Blocks
+> therefore name every known tool. This matters for the re-enabled path; while
+> OpenCode delivery is refused, the stopgap governs any OpenCode process started
+> outside Kontor, and removing it from operator hosts is still worthwhile.
 
 > **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
 > Kontor derives the intended value alongside the mode, but nothing sets it:

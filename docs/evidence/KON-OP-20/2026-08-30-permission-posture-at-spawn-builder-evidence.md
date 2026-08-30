@@ -196,3 +196,72 @@ both `autonomous` and `ask` spell `build`. Readback therefore cannot distinguish
 the two postures, and the permission block is never re-read after launch. An
 inherent limit of verifying through Paseo rather than a defect introduced here.
 Carried as OQ-OP20-6. **Not verified away.**
+
+---
+
+# Disposition: fail closed on OpenCode delivery (2026-08-30)
+
+**OP-20 remains in progress. This is an interim safe state, not acceptance of
+the ticket, and not grounds to close the task or the epic.**
+
+## Why the original approach could not be finished
+
+Verification of an OpenCode seat's posture was attempted by reimplementing
+OpenCode's configuration resolution. Successive review rounds each found another
+input: the machine-global config, the repository's root `opencode.json`, both
+`opencode.jsonc` siblings — and finally three environment variables:
+
+| Input | Effect |
+| --- | --- |
+| `OPENCODE_CONFIG_CONTENT` | injects a whole configuration inline, outranking project files |
+| `OPENCODE_PERMISSION` | injects a permission block directly |
+| `OPENCODE_DISABLE_PROJECT_CONFIG` | makes OpenCode ignore the composed file entirely |
+
+All three names are embedded in the installed 1.18.15 binary. The decisive point
+is not the count but the location: they are read by the **spawned** process,
+which Paseo creates. `paseo agent run` exposes no way to set or read that
+process's environment (verified against Paseo 0.6.1). So reading configuration
+files from the daemon cannot establish what the seat resolves, and running
+`opencode debug config` from the daemon resolves the *daemon's* environment,
+which is a different question. The layered merge was unsound in principle rather
+than merely incomplete.
+
+## What was done instead
+
+`seat_posture` refuses an OpenCode delivery launch with
+`PermissionModeUnsupported`, resolved before any transport call, so a refusal
+spends no census, no placement lookup and no spawn. The translation moved to
+`render_posture` and stays complete and under test.
+
+## The dependency this lifts on
+
+Paseo must expose **either** an attested resolved configuration per agent,
+**or** a seat process environment Kontor can set and verify. Until one exists,
+no OpenCode delivery posture can be claimed as deterministic.
+
+## Deferred, and still required if OpenCode delivery is re-enabled
+
+Two findings raised against the earlier design were **not** built, deliberately,
+because both sit on top of the verifier whose soundness failed. They do not
+affect the fail-closed path — no OpenCode seat launches, so neither can occur —
+and both become blocking again the moment delivery is re-enabled:
+
+- **Shared-file race.** A TeamRun can launch several OpenCode role seats into one
+  task worktree while posture resolution permits per-role-slot differences. They
+  would share a single `.opencode/opencode.json`, and a later seat would rewrite
+  the first seat's effective policy. Requires either true per-seat config
+  isolation in the spawned environment, or a validated task-wide identical
+  posture invariant with the file immutable while holders exist.
+- **Post-spawn compensation.** The second readback runs after `agent run`. On
+  drift it returned a refusal before bind, which would leave a created native
+  agent untracked. Requires a governed compensating archive correlated to the
+  exact native id, a terminal-state readback, and a receipt-bearing failure —
+  with a typed needs-human outcome retaining the binding when compensation
+  cannot be proved.
+
+## Retained from the earlier rounds
+
+F3 (Cursor) is now **fixed** rather than observed: `ask` and `plan` are refused.
+F4 (readback cannot see an OpenCode posture through the mode) is subsumed by the
+delivery refusal. F2's ambient-global leak no longer governs a Kontor-launched
+seat, because none launches.

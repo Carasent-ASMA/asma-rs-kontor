@@ -94,6 +94,16 @@ as literals and so cannot be silenced by editing the constant.
 
 **21 of 21 mutants killed.**
 
+## Superseded scope note (2026-08-30, fail-closed disposition)
+
+OpenCode delivery is now refused before any native call, so the mutants below
+that exercise the OpenCode composition and readback describe the **re-enabled**
+path rather than what runs today. They are retained because the code they test is
+retained. The gate itself carries its own mutation evidence: removing the refusal
+in `seat_posture` turns both `opencode_delivery_is_refused_until_it_can_be_proved`
+and the launch-boundary test
+`an_opencode_delivery_launch_is_refused_before_any_native_call` red.
+
 ## What this still does not prove
 
 - **Readback cannot see the posture on OpenCode** (inspector F4). Both
