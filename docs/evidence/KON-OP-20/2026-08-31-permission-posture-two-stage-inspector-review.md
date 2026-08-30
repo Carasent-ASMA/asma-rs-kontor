@@ -8,7 +8,7 @@
 - **Reviewed:** `feat/KON-OP-20-permission-posture-at-spawn` at `e2863bb`
   (one commit beyond the `32fccde` named in the handoff), baseline `e814661`.
   Outer repo `7832934f`.
-- **Verdict:** **BLOCKED.** Five blocking findings. The first is the load-bearing
+- **Verdict:** **BLOCKED.** Six blocking findings. The first is the load-bearing
   external fact the builder asked to be pressed on, and it does not hold.
 
 ## B1 — BLOCKING, decisive · the rendered permission never reaches OpenCode
@@ -181,6 +181,45 @@ Require removal of the dead verifier, types and helpers, and correction of these
 comments, the contract-test comment and the evidence table. The shipped
 `providerOptions` design makes a file-based ambient verifier obsolete, and — given
 B1 — actively misleading about where posture comes from.
+
+## B6 — BLOCKING · the retired design left broken public API docs and a dead public field, and rustdoc proves it
+
+This one is machine-checkable. Running
+
+```
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p kontor-runtime-paseo --no-deps
+```
+
+**fails, exit 101**, with four unresolved links — each naming a symbol the
+owned-root/environment design took with it:
+
+| Broken link | Where | Target |
+| --- | --- | --- |
+| `PASEO_SEAT_ENVIRONMENT_VERSION` | `wire.rs:87` | 1 hit repo-wide — this link |
+| `Self::supports_seat_environment` | `wire.rs:353` | 1 hit repo-wide — this link |
+| `crate::posture::SeatConfigRoot::for_seat` | `adapter.rs:318` | 1 hit repo-wide — this link |
+| `PaseoAdapter::capabilities` | (4th, not previously reported) | unresolved |
+
+plus six warnings, five of them public documentation linking to private items
+(`paseo_mode`, `consultation_permission_mode`, `consultation_route_permission_mode`).
+
+**A dead public field with it.** `PaseoConfig::state_root` (`adapter.rs:319`)
+occurs inside `kontor-runtime-paseo` only as its own declaration and five *test*
+constructors (`6961, 7067, 7153, 7231, 7362`). There is no production read. The
+daemon's heavy use of `config.state_root` is its own `DaemonConfig`, a different
+struct; `runtimes.rs:476` puts the path into `SeatMcp`, which does use it.
+`label::SEAT_POSTURE` is dead in the same way (B5).
+
+**Why this is blocking rather than tidy-up.** The builder evidence states the
+owned-root and environment code is *deleted*. It is not, while these public
+surfaces still name it — and unlike the prose mismatches in B5, this one is proved
+by the toolchain rather than by reading. `clippy` cannot catch it: broken
+intra-doc links are a rustdoc lint, and the acceptance ran clippy and fmt only.
+
+**Required.** Remove the residue or give a truthful supported-compatibility
+justification for each retained surface, and add the rustdoc gate above to CI so
+the next retirement cannot leave the same trail. It is a cheap check that would
+have caught all four today.
 
 ## The fixture-unreachable shape generalizes
 
