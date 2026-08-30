@@ -3516,6 +3516,13 @@ impl PaseoAdapter {
             return Ok(None);
         };
 
+        // Refused first, before the capability read, the diagnostic, the owned
+        // root and the preflight — all of which are implemented below and stay
+        // exercised, but none of which amounts to a proof while the spawned
+        // process can resolve inputs this daemon never sees. See
+        // `preflight::attest_spawn_environment` for exactly what is missing.
+        crate::preflight::attest_spawn_environment()?;
+
         // The daemon must *apply* per-agent environment, not merely accept the
         // flag. Read from the identity `declared()` already fetched, so a
         // refusal here costs nothing further.
@@ -3575,8 +3582,8 @@ impl PaseoAdapter {
             std::path::Path::new(worktree),
             permission,
             &environment,
-        )?;
-        crate::preflight::prove_preserved_roots(&binary, &evidence.path)?;
+        )
+        .await?;
 
         // Path and digest only: this is evidence, and evidence reaches records
         // and logs.

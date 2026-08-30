@@ -36,8 +36,8 @@
 //! object — refuses the launch, and refuses it before any native call.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::time::Duration;
 
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 
@@ -133,20 +133,23 @@ fn strip_ansi(text: &str) -> String {
 /// `--pure` disables external plugins only; it is not a containment mechanism
 /// and nothing here treats it as one. It is passed so a plugin cannot make the
 /// preflight answer differ from a plain resolution.
-fn resolve_configuration(
+async fn resolve_configuration(
     binary: &Path,
     cwd: &Path,
     environment: &[(&'static str, String)],
     timeout: Duration,
 ) -> RuntimeResult<serde_json::Value> {
     let refuse = |rule: &'static str| RuntimeError::LaunchNotAdmitted { rule };
-    let mut command = Command::new(binary);
+    let mut command = tokio::process::Command::new(binary);
     command
         .args(["debug", "config", "--pure"])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // So a timeout does not leave the child running against the seat's
+        // worktree after this future is dropped.
+        .kill_on_drop(true);
     // Exactly the closed set, and nothing removed: HOME and the data and state
     // roots stay inherited so the seat's credentials resolve as they will at
     // spawn.
@@ -154,27 +157,21 @@ fn resolve_configuration(
         command.env(key, value);
     }
 
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|_| refuse("the provider binary could not be run for the preflight"))?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(refuse("the preflight did not answer within its timeout"));
-            }
-            Err(_) => return Err(refuse("the preflight could not be waited on")),
-        }
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|_| refuse("the preflight produced no readable output"))?;
+    // `wait_with_output` reads both pipes *while* the child runs. Waiting for
+    // exit first and reading after is a deadlock, not a timeout: a resolved
+    // configuration larger than a pipe buffer blocks the child on write, and the
+    // wait never returns. It is also why this is `tokio` rather than
+    // `std::process` with a sleeping poll loop — that version blocked a runtime
+    // worker for the whole timeout, so a handful of concurrent launches could
+    // stall the daemon.
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) => return Err(refuse("the preflight produced no readable output")),
+        Err(_) => return Err(refuse("the preflight did not answer within its timeout")),
+    };
     if !output.status.success() {
         return Err(refuse("the provider refused to resolve its configuration"));
     }
@@ -188,7 +185,7 @@ fn resolve_configuration(
 /// [`RuntimeError::LaunchNotAdmitted`] on a version that is not the one Paseo
 /// resolves, an unrunnable or slow binary, unreadable output, or any difference
 /// between the resolved permission object and `expected`.
-pub fn prove_posture(
+pub async fn prove_posture(
     provider: &ProviderBinary,
     supported_versions: &[&str],
     cwd: &Path,
@@ -203,13 +200,14 @@ pub fn prove_posture(
         environment,
         PREFLIGHT_TIMEOUT,
     )
+    .await
 }
 
 /// [`prove_posture`] with an explicit deadline.
 ///
 /// # Errors
 /// As [`prove_posture`].
-pub fn prove_posture_within(
+pub async fn prove_posture_within(
     provider: &ProviderBinary,
     supported_versions: &[&str],
     cwd: &Path,
@@ -223,7 +221,7 @@ pub fn prove_posture_within(
             "the provider version Paseo resolves is not one this posture was proved against",
         ));
     }
-    let resolved = resolve_configuration(&provider.path, cwd, environment, timeout)?;
+    let resolved = resolve_configuration(&provider.path, cwd, environment, timeout).await?;
     let permission = resolved
         .get("permission")
         .ok_or_else(|| refuse("the resolved configuration states no permission"))?;
@@ -238,41 +236,43 @@ pub fn prove_posture_within(
     Ok(())
 }
 
-/// Check that the preserved roots still resolve where the daemon says they do.
+/// Attest that the process Paseo spawns resolves the same inputs this preflight
+/// did — which **Paseo 0.6.1 cannot do**, so this always refuses.
 ///
-/// Not a claim that the whole environment is equal — it is a bridge for the one
-/// part deliberately left inherited. If the binary's own reported data root does
-/// not contain the credentials the daemon's diagnostic names, then this process
-/// and the spawned one would authenticate differently, and the preflight is
-/// answering about a different seat.
+/// # Why there is no honest way to pass this today
+///
+/// Two inputs to an OpenCode seat's permission are decided outside everything
+/// Kontor pins:
+///
+/// * the **active-org remote configuration**, which is auth-backed, so it
+///   follows whichever credentials the spawned process resolves; and
+/// * the **system managed layer**, read at process start.
+///
+/// Both sort *after* the owned configuration in the merge order, so both can
+/// state a permission the preflight never saw. Whose credentials the spawned
+/// process uses depends on the inherited `HOME`/`XDG_DATA_HOME`, and
+/// `paseo provider diagnostic` reports neither: it prints `Daemon PATH`, a
+/// `Daemon shell`, and an *unexpanded* `~/.local/share/opencode/auth.json`. `~`
+/// is exactly the unknown. Nothing else on the 0.6.1 surface states the daemon's
+/// environment, and no Paseo call reports the configuration a created agent
+/// actually resolved.
+///
+/// The previous version of this check compared the auth string against a path
+/// the caller passed — and the caller passed the owned *config file*, not a data
+/// root. It accepted any argument containing `opencode`, and accepted a missing
+/// auth line outright. It proved nothing, and reading it as a guarantee is worse
+/// than having no guarantee at all.
+///
+/// So a pre-create observation is **not** a proof of the spawned resolution, and
+/// is not treated as one. This lifts when Paseo can attest either the spawned
+/// process's environment or the configuration a created agent resolved.
 ///
 /// # Errors
-/// [`RuntimeError::LaunchNotAdmitted`] when the roots disagree.
-pub fn prove_preserved_roots(
-    provider: &ProviderBinary,
-    reported_data_root: &Path,
-) -> RuntimeResult<()> {
-    let Some(auth) = provider.auth.as_ref() else {
-        return Ok(());
-    };
-    let expanded = auth.to_string_lossy().replace('~', "");
-    if expanded.is_empty() {
-        return Ok(());
-    }
-    let matches = if reported_data_root.to_string_lossy().contains("opencode") {
-        expanded
-            .trim_start_matches('/')
-            .starts_with(".local/share/opencode")
-            || auth.starts_with(reported_data_root)
-    } else {
-        false
-    };
-    if !matches {
-        return Err(RuntimeError::LaunchNotAdmitted {
-            rule: "the preflight's data root is not the one the daemon reports credentials under",
-        });
-    }
-    Ok(())
+/// Always [`RuntimeError::LaunchNotAdmitted`].
+pub fn attest_spawn_environment() -> RuntimeResult<()> {
+    Err(RuntimeError::LaunchNotAdmitted {
+        rule: "Paseo cannot attest the environment or resolved configuration of the process it spawns",
+    })
 }
 
 #[cfg(test)]
@@ -341,8 +341,8 @@ mod tests {
         assert!(parse_provider_diagnostic(&serde_json::json!({})).is_err());
     }
 
-    #[test]
-    fn a_matching_resolution_proves_the_posture() {
+    #[tokio::test]
+    async fn a_matching_resolution_proves_the_posture() {
         let scratch = tempfile::TempDir::new().expect("scratch");
         let expected = serde_json::json!({"bash": {"*": "deny"}});
         let binary = stub(
@@ -358,14 +358,15 @@ mod tests {
             &expected,
             &[],
         )
+        .await
         .expect("the resolved permission equals the posture");
     }
 
-    #[test]
-    fn every_way_the_proof_can_fail_refuses_the_launch() {
+    #[tokio::test]
+    async fn every_way_the_proof_can_fail_refuses_the_launch() {
         let scratch = tempfile::TempDir::new().expect("scratch");
         let expected = serde_json::json!({"bash": {"*": "deny"}});
-        let prove = |binary: PathBuf, versions: &[&str]| {
+        let prove = async |binary: PathBuf, versions: &[&str]| {
             prove_posture_within(
                 &provider_at(binary),
                 versions,
@@ -374,6 +375,7 @@ mod tests {
                 &[],
                 Duration::from_millis(400),
             )
+            .await
         };
 
         // one extra ambient rule the block never named
@@ -384,7 +386,7 @@ mod tests {
             0,
             0,
         );
-        assert!(prove(widened, &["1.18.15"]).is_err(), "an extra rule");
+        assert!(prove(widened, &["1.18.15"]).await.is_err(), "an extra rule");
 
         // a difference *outside* `bash`: comparing a chosen key rather than the
         // whole object is exactly how an ambient `edit: allow` would survive
@@ -396,7 +398,7 @@ mod tests {
             0,
         );
         assert!(
-            prove(elsewhere, &["1.18.15"]).is_err(),
+            prove(elsewhere, &["1.18.15"]).await.is_err(),
             "a rule outside bash must be caught too"
         );
 
@@ -407,23 +409,26 @@ mod tests {
             0,
             0,
         );
-        assert!(prove(narrowed, &["1.18.15"]).is_err(), "a missing rule");
+        assert!(
+            prove(narrowed, &["1.18.15"]).await.is_err(),
+            "a missing rule"
+        );
 
         // no permission at all — what OPENCODE_DISABLE_PROJECT_CONFIG would do
         // to a resolution that had nowhere else to read one from
         let bare = stub(scratch.path(), "{}", 0, 0);
-        assert!(prove(bare, &["1.18.15"]).is_err(), "no permission");
+        assert!(prove(bare, &["1.18.15"]).await.is_err(), "no permission");
 
         // unreadable output, and a refusing binary
         let garbage = stub(scratch.path(), "not json", 0, 0);
-        assert!(prove(garbage, &["1.18.15"]).is_err(), "unreadable");
+        assert!(prove(garbage, &["1.18.15"]).await.is_err(), "unreadable");
         let failing = stub(
             scratch.path(),
             &serde_json::json!({"permission": expected}).to_string(),
             3,
             0,
         );
-        assert!(prove(failing, &["1.18.15"]).is_err(), "non-zero exit");
+        assert!(prove(failing, &["1.18.15"]).await.is_err(), "non-zero exit");
 
         // a version Paseo resolves that this posture was never proved against
         let good = stub(
@@ -433,7 +438,7 @@ mod tests {
             0,
         );
         assert!(
-            prove(good.clone(), &["1.19.0"]).is_err(),
+            prove(good.clone(), &["1.19.0"]).await.is_err(),
             "an unproven version"
         );
 
@@ -444,28 +449,87 @@ mod tests {
             0,
             5,
         );
-        assert!(prove(slow, &["1.18.15"]).is_err(), "a timeout");
+        assert!(prove(slow, &["1.18.15"]).await.is_err(), "a timeout");
 
         // and a binary that is not there at all
         assert!(
-            prove(scratch.path().join("absent"), &["1.18.15"]).is_err(),
+            prove(scratch.path().join("absent"), &["1.18.15"])
+                .await
+                .is_err(),
             "an unrunnable binary"
         );
     }
 
+    /// The spawn environment cannot be attested, so it is refused — whatever it
+    /// is handed. The previous check took a path from its caller and accepted
+    /// anything containing `opencode`; the caller passed the owned config file,
+    /// so it proved nothing while reading like a guarantee.
     #[test]
-    fn the_preserved_roots_are_bridged_rather_than_assumed_equal() {
-        let provider = ProviderBinary {
-            path: PathBuf::from("/opt/homebrew/bin/opencode"),
-            version: "1.18.15".to_owned(),
-            auth: Some(PathBuf::from("~/.local/share/opencode/auth.json")),
-        };
-        prove_preserved_roots(&provider, Path::new("/Users/igor/.local/share/opencode"))
-            .expect("the data root holds the credentials the daemon names");
-
+    fn the_spawn_environment_is_refused_rather_than_inferred() {
         assert!(
-            prove_preserved_roots(&provider, Path::new("/somewhere/else")).is_err(),
-            "a different data root means a different seat"
+            matches!(
+                attest_spawn_environment(),
+                Err(RuntimeError::LaunchNotAdmitted { .. })
+            ),
+            "no argument and no heuristic can make this pass on Paseo 0.6.1"
         );
+    }
+
+    /// A report larger than a pipe buffer must resolve, not look like a timeout.
+    #[tokio::test]
+    async fn a_report_larger_than_a_pipe_buffer_still_resolves() {
+        let scratch = tempfile::TempDir::new().expect("scratch");
+        // Well past the 64 KiB a pipe typically holds.
+        let filler: String = std::iter::repeat_n("padding", 40_000).collect();
+        let expected = serde_json::json!({ "bash": { "*": "deny" }, "note": filler });
+        let binary = stub(
+            scratch.path(),
+            &serde_json::json!({ "permission": expected }).to_string(),
+            0,
+            0,
+        );
+        prove_posture_within(
+            &provider_at(binary),
+            &["1.18.15"],
+            scratch.path(),
+            &expected,
+            &[],
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("a large report is read while the child runs, not after it exits");
+    }
+
+    /// A slow preflight must not stop the runtime doing anything else.
+    #[tokio::test]
+    async fn a_slow_preflight_does_not_block_other_work() {
+        let scratch = tempfile::TempDir::new().expect("scratch");
+        let expected = serde_json::json!({ "bash": { "*": "deny" } });
+        let slow = stub(
+            scratch.path(),
+            &serde_json::json!({ "permission": expected }).to_string(),
+            0,
+            3,
+        );
+        let provider = provider_at(slow);
+        let preflight = prove_posture_within(
+            &provider,
+            &["1.18.15"],
+            scratch.path(),
+            &expected,
+            &[],
+            Duration::from_millis(600),
+        );
+        let ticking = async {
+            let mut ticks = 0_u32;
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                ticks += 1;
+            }
+            ticks
+        };
+        let (proof, ticks) = tokio::join!(preflight, ticking);
+        assert!(proof.is_err(), "the slow binary still times out");
+        assert_eq!(ticks, 20, "and other futures made progress meanwhile");
     }
 }
