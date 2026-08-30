@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "task": {
+    "kontor_task_id": "01a0539a-51ca-7ae1-9ce8-e40965efe0f2",
+    "short_code": "KBI-8050",
+    "jira_key": "ASMA-8050",
+    "title": "Implement durable Jira-derived Kontor backlog identities",
+    "module": "_tools/asma-rs-kontor"
+  },
+  "epic": {
+    "kontor_epic_id": "01a0539a-51c9-7301-9bd7-26c09167b23e",
+    "jira_key": "ASMA-8049",
+    "backlog_code": "KBI"
+  },
+  "status": "high_scope_handoff",
+  "recorded_at": "2026-08-30T17:21:08Z",
+  "authoritative_inputs": {
+    "plan": "../../../../../_docs/ai-orchestration/plans/2026-08-30-19-51-plan-kontor-backlog-identities.md",
+    "operational_gap": "../../../../../_docs/ai-orchestration/reports/2026-08-30-20-15-report-kbi-jira-connector-operational-gap.md",
+    "jira_scope": "ASMA only"
+  },
+  "governed_baseline": {
+    "branch": "feat/ASMA-8050-implement-durable-jira-derived-kontor-backlog-identities",
+    "created_with": "asma git --repo _tools/asma-rs-kontor checkout -b --from ASMA-8050 --manual --type feat --title 'Implement durable Jira-derived Kontor backlog identities'",
+    "manual_mode_reason": "The supported Jira-aware branch command refused with typed missing configuration because JIRA_BASE_URL is absent. Kontor already confirmed the exact ASMA-8050 binding and task title, so the supported manual branch mode introduced no inferred identity.",
+    "base_verification": "asma git --repo _tools/asma-rs-kontor sync-check --fetch --branch master --verbose",
+    "base_result": {
+      "remote": "origin",
+      "branch": "master",
+      "ahead": 0,
+      "behind": 0
+    },
+    "excluded_history": "The runtime-created parent worktree branch kbi-01 and its unrelated ASMA-8030 commits are not ancestors added by this delivery branch and must never be merged, committed or shipped through ASMA-8050."
+  },
+  "adr_disposition": {
+    "decision": "no_new_platform_adr",
+    "reason": "The change is confined to the Kontor control-plane service's own persistence, API and runtime-name projection. Reverting it requires no coordinated change by another ASMA service or team. The approved plan is the governing product decision and this repository-local record is the implementation scope.",
+    "governance_checked": "../../../../../_docs/adr/README.md"
+  },
+  "identity_contract": {
+    "authoritative_jira_binding": [
+      "Persist and return the complete confirmed Jira issue key and its readback hash for every epic and task binding.",
+      "Never reconstruct a Jira key from a backlog code, item code, configured project key or native display name.",
+      "A changed Jira project key or moved issue remains observable as a binding mismatch; it is never normalized into the old meaning."
+    ],
+    "epic_backlog_code": [
+      "Introduce a dedicated EpicBacklogCode value, independent of EpicExecutionScope and Jira binding state.",
+      "Canonical values are 2-32 uppercase ASCII letters or digits with no separator and are unique case-insensitively inside one Kontor project.",
+      "Assignment is permanent and immutable. Manual and automatic allocation use the same transaction and project-unique index.",
+      "Automatic allocation tokenizes ASCII alphanumeric title words, starts with their initials, expands in deterministic column-major title-character order and finally uses the smallest available ordinal from 2.",
+      "A title with fewer than two usable characters refuses unless a valid manual override is supplied.",
+      "Record provenance as manual, automatic or migrated without making provenance part of the displayed code."
+    ],
+    "jira_issue_number": [
+      "Parse a confirmed full Jira key only as <project-key>-<positive canonical decimal>.",
+      "Reject zero, leading zeroes, missing separators, empty project keys, non-decimal suffixes and unconfirmed bindings.",
+      "Retain the full key in the binding; the parsed number is a projection input, not another persisted Jira identity."
+    ],
+    "item_code": [
+      "Derive ItemCode as <epic backlog code>-<confirmed Jira decimal suffix>.",
+      "The epic item code uses the confirmed epic binding; each task item code uses that task's confirmed binding.",
+      "ItemCode is display/projection state and must not be persisted as a duplicate key or used to look up Jira.",
+      "Missing, malformed, ambiguous or unconfirmed input yields a typed unavailable projection rather than a guess.",
+      "Legacy task short_code remains import/history evidence and is used only for legacy non-Jira work where no derived item code exists."
+    ]
+  },
+  "persistence_scope": {
+    "next_schema": 72,
+    "epic_identity": [
+      "Add a project-scoped epic backlog identity table with an immutable epic primary key, a case-insensitive project/code unique key, provenance and assignment time.",
+      "Backfill valid unique epic_native_name_tokens.kontor_backlog_code values byte-for-byte after canonical validation.",
+      "Classify duplicate, invalid and absent legacy values explicitly. Duplicate legacy values remain readable but block new materialization and native-name reconciliation until a previewed migration assigns replacements.",
+      "Do not rewrite historical topology specifications, command receipts, execution scopes, task short codes or Jira bindings."
+    ],
+    "repository_contract": [
+      "Expose named allocate/get/list/migration-preview/migration-apply operations; no generic update or delete.",
+      "Automatic candidate selection and insert occur in one transaction. Retry a uniqueness race by recomputing against the newly committed used-code set.",
+      "Include new identity and recovery facts in deterministic backup/export/import and restart fixtures."
+    ]
+  },
+  "jira_failed_batch_recovery": {
+    "incident_batch": {
+      "original_idempotency_key": "kbi-jira-materialize-20260830-v1",
+      "original_preview_hash": "d65e78f7a41af3de9657056a1c6a677617c165c9bec7ea4d4b8340ffb612620d",
+      "epic_key_to_adopt": "ASMA-8049",
+      "task_key_to_adopt": "ASMA-8050"
+    },
+    "required_operation": [
+      "Add an explicit preview/apply recovery for one existing planned create-mode Jira materialization batch. The recovery command names the original batch and supplies one exact fallback key per original item.",
+      "Preview is read-only and hashes the original batch id, immutable item ids/order/kinds/markers, current epic revision, exact proposed keys, existing local Jira links and connector readbacks.",
+      "Apply has its own idempotency key and typed recovery receipt. It never replaces or deletes the original materialization command, batch or item rows and never creates a replacement batch.",
+      "Recovery performs Jira GET/search readback only. It must never POST an issue. The exact supplied key must match project, issue kind, stable Kontor marker, summary, description and parent; the task must read back under ASMA-8049.",
+      "For an already fallback-linked task, adopt the single existing exact connector.jira link and record that confirmed link identity separately from the original planned link id. If no link exists, the original planned link id may be created only after exact Jira readback. A different or ambiguous link refuses.",
+      "Confirm the original items with ASMA-8049 and ASMA-8050 plus their full readback hashes, confirm the original batch when complete, then use the existing activation invariant requiring one confirmed epic binding and one confirmed binding per task.",
+      "A replay after partial local confirmation resumes only unconfirmed original items and remains zero-create. A fully confirmed replay returns the same recovery and activation identities.",
+      "Do not mutate create intent_kind, requested_key, marker, ordinal, batch id, item id or original planned link id. Add an explicit confirmed/adopted link identity where the fallback link differs."
+    ],
+    "binding_hardening": [
+      "Epic confirmation must refuse an existing different full Jira key instead of overwriting it through UPSERT.",
+      "Task confirmation must refuse multiple links, a different key, cross-project link identity or a confirmation hash attached to another link.",
+      "The derived KBI-8049 and KBI-8050 item codes are computed only after these full bindings are confirmed. They are not recovery inputs."
+    ],
+    "typed_refusals": [
+      "batch_not_found_or_not_planned",
+      "batch_is_not_create_mode",
+      "recovery_item_set_mismatch",
+      "jira_key_not_canonical",
+      "jira_project_mismatch",
+      "jira_marker_mismatch_or_ambiguous",
+      "jira_issue_kind_mismatch",
+      "jira_parent_mismatch",
+      "jira_readback_mismatch",
+      "existing_binding_conflict",
+      "connector_unavailable"
+    ]
+  },
+  "api_and_projection_scope": {
+    "epic_preview_apply": [
+      "Accept an optional manual backlog-code override independently of execution_scope; otherwise preview the deterministic automatic allocation.",
+      "Return the allocated/stored backlog code, provenance and derived item-code availability without removing existing execution_scope or short_code compatibility fields.",
+      "Revalidate allocation in apply at the caller's exact project/epic revision and return a typed uniqueness conflict with a fresh preview action on a race."
+    ],
+    "jira_materialization": [
+      "Add the failed-batch recovery preview/apply DTOs and routes, then expose them through the generated MCP/CLI registry, OpenAPI contract and generated console client.",
+      "Normal create remains marker-idempotent; normal link remains exact-key read-only; neither normal mode may silently supersede a planned batch."
+    ],
+    "read_models": [
+      "Project/epic/task and code-help projections show full Jira key, backlog code and derived item code as separate named fields.",
+      "Console components consume server fields and do not parse or concatenate codes locally."
+    ]
+  },
+  "native_naming_scope": {
+    "token": "Add ITEM_CODE to the closed NativeNameToken vocabulary and NativeNameValues. It is supplied only from a confirmed server-derived ItemCode.",
+    "separator": [
+      "Use SPACE + U+00B7 MIDDLE DOT + SPACE as the canonical separator for newly published topology specifications.",
+      "Continue to deserialize and render stored pre-change U+2022 BULLET revisions byte-for-byte; do not rewrite an immutable published revision.",
+      "Normalize a caller-authored bullet separator to the canonical middle dot at the new-spec presentation/canonicalization boundary so two live separator conventions are not created."
+    ],
+    "new_revision": [
+      "Publish a new ASMA operational topology revision whose ESW and TSW container templates consume AREA_CODE plus ITEM_CODE and whose relevant ECP, Advice, CSW and seat templates use ITEM_CODE where the specification calls for the owning item identity.",
+      "Keep old revisions readable and rendering exactly as stored. Existing epics opt in only through topology upgrade preview/apply followed by native-name preview/apply and exact runtime readback.",
+      "A missing confirmed item code blocks new materialization or retitle with a typed placement/naming refusal."
+    ]
+  },
+  "implementation_sequence": [
+    "RED: add allocator/parser/projection, migration-compatibility, native-token and failed-create-batch recovery tests plus mutation-ledger rows before production logic.",
+    "GREEN 1: add core value types and schema 72 identity/recovery storage while preserving old rows and projections.",
+    "GREEN 2: wire transactional epic allocation and server-derived item codes through graph/read/API surfaces.",
+    "GREEN 3: wire explicit Jira batch recovery, exact binding hardening and the ASMA-8049/ASMA-8050 regression fixture.",
+    "GREEN 4: add ITEM_CODE, canonical centered-dot publication, a new immutable topology revision and runtime retitle contracts.",
+    "REFACTOR: remove duplicate formatting/parsing and keep all Jira suffix parsing and item-code construction in the typed core implementation.",
+    "DELIVERY: update contracts, generated clients, repository docs, migration/recovery guidance, changelog and release evidence; rehearse against a live-database copy before deployment."
+  ],
+  "primary_file_map": [
+    "crates/kontor-core/src/id.rs",
+    "crates/kontor-core/src/lib.rs",
+    "crates/kontor-core/src/naming.rs",
+    "crates/kontor-core/src/repository.rs",
+    "crates/kontor-core/tests/native_naming.rs",
+    "crates/kontor-store/migrations/0072_backlog_identities.sql",
+    "crates/kontor-store/src/migrations.rs",
+    "crates/kontor-store/src/graph.rs",
+    "crates/kontor-store/src/jira.rs",
+    "crates/kontor-store/tests/schema_v1.rs",
+    "crates/kontor-store/tests/jira_materialization.rs",
+    "crates/kontor-jira/src/connector.rs",
+    "crates/kontor-jira/tests/native_connector.rs",
+    "crates/kontor-daemon/src/applications.rs",
+    "crates/kontor-daemon/tests/loopback_api.rs",
+    "crates/kontor-api/src/applications.rs",
+    "crates/kontor-api/src/lib.rs",
+    "crates/kontor-api/src/openapi.rs",
+    "crates/kontor-api/contract/openapi.json",
+    "crates/kontor-mcp/src/registry.rs",
+    "crates/kontor-profiles/fixtures/operational-domain.json",
+    "crates/kontor-profiles/tests/operational_domain.rs",
+    "apps/console/src/api/schema.d.ts",
+    "README.md",
+    "ARCHITECTURE.md",
+    "RECOVERY.md",
+    "docs/CONFIGURATION.md",
+    "CHANGELOG.md"
+  ],
+  "acceptance_tests": {
+    "identity": [
+      "same title and used-code set yields the same candidate across restart and client",
+      "column-major collision expansion, identical-title ordinal fallback and 32-character exhaustion",
+      "case-insensitive project uniqueness with cross-project reuse",
+      "manual KBI/KOP override acceptance, collision refusal and immutability",
+      "canonical Jira suffix parsing and rejection of leading zeroes",
+      "derived epic/task item codes retain distinct full Jira keys and persist no duplicate item-code identity"
+    ],
+    "recovery": [
+      "planned create batch plus fallback-created ASMA-8049/ASMA-8050 and an existing exact task link recovers with zero Jira POST requests",
+      "original receipt, batch, item, marker, intent and requested-key bytes remain unchanged",
+      "exact full keys and readback hashes are confirmed; one task link exists; batch and activation confirm",
+      "partial retry and full replay are idempotent",
+      "wrong key, marker, type, parent, summary, project, existing binding or ambiguous marker refuses without a local confirmation",
+      "normal marker-idempotent create and normal exact link behavior remain green"
+    ],
+    "naming_and_compatibility": [
+      "new ESW/TSW names render from ITEM_CODE with the canonical centered dot",
+      "old topology revisions render their stored bullet bytes unchanged",
+      "legacy valid, duplicate, invalid, non-Jira and partially materialized fixtures classify without guessing",
+      "native retitle requires exact identity-preserving runtime readback and leaves rename_pending on failure"
+    ],
+    "delivery": [
+      "focused crate tests, workspace tests, fmt, clippy, OpenAPI/MCP/console drift checks and dependency/license gates",
+      "targeted mutation runs for every plan-ledger mutant followed by a whole-change-set mutation pass",
+      "migration rehearsal from a copy of the live schema 71 database, restart/readback/idempotency proof, release artifact inventory and live ASMA-8049/ASMA-8050 recovery readback"
+    ]
+  },
+  "prohibitions": [
+    "Do not store ItemCode as another Jira identity copy.",
+    "Do not derive or guess a Jira binding from KBI-<number>.",
+    "Do not overwrite a different confirmed full Jira key.",
+    "Do not delete or replace the failed create-mode batch, its command receipt or its item rows.",
+    "Do not create another Jira epic or task during recovery.",
+    "Do not rewrite an existing immutable topology revision or edit Paseo state directly.",
+    "Do not commit, merge or ship the parent kbi-01 branch's unrelated ASMA-8030 history.",
+    "Do not use raw Git branch, commit, merge, push or PR operations; use asma git."
+  ],
+  "open_questions": []
+}
