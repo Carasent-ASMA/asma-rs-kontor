@@ -172,12 +172,69 @@ fn compose_permission_block(posture: &SeatPosture, cwd: &Path) -> io::Result<()>
         return Ok(());
     };
     let directory = cwd.join(".opencode");
+    let path = directory.join("opencode.json");
+
+    // A file git tracks is a file somebody committed. `info/exclude` has no
+    // effect on one, so writing here would both dirty the seat's own diff and
+    // edit source under an operator's name. Refused rather than merged.
+    if is_tracked(cwd, ".opencode/opencode.json")? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is tracked by git; Kontor will not rewrite committed configuration",
+                path.display()
+            ),
+        ));
+    }
+
+    // Replace only a block Kontor can *prove* it wrote. "An OpenCode seat is
+    // launching" is not proof: the file may carry a permission a human put
+    // there, and overwriting it would be a silent source mutation. The receipt
+    // beside it records the exact block last composed, so anything else — a
+    // foreign block, or one edited since — refuses the launch untouched.
+    if let Some(current) = permission_of(&path)? {
+        let owned = composed_receipt(cwd)?;
+        if owned.as_ref() != Some(&current) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} carries a permission block Kontor did not compose; refusing to replace it",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
     std::fs::create_dir_all(&directory)?;
-    merge_json(&directory.join("opencode.json"), |document| {
-        document.insert("permission".to_owned(), permission);
+    merge_json(&path, |document| {
+        document.insert("permission".to_owned(), permission.clone());
         Ok(())
     })?;
+    // Written after the block, so a crash between the two leaves the receipt
+    // stale rather than claiming authorship of something never written.
+    let receipt = serde_json::json!({ "permission": permission });
+    let mut rendered = serde_json::to_string_pretty(&receipt).map_err(io::Error::other)?;
+    rendered.push('\n');
+    std::fs::write(directory.join(COMPOSED_RECEIPT), rendered)?;
     exclude_from_git(cwd, OPENCODE_EXCLUDED)
+}
+
+/// The file recording the exact permission block Kontor last composed here.
+const COMPOSED_RECEIPT: &str = ".kontor-posture.json";
+
+/// Whether git tracks `relative` inside `cwd`.
+fn is_tracked(cwd: &Path, relative: &str) -> io::Result<bool> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-files", "--error-unmatch", "--", relative])
+        .output()?;
+    Ok(output.status.success())
+}
+
+/// The permission block Kontor last composed into this worktree, if any.
+fn composed_receipt(cwd: &Path) -> io::Result<Option<serde_json::Value>> {
+    permission_of(&cwd.join(".opencode").join(COMPOSED_RECEIPT))
 }
 
 /// Compose the identity-bound leadership surface for a hosted LSA/TPM seat.
@@ -615,7 +672,7 @@ const CLAUDE_EXCLUDED: &[&str] = &[".mcp.json", ".claude/"];
 /// The exact file, never the `.opencode/` directory: a repository may
 /// legitimately track commands, skills or agents under it — this one does — and
 /// excluding the whole directory would be a claim over somebody else's files.
-const OPENCODE_EXCLUDED: &[&str] = &[".opencode/opencode.json"];
+const OPENCODE_EXCLUDED: &[&str] = &[".opencode/opencode.json", ".opencode/.kontor-posture.json"];
 
 /// Append the composed paths to the worktree's `info/exclude`, once each.
 ///
@@ -1070,16 +1127,15 @@ mod tests {
         let repo = repo();
         let cwd = repo.path();
         std::fs::create_dir_all(cwd.join(".opencode")).expect("directory");
-        std::fs::write(
-            cwd.join(".opencode/opencode.json"),
-            r#"{"model": "kept", "permission": {"bash": {"*": "stale"}}}"#,
-        )
-        .expect("seeded");
+        // No permission key: nothing here is Kontor's to prove authorship of,
+        // and nothing here is in its way either.
+        std::fs::write(cwd.join(".opencode/opencode.json"), r#"{"model": "kept"}"#)
+            .expect("seeded");
 
         let permission = compose_opencode_seat(cwd, SeatAutonomy::Bounded);
         assert_eq!(
             permission["bash"]["*"], "allow",
-            "a stale posture is replaced wholesale, not merged pattern by pattern"
+            "the posture is composed beside the keys already there"
         );
         let document: serde_json::Value =
             std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
@@ -1228,19 +1284,20 @@ mod tests {
             );
         }
 
-        // An OpenCode seat *does* own the posture decision, and replaces it.
+        // Nor does an OpenCode seat get to replace it: deciding a posture is
+        // this code's job, but the block sitting there is not one it wrote.
         let posture =
             crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
-        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
-        assert_eq!(read_permission(cwd)["bash"]["*"], "allow");
-        let document: serde_json::Value =
-            std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
-                .expect("read")
-                .parse()
-                .expect("JSON");
         assert_eq!(
-            document["model"], "mine",
-            "and still only the permission key is ours"
+            compose_for_seat(None, "opencode", &posture, cwd)
+                .expect_err("a foreign block is nobody else's to replace")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json")).expect("still there"),
+            owned,
+            "byte-identical after every refusal"
         );
     }
 
@@ -1540,5 +1597,94 @@ mod tests {
         let document: serde_json::Value = stripped.parse().expect("valid JSON after stripping");
         assert_eq!(document["url"], "https://example.test//not-a-comment");
         assert_eq!(document["list"], serde_json::json!([1, 2]));
+    }
+
+    /// Commit a config a human wrote, then launch: it must survive byte for byte.
+    #[test]
+    fn a_committed_user_config_is_never_rewritten() {
+        let repo = repo();
+        let cwd = repo.path();
+        std::fs::create_dir_all(cwd.join(".opencode")).expect("directory");
+        let committed = "{\n  \"permission\": { \"bash\": { \"*\": \"ask\" } }\n}\n";
+        std::fs::write(cwd.join(".opencode/opencode.json"), committed).expect("seeded");
+        for arguments in [
+            vec!["add", ".opencode/opencode.json"],
+            vec!["commit", "-m", "operator's own opencode config"],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(&arguments)
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {arguments:?}");
+        }
+
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        let error = compose_for_seat(None, "opencode", &posture, cwd)
+            .expect_err("committed configuration is not Kontor's to rewrite");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json")).expect("still there"),
+            committed,
+            "the committed file is byte-identical after the refusal"
+        );
+    }
+
+    /// An untracked block Kontor cannot prove it wrote is equally not its to
+    /// replace: "an OpenCode seat is launching" is not authorship.
+    #[test]
+    fn a_foreign_untracked_block_is_refused_rather_than_replaced() {
+        let repo = repo();
+        let cwd = repo.path();
+        std::fs::create_dir_all(cwd.join(".opencode")).expect("directory");
+        let theirs = "{\n  \"permission\": { \"bash\": { \"*\": \"allow\" } },\n  \"model\": \"theirs\"\n}\n";
+        std::fs::write(cwd.join(".opencode/opencode.json"), theirs).expect("seeded");
+
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        let error = compose_for_seat(None, "opencode", &posture, cwd)
+            .expect_err("a block with no Kontor receipt is not ours");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json")).expect("still there"),
+            theirs,
+            "untouched"
+        );
+    }
+
+    /// Kontor replaces its own block across postures, because it can prove it
+    /// wrote the one that is there.
+    #[test]
+    fn kontor_replaces_the_block_it_can_prove_it_composed() {
+        let repo = repo();
+        let cwd = repo.path();
+        let autonomous =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &autonomous, cwd).expect("first composition");
+        assert_eq!(read_permission(cwd)["bash"]["*"], "allow");
+
+        let advisory =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &advisory, cwd).expect("its own block is replaceable");
+        assert_eq!(read_permission(cwd)["bash"]["*"], "deny");
+
+        // And an edit to the composed block breaks the proof of authorship.
+        let mut document: serde_json::Value =
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
+                .expect("read")
+                .parse()
+                .expect("JSON");
+        document["permission"]["bash"]["*"] = serde_json::Value::from("allow");
+        std::fs::write(
+            cwd.join(".opencode/opencode.json"),
+            serde_json::to_string_pretty(&document).expect("render"),
+        )
+        .expect("edited by someone");
+        assert!(
+            compose_for_seat(None, "opencode", &advisory, cwd).is_err(),
+            "an edited block is no longer provably Kontor's"
+        );
     }
 }
