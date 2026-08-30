@@ -78,7 +78,10 @@ use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
 use kontor_scheduler::model::CapacityConfig;
-use kontor_store::{IdempotencyBinding, RegisteredPack, TeamTemplateSource};
+use kontor_store::{
+    IdempotencyBinding, JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch,
+    NewJiraMaterializationItem, RegisteredPack, TeamTemplateSource,
+};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -2873,6 +2876,77 @@ async fn legacy_task_short_code_mapping_previews_applies_and_replays_in_place() 
             .await;
         assert_eq!(answer.status, 400, "{}", answer.body);
     }
+}
+
+/// Backlog identity belongs to Kontor's graph, not to the optional runtime
+/// execution scope. A caller may therefore choose a valid project-scoped code
+/// without fabricating Jira/runtime metadata, and every public read path must
+/// return the same durable value. Omission allocates deterministically from the
+/// epic title during preview and apply.
+#[tokio::test]
+async fn epic_backlog_code_previews_applies_and_reads_back_independently_of_execution_scope() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "backlog-code-project",
+        "Backlog identity",
+        "/tmp/kontor-backlog-code",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let mut body = epic_body(
+        revision,
+        "Kontor Backlog Identities",
+        &category,
+        serde_json::json!([{"title": "Implement the contract"}]),
+    );
+    body.as_object_mut()
+        .expect("the epic request is an object")
+        .remove("execution_scope");
+
+    let automatic = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(automatic.status, 200, "{}", automatic.body);
+    assert_eq!(automatic.json()["epic_backlog_code"], "KBI");
+    assert!(automatic.json()["execution_scope"].is_null());
+
+    body["epic_backlog_code"] = serde_json::json!("KOP");
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["epic_backlog_code"], "KOP");
+    assert!(preview.json()["execution_scope"].is_null());
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("backlog-code-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["epic_backlog_code"], "KOP");
+    assert!(applied.json()["execution_scope"].is_null());
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("epic id")
+        .to_owned();
+
+    let readback = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert_eq!(readback.json()["epic_backlog_code"], "KOP");
+    assert!(readback.json()["execution_scope"].is_null());
 }
 
 /// GAP-06. A runtime plane serves a host, not one epic. Each epic therefore
@@ -21195,6 +21269,271 @@ async fn code_help_explains_the_codes_an_epic_is_actually_pinned_to() {
 
 /// An epic's pin moves only through the exact preview that was authorized.
 #[tokio::test]
+async fn operational_v2_names_epics_and_tasks_from_confirmed_jira_item_codes() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "item-code-naming",
+        "Kontor item codes",
+        "/tmp/kontor-item-code-naming",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("the project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("the project revision");
+    let category = first_category(&world).await;
+    let mut body = epic_body(
+        project_revision,
+        "Kontor Operational MVP",
+        &category,
+        serde_json::json!([{
+            "title": "Implement derived topology names",
+            "short_code": "LEGACY-TASK-CODE",
+            "worktree": "/tmp/kontor-item-code-naming/task"
+        }]),
+    );
+    body["epic_backlog_code"] = serde_json::json!("KOP");
+    body["execution_scope"] = serde_json::json!({
+        "external_epic_key": "ASMA-8001",
+        "short_title": "Kontor Operational MVP",
+        "kontor_backlog_code": "LEGACY-EPIC-CODE"
+    });
+    body["tasks"][0]
+        .as_object_mut()
+        .expect("the task is an object")
+        .remove("ticket_links");
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("item-code-epic")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["epic_backlog_code"], "KOP");
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("the epic id")
+        .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the task id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"]
+        .as_u64()
+        .expect("the epic revision");
+
+    let topology_lineage = "01936f5a-1000-7000-8000-000000000001";
+    let project_preview = Call::post(
+        format!("/v1/projects/{project}/topology-selection:preview"),
+        &serde_json::json!({
+            "target_spec": {"id": topology_lineage, "version": 2}
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(project_preview.status, 200, "{}", project_preview.body);
+    let project_selected = Call::post(
+        format!("/v1/projects/{project}/topology-selection:apply"),
+        &serde_json::json!({
+            "preview_hash": project_preview.json()["preview_hash"],
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("item-code-project-topology")
+    .send(&world)
+    .await;
+    assert_eq!(project_selected.status, 200, "{}", project_selected.body);
+    let upgrade_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/topology:upgrade-preview"),
+        &serde_json::json!({
+            "target_spec": {"id": topology_lineage, "version": 2}
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(upgrade_preview.status, 200, "{}", upgrade_preview.body);
+    let upgraded = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/topology:upgrade-apply"),
+        &serde_json::json!({
+            "preview_hash": upgrade_preview.json()["preview_hash"],
+            "expected_revision": epic_revision
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("item-code-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(upgraded.status, 200, "{}", upgraded.body);
+    assert_eq!(upgraded.json()["pinned_spec"]["version"], 2);
+
+    world.fake.take_calls();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("item-code-missing-confirmation")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert!(
+        refused.body.contains("confirmed Jira binding"),
+        "{}",
+        refused.body
+    );
+    let refused_calls = world.fake.calls();
+    assert!(
+        refused_calls.iter().all(|call| !matches!(
+            call,
+            AdapterCall::PrepareContainer(_)
+                | AdapterCall::RetitleContainer(_)
+                | AdapterCall::RetitleSeat(_)
+                | AdapterCall::Launch(_)
+                | AdapterCall::LaunchHostedSeat(_)
+                | AdapterCall::LaunchConsultation(_)
+        )),
+        "identity validation precedes every runtime mutation: {refused_calls:?}"
+    );
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-08-30T20:00:00Z");
+        let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("a batch id");
+        let epic_item_id =
+            ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id");
+        let task_item_id =
+            ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id");
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: "item-code-confirmation".to_owned(),
+                    preview_hash: ContentHash::of(b"item-code-confirmation"),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &[
+                    NewJiraMaterializationItem {
+                        id: epic_item_id,
+                        batch_id: batch_id.clone(),
+                        project_id,
+                        epic_id,
+                        task_id: None,
+                        link_id: None,
+                        ordinal: 0,
+                        item_kind: JiraItemKind::Epic,
+                        intent_kind: JiraIntentKind::Link,
+                        requested_key: Some(ExternalId::parse("ASMA-8001").expect("epic key")),
+                        marker: ExternalId::parse("kontor-epic-item-code-test").expect("marker"),
+                    },
+                    NewJiraMaterializationItem {
+                        id: task_item_id,
+                        batch_id: batch_id.clone(),
+                        project_id,
+                        epic_id,
+                        task_id: Some(task_id),
+                        link_id: Some(TicketLinkId::generate()),
+                        ordinal: 1,
+                        item_kind: JiraItemKind::Task,
+                        intent_kind: JiraIntentKind::Link,
+                        requested_key: Some(ExternalId::parse("ASMA-7869").expect("task key")),
+                        marker: ExternalId::parse("kontor-task-item-code-test").expect("marker"),
+                    },
+                ],
+            )
+            .expect("the Jira plan is durable");
+        let items = store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("planned Jira items");
+        for (item, key) in items.iter().zip(["ASMA-8001", "ASMA-7869"]) {
+            store
+                .confirm_jira_materialization_item(
+                    item,
+                    &ExternalId::parse(key).expect("a Jira key"),
+                    &ContentHash::of(format!("{key}-readback").as_bytes()),
+                    now,
+                )
+                .expect("the Jira readback is confirmed");
+        }
+        store
+            .confirm_jira_materialization_batch(project_id, &batch_id, now)
+            .expect("the Jira batch confirms");
+    });
+
+    let materialized_control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("item-code-control-confirmed")
+    .send(&world)
+    .await;
+    assert_eq!(
+        materialized_control.status, 200,
+        "{}",
+        materialized_control.body
+    );
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("item-code-confirmed")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+
+    let topology = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(topology.status, 200, "{}", topology.body);
+    let topology_json = topology.json();
+    let title_for = |kind: &str| {
+        let node = topology_json["nodes"]
+            .as_array()
+            .expect("topology nodes")
+            .iter()
+            .find(|node| node["kind_key"] == kind)
+            .unwrap_or_else(|| panic!("the {kind} node exists"));
+        let node_id =
+            TopologyNodeId::parse(node["topology_node_id"].as_str().expect("the node id"))
+                .expect("a topology node id");
+        world
+            .fake
+            .container_title(node_id)
+            .unwrap_or_else(|| panic!("the {kind} container is bound"))
+    };
+    assert_eq!(title_for("TSW"), "TSW · KOP-7869");
+    assert_eq!(title_for("ESW"), "ESW · KOP-8001");
+    assert_eq!(title_for("ECP"), "ECP · KOP-8001");
+}
+
+#[tokio::test]
 async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     let composed = compose_realm("/tmp/kontor-cp2-upgrade").await;
     let world = &composed.world;
@@ -21225,13 +21564,13 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(materialized.status, 200, "{}", materialized.body);
 
-    // Publish a second revision of the *bundled* lineage whose sole semantic
-    // change is the ESW native-name template. Existing kinds, hierarchy,
-    // capabilities, nodes, containers and seats remain valid in place.
+    // Publish a third revision of the *bundled* lineage whose sole semantic
+    // change from bundled v2 is the ESW native-name template. Existing kinds,
+    // hierarchy, capabilities, nodes, containers and seats remain valid in place.
     let bundled = pinned_before["id"].as_str().expect("a spec id").to_owned();
     let current = Call::get(format!(
-        "/v1/projects/{}/topology-specs/{bundled}/{}",
-        composed.project, pinned_before["version"]
+        "/v1/projects/{}/topology-specs/{bundled}/2",
+        composed.project
     ))
     .signed_as(world, "admin")
     .send(world)
@@ -21253,7 +21592,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     let drafted = Call::post(
         format!("/v1/projects/{}/topology-specs:draft", composed.project),
         &serde_json::json!({
-            "base": {"id": bundled, "version": pinned_before["version"]},
+            "base": {"id": bundled, "version": 2},
             "name": "Retitled epic workspace vocabulary",
             "root_kind": "PSW",
             "node_kinds": node_kinds,
@@ -21267,7 +21606,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     assert_eq!(drafted.status, 200, "{}", drafted.body);
     assert_eq!(
         drafted.json()["candidate"]["version"],
-        2,
+        3,
         "an edit drafts the next version of the lineage: {}",
         drafted.body
     );
@@ -21299,14 +21638,14 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
             "/v1/projects/{}/topology-selection:preview",
             composed.project
         ),
-        &serde_json::json!({"target_spec": {"id": bundled, "version": 2}}),
+        &serde_json::json!({"target_spec": {"id": bundled, "version": 3}}),
     )
     .signed_as(world, "admin")
     .send(world)
     .await;
     assert_eq!(project_preview.status, 200, "{}", project_preview.body);
     assert_eq!(project_preview.json()["current_spec"]["version"], 1);
-    assert_eq!(project_preview.json()["target_spec"]["version"], 2);
+    assert_eq!(project_preview.json()["target_spec"]["version"], 3);
     let project_preview_hash = project_preview.json()["preview_hash"]
         .as_str()
         .expect("a project selection hash")
@@ -21324,7 +21663,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .send(world)
     .await;
     assert_eq!(selected.status, 200, "{}", selected.body);
-    assert_eq!(selected.json()["selected_spec"]["version"], 2);
+    assert_eq!(selected.json()["selected_spec"]["version"], 3);
     assert_eq!(selected.json()["receipt"]["applied"], "updated");
 
     let selected_replay = Call::post(
@@ -21356,7 +21695,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
             "/v1/projects/{}/epics/{}/topology:upgrade-preview",
             composed.project, composed.epic
         ),
-        &serde_json::json!({"target_spec": {"id": bundled, "version": 2}}),
+        &serde_json::json!({"target_spec": {"id": bundled, "version": 3}}),
     )
     .signed_as(world, "admin")
     .with_key("upgrade-preview")
@@ -21364,7 +21703,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(preview.status, 200, "{}", preview.body);
     assert_eq!(preview.json()["current_spec"]["version"], 1);
-    assert_eq!(preview.json()["target_spec"]["version"], 2);
+    assert_eq!(preview.json()["target_spec"]["version"], 3);
     let effects = preview.json()["effects"]
         .as_array()
         .expect("effects")
@@ -21445,10 +21784,10 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .send(world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
-    assert_eq!(applied.json()["pinned_spec"]["version"], 2);
+    assert_eq!(applied.json()["pinned_spec"]["version"], 3);
     assert_eq!(
         applied.json()["projection"]["pinned_spec"]["version"],
-        2,
+        3,
         "the embedded epic projection reports the epic pin: {}",
         applied.body
     );
@@ -21462,7 +21801,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
         .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
         .expect("the epic nodes read");
     assert!(
-        nodes.iter().all(|node| node.topology.version.get() == 2),
+        nodes.iter().all(|node| node.topology.version.get() == 3),
         "the exact existing nodes move to the target revision in place"
     );
 
@@ -21536,7 +21875,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(replayed.status, 200, "{}", replayed.body);
     assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
-    assert_eq!(replayed.json()["pinned_spec"]["version"], 2);
+    assert_eq!(replayed.json()["pinned_spec"]["version"], 3);
 
     // The revision the epic *left* is untouched — it is immutable, and other
     // epics may still be pinned to it.
@@ -23562,6 +23901,20 @@ async fn a_misnamed_container_is_repaired_from_the_pinned_topology_and_never_fro
         .send(world)
         .await;
     assert_eq!(operator.status, 403, "{}", operator.body);
+
+    world.fake.ignore_next_retitle(node_key);
+    let unconfirmed = Call::post(&apply_uri, &body)
+        .signed_as(world, "admin")
+        .with_key("retitle-unconfirmed")
+        .send(world)
+        .await;
+    assert_eq!(unconfirmed.status, 409, "{}", unconfirmed.body);
+    assert_eq!(unconfirmed.json()["code"], "stale_binding");
+    assert_eq!(
+        world.fake.container_title(node_key).as_deref(),
+        Some("Ticket Session Workspace · 0189-stale"),
+        "an ignored runtime rename cannot be recorded as delivered"
+    );
 
     let applied = Call::post(&apply_uri, &body)
         .signed_as(world, "admin")
@@ -28889,6 +29242,7 @@ async fn a_consultation_freezes_the_alias_rung_with_headroom_not_the_first_rung(
         .signed_as(world, "observer")
         .send(world)
         .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
         &serde_json::json!({

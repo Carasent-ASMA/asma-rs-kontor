@@ -24,6 +24,22 @@ fn values(area: &str, jira: &str, backlog: &str) -> NativeNameValues {
 }
 
 #[test]
+fn item_code_is_one_typed_native_name_value_not_two_recombined_tokens() {
+    let template = tokens(&[NativeNameToken::AreaCode, NativeNameToken::ItemCode]);
+
+    let rendered = template
+        .render(
+            &NameSeparator::parse(" · ").expect("approved separator"),
+            &NativeNameValues::new()
+                .with_area_code("ESW")
+                .with_item_code("KOP-8001"),
+        )
+        .expect("typed item code renders");
+
+    assert_eq!(rendered.as_str(), "ESW · KOP-8001");
+}
+
+#[test]
 fn the_v1_matrix_renders_exact_bullet_separated_bytes() {
     let separator = NameSeparator::default();
     assert_eq!(separator.as_str().as_bytes(), " • ".as_bytes());
@@ -115,6 +131,7 @@ fn every_missing_token_fails_closed_and_names_the_missing_contract() {
         (NativeNameToken::AreaCode, "AREA_CODE"),
         (NativeNameToken::JiraCode, "JIRA_CODE"),
         (NativeNameToken::KontorBacklogCode, "KONTOR_BACKLOG_CODE"),
+        (NativeNameToken::ItemCode, "ITEM_CODE"),
         (NativeNameToken::AiShortName, "AI_SHORT_NAME"),
     ] {
         let error = tokens(&[token])

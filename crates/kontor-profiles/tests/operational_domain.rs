@@ -27,6 +27,15 @@ fn topology() -> ProjectSessionTopologySpec {
         .clone()
 }
 
+fn topology_at(version: u32) -> ProjectSessionTopologySpec {
+    bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .topology_specs
+        .into_iter()
+        .find(|spec| spec.version == SpecVersion::parse(version).expect("a version"))
+        .unwrap_or_else(|| panic!("topology revision {version} is bundled"))
+}
+
 fn kind(text: &str) -> TopologyKindKey {
     TopologyKindKey::parse(text).expect("a valid kind key")
 }
@@ -160,6 +169,42 @@ fn operational_v1_owns_the_exact_native_name_matrix_and_separator_bytes() {
         !serialized.contains('\u{00b7}'),
         "the v1 seed contains no U+00B7 fallback punctuation"
     );
+}
+
+#[test]
+fn operational_v2_renders_only_area_and_confirmed_jira_derived_item_code() {
+    let v1 = topology_at(1);
+    let v2 = topology_at(2);
+    assert_eq!(v2.spec_id, v1.spec_id, "this is one immutable spec lineage");
+    assert_eq!(v2.name, v1.name, "a revision does not rename its lineage");
+    assert_eq!(v2.name_separator.as_str().as_bytes(), " · ".as_bytes());
+
+    let item_scoped = [
+        token(NativeNameToken::AreaCode),
+        token(NativeNameToken::ItemCode),
+    ];
+    for area in ["ESW", "ECP", "TSW"] {
+        let declared = declared(&v2, area);
+        assert_eq!(
+            declared.name_template.segments(),
+            Some(item_scoped.as_slice()),
+            "{area} renders the one derived item-code projection"
+        );
+        if area != "ESW" {
+            assert_eq!(
+                declared
+                    .seat_name_template
+                    .as_ref()
+                    .and_then(|template| template.segments()),
+                Some(item_scoped.as_slice()),
+                "{area} seats use the same confirmed identity projection"
+            );
+        }
+    }
+    let serialized = serde_json::to_string(&v2).expect("the seed serializes");
+    assert!(serialized.contains("ITEM_CODE"));
+    assert!(!serialized.contains("JIRA_CODE"));
+    assert!(!serialized.contains("KONTOR_BACKLOG_CODE"));
 }
 
 #[test]

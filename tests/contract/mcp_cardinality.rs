@@ -70,6 +70,7 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         ArgType::IntakeReceiptId => serde_json::Value::String(UUID.to_owned()),
         ArgType::OpenKey => serde_json::Value::String("codex".to_owned()),
         ArgType::ExternalId => serde_json::Value::String("external-event-1".to_owned()),
+        ArgType::EpicBacklogCode => serde_json::Value::String("KOP".to_owned()),
         ArgType::SpecVersion => serde_json::Value::from(1),
         ArgType::ExternalName => serde_json::Value::String("Sample".to_owned()),
         ArgType::IdempotencyKey => serde_json::Value::String(format!("key-for-{name}")),

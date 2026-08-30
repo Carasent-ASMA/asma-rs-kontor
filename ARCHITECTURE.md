@@ -150,6 +150,26 @@ Committee. The Git worktree is separate checkout/isolation evidence, not the
 workspace identity. `PASE` and `TSC` are historical spellings of TSW and CSW and
 survive only as read/import aliases.
 
+Backlog identity is deliberately split into three layers. Jira owns the full
+confirmed tracker key (`ASMA-8001`). Kontor owns one immutable, case-insensitively
+unique epic namespace per project (`KOP`), allocated from title characters or
+selected manually. A native item code (`KOP-8001`) is a display-only projection
+of that namespace and the confirmed Jira numeric suffix; it is never persisted
+as a second Jira binding and is never used to reconstruct one. Schema v72
+preserves legacy codes as immutable evidence, quarantines duplicate or invalid
+values, and allows a separate active assignment beside quarantined evidence.
+Pre-v72 epics with no legacy code remain readable and operable; assignment is an
+explicit write, and any topology needing the projection stays blocked until it
+has happened.
+
+Operational topology revision 1 remains byte-immutable. Revision 2 opts into the
+typed `ITEM_CODE` token and centered-dot separator, yielding names such as
+`ESW · KOP-8001`, `ECP · KOP-8001` and `TSW · KOP-7869`. Projects and epics move
+to it only through their existing preview/apply selection and upgrade seams. A
+template asking for `ITEM_CODE` fails `placement_blocked` before any runtime
+mutation unless the epic namespace is active and the relevant Jira binding has
+exactly one confirmed readback.
+
 ## Deterministic scheduling and policy
 
 A model may recommend work but cannot write scheduler truth. Admission is a

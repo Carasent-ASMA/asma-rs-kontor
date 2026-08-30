@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 71;
+pub const SCHEMA_VERSION: i64 = 72;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -283,6 +283,9 @@ const MIGRATIONS: &[&str] = &[
     // native occupancy and freezes one stable message id/body for replay-safe
     // canonical-history reconciliation across replacement and restart.
     include_str!("../migrations/0071_completion_wake_deliveries.sql"),
+    // Schema v72. Epic backlog namespaces are independent of execution scopes
+    // and Jira bindings, project-unique case-insensitively and immutable.
+    include_str!("../migrations/0072_epic_backlog_identities.sql"),
 ];
 
 const _: () = assert!(

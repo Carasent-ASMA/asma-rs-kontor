@@ -1,6 +1,6 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-08-26.
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-08-30.
 
 ## Overview
 
@@ -45,5 +45,6 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 - [AI Orchestration documentation index](../../../_docs/ai-orchestration/index.md) — product principles, architecture, plans, operational reports and historical decisions governing Kontor.
 - [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality; read before proposing any Kontor change.
 - [Kontor control-plane architecture](../../../_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md) — the authoritative platform-wide *how*.
+- [Kontor codes and terms](../../../_docs/ai-orchestration/reference/2026-08-16-13-02-reference-kontor-codes-and-terms.md) — canonical Jira identities, epic backlog namespaces, derived item codes and topology naming revisions.
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-local architecture overview.
 - [`README.md`](../README.md) — build, usage, and current repository overview.

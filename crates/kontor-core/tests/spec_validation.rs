@@ -161,8 +161,18 @@ fn topology_naming_rejects_legacy_unknown_empty_duplicate_and_punctuated_templat
 }
 
 #[test]
-fn topology_naming_rejects_invalid_or_middle_dot_separators() {
-    for separator in ["", "   ", " · ", "\n"] {
+fn topology_naming_accepts_versioned_bullets_while_rejecting_invalid_separators() {
+    for separator in [" • ", " · "] {
+        let mut document = minimal_native_topology();
+        document["name_separator"] = serde_json::json!(separator);
+        assert!(
+            native_topology(document).is_ok(),
+            "`{}` must remain a valid versioned separator",
+            separator.escape_debug()
+        );
+    }
+
+    for separator in ["", "   ", "\n"] {
         let mut document = minimal_native_topology();
         document["name_separator"] = serde_json::json!(separator);
         assert!(
