@@ -9,15 +9,18 @@
 - **Reviewed:** `feat/KON-OP-20-permission-posture-at-spawn` at `4c93739`
   (`44c247c`, `2a6fd8e`, `eeed9ad`, `4c93739`), baseline `origin/master` `e814661`.
 - **Plan:** `_docs/ai-orchestration/plans/2026-08-30-15-05-plan-kontor-op20-permission-posture-reconciliation.md`.
-- **Verdict:** **BLOCKED on one finding (F1).** Everything else inspected passes.
+- **Verdict:** **BLOCKED on two findings (F1, F5).** Everything else inspected
+  passes.
 
 ## Verdict in one line
 
 The design, the v4→v5 migration, the resolution order, the kill switch, the
 launch/readback mode agreement and the OpenCode discovery contract are all
-correct and independently reproduced. One safety gate — the *membership* of the
-destructive floor — is asserted by tests that use the floor as their own oracle,
-so four of its five patterns can be deleted with the suite green.
+correct and independently reproduced, and the exact-version evaluator semantics
+confirm the destructive floor beats the catch-all. Two holes remain in that
+floor: its *membership* is asserted by tests that use the floor as their own
+oracle (F1), and a bounded override that is not an exact floor key silently
+defeats it under last-match evaluation (F5).
 
 ## What was checked independently
 
@@ -49,6 +52,52 @@ this repository: the superproject tracks a root `opencode.json`, and
 `info/exclude` cannot hide a tracked file. `OPENCODE_EXCLUDED` naming the exact
 file rather than the `.opencode/` directory is also correct — the superproject
 tracks eight files under `.opencode/` (`command/*.md`, `skills`).
+
+### The evaluator, verified at the exact version from the installed binary
+
+`MUTATION.md` records as an open assumption that "a specific `deny` pattern beats
+`"*": "allow"` inside one `bash` map". That assumption is now **closed and
+confirmed**, verified here against the installed OpenCode 1.18.15 itself — the
+Bun-compiled `/opt/homebrew/Cellar/opencode/1.18.15/bin/opencode` embeds its JS,
+and the Permission module extracts verbatim:
+
+```js
+// evaluate — exported as `evaluate: () => c`
+function c(j,J,...K){
+  return K.flat().findLast((z)=> g.match(j,z.permission) && g.match(J,z.pattern))
+      ?? {action:"ask", permission:j, pattern:"*"};
+}
+// fromConfig — exported as `fromConfig: () => RA`
+function RA(j){ let J=[];
+  for (let [K,z] of Object.entries(j)) {
+    if (typeof z === "string") { J.push({permission:K, action:z, pattern:"*"}); continue; }
+    J.push(...Object.entries(z).map(([B,X]) => ({permission:K, pattern:LA(B), action:X})));
+  } return J; }
+```
+
+Confirmed: `fromConfig` iterates `Object.entries` outer and nested, preserving
+file key order (`LA` only expands `~`/`$HOME`); `evaluate` resolves by
+**`.findLast`**, so the *last* matching rule wins; and an unmatched tool defaults
+to `ask`.
+
+**One mechanism correction.** The ordering does *not* come from insertion order.
+This workspace pins `serde_json = "=1.0.151"` with no `indexmap` in its
+dependency tree, so `preserve_order` is off and `serde_json::Map` is a
+`BTreeMap` — keys serialize **lexicographically**. Rendering the real block
+confirms what reaches disk:
+
+```json
+{ "*": "allow", "*git clean -*": "deny", "*git rm --cached*": "deny",
+  "*rm -rf *": "deny", "*submodule deinit*": "deny", "*submodule update*": "deny" }
+```
+
+The conclusion survives the correction, and for a stronger reason than insertion
+order: `*` is a prefix of every floor pattern, so it sorts first under `BTreeMap`
+*and* would be inserted first under `IndexMap`. The catch-all therefore precedes
+every deny under either build configuration, and `findLast` gives the floor the
+win. An exact-key allowance replaces that one deny in place, changing its action
+and not its position — also confirmed by rendering it. **But this holds only for
+allowances that are exact floor keys; see F5.**
 
 ### Other dimensions
 
@@ -138,6 +187,60 @@ the self-referential loops do catch, but no mutant changes the floor's
 *membership*, so "9 of 9 mutants killed" overstates what this gate is defended
 against.
 
+### F5 — BLOCKING · a bounded override that is not an exact floor key defeats the floor
+
+This follows directly from the exact-version semantics verified above, and is
+invisible without them: `findLast` + lexicographic key order means **a broader
+allowance sorts after the deny it overlaps and therefore beats it**.
+
+`PermissionAllowance::parse` rejects only empty, blank, and all-`*` strings, so
+`*git*` is accepted as a "named" pattern. Rendering it:
+
+```json
+{ "*": "allow", "*git clean -*": "deny", "*git rm --cached*": "deny",
+  "*git*": "allow", "*rm -rf *": "deny", ... }
+```
+
+`*git*` sorts *after* both git denies — at index 4 of the pattern, `' '` (0x20)
+precedes `'*'` (0x2A). Evaluating `git clean -fdx` matches `*` (allow),
+`*git clean -*` (deny) and `*git*` (allow); `findLast` returns the last one:
+**allow**. The same shape defeats every floor family — `*rm*` sorts after
+`*rm -rf *`, `*submodule*` after both submodule denies.
+
+**Failure scenario.** A ticket declares `"permission_overrides": ["*git*"]`
+because it does a lot of git work. `compose_paseo` accepts it, the type accepts
+it, every test passes, and that ticket's autonomous seats can now run
+`git clean -fdx` and `git rm --cached` — the entire git half of the floor is
+gone, from one config line that never spells `*`.
+
+This contradicts the stated invariant of the feature. `posture.rs` argues an
+override "that could say `*` would be `allow-all` spelled as an exception, and
+the floor would hold only until somebody needed it not to"; the plan's D5 says
+"Never seat-side, never `allow-all`". The type exists precisely to make the
+bounded override safe by construction, and it does not achieve that. The test
+`an_allowance_relaxes_exactly_one_named_pattern` only ever exercises an exact
+floor key (`*git rm --cached*`), which is the one case that *is* safe.
+
+**Fix.** Require an allowance to name a pattern that is already in
+`DESTRUCTIVE_BASH_DENIES` — which is exactly the real use case, since an
+allowance is only meaningful against a rule the floor otherwise denies:
+
+```rust
+pub fn parse(pattern: &str) -> Option<Self> {
+    let pattern = pattern.trim();
+    DESTRUCTIVE_BASH_DENIES
+        .contains(&pattern)
+        .then(|| Self(pattern.to_owned()))
+}
+```
+
+That makes the allowance set a subset of the floor by construction, so an
+override can only ever flip one existing deny and can never introduce a new,
+later-sorting rule. It also subsumes the wildcard and blank refusals rather than
+enumerating them. If a non-floor allowance is genuinely wanted later, it must be
+inserted such that the floor still evaluates last, which lexicographic
+serialization cannot guarantee.
+
 ### F2 — non-blocking · `ask` posture is still ambient-dependent for non-bash tools
 
 Because opencode deep-merges rather than replaces, and the `Supervised` block
@@ -155,8 +258,10 @@ bash[*]            = "ask"
 ```
 
 An `ask` seat edits files without asking. The same block under an isolated
-`HOME`/`XDG_CONFIG_HOME` leaves those keys unset — so **the code is correct as
-designed**; the leak is entirely the ambient stopgap, and this is a strict
+`HOME`/`XDG_CONFIG_HOME` leaves those keys unset, and the evaluator extracted
+above defaults an unmatched tool to `{action:"ask"}` — so on a clean host the
+`Supervised` block does mean `ask` for every tool, and **the code is correct as
+designed**. The leak is entirely the ambient stopgap, and this is a strict
 improvement on the prior state (where `bash` was ambient too). It is recorded
 because neither `CONFIGURATION.md` nor the builder evidence states the
 operational precondition: until the machine-local stopgap is removed from
@@ -215,8 +320,14 @@ but not this readback blind spot.
 ## Scope notes
 
 - `67755bd` (`MUTATION.md`) landed on the branch *during* this review, after the
-  assigned range. It is outside the four commits under review; it is referenced
-  only in F1, where its floor claim is the one contradicted by the sweep above.
+  assigned range. It is outside the four commits under review. Two of its
+  statements are addressed here: its floor claim is contradicted by the
+  membership sweep (F1), and its one declared open assumption about the OpenCode
+  evaluator is closed and confirmed above — with the ordering mechanism corrected
+  from insertion order to `BTreeMap` lexicographic serialization. `MUTATION.md`
+  should be amended to state the corrected mechanism, since "the map serializes
+  in insertion order" is the reasoning that would later justify appending a
+  non-floor allowance and would be wrong.
 - No deploy, push, merge, session or workspace was created. The nested working
   tree was left clean; every mutant was reverted and verified with
   `git diff --quiet`.
