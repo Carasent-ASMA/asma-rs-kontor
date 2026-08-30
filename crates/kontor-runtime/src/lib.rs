@@ -42,6 +42,7 @@ pub mod capability;
 pub mod container;
 pub mod fake;
 pub mod observation;
+pub mod refusal;
 pub mod request;
 pub mod scope;
 pub mod timeline;

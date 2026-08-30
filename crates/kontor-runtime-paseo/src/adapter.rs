@@ -80,6 +80,7 @@ use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationFinding, ReconciliationReport, reconcile,
 };
+use kontor_runtime::refusal::TransientRefusal;
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
@@ -88,8 +89,7 @@ use kontor_runtime::request::{
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
-    PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition,
-};
+    PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition, SessionEventKind,};
 use kontor_runtime::workspace::{
     WorkspaceBinding, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence, WorkspaceLabel,
     WorkspaceOutcome, WorkspacePrepareRequest, WorkspaceRoot,
@@ -105,7 +105,7 @@ use crate::wire::{
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
     PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
     PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
-    label, normalize_entry, stream_permission_external_id,
+    label, classify_item, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -834,6 +834,39 @@ pub struct PaseoAdapter {
     /// the retitle capability is undeclared, so a caller can tell before asking.
     mcp: Option<Box<dyn PaseoMcp>>,
     state: Mutex<PaseoState>,
+}
+
+/// The most timeline items one refusal probe reads.
+///
+/// A provider refusal is the last thing said, so a short window finds it or it
+/// is not there. This is the cap that keeps an observation path from becoming
+/// proportional to session age.
+const REFUSAL_TAIL_ITEMS: u32 = 8;
+
+/// The most bytes one refusal probe will concatenate.
+const REFUSAL_TAIL_BYTES: usize = 8 * 1024;
+
+/// The probe may never ask for more than the adapter's own page ceiling, nor
+/// concatenate more than a refusal could plausibly be. Enforced at compile
+/// time so widening either constant is a build failure, not a review note.
+const _: () = {
+    assert!(REFUSAL_TAIL_ITEMS <= MAX_HISTORY_PAGE);
+    assert!(REFUSAL_TAIL_BYTES <= 16 * 1024);
+};
+
+/// Whether a native item type is content the *provider* produced.
+///
+/// `user_message` is excluded deliberately: it is Kontor's own prompt coming
+/// back, and classifying it would let an operator's text about a usage limit
+/// mark an account exhausted.
+fn provider_originated(item_type: &str) -> bool {
+    match item_type {
+        "user_message" => false,
+        other => matches!(
+            classify_item(other),
+            SessionEventKind::Message | SessionEventKind::Log
+        ),
+    }
 }
 
 impl PaseoAdapter {
@@ -2011,6 +2044,84 @@ impl PaseoAdapter {
         }))
     }
 
+    /// Read the last words of a *quiescent* session, for classification only.
+    ///
+    /// # Why only these shapes
+    ///
+    /// A refusal that ended a turn can only be the last thing said, so this asks
+    /// nothing of a session that is still working. The three shapes below are
+    /// exactly the ones where Paseo has stopped and declines to say why, which
+    /// is the honest mapping [`Self::normalize_agent`] already makes rather than
+    /// inventing a work verdict:
+    ///
+    /// * `Error` -> [`ObservedRunState::Blocked`] — stuck on something;
+    /// * `Closed` -> [`ObservedRunState::Unknown`] — the process is gone;
+    /// * `Idle` -> [`ObservedRunState::WaitingInput`] — a turn ended, and a
+    ///   turn that ended *because the provider refused* looks identical to one
+    ///   that ended because the work was done.
+    ///
+    /// # Why it is bounded, and outside every lock
+    ///
+    /// One cursor-free tail window, `REFUSAL_TAIL_ITEMS` items at most, capped
+    /// again in bytes, and never a walk backwards through history — the probe
+    /// runs on an observation path, and an unbounded read there would make
+    /// every inspect proportional to session age. It takes no lock and holds
+    /// none across the await, for the same reason
+    /// `holder_is_finished_or_retired` refuses to do a readback under one.
+    ///
+    /// That last property is **compiler-enforced, not conventional**:
+    /// [`Self::lock`] returns a `std::sync::MutexGuard`, which is `!Send`, and
+    /// the caller is an `#[async_trait]` method whose future must be `Send`. A
+    /// future revision that took the lock across this await would not compile.
+    ///
+    /// Every failure is `None`. A diagnostic that cannot be taken safely is not
+    /// worth degrading an observation for.
+    async fn refusal_diagnostic(
+        &self,
+        native_id: &str,
+        state: ObservedRunState,
+    ) -> Option<TransientRefusal> {
+        if !matches!(
+            state,
+            ObservedRunState::Blocked | ObservedRunState::Unknown | ObservedRunState::WaitingInput
+        ) {
+            return None;
+        }
+        let page = self
+            .fetch_canonical(
+                native_id,
+                PaseoDirection::Tail,
+                None,
+                REFUSAL_TAIL_ITEMS,
+                PaseoProjection::Canonical,
+            )
+            .await
+            .ok()?;
+        let mut collected: Vec<&str> = Vec::new();
+        let mut budget = REFUSAL_TAIL_BYTES;
+        // Newest first, so the byte cap spends itself on the words nearest the
+        // stop rather than on whatever happened earliest in the window.
+        for entry in page.entries.iter().rev() {
+            if !provider_originated(&entry.item.item_type) {
+                continue;
+            }
+            let Some(text) = entry.item.text.as_deref() else {
+                continue;
+            };
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.len() > budget {
+                break;
+            }
+            budget -= trimmed.len();
+            collected.push(trimmed);
+        }
+        collected.reverse();
+        TransientRefusal::parse(&collected.join("\n"))
+    }
+
     fn observation(
         &self,
         agent_run_id: AgentRunId,
@@ -2039,6 +2150,7 @@ impl PaseoAdapter {
             observed_at,
             evidence: Self::agent_evidence(agent)?,
             source,
+            refusal: None,
         })
     }
 
@@ -5613,13 +5725,20 @@ impl RuntimeAdapter for PaseoAdapter {
         // lifecycle, which on this wire lives in the agent snapshot rather than
         // in the transcript.
         self.observe_permissions(binding.binding_id(), &agent);
-        self.observation(
-            binding.agent_run_id(),
-            binding.identity().clone(),
-            &agent,
-            request.requested_at,
-            ObservationSource::Inspect,
-        )
+        // A quiescent session may have stopped because the provider refused.
+        // The probe is bounded and takes no lock; `observe_permissions` above
+        // released its own before this await is reached.
+        let (state, _) = Self::normalize_agent(&agent);
+        let refusal = self.refusal_diagnostic(&native_id, state).await;
+        Ok(self
+            .observation(
+                binding.agent_run_id(),
+                binding.identity().clone(),
+                &agent,
+                request.requested_at,
+                ObservationSource::Inspect,
+            )?
+            .with_refusal(refusal))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -7119,4 +7238,20 @@ mod governed_pin_tests {
             "a launch on another account's alias is not this account's launch"
         );
     }
+}
+
+#[cfg(test)]
+mod refusal_probe_tests {
+    use super::*;
+
+    #[test]
+    fn only_provider_content_is_selected() {
+        assert!(provider_originated("assistant_message"));
+        assert!(provider_originated("plain_text"));
+        // Kontor's own prompt coming back. Classifying it would let an operator
+        // writing about a usage limit mark the account exhausted.
+        assert!(!provider_originated("user_message"));
+        assert!(!provider_originated("tool_call"));
+    }
+
 }

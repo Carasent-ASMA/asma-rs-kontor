@@ -982,6 +982,16 @@ pub struct PaseoTimelineItem {
     /// The tool call this entry is about.
     #[serde(default, rename = "callId")]
     pub call_id: Option<String>,
+    /// The item's own text, when Paseo carries one.
+    ///
+    /// Deserialized for exactly one purpose: classifying whether a *quiescent*
+    /// session's last words were a provider quota refusal. It is deliberately
+    /// **not** placed into the canonical [`SessionEvent`] payload by
+    /// [`normalize_entry`] — the durable event vocabulary stays closed and
+    /// scalar, and this is the one place a transcript could otherwise
+    /// accumulate.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// One canonical timeline entry.

@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapter::{RuntimeError, RuntimeResult};
 use crate::capability::{IssuedBinding, RuntimeBindingSnapshot, TrustGrade};
+use crate::refusal::TransientRefusal;
 use crate::request::CorrelationLabel;
 
 /// Allocate control ordering for a runtime that exposes no native session
@@ -100,9 +101,32 @@ pub struct ControlPlaneObservation {
     pub evidence: CanonicalDocument,
     /// The evidence class this fact belongs to.
     pub source: ObservationSource,
+    /// Text the runtime appears to have ended the turn with, when the adapter
+    /// could read it cheaply and safely.
+    ///
+    /// **Transient.** This is diagnostic input for classification and is never
+    /// persisted, never canonicalized into [`Self::evidence`], and never
+    /// projected. [`crate::refusal::TransientRefusal`] is deliberately not
+    /// serializable and its `Debug` is redacted, so a value that reaches a log
+    /// or a stored payload by accident carries no sentence with it.
+    ///
+    /// `None` is the normal case and means nothing: an adapter that cannot read
+    /// a turn's last words safely says nothing rather than guessing.
+    pub refusal: Option<TransientRefusal>,
 }
 
 impl ControlPlaneObservation {
+    /// Attach a transient refusal diagnostic.
+    ///
+    /// Separate from construction on purpose: reading a turn's last words costs
+    /// a runtime round trip, so a caller states that it paid for one rather
+    /// than every construction site carrying a field it never fills.
+    #[must_use]
+    pub fn with_refusal(mut self, refusal: Option<TransientRefusal>) -> Self {
+        self.refusal = refusal;
+        self
+    }
+
     /// Digest of the canonical payload, as KON-MVP-03 stores it.
     #[must_use]
     pub const fn evidence_hash(&self) -> &ContentHash {
@@ -527,6 +551,7 @@ mod tests {
             }))
             .expect("canonical payload"),
             source,
+            refusal: None,
         }
     }
 

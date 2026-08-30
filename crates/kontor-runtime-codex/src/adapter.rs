@@ -1114,6 +1114,7 @@ impl<'a> CodexAdapter<'a> {
             observed_at,
             evidence: Self::process_evidence(record, Some(ending))?,
             source: ObservationSource::AdvisoryReport,
+            refusal: None,
         })
     }
 
@@ -1271,6 +1272,7 @@ impl<'a> CodexAdapter<'a> {
                 observed_at: request.requested_at(),
                 evidence: Self::frame_evidence(&started.launch_ack, &frame)?,
                 source: ObservationSource::CommandAck,
+                refusal: None,
             };
 
             // The claim becomes the session in the same critical section that
@@ -1600,6 +1602,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
             observed_at: request.requested_at,
             evidence: Self::process_evidence(&record, Some(ending))?,
             source: ObservationSource::CommandAck,
+            refusal: None,
         })
     }
 
@@ -1647,6 +1650,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
                 observed_at: request.requested_at,
                 evidence: Self::process_evidence(&record, None)?,
                 source: ObservationSource::Inspect,
+                refusal: None,
             });
         };
         let record = {
