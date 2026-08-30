@@ -16,8 +16,9 @@
 //!
 //! An opencode session mode is the shape of the turn, not its permission
 //! posture: `--mode build` says nothing about what the seat may do without
-//! asking. Posture lives in the `permission` block opencode reads from its
-//! project configuration. On 2026-08-22 that gap stalled the ASMA-8001 epic for
+//! asking. Posture lives in a `permission` block — and Paseo 0.6.1 offers no way
+//! to deliver one to the spawned process, so opencode delivery is refused rather
+//! than launched unproved. On 2026-08-22 that gap stalled the ASMA-8001 epic for
 //! ~2.5h — twelve of fifteen delivery seats blocked mid-turn on prompts no human
 //! was watching, while Kontor recorded them as running.
 //!
@@ -48,7 +49,6 @@
 //! earn a refusal are refused rather than escalated.
 
 use crate::client::{built_in_provider, paseo_mode};
-use kontor_core::id::ContentHash;
 use kontor_core::spec::SeatAutonomy;
 use kontor_runtime::adapter::RuntimeResult;
 
@@ -119,16 +119,15 @@ impl PermissionAllowance {
 pub struct SeatPosture {
     /// The provider-native `--mode`, when the provider spells one.
     pub mode: Option<&'static str>,
-    /// The `permission` object the seat is created with, when the provider
-    /// takes one. Only OpenCode does today.
+    /// The `permission` object a seat would be created with, when the provider
+    /// takes one. Only OpenCode does, and **no carrier delivers it today**.
     ///
-    /// It travels in `create_agent_request`'s
-    /// `config.providerOptions.permission`, which installed Paseo 0.6.1
-    /// validates against OpenCode's own `Config.permission` schema, persists on
-    /// the agent record, and replays into `session.promptAsync` on every turn —
-    /// where OpenCode installs it on the session before evaluating any tool
-    /// call. It is **not** written into the seat's worktree, and nothing about
-    /// it is resolved from files or environment.
+    /// The block is rendered so the posture has one specification and the floor
+    /// and allowance rules have something to be tested against. It is not
+    /// written into the worktree, not put in the environment, and not sent on
+    /// the create: on Paseo 0.6.1 every one of those routes is either outranked
+    /// by a later layer or silently dropped, so an OpenCode delivery launch is
+    /// refused instead. See `PaseoAdapter::refuse_opencode_delivery`.
     pub permission: Option<serde_json::Value>,
     /// Whether the harness should accept its own tool calls without asking.
     ///
@@ -162,25 +161,28 @@ impl SeatPosture {
 
 /// The posture a delivery seat launches under, or a refusal.
 ///
-/// # Why OpenCode's block is rendered here but never written
+/// # OpenCode renders a block here that nothing can currently deliver
 ///
-/// OpenCode carries its posture in a permission block rather than in a mode, and
-/// no file or environment variable can deliver that block provably. The inputs
-/// that decide it are read by the *spawned* process, and several of them sit
-/// above anything Kontor could write: `OPENCODE_CONFIG_CONTENT` and
-/// `OPENCODE_PERMISSION` inject permissions outright,
-/// `OPENCODE_DISABLE_PROJECT_CONFIG` discards the project layer, and the
-/// active-org remote config and managed profiles merge later still and depend on
-/// who the seat authenticated as.
+/// **No OpenCode delivery seat launches.** The renderer still produces the block
+/// — it is the specification of the posture, and the floor and allowance rules
+/// below are tested against it — but on Paseo 0.6.1 there is no carrier, so the
+/// launch is refused before any native effect. See
+/// `PaseoAdapter::refuse_opencode_delivery`.
 ///
-/// So the block this function renders does not go to disk. It travels as
-/// `config.providerOptions.permission` on the seat's `create_agent_request`,
-/// which the daemon validates, persists on the agent, and replays into
-/// `session.promptAsync` on every turn — leaving the merge order above nothing
-/// to act on. See
-/// [`PaseoRpc::delivery_agent_create`](crate::client::PaseoRpc::delivery_agent_create)
-/// for the create and `PaseoAdapter::prove_first_turn` for the acceptance a
-/// launch binds on.
+/// A file or an environment variable cannot deliver it: the deciding inputs are
+/// read by the *spawned* process, and several sit above anything Kontor could
+/// write — `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` inject
+/// permissions outright, `OPENCODE_DISABLE_PROJECT_CONFIG` discards the project
+/// layer, and the active-org remote config and managed profiles merge later
+/// still and depend on who the seat authenticated as.
+///
+/// Nor does `create_agent_request`'s `providerOptions`, which an earlier build
+/// used. Read from the installed bundles: Paseo's `@opencode-ai/sdk/v2/client`
+/// `promptAsync` allow-lists the body keys `messageID, model, agent, noReply,
+/// tools, format, system, variant, parts` and `buildClientParams` drops the
+/// rest, and OpenCode 1.18.15's `SessionPrompt.prompt` builds its rules from
+/// `Object.entries(t.tools)` alone. The daemon accepts the field and no seat
+/// ever sees it.
 ///
 /// Consultation is unaffected — it runs through
 /// [`consultation_route_permission_mode`](crate::client::consultation_route_permission_mode),
@@ -339,49 +341,6 @@ fn opencode_permission(
 /// Hashed into a label so a reconciling census can recognise the agent this
 /// launch created and refuse anything else.
 ///
-/// The digest is taken over **the create configuration that is actually sent**,
-/// not over a hand-listed subset of it. Listing fields is how a digest quietly
-/// stops covering the thing it names: an earlier version of this covered only
-/// binding, run, place and slot, and so said nothing about provider, model, cwd,
-/// mode, thinking option, title or MCP surface — every one of which changes what
-/// the create does. Passing the config itself means a field added to the create
-/// is covered the day it is added, with nobody having to remember.
-///
-/// Excluded, necessarily: the correlation id, which differs per attempt and
-/// would make a retry's digest disagree with the agent it is looking for, and
-/// the intent label itself, which cannot contain its own hash.
-#[derive(Debug, Clone, Copy)]
-pub struct LaunchIntent<'a> {
-    /// The Kontor session binding this seat is placed under.
-    pub binding_id: &'a str,
-    /// The agent run being launched.
-    pub agent_run_id: &'a str,
-    /// The native place it is created in.
-    pub workspace_id: &'a str,
-    /// The role slot it fills.
-    pub role_slot_id: &'a str,
-    /// The complete `create_agent_request.config` this launch will send.
-    pub config: &'a serde_json::Value,
-}
-
-impl LaunchIntent<'_> {
-    /// The digest that travels in
-    /// [`label::LAUNCH_INTENT`](crate::wire::label::LAUNCH_INTENT).
-    ///
-    /// Field-separated so no two different intents can hash the same by
-    /// concatenation, and carrying no value of anything it covers. The config is
-    /// serialized canonically — `serde_json::Map` is a `BTreeMap` here — so the
-    /// same intent digests identically on every host and on every attempt.
-    #[must_use]
-    pub fn digest(&self) -> ContentHash {
-        let material = format!(
-            "binding={}\nagent_run={}\nworkspace={}\nrole_slot={}\nconfig={}",
-            self.binding_id, self.agent_run_id, self.workspace_id, self.role_slot_id, self.config,
-        );
-        ContentHash::of(material.as_bytes())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,116 +1012,6 @@ mod tests {
             assert!(
                 posture.permission.is_some(),
                 "{autonomy:?} still renders a block"
-            );
-        }
-    }
-
-    fn intent<'a>(config: &'a serde_json::Value) -> LaunchIntent<'a> {
-        LaunchIntent {
-            binding_id: "bind-1",
-            agent_run_id: "run-1",
-            workspace_id: "wks-1",
-            role_slot_id: "implement-a",
-            config,
-        }
-    }
-
-    fn create_config() -> serde_json::Value {
-        serde_json::json!({
-            "provider": "opencode",
-            "cwd": "/w/task-1",
-            "model": "deepseek/deepseek-v4-flash",
-            "title": "Implement",
-            "modeId": "build",
-            "thinkingOptionId": "max",
-            "providerOptions": { "permission": opencode(SeatAutonomy::Bounded, &[]) },
-            "mcpServers": { "kontor": { "type": "local" } },
-        })
-    }
-
-    /// **Every effective create field** moves the digest. A field the digest
-    /// does not cover is a field a reconciling census would accept a different
-    /// value of.
-    #[test]
-    fn a_launch_intent_digest_covers_every_effective_create_field() {
-        let base = create_config();
-        let baseline = intent(&base).digest();
-
-        for (field, value) in [
-            ("provider", serde_json::json!("claude")),
-            ("cwd", serde_json::json!("/w/other")),
-            ("model", serde_json::json!("other-model")),
-            ("title", serde_json::json!("Other")),
-            ("modeId", serde_json::json!("plan")),
-            ("thinkingOptionId", serde_json::json!("low")),
-            (
-                "providerOptions",
-                serde_json::json!({ "permission": opencode(SeatAutonomy::Advisory, &[]) }),
-            ),
-            (
-                "mcpServers",
-                serde_json::json!({ "kontor": { "type": "remote" } }),
-            ),
-        ] {
-            let mut changed = base.clone();
-            changed[field] = value;
-            assert_ne!(
-                baseline,
-                intent(&changed).digest(),
-                "`{field}` must move the launch-intent digest"
-            );
-        }
-
-        // And a field removed entirely, not merely changed.
-        let mut without = base.clone();
-        without.as_object_mut().expect("map").remove("mcpServers");
-        assert_ne!(
-            baseline,
-            intent(&without).digest(),
-            "dropping a field must move the digest too"
-        );
-        assert_eq!(baseline, intent(&base).digest(), "and it is stable");
-    }
-
-    /// The identity fields are covered as well as the configuration.
-    #[test]
-    fn a_launch_intent_digest_covers_its_identity() {
-        let config = create_config();
-        let baseline = intent(&config).digest();
-        for mutate in [
-            |i: &mut LaunchIntent| i.binding_id = "bind-2",
-            |i: &mut LaunchIntent| i.agent_run_id = "run-2",
-            |i: &mut LaunchIntent| i.workspace_id = "wks-2",
-            |i: &mut LaunchIntent| i.role_slot_id = "implement-b",
-        ] {
-            let mut changed = intent(&config);
-            mutate(&mut changed);
-            assert_ne!(baseline, changed.digest());
-        }
-    }
-
-    /// Fields are separated, so no two intents collide by running together.
-    #[test]
-    fn a_launch_intent_digest_cannot_collide_by_concatenation() {
-        let config = serde_json::json!({});
-        let mut first = intent(&config);
-        first.binding_id = "a";
-        first.agent_run_id = "bc";
-        let mut second = intent(&config);
-        second.binding_id = "ab";
-        second.agent_run_id = "c";
-        assert_ne!(first.digest(), second.digest());
-    }
-
-    /// It carries no value of what it covers.
-    #[test]
-    fn a_launch_intent_digest_carries_no_value() {
-        let config = create_config();
-        let rendered = intent(&config).digest().to_string();
-        for secret in ["bind-1", "run-1", "wks-1", "implement-a", "deny", "allow"] {
-            assert!(
-                !rendered.contains(secret),
-                "the digest leaks `{secret}`: {rendered}"
             );
         }
     }

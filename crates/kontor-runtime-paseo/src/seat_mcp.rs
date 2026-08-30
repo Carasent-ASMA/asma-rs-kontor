@@ -54,7 +54,7 @@
 //! Account-qualified Claude provider ids such as `claude-work` and
 //! `claude-personal` are the same harness boundary and are composed too.
 
-use crate::posture::{DESTRUCTIVE_BASH_DENIES, PermissionAllowance, SeatPosture};
+use crate::posture::SeatPosture;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -164,20 +164,16 @@ pub fn compose_for_seat(
     let harness = crate::client::built_in_provider(provider);
     // **No OpenCode configuration is written here, by any provider.**
     //
-    // An OpenCode seat's posture travels in the `providerOptions.permission` of
-    // its `create_agent_request`, which the daemon persists and replays into
-    // every turn. It never passes through a file, so no file here could carry
-    // it — writing one would only put two seats sharing a worktree back in each
-    // other's way, and change operator state for nothing.
+    // No OpenCode delivery seat launches at all, so there is nothing here to
+    // configure. And a file could not carry the posture even if one did: the
+    // layers that decide it merge after anything Kontor writes and depend on who
+    // the seat authenticated as. Writing one would only put two seats sharing a
+    // worktree in each other's way, and change operator state for nothing.
     //
     // Nor does any other provider touch it: a Claude or Codex seat has no
     // business rewriting OpenCode configuration, and Kontor holds no marker
     // proving a `permission` block found there is one it wrote rather than one a
     // human did.
-    //
-    // [`compose_permission_block`] and [`verify_composed_posture`] remain for
-    // reading receipts an earlier build left behind. They are history, not
-    // authority, and nothing on the delivery path calls them.
     let _ = posture;
     match seat {
         Some(seat) if harness == "claude" => seat.compose(cwd, "consultation"),
@@ -281,347 +277,10 @@ fn merge_json(
 ///
 /// Named explicitly rather than resolved inline so a test can present an exact
 /// layer stack without depending on the machine it runs on, and so the set of
-/// layers this verification believes in is reviewable in one place.
-#[derive(Debug, Clone)]
-pub struct ConfigLayers {
-    /// Files merged in order, lowest precedence first, ending with the block
-    /// Kontor composed. **Read only** apart from the seat-local file.
-    pub merged: Vec<PathBuf>,
-    /// Files whose precedence relative to the composed block is *not* proven,
-    /// and which therefore may not declare a `permission` at all.
-    ///
-    /// The `.jsonc` siblings. The installed 1.18.15 reads both spellings in a
-    /// directory, and which one wins over the other is not something this code
-    /// can demonstrate — so rather than guess an order and risk approving a
-    /// stack the evaluator resolves differently, a `permission` declared in one
-    /// of these refuses the launch outright.
-    pub unordered: Vec<PathBuf>,
-    /// The file Kontor composed; it must exist and state the block.
-    pub seat_local: PathBuf,
-}
-
-impl ConfigLayers {
-    /// The layers a seat spawned in `cwd` will actually read.
-    ///
-    /// `OPENCODE_CONFIG` names a single file merged under everything else;
-    /// `OPENCODE_CONFIG_DIR`, `XDG_CONFIG_HOME` and `HOME` resolve the
-    /// configuration directory, whose `opencode.json` and `opencode.jsonc` are
-    /// both read. Then the repository's own root config, then the seat-local
-    /// block. Both `.jsonc` siblings inside the worktree are treated as
-    /// unordered rather than merged — see [`Self::unordered`].
-    #[must_use]
-    pub fn for_seat(cwd: &Path) -> Self {
-        let mut merged = Vec::new();
-        if let Some(file) = std::env::var_os("OPENCODE_CONFIG") {
-            merged.push(PathBuf::from(file));
-        }
-        let directory = std::env::var_os("OPENCODE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("XDG_CONFIG_HOME").map(|xdg| PathBuf::from(xdg).join("opencode"))
-            })
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|home| PathBuf::from(home).join(".config").join("opencode"))
-            });
-        if let Some(directory) = directory {
-            merged.push(directory.join("opencode.json"));
-            merged.push(directory.join("opencode.jsonc"));
-        }
-        let seat_local = cwd.join(".opencode/opencode.json");
-        merged.push(cwd.join("opencode.json"));
-        merged.push(seat_local.clone());
-        Self {
-            merged,
-            unordered: vec![
-                cwd.join("opencode.jsonc"),
-                cwd.join(".opencode/opencode.jsonc"),
-            ],
-            seat_local,
-        }
-    }
-}
-
-/// Read the seat's **effective** permission back and refuse the launch unless it
-/// states exactly the posture that was rendered.
-///
-/// # Why every layer is read
-///
-/// OpenCode merges configuration rather than replacing it, and resolves a call
-/// by last match. Comparing only the file Kontor wrote therefore proves nothing:
-/// an operator's machine-global config carrying `edit: allow`, `task: allow` or
-/// `external_directory: {"*": "allow"}` merges *underneath* the composed block
-/// and survives for every key the block does not name; a rule committed in the
-/// repository's root `opencode.json` survives the same way; and a `.jsonc`
-/// sibling of either is read too. Each was reproduced against the installed
-/// 1.18.15. So the whole stack is merged here in OpenCode's own order and the
-/// result must equal the rendered posture exactly — any surviving rule the
-/// posture did not state refuses the launch, widening or not.
-///
-/// # What it does and does not prove
-///
-/// It proves that the configuration OpenCode will resolve at process start says
-/// what Kontor decided it should say. It does **not** observe provider-internal
-/// evaluator state after start, which no surface exposes; and it cannot prevent
-/// a file changing between this check and the process reading it, which is why
-/// the launch path runs it again after placement.
-///
-/// # Errors
-/// A missing, unreadable, unparseable or non-object layer; a `permission`
-/// declared in a file whose precedence is unproven; an effective `permission`
-/// differing in any way from the rendered posture; or a floor pattern that is
-/// not denied and was not exactly relaxed by a declared allowance.
-pub fn verify_composed_posture(
-    posture: &SeatPosture,
-    allowances: &[PermissionAllowance],
-    cwd: &Path,
-) -> io::Result<()> {
-    verify_composed_posture_in(&ConfigLayers::for_seat(cwd), posture, allowances)
-}
-
-/// [`verify_composed_posture`] against an explicit set of layers.
-///
-/// # Errors
-/// As [`verify_composed_posture`].
-pub fn verify_composed_posture_in(
-    layers: &ConfigLayers,
-    posture: &SeatPosture,
-    allowances: &[PermissionAllowance],
-) -> io::Result<()> {
-    let Some(rendered) = posture.permission.as_ref() else {
-        return Ok(());
-    };
-    for path in &layers.unordered {
-        if permission_of(path)?.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "{} declares a permission whose precedence over the composed block is not \
-                     proven; refusing to spawn",
-                    path.display()
-                ),
-            ));
-        }
-    }
-    let effective = effective_permission(layers)?;
-    if effective != *rendered {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "{}: the effective permission OpenCode would resolve does not match the \
-                 posture this seat was rendered for; refusing to spawn",
-                layers.seat_local.display()
-            ),
-        ));
-    }
-    // Checked again against the floor itself rather than against the value just
-    // compared to: an equality test is only as good as what it was handed, and
-    // this is the one property that must hold however the block was produced.
-    let relaxed: Vec<&str> = allowances
-        .iter()
-        .map(PermissionAllowance::pattern)
-        .collect();
-    for pattern in DESTRUCTIVE_BASH_DENIES {
-        let expected = if relaxed.contains(pattern) {
-            "allow"
-        } else {
-            "deny"
-        };
-        if effective["bash"][*pattern] != *expected {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the destructive floor pattern `{pattern}` is not `{expected}`"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Strip JSONC to JSON: line and block comments, and trailing commas.
-///
-/// OpenCode accepts `opencode.jsonc`, and `serde_json` does not. Written out
-/// rather than taken as a dependency because the job is small and exactly
-/// specified, and because a config this refuses to read refuses a launch — the
-/// behaviour has to be inspectable here.
-fn strip_jsonc(source: &str) -> String {
-    /// Remove line and block comments that are not inside a string.
-    fn without_comments(source: &str) -> String {
-        let bytes = source.as_bytes();
-        let mut out = String::with_capacity(source.len());
-        let mut index = 0;
-        let mut in_string = false;
-        while index < bytes.len() {
-            let byte = bytes[index];
-            if in_string {
-                out.push(byte as char);
-                if byte == b'\\' && index + 1 < bytes.len() {
-                    out.push(bytes[index + 1] as char);
-                    index += 2;
-                    continue;
-                }
-                if byte == b'"' {
-                    in_string = false;
-                }
-                index += 1;
-                continue;
-            }
-            match (byte, bytes.get(index + 1)) {
-                (b'"', _) => {
-                    in_string = true;
-                    out.push('"');
-                    index += 1;
-                }
-                (b'/', Some(b'/')) => {
-                    while index < bytes.len() && bytes[index] != b'\n' {
-                        index += 1;
-                    }
-                }
-                (b'/', Some(b'*')) => {
-                    index += 2;
-                    while index + 1 < bytes.len()
-                        && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                    {
-                        index += 1;
-                    }
-                    index = (index + 2).min(bytes.len());
-                }
-                _ => {
-                    out.push(byte as char);
-                    index += 1;
-                }
-            }
-        }
-        out
-    }
-
-    /// Drop a comma whose next meaningful character closes its container.
-    ///
-    /// Run *after* comments are gone, so a comment sitting between the comma and
-    /// the brace cannot hide the fact that the comma is trailing.
-    fn without_trailing_commas(source: &str) -> String {
-        let bytes = source.as_bytes();
-        let mut out = String::with_capacity(source.len());
-        let mut index = 0;
-        let mut in_string = false;
-        while index < bytes.len() {
-            let byte = bytes[index];
-            if in_string {
-                out.push(byte as char);
-                if byte == b'\\' && index + 1 < bytes.len() {
-                    out.push(bytes[index + 1] as char);
-                    index += 2;
-                    continue;
-                }
-                if byte == b'"' {
-                    in_string = false;
-                }
-                index += 1;
-                continue;
-            }
-            if byte == b'"' {
-                in_string = true;
-                out.push('"');
-                index += 1;
-                continue;
-            }
-            if byte == b',' {
-                let mut lookahead = index + 1;
-                while lookahead < bytes.len() && bytes[lookahead].is_ascii_whitespace() {
-                    lookahead += 1;
-                }
-                if matches!(bytes.get(lookahead), Some(b'}' | b']')) {
-                    index += 1;
-                    continue;
-                }
-            }
-            out.push(byte as char);
-            index += 1;
-        }
-        out
-    }
-
-    without_trailing_commas(&without_comments(source))
-}
-
-/// The `permission` one configuration file declares, if it declares one.
-fn permission_of(path: &Path) -> io::Result<Option<serde_json::Value>> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    let source = if path
-        .extension()
-        .is_some_and(|extension| extension == "jsonc")
-    {
-        strip_jsonc(&text)
-    } else {
-        text.into_owned()
-    };
-    match serde_json::from_str::<serde_json::Value>(&source) {
-        Ok(serde_json::Value::Object(document)) => Ok(document.get("permission").cloned()),
-        Ok(_) | Err(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "{} is not a JSON object; the effective permission cannot be proved",
-                path.display()
-            ),
-        )),
-    }
-}
-
-/// The `permission` OpenCode resolves from these layers, merged in its order.
-fn effective_permission(layers: &ConfigLayers) -> io::Result<serde_json::Value> {
-    /// OpenCode deep-merges nested objects, the later document winning per key.
-    fn merge(under: &serde_json::Value, over: &serde_json::Value) -> serde_json::Value {
-        match (under, over) {
-            (serde_json::Value::Object(under), serde_json::Value::Object(over)) => {
-                let mut merged = under.clone();
-                for (key, value) in over {
-                    let combined = merged
-                        .get(key)
-                        .map_or_else(|| value.clone(), |existing| merge(existing, value));
-                    merged.insert(key.clone(), combined);
-                }
-                serde_json::Value::Object(merged)
-            }
-            _ => over.clone(),
-        }
-    }
-
-    if permission_of(&layers.seat_local)?.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "{} states no permission block; refusing to spawn",
-                layers.seat_local.display()
-            ),
-        ));
-    }
-    let mut effective = serde_json::Value::Null;
-    for path in &layers.merged {
-        if let Some(permission) = permission_of(path)? {
-            effective = if effective.is_null() {
-                permission
-            } else {
-                merge(&effective, &permission)
-            };
-        }
-    }
-    Ok(effective)
-}
-
+/// travel through the Paseo transport seam.
 /// The lines a composed Claude seat must never surface as in `git status`.
 const CLAUDE_EXCLUDED: &[&str] = &[".mcp.json", ".claude/"];
 
-/// Append the composed paths to the worktree's `info/exclude`, once each.
-///
-/// `git rev-parse --git-path info/exclude` rather than a hand-rolled `.git`
-/// walk: for a linked worktree the exclude file lives under the *common* git
-/// dir, and re-deriving git's own path rules here would be a second copy that
-/// drifts. This is a local plumbing query, not a runtime effect, so it does not
-/// travel through the Paseo transport seam.
 fn exclude_from_git(cwd: &Path, lines: &[&str]) -> io::Result<()> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -1009,16 +668,5 @@ mod tests {
         seat("/realm/state")
             .compose(directory.path(), "consultation")
             .expect_err("no worktree, no composition");
-    }
-
-    /// The JSONC reader strips what the spelling allows and nothing else.
-    #[test]
-    fn jsonc_stripping_leaves_strings_alone() {
-        let stripped = strip_jsonc(
-            "{\n  // line\n  /* block */\n  \"url\": \"https://example.test//not-a-comment\",\n  \"list\": [1, 2,],\n}",
-        );
-        let document: serde_json::Value = stripped.parse().expect("valid JSON after stripping");
-        assert_eq!(document["url"], "https://example.test//not-a-comment");
-        assert_eq!(document["list"], serde_json::json!([1, 2]));
     }
 }

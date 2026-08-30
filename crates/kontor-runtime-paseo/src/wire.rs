@@ -81,24 +81,6 @@ pub const PASEO_APP_VERSION: &str = "0.3.1";
 /// flag remains authoritative too.
 pub const PASEO_PROJECT_RENAME_VERSION: &str = "0.4.0";
 
-/// The release whose `create_agent_request` carries typed per-agent
-/// `providerOptions`.
-///
-/// A **separate contract** from [`PASEO_SEAT_ENVIRONMENT_VERSION`], and
-/// deliberately not folded into it: `--env` sets a process environment, while
-/// this is a validated provider-native policy the daemon persists and replays
-/// into every turn. A daemon could plausibly have one and not the other, and
-/// letting an environment capability stand in for provider-options support
-/// would be exactly the kind of substitution that launches a seat under a
-/// policy nothing carried.
-///
-/// Read out of the installed 0.6.1 bundle: `AgentSessionConfigSchema` carries
-/// `providerOptions`, `applyProviderConfiguration` validates it against the
-/// provider's own schema, and `opencode-agent.js` replays it into
-/// `session.promptAsync`. Earlier releases were not inspected, so the floor is
-/// the version this was actually read from and anything below it fails closed.
-pub const PASEO_PROVIDER_OPTIONS_VERSION: &str = "0.6.1";
-
 /// The client type this adapter announces in the hello.
 pub const PASEO_CLIENT_TYPE: &str = "cli";
 
@@ -189,22 +171,6 @@ pub mod label {
     /// Persistent non-delivery topology seat (for example LSA/TPM).
     pub const HOSTED_SEAT: &str = "kontor.hosted_seat";
     /// The digest of the posture, owned config and environment a seat launched
-    /// under.
-    ///
-    /// A hash, never the values: labels are readable by anyone who can list
-    /// agents. It exists so a launch whose acknowledgement was lost can only be
-    /// adopted by a census that finds *this* posture — an agent carrying the
-    /// right task and slot but no matching digest was launched under something
-    /// else, or by something else, and is not this seat.
-    pub const SEAT_POSTURE: &str = "kontor.seat_posture";
-    /// The digest of one exact launch intent.
-    ///
-    /// Binding, agent run, place, slot and posture, hashed together. A census
-    /// looking for a launch whose acknowledgement was lost matches on this, so
-    /// an agent that merely shares a task, a workspace or a slot — a
-    /// predecessor, a neighbouring seat, a similarly-labelled leftover — is not
-    /// mistaken for the one this launch created. A hash, never the values.
-    pub const LAUNCH_INTENT: &str = "kontor.launch_intent";
     /// The logical seat a still-live predecessor formerly filled.
     ///
     /// Paseo's public metadata update surface patches string values and cannot
@@ -345,19 +311,6 @@ impl PaseoServerInfo {
                 .version
                 .as_deref()
                 .is_some_and(|version| version_at_least(version, PASEO_PROJECT_RENAME_VERSION))
-    }
-
-    /// Whether this daemon accepts typed per-agent `providerOptions`.
-    ///
-    /// Fails closed on an absent, pre-release or unparseable version. Asked
-    /// separately from [`Self::supports_seat_environment`]: a seat whose policy
-    /// rides in `providerOptions` must not launch because the daemon happens to
-    /// support a different mechanism.
-    #[must_use]
-    pub fn supports_provider_options(&self) -> bool {
-        self.version
-            .as_deref()
-            .is_some_and(|version| version_at_least(version, PASEO_PROVIDER_OPTIONS_VERSION))
     }
 
     /// Every required feature this daemon does not advertise, in policy order.
@@ -787,12 +740,9 @@ impl PaseoAgent {
 
 /// The answer to `send_agent_message_request`.
 ///
-/// `accepted` is the acknowledgement a delivery seat is admitted on. The
-/// installed 0.6.1 replays the agent's persisted `providerOptions.permission`
-/// into `session.promptAsync` for that turn, and OpenCode installs those rules
-/// on the session before it evaluates a tool call — so a turn the daemon accepts
-/// is a turn that ran under the policy Kontor sent, and a seat is bound on
-/// nothing weaker.
+/// `accepted` says the daemon took the turn, and **only** that. It is not
+/// evidence about the policy the turn ran under: nothing in the accepted frame
+/// reports an applied posture, which is why no launch binds on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoMessageAccepted {
     /// The correlation id of the send.
@@ -807,22 +757,6 @@ pub struct PaseoMessageAccepted {
     /// The daemon's own refusal text, when it did not.
     #[serde(default)]
     pub error: Option<String>,
-}
-
-impl PaseoMessageAccepted {
-    /// Whether this answer authorizes binding the seat it was sent for.
-    ///
-    /// `accepted` alone is not enough. It is a boolean on a frame, and a frame
-    /// that belongs to a different send — a retry, a neighbouring seat, a
-    /// late-arriving answer to a request this launch already gave up on —
-    /// carries exactly the same `true`. Binding on that would admit a seat whose
-    /// first turn nobody watched. So the correlation is checked first, exactly:
-    /// the answer must name the request that was sent and the agent it was sent
-    /// to, and only then does acceptance mean anything.
-    #[must_use]
-    pub fn authorizes(&self, request_id: &str, agent_id: &str) -> bool {
-        self.request_id == request_id && self.agent_id == agent_id && self.accepted
-    }
 }
 
 /// The answer to `fetch_agent_request`.
@@ -1791,41 +1725,5 @@ mod tests {
         .expect("Paseo 0.4 page info");
 
         assert_eq!(page_info.next(), Some("cur_2"));
-    }
-
-    /// Acceptance authorizes a binding only when the answer is *this* answer.
-    #[test]
-    fn acceptance_requires_exact_correlation() {
-        let answer = PaseoMessageAccepted {
-            request_id: "req-1".to_owned(),
-            agent_id: "agt-1".to_owned(),
-            accepted: true,
-            error: None,
-        };
-        assert!(answer.authorizes("req-1", "agt-1"));
-        assert!(
-            !answer.authorizes("req-2", "agt-1"),
-            "an answer to another request must not bind this seat"
-        );
-        assert!(
-            !answer.authorizes("req-1", "agt-2"),
-            "an answer about another agent must not bind this seat"
-        );
-
-        let refused = PaseoMessageAccepted {
-            accepted: false,
-            ..answer.clone()
-        };
-        assert!(!refused.authorizes("req-1", "agt-1"));
-
-        // A frame that carried no correlation at all deserializes to empty
-        // strings, and empty strings match nothing this launch sent.
-        let bare = PaseoMessageAccepted {
-            request_id: String::new(),
-            agent_id: String::new(),
-            accepted: true,
-            error: None,
-        };
-        assert!(!bare.authorizes("req-1", "agt-1"));
     }
 }

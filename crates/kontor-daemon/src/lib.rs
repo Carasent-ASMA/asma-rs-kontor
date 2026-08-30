@@ -430,7 +430,7 @@ impl Daemon {
         // Seat MCP composition is resolved here — once, at daemon level — so the
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
-        let registry = runtimes::build_registry(&settings, seat_mcp.as_ref(), &config.state_root)?;
+        let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
         Self::start_with_supervision(config, registry, supervision, None)
     }
 

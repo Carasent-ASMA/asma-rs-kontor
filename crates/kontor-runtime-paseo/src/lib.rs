@@ -48,8 +48,7 @@ pub use adapter::{
 pub use client::{PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport};
 pub use fixture::RecordedPaseo;
 pub use posture::{
-    DESTRUCTIVE_BASH_DENIES, LaunchIntent, PermissionAllowance, SeatPosture, render_posture,
-    seat_posture,
+    DESTRUCTIVE_BASH_DENIES, PermissionAllowance, SeatPosture, render_posture, seat_posture,
 };
 pub use seat_mcp::SeatMcp;
 pub use wire::{

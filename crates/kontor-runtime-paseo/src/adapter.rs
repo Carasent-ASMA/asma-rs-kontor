@@ -42,7 +42,6 @@
 //!   unsolicited stream rather than from history.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -311,12 +310,6 @@ pub struct PaseoConfig {
     /// is `false`, `kontor_runtime::capability::preflight` refuses every
     /// account-pinned launch on this plane, which is the v1.0 behaviour.
     pub provider_selects_account: bool,
-    /// The realm state root this plane's seat configuration is owned under.
-    ///
-    /// Kontor's own subtree, never the worktree — a seat can write there — and
-    /// never a directory shared with a provider. See
-    /// [`SeatConfigRoot::for_seat`](crate::posture::SeatConfigRoot::for_seat).
-    pub state_root: PathBuf,
     /// The posture seats on this plane get when their role slot declares none.
     ///
     /// A plane-wide default, subordinate to the role slot. `None` — the only
@@ -3254,10 +3247,9 @@ impl PaseoAdapter {
         }
 
         // Before the placement readback, the census, and every workspace and
-        // agent call: a seat whose posture cannot be carried is refused having
-        // spent no native call at all. Both inputs are local — the daemon
-        // contract from the identity already read, expressibility from a table.
-        let opencode_delivery = self.opencode_delivery_gates(request)?;
+        // agent call: an OpenCode delivery launch is refused having spent no
+        // native call at all. The check is local, so the refusal costs nothing.
+        Self::refuse_opencode_delivery(request)?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
@@ -3265,7 +3257,7 @@ impl PaseoAdapter {
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
         self.verify_workspace_placement(&workspace, &project, &place.root)?;
 
-        let mut labels = self.seat_labels(
+        let labels = self.seat_labels(
             request.agent_run_id(),
             request.team_run_id(),
             request.role_slot_id(),
@@ -3273,37 +3265,6 @@ impl PaseoAdapter {
             &project,
             &workspace_id,
         )?;
-        // Built before the census, not after, because the create carries a
-        // launch-intent digest and the census must match the labels the created
-        // agent will actually have. This is also the reconciliation claim: the
-        // digest exists, and is the same on every attempt, before any effect.
-        let delivery = if opencode_delivery {
-            let allowances = self
-                .config
-                .scope
-                .configured_task_scope(request.task_id())
-                .map(|configured| configured.permission_overrides)
-                .unwrap_or_default();
-            let created = PaseoRpc::delivery_agent_create(crate::client::DeliveryCreate {
-                request_id: &self.next_request_id(),
-                workspace_id: &workspace_id,
-                canonical_cwd: task_scope.worktree.as_str(),
-                model_rung: request.model_rung(),
-                autonomy: request.autonomy(),
-                title: request.display_name().as_str(),
-                labels: &labels,
-                allowances: &allowances,
-                seat_mcp: self.config.seat_mcp.as_ref(),
-                serve_profile: "worker",
-                binding_id: &request.binding_id().to_string(),
-                agent_run_id: &request.agent_run_id().to_string(),
-                role_slot_id: request.role_slot_id().as_str(),
-            })?;
-            labels = created.labels.clone();
-            Some(created)
-        } else {
-            None
-        };
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
         // A native census before the first effect. An exact full-label match is
@@ -3363,10 +3324,8 @@ impl PaseoAdapter {
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
         //
-        // An OpenCode seat writes nothing here. Its posture rides in the
-        // `providerOptions.permission` the create above carried, so there is no
-        // file for it to be written into — which is also why two OpenCode seats
-        // can share one worktree: they have nothing to race over.
+        // An OpenCode seat writes nothing here, and does not reach this line at
+        // all: its delivery launch was refused above.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
@@ -3394,12 +3353,9 @@ impl PaseoAdapter {
             request.prompt().as_str(),
         )?;
 
-        let native_id = match (recovered_id, delivery.as_ref()) {
-            (Some(native_id), _) => native_id,
-            // OpenCode is created over the session socket so its posture can
-            // travel in `providerOptions`.
-            (None, Some(delivery)) => self.create_opencode_seat(delivery).await?,
-            (None, None) => match self.transport.run(&command).await {
+        let native_id = match recovered_id {
+            Some(native_id) => native_id,
+            None => match self.transport.run(&command).await {
                 Ok(output) => {
                     let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
                     started.agent_id
@@ -3420,27 +3376,6 @@ impl PaseoAdapter {
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
         Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
 
-        // The acceptance a delivery seat is admitted on. Before this line the
-        // seat exists and is bound to nothing; after it, the daemon has taken a
-        // turn, which it runs by replaying the agent's persisted
-        // `providerOptions.permission` into `session.promptAsync` — so the turn
-        // that was accepted is a turn that ran under the policy Kontor sent.
-        //
-        // A seat that cannot be proved is not left running: it is archived and
-        // read back terminal. If *that* cannot be confirmed either, the refusal
-        // says so and the seat stays recoverable rather than being reported
-        // cleaned up.
-        if delivery.is_some()
-            && let Err(unproved) = self.prove_first_turn(request, &native_id).await
-        {
-            self.compensate_unproved_seat(&native_id).await?;
-            return Err(unproved);
-        }
-        // No post-placement re-read of a worktree file, because there is no
-        // worktree file: the posture is a field of the agent the daemon
-        // persisted, and the first turn this seat was bound on already ran under
-        // it. There is no drift window here because there is nothing on disk for
-        // anything to drift from.
         let snapshot = self.bind(
             request.agent_run_id(),
             request.binding_id(),
@@ -3504,173 +3439,52 @@ impl PaseoAdapter {
         })
     }
 
-    /// The pre-effect gates an OpenCode delivery launch must pass.
+    /// Refuse an OpenCode delivery launch before it can have any native effect.
     ///
-    /// `None` for every other provider: their posture is their mode, the mode
-    /// readback already proves it, and their launch path is untouched.
+    /// `Ok(())` for every other provider: their posture *is* their mode, the
+    /// mode readback proves it, and their launch path is untouched.
     ///
-    /// Everything here is local or already-fetched, so a refusal costs no native
-    /// call at all: the daemon contract comes from the identity `declared()`
-    /// read, and expressibility is a table lookup. The *payload* is not built
-    /// here — `PaseoRpc::delivery_agent_create` renders it, once — this only
-    /// refuses launches that could not produce a valid one.
-    fn opencode_delivery_gates(&self, request: &LaunchRequest) -> RuntimeResult<bool> {
-        let provider = request.model_rung().provider.0.as_str();
-        if crate::client::built_in_provider(provider) != "opencode" {
-            return Ok(false);
-        }
-        // The daemon must accept typed per-agent `providerOptions`. Asked of the
-        // provider-options contract specifically: an environment capability is a
-        // different mechanism and would launch a seat under a policy nothing
-        // carried.
-        let carries_provider_options = self
-            .lock()
-            .server
-            .as_ref()
-            .is_some_and(crate::wire::PaseoServerInfo::supports_provider_options);
-        if !carries_provider_options {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "this Paseo does not accept per-agent providerOptions, so an OpenCode posture cannot be carried",
-            });
-        }
-        // And the provider must be able to express the declared posture at all.
-        // The refusal is `paseo_mode`'s own, so an advisory seat on a provider
-        // with no contained mode is refused here rather than at the wire.
-        crate::posture::render_posture(provider, request.autonomy(), &[])?;
-        Ok(true)
-    }
-
-    /// Create one OpenCode delivery seat over the session socket.
+    /// # Why OpenCode cannot be launched at all
     ///
-    /// No `initialPrompt`: the first turn is a separate call, made only once
-    /// there is an id to compensate against. A lost acknowledgement is
-    /// reconciled by the exact-label census — one match is adopted, none is
-    /// confirmation-unknown, more than one refuses — and the create is never
-    /// sent again, because that is how one seat acquires two sessions.
-    async fn create_opencode_seat(
-        &self,
-        delivery: &crate::client::DeliveryCreateRequest,
-    ) -> RuntimeResult<String> {
-        let frame = match self.transport.request(&delivery.rpc).await {
-            Ok(frame) => frame,
-            Err(RuntimeError::Transport { .. }) => {
-                return self.recover_launch(&delivery.labels).await;
-            }
-            Err(other) => return Err(other),
-        };
-        let status: serde_json::Value =
-            frame.resolve(&delivery.rpc, "PaseoDeliveryAgentCreated")?;
-        if status.get("status").and_then(serde_json::Value::as_str) != Some("agent_created") {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "the runtime refused this delivery seat's creation",
-            });
-        }
-        status
-            .get("agent")
-            .and_then(|agent| agent.get("id"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                RuntimeError::Domain(kontor_core::DomainError::invalid(
-                    "PaseoDeliveryAgentCreated",
-                    "does not name the created agent",
-                ))
-            })
-    }
-
-    /// Send the first real turn, and prove the daemon took it.
+    /// OpenCode expresses its posture as a permission block, and on Paseo 0.6.1
+    /// there is no carrier for one. The block cannot go in a file or an
+    /// environment variable, because `OPENCODE_CONFIG_CONTENT`,
+    /// `OPENCODE_PERMISSION`, `OPENCODE_DISABLE_PROJECT_CONFIG`, the active-org
+    /// remote config and managed profiles all merge later and depend on who the
+    /// seat authenticated as. An earlier build therefore sent it as
+    /// `config.providerOptions.permission` on the create — and that is inert,
+    /// read from the installed bundles:
     ///
-    /// This is the acceptance OP-20 binds on. The installed 0.6.1 replays the
-    /// agent's persisted `providerOptions.permission` into `session.promptAsync`
-    /// for the turn, and OpenCode installs those rules on the session before it
-    /// evaluates a tool call — so a turn the daemon accepts is a turn that ran
-    /// under the policy Kontor sent.
+    /// * Paseo imports `@opencode-ai/sdk/v2/client`, whose `promptAsync`
+    ///   allow-lists the body keys `messageID, model, agent, noReply, tools,
+    ///   format, system, variant, parts`. `buildClientParams` silently drops
+    ///   everything else, so the permission never leaves the daemon process.
+    /// * OpenCode 1.18.15's `SessionPrompt.prompt` builds its session rules from
+    ///   `Object.entries(t.tools)` alone. That route reads no `t.permission`.
     ///
-    /// The message id is derived from the launch, not generated: an ambiguous
-    /// send is reconciled by looking for that id on the agent's own timeline,
-    /// never by sending the prompt again.
-    async fn prove_first_turn(
-        &self,
-        request: &LaunchRequest,
-        native_id: &str,
-    ) -> RuntimeResult<()> {
-        let message_id = format!(
-            "kontor-first-turn-{}-{}",
-            request.agent_run_id(),
-            request.binding_id()
-        );
-        let send = PaseoRpc::send_message(
-            self.next_request_id(),
-            native_id,
-            &message_id,
-            request.prompt().as_str(),
-        );
-        let correlation = send.request_id.clone();
-        match self.transport.request(&send).await {
-            Ok(frame) => {
-                let accepted: crate::wire::PaseoMessageAccepted =
-                    frame.resolve(&send, "PaseoMessageAccepted")?;
-                if accepted.authorizes(&correlation, native_id) {
-                    return Ok(());
-                }
-                Err(RuntimeError::LaunchNotAdmitted {
-                    rule: "the runtime did not accept this seat's first turn",
-                })
-            }
-            // The send may have landed. Reconcile by the id the caller chose,
-            // which Paseo echoes on the resulting user message: a second send
-            // would be a second turn on a seat that already has one.
-            Err(RuntimeError::Transport { .. }) => {
-                if self.first_turn_on_timeline(native_id, &message_id).await? {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::LaunchNotAdmitted {
-                        rule: "this seat's first turn could not be confirmed",
-                    })
-                }
-            }
-            Err(other) => Err(other),
-        }
-    }
-
-    /// Whether `message_id` already appears on this agent's own timeline.
-    async fn first_turn_on_timeline(
-        &self,
-        native_id: &str,
-        message_id: &str,
-    ) -> RuntimeResult<bool> {
-        let request = PaseoRpc::timeline_fetch(
-            self.next_request_id(),
-            native_id,
-            PaseoProjection::Canonical,
-            PaseoDirection::Tail,
-            None,
-            MAX_HISTORY_PAGE,
-        );
-        let frame = self.transport.request(&request).await?;
-        let page: crate::wire::PaseoTimelinePage = frame.resolve(&request, "PaseoTimelinePage")?;
-        Ok(page
-            .entries
-            .iter()
-            .any(|entry| entry.item.client_message_id.as_deref() == Some(message_id)))
-    }
-
-    /// Archive a seat that was created and could not be proved, and require it
-    /// to read back terminal.
+    /// A create the daemon accepts therefore proves only that the daemon parsed
+    /// it. The seat would run under whatever OpenCode's own layers resolved,
+    /// which on a clean host is the evaluator's `ask` default for every
+    /// unmatched tool — the wedging this task exists to prevent. Launching under
+    /// an unproved posture is the failure, so the launch is refused instead.
     ///
-    /// A created agent Kontor will not bind is a live session nobody owns. It is
-    /// archived over the same socket the create used, and then *read back*:
-    /// an archive whose effect cannot be confirmed leaves the seat recoverable
-    /// and refuses, rather than reporting a cleanup that may not have happened.
-    async fn compensate_unproved_seat(&self, native_id: &str) -> RuntimeResult<()> {
-        let archive = PaseoRpc::agent_archive(self.next_request_id(), native_id);
-        self.transport.request(&archive).await?;
-        let agent = self.fetch_agent(native_id).await?;
-        if agent.is_archived() {
+    /// The refusal lifts when Paseo attaches the typed permission through
+    /// OpenCode's `session.create` or `session.update` — both of which *do*
+    /// allow-list it, and where `SessionHttpApi.update` installs it via
+    /// `setPermission` — and returns a correlated applied-policy acknowledgement
+    /// or effective-permission readback that a launch can bind on. That is an
+    /// upstream dependency; see `docs/evidence/KON-OP-20/`.
+    ///
+    /// # Errors
+    /// [`RuntimeError::LaunchNotAdmitted`] for any OpenCode provider, before any
+    /// transport call, native effect or worktree write.
+    fn refuse_opencode_delivery(request: &LaunchRequest) -> RuntimeResult<()> {
+        if crate::client::built_in_provider(request.model_rung().provider.0.as_str()) != "opencode"
+        {
             return Ok(());
         }
-        Err(RuntimeError::DeliveryConfirmationUnknown {
-            rule: "an unproved seat could not be confirmed archived; it is left recoverable",
+        Err(RuntimeError::LaunchNotAdmitted {
+            rule: "Paseo carries no applied OpenCode permission policy, so a delivery seat's posture cannot be proved",
         })
     }
 
@@ -6534,7 +6348,7 @@ impl RuntimeAdapter for PaseoAdapter {
     /// Report, honestly, that this daemon cannot compact a seat's context.
     ///
     /// The Paseo 0.3.1 protocol exposes no per-seat context configuration and no
-    /// compaction operation, so [`PaseoAdapter::capabilities`] advertises
+    /// compaction operation, so `PaseoAdapter::capabilities` advertises
     /// neither [`RuntimeCapability::ContextPolicy`] nor
     /// [`RuntimeCapability::Compact`], and this method emits **no RPC at all**.
     ///
@@ -6958,7 +6772,6 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
-                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -7064,7 +6877,6 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers,
-                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -7150,7 +6962,6 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
-                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -7228,7 +7039,6 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
-                state_root: std::path::PathBuf::from("/realm/state"),
                 permission_posture: None,
                 seat_mcp: None,
             },
@@ -7359,7 +7169,6 @@ mod governed_pin_tests {
             provider_selects_account,
             provider_fallbacks: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
-            state_root: std::path::PathBuf::from("/realm/state"),
             permission_posture: None,
             seat_mcp: None,
         }
