@@ -1094,6 +1094,30 @@ mod tests {
         );
     }
 
+    /// The provider guard is what stops a non-OpenCode seat writing OpenCode
+    /// configuration — not merely the fact that such a posture happens to carry
+    /// no block today. Handed a block anyway, a Claude seat still writes none.
+    #[test]
+    fn a_non_opencode_seat_writes_no_block_even_when_handed_one() {
+        let repo = repo();
+        let cwd = repo.path();
+        let carries_a_block =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        assert!(
+            carries_a_block.permission.is_some(),
+            "the fixture must actually carry a block for this to prove anything"
+        );
+
+        for provider in ["claude", "codex", "cursor"] {
+            compose_for_seat(Some(&seat("/realm/state")), provider, &carries_a_block, cwd)
+                .expect("composition");
+            assert!(
+                !cwd.join(".opencode/opencode.json").exists(),
+                "a {provider} seat must not write OpenCode configuration"
+            );
+        }
+    }
+
     /// The readback refuses everything that would let a seat start unprotected.
     #[test]
     fn the_readback_refuses_a_config_that_is_not_what_was_rendered() {
