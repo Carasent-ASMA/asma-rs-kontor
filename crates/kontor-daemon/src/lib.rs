@@ -597,6 +597,19 @@ impl Daemon {
                     "follow-ups derived before the restart could not be handed over"
                 ),
             }
+            match self.state.applications().retry_completion_wakes().await {
+                Ok(0) => {}
+                Ok(delivered) => info!(
+                    realm_id = %realm_id,
+                    delivered,
+                    "pending Completion wakes reached their exact hosted TPM natives"
+                ),
+                Err(error) => warn!(
+                    realm_id = %realm_id,
+                    detail = %error.code.as_str(),
+                    "pending Completion wakes could not be reconciled"
+                ),
+            }
         }
         info!(
             realm_id = %realm_id,

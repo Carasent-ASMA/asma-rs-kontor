@@ -52,25 +52,25 @@ path = "mcp_mutants.rs"
 # the domain types the contract is stated in as normal dependencies; the test
 # targets below pick them up through it. No adapter crate is a dependency here:
 # the harness is stated against `RuntimeAdapter`, never against a provider.
-kontor-core = { path = "../../crates/kontor-core", version = "=0.2.0" }
-kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.2.0" }
+kontor-core = { path = "../../crates/kontor-core", version = "=0.2.1" }
+kontor-runtime = { path = "../../crates/kontor-runtime", version = "=0.2.1" }
 
 [dev-dependencies]
 # KON-MVP-08: the profiles/teams contract exercises the sealed slot API against
 # the real store and the same scripted fake, rather than against mock sessions.
-kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.2.0" }
-kontor-policy = { path = "../../crates/kontor-policy", version = "=0.2.0" }
+kontor-profiles = { path = "../../crates/kontor-profiles", version = "=0.2.1" }
+kontor-policy = { path = "../../crates/kontor-policy", version = "=0.2.1" }
 # KON-MVP-09: the scheduling contract runs the real pass over what the real store
 # holds, so the seam between deciding and committing is proved rather than assumed.
-kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.2.0" }
-kontor-store = { path = "../../crates/kontor-store", version = "=0.2.0" }
-kontor-teams = { path = "../../crates/kontor-teams", version = "=0.2.0" }
+kontor-scheduler = { path = "../../crates/kontor-scheduler", version = "=0.2.1" }
+kontor-store = { path = "../../crates/kontor-store", version = "=0.2.1" }
+kontor-teams = { path = "../../crates/kontor-teams", version = "=0.2.1" }
 # KON-MVP-16: the two sides the parity oracle compares — the generated contract
 # and the tool registry — plus the daemon, for the constants `kontor-mcp` must
 # restate because it may not link it.
-kontor-api = { path = "../../crates/kontor-api", version = "=0.2.0" }
-kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.2.0" }
-kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.2.0" }
+kontor-api = { path = "../../crates/kontor-api", version = "=0.2.1" }
+kontor-mcp = { path = "../../crates/kontor-mcp", version = "=0.2.1" }
+kontor-daemon = { path = "../../crates/kontor-daemon", version = "=0.2.1" }
 jiff = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }

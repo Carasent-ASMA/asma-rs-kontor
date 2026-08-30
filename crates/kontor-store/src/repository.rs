@@ -61,13 +61,13 @@ use kontor_core::repository::{
     RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
     SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
     SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredConsultationMaterializationReroute,
-    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
+    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
+    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -94,6 +94,7 @@ use kontor_core::ticket::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use uuid::Uuid;
 
 use crate::SqliteStore;
 use crate::events::append::stored_payload;
@@ -560,6 +561,115 @@ fn ensure_completion_wake_in(
         )
         .map_err(backend)?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_completion_wake_delivery(
+    connection: &Connection,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+    completion_revision: AggregateRevision,
+    reason: &ExternalName,
+    seat_binding_id: SeatBindingId,
+    occupancy_generation: u64,
+    native_id: &ExternalId,
+) -> RepositoryResult<Option<StoredCompletionWakeDelivery>> {
+    let row = connection
+        .query_row(
+            "SELECT d.occupancy_generation, d.runtime_kind, d.host,
+                    d.runtime_generation, d.message_id, d.body, d.body_hash,
+                    d.created_at, d.acknowledged_at, d.timeline_epoch,
+                    d.timeline_sequence, w.receipt, w.appended_at, w.acknowledged_at
+             FROM epic_completion_wake_deliveries d
+             JOIN epic_completion_wakes w
+               ON w.project_id = d.project_id
+              AND w.mini_project_id = d.mini_project_id
+              AND w.completion_revision = d.completion_revision
+              AND w.reason = d.reason
+              AND w.seat_binding_id = d.seat_binding_id
+             WHERE d.project_id = ?1 AND d.mini_project_id = ?2
+               AND d.completion_revision = ?3 AND d.reason = ?4
+               AND d.seat_binding_id = ?5 AND d.occupancy_generation = ?6
+               AND d.native_id = ?7",
+            params![
+                project_id.to_string(),
+                mini_project_id.to_string(),
+                i64::try_from(completion_revision.get()).unwrap_or(i64::MAX),
+                reason.as_str(),
+                seat_binding_id.to_string(),
+                i64::try_from(occupancy_generation).unwrap_or(i64::MAX),
+                native_id.as_str(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(|columns| {
+        Ok(StoredCompletionWakeDelivery {
+            wake: StoredCompletionWake {
+                project_id,
+                mini_project_id,
+                completion_revision,
+                reason: reason.clone(),
+                seat_binding_id,
+                receipt: ContentHash::parse(&columns.11)?,
+                appended_at: read_timestamp(&columns.12)?,
+                acknowledged_at: columns.13.as_deref().map(read_timestamp).transpose()?,
+            },
+            occupancy_generation: u64::try_from(columns.0).map_err(|_| {
+                RepositoryError::Backend {
+                    detail: "a completion wake occupancy generation is invalid".to_owned(),
+                }
+            })?,
+            native_identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(&columns.1)?,
+                host: ExternalName::parse(&columns.2)?,
+                generation: u64::try_from(columns.3).map_err(|_| RepositoryError::Backend {
+                    detail: "a completion wake runtime generation is invalid".to_owned(),
+                })?,
+                native_id: native_id.clone(),
+            },
+            message_id: columns.4,
+            body: BoundedText::parse(&columns.5)?,
+            body_hash: ContentHash::parse(&columns.6)?,
+            created_at: read_timestamp(&columns.7)?,
+            acknowledged_at: columns.8.as_deref().map(read_timestamp).transpose()?,
+            timeline_epoch: columns
+                .9
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| RepositoryError::Backend {
+                        detail: "a completion wake timeline epoch is invalid".to_owned(),
+                    })
+                })
+                .transpose()?,
+            timeline_sequence: columns
+                .10
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| RepositoryError::Backend {
+                        detail: "a completion wake timeline sequence is invalid".to_owned(),
+                    })
+                })
+                .transpose()?,
+        })
+    })
+    .transpose()
 }
 
 type ConsultationSeatColumns = (
@@ -5353,6 +5463,387 @@ impl SqliteStore {
                 subject: "completion wake intent",
             })
         }
+    }
+
+    /// Read the newest logical wake for one persistent TPM seat.
+    ///
+    /// Older unacknowledged rows are intentional audit history: the newest
+    /// completion projection subsumes them and is the only one a recovered
+    /// native successor needs to receive.
+    pub fn latest_completion_wake(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<StoredCompletionWake>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT completion_revision, reason, receipt, appended_at, acknowledged_at
+                 FROM epic_completion_wakes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND seat_binding_id = ?3
+                 ORDER BY completion_revision DESC, appended_at DESC, reason DESC
+                 LIMIT 1",
+                params![
+                    project_id.to_string(),
+                    mini_project_id.to_string(),
+                    seat_binding_id.to_string(),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|columns| {
+            Ok(StoredCompletionWake {
+                project_id,
+                mini_project_id,
+                completion_revision: AggregateRevision::parse(
+                    u64::try_from(columns.0).unwrap_or_default(),
+                )?,
+                reason: ExternalName::parse(&columns.1)?,
+                seat_binding_id,
+                receipt: ContentHash::parse(&columns.2)?,
+                appended_at: read_timestamp(&columns.3)?,
+                acknowledged_at: columns.4.as_deref().map(read_timestamp).transpose()?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Claim or replay one exact-native delivery of the newest wake.
+    ///
+    /// The transaction rechecks both moving facts: the wake must still be the
+    /// newest for this epic/seat and the hosted-seat row must still name this
+    /// native identity and occupancy generation. A racing caller reads back the
+    /// winner's stable message id/body instead of minting a second effect.
+    pub fn claim_completion_wake_delivery(
+        &self,
+        candidate: &StoredCompletionWakeDelivery,
+    ) -> RepositoryResult<StoredCompletionWakeDelivery> {
+        let parsed_message_id = Uuid::try_parse(&candidate.message_id).map_err(|_| {
+            conflict(
+                "completion wake delivery",
+                "the message id must be a canonical UUIDv7",
+            )
+        })?;
+        if parsed_message_id.get_version_num() != 7
+            || parsed_message_id.as_hyphenated().to_string() != candidate.message_id
+        {
+            return Err(conflict(
+                "completion wake delivery",
+                "the message id must be a canonical UUIDv7",
+            ));
+        }
+        if ContentHash::of(candidate.body.as_str().as_bytes()) != candidate.body_hash {
+            return Err(conflict(
+                "completion wake delivery",
+                "the frozen body does not match its digest",
+            ));
+        }
+        if candidate.acknowledged_at.is_some()
+            || candidate.timeline_epoch.is_some()
+            || candidate.timeline_sequence.is_some()
+        {
+            return Err(conflict(
+                "completion wake delivery",
+                "a new delivery claim must be pending",
+            ));
+        }
+        let transaction = self.begin()?;
+        let newest: Option<(i64, String, String, String)> = transaction
+            .query_row(
+                "SELECT completion_revision, reason, receipt, appended_at
+                 FROM epic_completion_wakes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND seat_binding_id = ?3
+                 ORDER BY completion_revision DESC, appended_at DESC, reason DESC
+                 LIMIT 1",
+                params![
+                    candidate.wake.project_id.to_string(),
+                    candidate.wake.mini_project_id.to_string(),
+                    candidate.wake.seat_binding_id.to_string(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if newest
+            != Some((
+                i64::try_from(candidate.wake.completion_revision.get()).unwrap_or(i64::MAX),
+                candidate.wake.reason.as_str().to_owned(),
+                candidate.wake.receipt.as_str().to_owned(),
+                text(candidate.wake.appended_at),
+            ))
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "completion wake delivery",
+                rule: "the named wake is no longer the newest completion projection",
+            });
+        }
+        let active: Option<(String, String, i64, String, i64)> = transaction
+            .query_row(
+                "SELECT runtime_kind, host, generation, native_id,
+                        1 + (SELECT COUNT(*) FROM hosted_topology_seat_history h
+                             WHERE h.project_id = s.project_id
+                               AND h.seat_binding_id = s.seat_binding_id)
+                 FROM hosted_topology_seats s
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![
+                    candidate.wake.project_id.to_string(),
+                    candidate.wake.seat_binding_id.to_string(),
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let expected = (
+            candidate.native_identity.runtime_kind.as_str().to_owned(),
+            candidate.native_identity.host.as_str().to_owned(),
+            i64::try_from(candidate.native_identity.generation).unwrap_or(i64::MAX),
+            candidate.native_identity.native_id.as_str().to_owned(),
+            i64::try_from(candidate.occupancy_generation).unwrap_or(i64::MAX),
+        );
+        if active != Some(expected) {
+            return Err(RepositoryError::Conflict {
+                subject: "completion wake delivery",
+                rule: "the exact hosted TPM native occupancy moved before delivery",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO epic_completion_wake_deliveries
+                     (project_id, mini_project_id, completion_revision, reason,
+                      seat_binding_id, occupancy_generation, runtime_kind, host,
+                      runtime_generation, native_id, message_id, body, body_hash,
+                      created_at, acknowledged_at, timeline_epoch, timeline_sequence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                         NULL, NULL, NULL)
+                 ON CONFLICT (project_id, mini_project_id, completion_revision, reason,
+                              seat_binding_id, occupancy_generation, native_id) DO NOTHING",
+                params![
+                    candidate.wake.project_id.to_string(),
+                    candidate.wake.mini_project_id.to_string(),
+                    i64::try_from(candidate.wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    candidate.wake.reason.as_str(),
+                    candidate.wake.seat_binding_id.to_string(),
+                    i64::try_from(candidate.occupancy_generation).unwrap_or(i64::MAX),
+                    candidate.native_identity.runtime_kind.as_str(),
+                    candidate.native_identity.host.as_str(),
+                    i64::try_from(candidate.native_identity.generation).unwrap_or(i64::MAX),
+                    candidate.native_identity.native_id.as_str(),
+                    candidate.message_id,
+                    candidate.body.as_str(),
+                    candidate.body_hash.as_str(),
+                    text(candidate.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        let delivery = read_completion_wake_delivery(
+            &transaction,
+            candidate.wake.project_id,
+            candidate.wake.mini_project_id,
+            candidate.wake.completion_revision,
+            &candidate.wake.reason,
+            candidate.wake.seat_binding_id,
+            candidate.occupancy_generation,
+            &candidate.native_identity.native_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "completion wake delivery",
+        })?;
+        transaction.commit().map_err(backend)?;
+        Ok(delivery)
+    }
+
+    /// Record canonical timeline evidence for one exact delivery.
+    pub fn acknowledge_completion_wake_delivery(
+        &self,
+        delivery: &StoredCompletionWakeDelivery,
+        acknowledged_at: Timestamp,
+        timeline_epoch: u64,
+        timeline_sequence: u64,
+    ) -> RepositoryResult<()> {
+        if timeline_epoch == 0 || timeline_sequence == 0 {
+            return Err(conflict(
+                "completion wake delivery",
+                "canonical timeline coordinates must be positive",
+            ));
+        }
+        let transaction = self.begin()?;
+        let existing = read_completion_wake_delivery(
+            &transaction,
+            delivery.wake.project_id,
+            delivery.wake.mini_project_id,
+            delivery.wake.completion_revision,
+            &delivery.wake.reason,
+            delivery.wake.seat_binding_id,
+            delivery.occupancy_generation,
+            &delivery.native_identity.native_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "completion wake delivery",
+        })?;
+        if existing.message_id != delivery.message_id
+            || existing.body != delivery.body
+            || existing.body_hash != delivery.body_hash
+            || existing.native_identity != delivery.native_identity
+            || existing.wake.receipt != delivery.wake.receipt
+            || existing.wake.appended_at != delivery.wake.appended_at
+        {
+            return Err(conflict(
+                "completion wake delivery",
+                "the acknowledgement does not name the frozen delivery",
+            ));
+        }
+        if let Some(existing_at) = existing.acknowledged_at
+            && (existing_at != acknowledged_at
+                || existing.timeline_epoch != Some(timeline_epoch)
+                || existing.timeline_sequence != Some(timeline_sequence))
+        {
+            return Err(conflict(
+                "completion wake delivery",
+                "canonical acknowledgement evidence cannot be replaced",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE epic_completion_wake_deliveries
+                 SET acknowledged_at = COALESCE(acknowledged_at, ?8),
+                     timeline_epoch = COALESCE(timeline_epoch, ?9),
+                     timeline_sequence = COALESCE(timeline_sequence, ?10)
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND completion_revision = ?3 AND reason = ?4
+                   AND seat_binding_id = ?5 AND occupancy_generation = ?12
+                   AND native_id = ?6 AND message_id = ?7 AND body_hash = ?11",
+                params![
+                    delivery.wake.project_id.to_string(),
+                    delivery.wake.mini_project_id.to_string(),
+                    i64::try_from(delivery.wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    delivery.wake.reason.as_str(),
+                    delivery.wake.seat_binding_id.to_string(),
+                    delivery.native_identity.native_id.as_str(),
+                    delivery.message_id,
+                    text(acknowledged_at),
+                    i64::try_from(timeline_epoch).unwrap_or(i64::MAX),
+                    i64::try_from(timeline_sequence).unwrap_or(i64::MAX),
+                    delivery.body_hash.as_str(),
+                    i64::try_from(delivery.occupancy_generation).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::NotFound {
+                subject: "completion wake delivery",
+            });
+        }
+        transaction
+            .execute(
+                "UPDATE epic_completion_wakes SET acknowledged_at = COALESCE(acknowledged_at, ?6)
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND completion_revision = ?3 AND reason = ?4 AND seat_binding_id = ?5",
+                params![
+                    delivery.wake.project_id.to_string(),
+                    delivery.wake.mini_project_id.to_string(),
+                    i64::try_from(delivery.wake.completion_revision.get()).unwrap_or(i64::MAX),
+                    delivery.wake.reason.as_str(),
+                    delivery.wake.seat_binding_id.to_string(),
+                    text(acknowledged_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)
+    }
+
+    /// Every exact-native delivery retained for one epic, in wake/native order.
+    pub fn list_completion_wake_deliveries(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<StoredCompletionWakeDelivery>> {
+        let wakes = self.list_completion_wakes(project_id, mini_project_id)?;
+        let mut deliveries = Vec::new();
+        for wake in wakes {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT occupancy_generation, native_id
+                     FROM epic_completion_wake_deliveries
+                     WHERE project_id = ?1 AND mini_project_id = ?2
+                       AND completion_revision = ?3 AND reason = ?4 AND seat_binding_id = ?5
+                     ORDER BY occupancy_generation, native_id",
+                )
+                .map_err(backend)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        project_id.to_string(),
+                        mini_project_id.to_string(),
+                        i64::try_from(wake.completion_revision.get()).unwrap_or(i64::MAX),
+                        wake.reason.as_str(),
+                        wake.seat_binding_id.to_string(),
+                    ],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(backend)?;
+            for row in rows {
+                let (occupancy_generation, native_id) = row.map_err(backend)?;
+                let occupancy_generation =
+                    u64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                        detail: "a completion wake occupancy generation is invalid".to_owned(),
+                    })?;
+                let native_id = ExternalId::parse(&native_id)?;
+                if let Some(delivery) = read_completion_wake_delivery(
+                    &self.connection,
+                    project_id,
+                    mini_project_id,
+                    wake.completion_revision,
+                    &wake.reason,
+                    wake.seat_binding_id,
+                    occupancy_generation,
+                    &native_id,
+                )? {
+                    deliveries.push(delivery);
+                }
+            }
+        }
+        Ok(deliveries)
+    }
+
+    /// Distinct epic scopes that hold at least one Completion wake.
+    pub fn completion_wake_scopes(&self) -> RepositoryResult<Vec<(ProjectId, MiniProjectId)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT project_id, mini_project_id
+                 FROM epic_completion_wakes ORDER BY project_id, mini_project_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        let mut scopes = Vec::new();
+        for row in rows {
+            let (project, epic) = row.map_err(backend)?;
+            scopes.push((ProjectId::parse(&project)?, MiniProjectId::parse(&epic)?));
+        }
+        Ok(scopes)
     }
 
     /// The distinct artifact-contract keys one task has durable evidence for.

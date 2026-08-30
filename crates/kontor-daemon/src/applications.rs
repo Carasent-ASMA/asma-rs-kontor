@@ -144,11 +144,11 @@ use kontor_core::repository::{
     OpenQuestionRepository, ProjectRepository, ProjectTopologyDefault, ProviderUsageObservation,
     RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
     SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    TaskTransitionRequest, TaskWorkflow, TicketLink, TicketRepository, TopologyRepository,
-    WorkflowRepository,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow, TicketLink, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -9338,9 +9338,7 @@ fn has_fresh_provider_reported_headroom(
     let mut selectable = accounts
         .iter()
         .filter(|account| account.selectable_providers.contains(&rung.provider.0));
-    let Some(account) = selectable.next() else {
-        return None;
-    };
+    let account = selectable.next()?;
     if selectable.next().is_some() {
         // The runtime launch request freezes a governed provider alias but not
         // an account id. More than one profile able to select the same alias
@@ -11484,6 +11482,167 @@ impl Services {
             }
         }
         Ok(next)
+    }
+
+    /// Deliver the newest Completion projection to the exact native currently
+    /// filling its persistent TPM SeatBinding.
+    ///
+    /// The durable delivery row is claimed before the runtime effect and owns
+    /// the stable message id/body. A replacement keeps the logical wake but
+    /// claims a distinct native-scoped delivery, while a retry for the same
+    /// native reuses the winner and lets canonical history answer lost acks.
+    async fn drain_latest_completion_wake(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let Some(stored) = state
+            .with_store(|store| store.get_epic_completion(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(false);
+        };
+        let current = self.completion_state(&stored)?;
+        let Some(wake) = state
+            .with_store(|store| {
+                store.latest_completion_wake(project_id, epic_id, current.tpm_seat_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(false);
+        };
+        // A newer state without its corresponding wake is a partial commit to
+        // repair, not permission to send an older projection as though current.
+        if wake.completion_revision != stored.revision {
+            return Ok(false);
+        }
+        let Some(hosted) = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, wake.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(false);
+        };
+        let Some(occupancy_generation) = state
+            .with_store(|store| {
+                store.hosted_topology_seat_occupancy_generation(project_id, wake.seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(false);
+        };
+        // This is a frozen projection, not a URL the narrowly scoped TPM may
+        // be unable to read. Exclude cursor and delivery status: both move when
+        // this very message is acknowledged, while the completion state and
+        // wake identity are immutable at this revision.
+        let projection = serde_json::to_string(&serde_json::json!({
+            "schema_version": 1,
+            "kind": "kontor_completion_wake",
+            "project_id": project_id,
+            "epic_id": epic_id,
+            "completion_revision": wake.completion_revision,
+            "reason": wake.reason,
+            "definition_hash": stored.definition_hash,
+            "state": stored.state,
+        }))
+        .map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the completion wake does not serialize",
+            )
+        })?;
+        let body = BoundedText::parse(&format!(
+            "Kontor Completion wake. Continue only the bounded coordination authorized by this projection.\n{projection}"
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let candidate = StoredCompletionWakeDelivery {
+            wake,
+            occupancy_generation,
+            native_identity: hosted.native_identity.clone(),
+            message_id: MessageId::generate().to_string(),
+            body_hash: ContentHash::of(body.as_str().as_bytes()),
+            body,
+            created_at: kontor_api::now(),
+            acknowledged_at: None,
+            timeline_epoch: None,
+            timeline_sequence: None,
+        };
+        let delivery = state
+            .with_store(|store| store.claim_completion_wake_delivery(&candidate))
+            .map_err(|error| self.refuse(&error))?;
+        if delivery.acknowledged_at.is_some() {
+            return Ok(false);
+        }
+        let still_current = state
+            .with_store(|store| {
+                let hosted = store.get_hosted_topology_seat(
+                    delivery.wake.project_id,
+                    delivery.wake.seat_binding_id,
+                )?;
+                let occupancy = store.hosted_topology_seat_occupancy_generation(
+                    delivery.wake.project_id,
+                    delivery.wake.seat_binding_id,
+                )?;
+                Ok::<bool, RepositoryError>(
+                    hosted
+                        .as_ref()
+                        .is_some_and(|hosted| hosted.native_identity == delivery.native_identity)
+                        && occupancy == Some(delivery.occupancy_generation),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        if !still_current {
+            return Ok(false);
+        }
+        let message_id =
+            MessageId::parse(&delivery.message_id).map_err(|error| self.refuse_domain(&error))?;
+        let Some(adapter) = state.runtimes().get(&delivery.native_identity.runtime_kind) else {
+            return Ok(false);
+        };
+        let outcome = adapter
+            .message_hosted_seat(&HostedSeatMessageRequest {
+                seat_binding_id: delivery.wake.seat_binding_id,
+                identity: delivery.native_identity.clone(),
+                message_id,
+                body: delivery.body.clone(),
+                sent_at: delivery.created_at,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        state
+            .with_store(|store| {
+                store.acknowledge_completion_wake_delivery(
+                    &delivery,
+                    outcome.accepted_at,
+                    outcome.position.epoch,
+                    outcome.position.sequence,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(true)
+    }
+
+    /// Best-effort effect seam used after the durable owner mutation. A runtime
+    /// refusal leaves the wake/delivery row pending for startup reconciliation;
+    /// it never rolls back the completion or route correction that created it.
+    async fn try_drain_completion_wake(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> bool {
+        match self.drain_latest_completion_wake(project_id, epic_id).await {
+            Ok(delivered) => delivered,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = %project_id,
+                    epic_id = %epic_id,
+                    code = %error.code.as_str(),
+                    "the newest Completion wake remains pending"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -15092,6 +15251,7 @@ impl ApplicationOperations for Services {
             plan.epic.revision,
             &intent,
         )?;
+        self.try_drain_completion_wake(project_id, epic_id).await;
         Ok(CoreTeamRouteOutcomeDto {
             core_team: self.epic_core_team_dto(project_id, epic_id, &plan.roster)?,
             seat_binding_id: plan.binding.id,
@@ -15245,6 +15405,7 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
         let was_empty = plan.active.is_none();
+        self.try_drain_completion_wake(project_id, epic_id).await;
         Ok(CoreTeamSeatClaimOutcomeDto {
             core_team: self.epic_core_team_dto(project_id, epic_id, &plan.roster)?,
             seat_binding_id: plan.binding.id,
@@ -16824,7 +16985,7 @@ impl ApplicationOperations for Services {
         let attempt = if let Some(attempt) = pending_attempt {
             attempt
         } else {
-            let attempt = state
+            state
                 .with_store(|store| {
                     store.prepare_consultation_recovery_attempt(&NewConsultationRecoveryAttempt {
                         project_id,
@@ -16837,8 +16998,7 @@ impl ApplicationOperations for Services {
                         prepared_at: kontor_api::now(),
                     })
                 })
-                .map_err(|error| self.refuse(&error))?;
-            attempt
+                .map_err(|error| self.refuse(&error))?
         };
         if attempt.recovery_profile_hash != *recovery_profile.hash() {
             return Err(self.deny(
@@ -17889,6 +18049,11 @@ impl ApplicationOperations for Services {
                 epic.revision,
                 &intent,
             )?;
+            // Replaying the owner mutation is also a safe reconciliation seam:
+            // the completion may have committed while its hosted wake lost an
+            // acknowledgement. The durable delivery claim keeps this retry
+            // idempotent for the current TPM occupancy.
+            self.try_drain_completion_wake(project_id, epic_id).await;
             // No observation is derived on a replay. The effect already
             // happened, and re-deriving it could refuse for a reason that has
             // nothing to do with this call — an integration outcome that has
@@ -17971,6 +18136,7 @@ impl ApplicationOperations for Services {
             epic.revision,
             &intent,
         )?;
+        self.try_drain_completion_wake(project_id, epic_id).await;
         Ok(CompletionOutcomeDto {
             state: self.completion_dto(&next, &compiled)?,
             receipt: MutationReceiptDto {
@@ -18281,6 +18447,7 @@ impl ApplicationOperations for Services {
                     })
                     .map_err(|error| self.refuse_remediation_command(&error))?;
                 state.signals().appended();
+                self.try_drain_completion_wake(project_id, epic_id).await;
                 Ok(CompletionOutcomeDto {
                     state: self.completion_dto(&next, &compiled)?,
                     receipt: MutationReceiptDto {
@@ -20472,6 +20639,20 @@ impl ApplicationOperations for Services {
                 {
                     delivered += 1;
                 }
+            }
+        }
+        Ok(delivered)
+    }
+
+    async fn retry_completion_wakes(&self) -> Result<usize, ApiError> {
+        let state = self.state()?;
+        let scopes = state
+            .with_store(SqliteStore::completion_wake_scopes)
+            .map_err(|error| self.refuse(&error))?;
+        let mut delivered = 0usize;
+        for (project_id, epic_id) in scopes {
+            if self.try_drain_completion_wake(project_id, epic_id).await {
+                delivered = delivered.saturating_add(1);
             }
         }
         Ok(delivered)

@@ -21,12 +21,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 
+#[cfg(target_os = "macos")]
+use kontor_accounts::SystemKeychain;
 use kontor_accounts::{
     AccountAvailability, AccountEnvironmentMap, AccountProfileDraft, AccountResolver,
     AccountService, AvailabilityObservation, FailoverReason, FailoverRefusal, FailoverRequest,
     KeychainBackend, KeychainFailure, KeychainTarget, LaunchAdmissionRequest, LaunchRefusal,
-    PolicyError, ResolutionReason, ResolverPolicy, ResolverPolicyBuilder, SystemKeychain,
-    admit_pinned_launch, fail_over_to_new_run,
+    PolicyError, ResolutionReason, ResolverPolicy, ResolverPolicyBuilder, admit_pinned_launch,
+    fail_over_to_new_run,
 };
 use kontor_core::DomainError;
 use kontor_core::id::{

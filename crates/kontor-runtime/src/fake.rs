@@ -501,6 +501,10 @@ struct FakeState {
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Stable message ledger per exact hosted native. A logical seat may be
+    /// replaced, so keying this by SeatBinding would incorrectly make a
+    /// successor inherit its predecessor's deliveries.
+    hosted_messages: BTreeMap<ExternalId, MessageLedger<HostedSeatMessageOutcome>>,
     /// Actual routes of already-running sessions made claimable by a test.
     hosted_claim_routes: BTreeMap<ExternalId, ModelRung>,
     /// Native id -> (container id, provider session id, visible title).
@@ -972,6 +976,7 @@ impl ScriptedFakeRuntime {
                 consultations: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
+                hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
@@ -2164,6 +2169,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .hosted_seats
             .insert(request.seat_binding_id, outcome.clone());
+        state
+            .hosted_messages
+            .entry(outcome.identity.native_id.clone())
+            .or_default();
         state.seat_titles.insert(
             outcome.identity.native_id.clone(),
             (
@@ -2314,6 +2323,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             },
         );
         state
+            .hosted_messages
+            .entry(preview.identity.native_id.clone())
+            .or_default();
+        state
             .calls
             .push(AdapterCall::ClaimHostedSeat(request.seat_binding_id));
         Ok(HostedSeatClaimOutcome {
@@ -2403,13 +2416,29 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         if held.identity != request.identity {
             return Err(RuntimeError::CorrelationFailed);
         }
+        let body_hash = ContentHash::of(request.body.as_str().as_bytes());
+        let epoch = state.epoch;
+        let ledger = state
+            .hosted_messages
+            .entry(request.identity.native_id.clone())
+            .or_default();
+        if let Admission::Replay(outcome) = ledger.admit(&request.message_id, &body_hash)? {
+            return Ok(outcome);
+        }
+        let position = TimelinePosition {
+            epoch,
+            sequence: u64::try_from(ledger.len()).unwrap_or(u64::MAX) + 1,
+        };
+        let outcome = HostedSeatMessageOutcome {
+            message_id: request.message_id,
+            accepted_at: request.sent_at,
+            position,
+        };
+        ledger.record(request.message_id, body_hash, outcome.clone());
         state
             .calls
             .push(AdapterCall::MessageHostedSeat(request.seat_binding_id));
-        Ok(HostedSeatMessageOutcome {
-            message_id: request.message_id,
-            accepted_at: request.sent_at,
-        })
+        Ok(outcome)
     }
 
     async fn retire_hosted_seat(
@@ -3156,6 +3185,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 mod retitle_seat_generation_tests {
     use super::*;
     use crate::capability::{RuntimeLimits, TrustGrade};
+    use kontor_core::id::BoundedText;
     use kontor_core::spec::{ModelRef, ProviderRef};
 
     fn capabilities() -> RuntimeCapabilities {
@@ -3336,5 +3366,88 @@ mod retitle_seat_generation_tests {
         assert!(runtime.calls().iter().all(
             |call| !matches!(call, AdapterCall::RetireHostedSeat(id) if *id == seat_binding_id)
         ));
+    }
+
+    #[tokio::test]
+    async fn hosted_message_replay_is_exact_native_scoped_and_survives_adapter_rebuild() {
+        let runtime = ScriptedFakeRuntime::new(capabilities());
+        let seat_binding_id = SeatBindingId::generate();
+        let predecessor = runtime
+            .lock()
+            .identity(ExternalId::parse("native-hosted-message-old").expect("native id"));
+        runtime.lock().hosted_seats.insert(
+            seat_binding_id,
+            ConsultationLaunchOutcome {
+                identity: predecessor.clone(),
+                provider_session_id: None,
+                observed_at: "2026-08-20T12:00:00Z"
+                    .parse::<Timestamp>()
+                    .expect("timestamp"),
+                created: true,
+            },
+        );
+        let request = HostedSeatMessageRequest {
+            seat_binding_id,
+            identity: predecessor.clone(),
+            message_id: MessageId::parse("0193f000-0000-7000-8000-000000000070")
+                .expect("message id"),
+            body: BoundedText::parse("frozen completion wake").expect("body"),
+            sent_at: "2026-08-20T12:01:00Z"
+                .parse::<Timestamp>()
+                .expect("timestamp"),
+        };
+        let first = runtime
+            .message_hosted_seat(&request)
+            .await
+            .expect("the first message lands");
+        runtime.rebuild_adapter_state();
+        let replay = runtime
+            .message_hosted_seat(&request)
+            .await
+            .expect("canonical fake runtime evidence survives adapter rebuild");
+        assert_eq!(replay, first);
+        assert_eq!(
+            runtime
+                .calls()
+                .iter()
+                .filter(|call| matches!(call, AdapterCall::MessageHostedSeat(id) if *id == seat_binding_id))
+                .count(),
+            1,
+            "a stable id/body has one predecessor effect"
+        );
+
+        let successor = runtime
+            .lock()
+            .identity(ExternalId::parse("native-hosted-message-new").expect("native id"));
+        runtime.lock().hosted_seats.insert(
+            seat_binding_id,
+            ConsultationLaunchOutcome {
+                identity: successor.clone(),
+                provider_session_id: None,
+                observed_at: request.sent_at,
+                created: true,
+            },
+        );
+        let successor_request = HostedSeatMessageRequest {
+            identity: successor,
+            ..request.clone()
+        };
+        runtime
+            .message_hosted_seat(&successor_request)
+            .await
+            .expect("a successor has a distinct exact-native delivery ledger");
+        assert!(matches!(
+            runtime.message_hosted_seat(&request).await,
+            Err(RuntimeError::CorrelationFailed)
+        ));
+        assert_eq!(
+            runtime
+                .calls()
+                .iter()
+                .filter(|call| matches!(call, AdapterCall::MessageHostedSeat(id) if *id == seat_binding_id))
+                .count(),
+            2,
+            "the successor effect is not mistaken for its predecessor's replay"
+        );
     }
 }

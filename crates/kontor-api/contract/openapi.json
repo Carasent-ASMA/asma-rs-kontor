@@ -3239,7 +3239,7 @@
         "tags": [
           "applications"
         ],
-        "summary": "Apply one still-current Core Team route correction without replacing its logical seat.",
+        "summary": "Apply one still-current Core Team route correction or stale-native recovery.",
         "operationId": "apply_core_team_route",
         "parameters": [
           {
@@ -3320,7 +3320,7 @@
         "tags": [
           "applications"
         ],
-        "summary": "Preview an exact provider/model correction for one persistent Core Team seat.",
+        "summary": "Preview an exact route correction or stale-native recovery for one persistent Core Team seat.",
         "operationId": "preview_core_team_route",
         "parameters": [
           {
@@ -12046,7 +12046,7 @@
       },
       "CoreTeamRoutePreviewDto": {
         "type": "object",
-        "description": "Read-only route-correction plan for one persistent Core Team seat.",
+        "description": "Read-only route-correction or stale-native recovery plan for one persistent Core Team seat.",
         "required": [
           "realm_id",
           "project_id",
@@ -12066,7 +12066,7 @@
           },
           "desired_model_route": {
             "$ref": "#/components/schemas/RuntimeModelRouteRequest",
-            "description": "Requested replacement route."
+            "description": "Requested successor route, which may equal the current route during recovery."
           },
           "epic_id": {
             "type": "string",
@@ -12105,7 +12105,7 @@
       },
       "CoreTeamRoutePreviewRequest": {
         "type": "object",
-        "description": "Exact in-place correction requested for one persistent Core Team seat.",
+        "description": "Exact in-place route correction or stale-native recovery for one persistent Core Team seat.",
         "required": [
           "expected_revision",
           "seat_binding_id",
@@ -14350,7 +14350,7 @@
           },
           "native_id": {
             "type": "string",
-            "description": "The native container identity it reported."
+            "description": "The exact native identity it reported."
           },
           "native_name": {
             "type": [

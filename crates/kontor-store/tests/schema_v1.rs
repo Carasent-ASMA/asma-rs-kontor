@@ -63,6 +63,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_completion_remediation_command_claims",
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
+    "epic_completion_wake_deliveries",
     "epic_native_name_tokens",
     "epic_execution_scopes",
     "epic_rosters",
@@ -470,11 +471,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v68 adds immutable native-less materialization reroute
-    // lineage and receipt authority; v69 widens global Committee recovery
-    // rounds to the scheduler's positive u8 domain and v70 reconciles any
-    // intermediate v69 projection against the same published shape.
-    assert_eq!(SCHEMA_VERSION, 70);
+    // side effect. v68 adds immutable native-less materialization reroute;
+    // v69 widens global Committee recovery rounds; v70 reconciles intermediate
+    // v69 projections; and v71 adds exact-occupancy durable Completion-wake
+    // delivery evidence.
+    assert_eq!(SCHEMA_VERSION, 71);
 }
 
 #[test]
@@ -1267,6 +1268,27 @@ fn v69_preserves_global_round_rows_and_opens_the_positive_u8_domain() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("the reconciled schema version reads"),
         70
+    );
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0071_completion_wake_deliveries.sql"
+        ))
+        .expect("the v71 wake-delivery migration applies over deployed v70");
+    let delivery_table: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema
+             WHERE type = 'table' AND name = 'epic_completion_wake_deliveries'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the wake-delivery table is installed");
+    assert!(delivery_table.contains("occupancy_generation"));
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the wake-delivery schema version reads"),
+        71
     );
 }
 

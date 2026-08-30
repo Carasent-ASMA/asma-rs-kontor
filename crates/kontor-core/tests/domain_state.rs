@@ -1715,6 +1715,12 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("settle_advisor_run", "mini_project", "witness", None),
     ("invoke_committee_run", "mini_project", "witness", None),
     ("recover_consultation_seat", "mini_project", "witness", None),
+    (
+        "reroute_unmaterialized_consultation_seat",
+        "mini_project",
+        "witness",
+        None,
+    ),
     ("record_committee_findings", "mini_project", "witness", None),
     ("settle_committee_run", "mini_project", "witness", None),
     // The two completion writes are about one epic's own frozen run.

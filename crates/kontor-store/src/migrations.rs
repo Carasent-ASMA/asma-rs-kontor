@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 70;
+pub const SCHEMA_VERSION: i64 = 71;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -279,6 +279,10 @@ const MIGRATIONS: &[&str] = &[
     // rebuild is deliberately safe over both that partial projection and the
     // published v69 projection, and restores the full positive u8 domain.
     include_str!("../migrations/0070_reconcile_global_committee_rounds.sql"),
+    // Schema v71. Completion wake delivery is scoped to an exact hosted TPM
+    // native occupancy and freezes one stable message id/body for replay-safe
+    // canonical-history reconciliation across replacement and restart.
+    include_str!("../migrations/0071_completion_wake_deliveries.sql"),
 ];
 
 const _: () = assert!(

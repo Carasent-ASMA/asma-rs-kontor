@@ -12,8 +12,8 @@ description = "Native Jira policy and transport for Kontor."
 workspace = true
 
 [dependencies]
-kontor-accounts = { path = "../kontor-accounts", version = "=0.2.0" }
-kontor-core = { path = "../kontor-core", version = "=0.2.0" }
+kontor-accounts = { path = "../kontor-accounts", version = "=0.2.1" }
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
