@@ -1019,13 +1019,23 @@ fn opencode_rung() -> ModelRung {
 /// The launch-intent digest this launch will carry, derived independently of
 /// the adapter from the same inputs it is given.
 fn expected_intent(binding: RuntimeBindingId, run: AgentRunId, autonomy: SeatAutonomy) -> String {
+    expected_intent_in_slot(binding, run, autonomy, "implement-a", "Implement • KON-19")
+}
+
+fn expected_intent_in_slot(
+    binding: RuntimeBindingId,
+    run: AgentRunId,
+    autonomy: SeatAutonomy,
+    role_slot_id: &str,
+    title: &str,
+) -> String {
     let posture = kontor_runtime_paseo::render_posture("opencode", autonomy, &[])
         .expect("opencode expresses this posture");
     let mut config = serde_json::json!({
         "provider": "opencode",
         "cwd": CWD,
         "model": "deepseek/deepseek-v4-flash",
-        "title": "Implement • KON-19",
+        "title": title,
     });
     config["modeId"] = serde_json::json!(posture.mode.expect("a mode"));
     config["providerOptions"] =
@@ -1034,11 +1044,29 @@ fn expected_intent(binding: RuntimeBindingId, run: AgentRunId, autonomy: SeatAut
         binding_id: &binding.to_string(),
         agent_run_id: &run.to_string(),
         workspace_id: WORKSPACE_ID,
-        role_slot_id: "implement-a",
+        role_slot_id,
         config: &config,
     }
     .digest()
     .to_string()
+}
+
+/// The id `prove_first_turn` derives for this launch: reconciliation asks the
+/// timeline about exactly this, so the test derives it the same way rather than
+/// reading it back out of the recorded call.
+fn first_turn_id(agent_run_id: AgentRunId, binding_id: RuntimeBindingId) -> String {
+    format!("kontor-first-turn-{agent_run_id}-{binding_id}")
+}
+
+/// A canonical timeline page carrying one user message, under `client_message_id`
+/// when one is given and under an unrelated id when none is.
+fn first_turn_timeline(client_message_id: Option<&str>) -> serde_json::Value {
+    let mut page = v(TIMELINE_MESSAGE_LANDED);
+    page["entries"][0]["item"]["clientMessageId"] = match client_message_id {
+        Some(id) => serde_json::json!(id),
+        None => serde_json::json!("some-other-turn"),
+    };
+    page
 }
 
 /// The agent the daemon reports for a created OpenCode seat.
@@ -1065,18 +1093,56 @@ fn opencode_agent(intent: &str, archived: bool) -> serde_json::Value {
     agent
 }
 
+/// The second seat sharing the worktree: a different native agent, under a
+/// different role slot and agent run, carrying its own launch intent.
+fn opencode_seat_b(intent: &str) -> serde_json::Value {
+    let mut agent = opencode_agent(intent, false);
+    let body = agent["agent"].as_object_mut().expect("an agent object");
+    body.insert("id".to_owned(), serde_json::json!("agt_implement_b"));
+    let labels = body
+        .get_mut("labels")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("labels");
+    labels.insert(
+        "kontor.agent-run".to_owned(),
+        serde_json::json!(format!("kontor-run-{RUN_QA}")),
+    );
+    labels.insert("kontor.role".to_owned(), serde_json::json!("implement-b"));
+    labels.insert(
+        "kontor.role_slot_id".to_owned(),
+        serde_json::json!("implement-b"),
+    );
+    agent
+}
+
 /// Build one OpenCode launch request against a plane, returning the ids the
 /// intent digest is derived from.
 async fn opencode_launch(
     plane: &Plane,
     workspace: &WorkspaceBindingSnapshot,
 ) -> (LaunchRequest, RuntimeBindingId, AgentRunId) {
-    let agent_run_id = run(RUN_IMPLEMENT);
+    opencode_launch_in_slot(
+        plane,
+        workspace,
+        "implement-a",
+        "Implement • KON-19",
+        run(RUN_IMPLEMENT),
+    )
+    .await
+}
+
+async fn opencode_launch_in_slot(
+    plane: &Plane,
+    workspace: &WorkspaceBindingSnapshot,
+    role_slot_id: &str,
+    title: &str,
+    agent_run_id: AgentRunId,
+) -> (LaunchRequest, RuntimeBindingId, AgentRunId) {
     let binding_id = RuntimeBindingId::generate();
     let authority = plane
         .adapter
         .admit_launch(&AdmissionRequest {
-            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            slot: RoleSlotKey::new(team_run(), slot(role_slot_id)),
             agent_run_id,
             binding_id,
             replaces: None,
@@ -1088,10 +1154,10 @@ async fn opencode_launch(
         .expect("an authority");
     let request = authority.into_request(LaunchParts {
         scope: execution_scope(),
-        display_name: name("Implement • KON-19"),
+        display_name: name(title),
         agent_run_id,
         team_run_id: team_run(),
-        role_slot_id: slot("implement-a"),
+        role_slot_id: slot(role_slot_id),
         task_id: task(),
         binding_id,
         placement: Some(LaunchPlacement::Workspace(workspace.clone())),
@@ -1353,6 +1419,178 @@ async fn an_uncorrelated_acceptance_does_not_bind() {
         plane.daemon.count("rpc archive_agent_request"),
         1,
         "and the unproved seat is compensated"
+    );
+}
+
+/// A first-turn acknowledgement the channel lost is settled by looking for the
+/// message id on the agent's own timeline — never by prompting again.
+///
+/// The id is derived from the launch rather than generated, so the same launch
+/// asks about the same message every time. A second send would be a second turn
+/// on a seat that already has one, and on an autonomous seat that means the work
+/// starts twice.
+#[tokio::test]
+async fn a_lost_first_turn_acknowledgement_is_settled_by_the_timeline() {
+    let recorded = opencode_capable_daemon();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = expected_intent(binding_id, agent_run_id, SeatAutonomy::Bounded);
+
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        serde_json::json!({ "status": "agent_created", "agent": opencode_agent(&intent, false)["agent"] }),
+    );
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", opencode_agent(&intent, false));
+    // The prompt landed; the answer did not come back.
+    plane.daemon.lose_next_rpc("send_agent_message_request");
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_timeline_request",
+        first_turn_timeline(Some(&first_turn_id(agent_run_id, binding_id))),
+    );
+
+    plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("the timeline settles what the acknowledgement could not");
+
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        1,
+        "the first turn was never prompted a second time"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "a seat whose turn is on its own timeline is proved, not compensated"
+    );
+}
+
+/// A first turn that is *not* on the timeline is unproved: the seat is
+/// compensated and the launch refuses. It is still never prompted again.
+#[tokio::test]
+async fn a_first_turn_absent_from_the_timeline_compensates_without_prompting_again() {
+    let recorded = opencode_capable_daemon();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = expected_intent(binding_id, agent_run_id, SeatAutonomy::Bounded);
+
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        serde_json::json!({ "status": "agent_created", "agent": opencode_agent(&intent, false)["agent"] }),
+    );
+    plane.daemon.lose_next_rpc("send_agent_message_request");
+    // Somebody else's turn, on the same agent: the id is what decides, not the
+    // presence of *a* message.
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", first_turn_timeline(None));
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_agent_request", opencode_agent(&intent, false));
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_agent_request", opencode_agent(&intent, true));
+
+    plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an unconfirmed first turn is not a proof");
+
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        1,
+        "an absent message is not authority to send another"
+    );
+    assert_eq!(plane.daemon.count("rpc archive_agent_request"), 1);
+}
+
+/// Two OpenCode seats in one worktree get two agents, two launch intents, and
+/// two first turns — and neither writes anything into the tree they share.
+///
+/// This is the 2026-08-22 failure's other half. Seats that carried their posture
+/// in a worktree file could not share a worktree without racing over it; a
+/// posture that rides on the create has nothing to race over, and the census
+/// that reconciles a lost acknowledgement keys on labels that name one seat.
+///
+/// That nothing is written is proved against a real directory by
+/// `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`; this test
+/// owns the other half — two creates, two intents, two turns, no interference.
+#[tokio::test]
+async fn two_opencode_seats_in_one_worktree_are_created_independently() {
+    let recorded = opencode_capable_daemon();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let (first, first_binding, first_run) = opencode_launch(&plane, &workspace).await;
+    let (second, second_binding, second_run) = opencode_launch_in_slot(
+        &plane,
+        &workspace,
+        "implement-b",
+        "Implement • KON-19 • B",
+        run(RUN_QA),
+    )
+    .await;
+
+    let first_intent = expected_intent(first_binding, first_run, SeatAutonomy::Bounded);
+    let second_intent = expected_intent_in_slot(
+        second_binding,
+        second_run,
+        SeatAutonomy::Bounded,
+        "implement-b",
+        "Implement • KON-19 • B",
+    );
+    assert_ne!(
+        first_intent, second_intent,
+        "two seats in one worktree must be distinguishable to the census that \
+         adopts a lost create"
+    );
+
+    // Two distinct native seats, each carrying its own slot's labels.
+    let seats = [
+        (&first, opencode_agent(&first_intent, false), AGENT_ID),
+        (&second, opencode_seat_b(&second_intent), "agt_implement_b"),
+    ];
+
+    for (request, agent, native_id) in &seats {
+        plane.daemon.set_answer_rpc(
+            "create_agent_request",
+            serde_json::json!({ "status": "agent_created", "agent": agent["agent"] }),
+        );
+        plane
+            .daemon
+            .set_answer_rpc("fetch_agent_request", agent.clone());
+        plane.daemon.set_answer_rpc(
+            "send_agent_message_request",
+            serde_json::json!({ "agentId": native_id, "accepted": true, "error": null }),
+        );
+        plane
+            .adapter
+            .launch(request)
+            .await
+            .unwrap_or_else(|error| panic!("{error:?} after {:?}", plane.daemon.calls()));
+    }
+
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        2,
+        "one create each: {:?}",
+        plane.daemon.calls()
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        2,
+        "one first turn each"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "neither seat was compensated"
     );
 }
 

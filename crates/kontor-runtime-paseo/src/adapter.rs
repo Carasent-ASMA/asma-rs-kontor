@@ -3363,12 +3363,10 @@ impl PaseoAdapter {
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
         //
-        // An OpenCode seat writes nothing here. Its posture was proved above,
-        // against the resolving binary, out of a Kontor-owned configuration root
-        // outside the worktree — and with project configuration disabled, a file
-        // written into the worktree would not be read at all. Writing one anyway
-        // would put two seats sharing a worktree back in each other's way and
-        // change operator state for no effect.
+        // An OpenCode seat writes nothing here. Its posture rides in the
+        // `providerOptions.permission` the create above carried, so there is no
+        // file for it to be written into — which is also why two OpenCode seats
+        // can share one worktree: they have nothing to race over.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
@@ -3439,11 +3437,10 @@ impl PaseoAdapter {
             return Err(unproved);
         }
         // No post-placement re-read of a worktree file, because there is no
-        // worktree file: an OpenCode seat's posture rides in the environment
-        // `agent run` carried, out of a Kontor-owned root the seat cannot write,
-        // and it was proved against the resolving binary before this call was
-        // made. Nothing between that proof and this line can reach it, so there
-        // is no drift window here to compensate for.
+        // worktree file: the posture is a field of the agent the daemon
+        // persisted, and the first turn this seat was bound on already ran under
+        // it. There is no drift window here because there is nothing on disk for
+        // anything to drift from.
         let snapshot = self.bind(
             request.agent_run_id(),
             request.binding_id(),
@@ -3677,7 +3674,7 @@ impl PaseoAdapter {
         })
     }
 
-    /// Recover a launch whose acknowledgement was lost.    /// Recover a launch whose acknowledgement was lost.
+    /// Recover a launch whose acknowledgement was lost.
     ///
     /// The full label set is planted on the agent, so exactly one agent in this
     /// project can legitimately match. The three outcomes are all refusals to

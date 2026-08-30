@@ -162,25 +162,25 @@ impl SeatPosture {
 
 /// The posture a delivery seat launches under, or a refusal.
 ///
-/// # Why OpenCode is refused here
+/// # Why OpenCode's block is rendered here but never written
 ///
-/// OpenCode carries its posture in a written permission block rather than in a
-/// mode, and Kontor cannot prove what block the spawned process will actually
-/// resolve. The deciding inputs include environment variables read by that
-/// process — `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` both inject
-/// permissions, and `OPENCODE_DISABLE_PROJECT_CONFIG` makes it ignore the
-/// composed file entirely — and the process is created by Paseo, whose
-/// `agent run` exposes no way to set or read its environment (verified against
-/// Paseo 0.6.1). Reading configuration files from the daemon therefore cannot
-/// establish the seat's effective policy, and resolving them in the daemon's own
-/// environment answers a different question than the one that matters.
+/// OpenCode carries its posture in a permission block rather than in a mode, and
+/// no file or environment variable can deliver that block provably. The inputs
+/// that decide it are read by the *spawned* process, and several of them sit
+/// above anything Kontor could write: `OPENCODE_CONFIG_CONTENT` and
+/// `OPENCODE_PERMISSION` inject permissions outright,
+/// `OPENCODE_DISABLE_PROJECT_CONFIG` discards the project layer, and the
+/// active-org remote config and managed profiles merge later still and depend on
+/// who the seat authenticated as.
 ///
-/// So an OpenCode delivery launch is refused before any native effect rather
-/// than reported as running under a posture nobody verified. This is an interim
-/// safe state, not the shape of the feature: it lifts as soon as Paseo exposes
-/// an attested resolved configuration, or a seat environment Kontor can verify.
-/// The composition, the floor and the readback below are kept and kept tested
-/// because they are what that surface switches back on.
+/// So the block this function renders does not go to disk. It travels as
+/// `config.providerOptions.permission` on the seat's `create_agent_request`,
+/// which the daemon validates, persists on the agent, and replays into
+/// `session.promptAsync` on every turn — leaving the merge order above nothing
+/// to act on. See
+/// [`PaseoRpc::delivery_agent_create`](crate::client::PaseoRpc::delivery_agent_create)
+/// for the create and `PaseoAdapter::prove_first_turn` for the acceptance a
+/// launch binds on.
 ///
 /// Consultation is unaffected — it runs through
 /// [`consultation_route_permission_mode`](crate::client::consultation_route_permission_mode),
@@ -989,21 +989,17 @@ mod tests {
         );
     }
 
-    /// An OpenCode delivery seat is refused until its posture can be proved.
+    /// An OpenCode delivery seat renders its block here and carries it on the
+    /// create, so this renderer must admit OpenCode at every posture.
     ///
-    /// The deciding inputs — `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION`,
-    /// `OPENCODE_DISABLE_PROJECT_CONFIG` — are read by the spawned process,
-    /// which Paseo creates and whose environment `agent run` neither sets nor
-    /// reports. Until that surface exists, claiming a verified posture would be
-    /// claiming something nothing checks.
+    /// Refusing here would refuse OpenCode delivery outright. What actually
+    /// governs a launch is the adapter's gate — the daemon must accept typed
+    /// per-agent `providerOptions` — and then the first turn it binds on.
     #[test]
     fn opencode_renders_here_and_is_proved_at_the_launch_boundary() {
-        // The renderer admits OpenCode: refusing here would refuse it
-        // unconditionally, and what actually governs an OpenCode launch is the
-        // proof the adapter runs before creating anything — the daemon must
-        // apply per-agent environment, the resolving binary must be a version
-        // this posture was proved against, and its resolved permission must
-        // equal this block exactly.
+        // Every posture renders a block, because the block is what the create
+        // carries. A posture that rendered none would create a seat with no
+        // policy in `providerOptions` at all.
         for autonomy in [
             SeatAutonomy::Bounded,
             SeatAutonomy::Supervised,

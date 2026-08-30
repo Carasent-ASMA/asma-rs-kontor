@@ -164,12 +164,11 @@ pub fn compose_for_seat(
     let harness = crate::client::built_in_provider(provider);
     // **No OpenCode configuration is written here, by any provider.**
     //
-    // An OpenCode seat's posture now travels in a Kontor-owned configuration
-    // root outside the worktree, named through `agent run --env` and proved
-    // against the resolving binary before the seat is created. Project
-    // configuration is disabled for that seat, so a file written into the
-    // worktree would not be read — it would only put two seats sharing a
-    // worktree back in each other's way, and change operator state for nothing.
+    // An OpenCode seat's posture travels in the `providerOptions.permission` of
+    // its `create_agent_request`, which the daemon persists and replays into
+    // every turn. It never passes through a file, so no file here could carry
+    // it — writing one would only put two seats sharing a worktree back in each
+    // other's way, and change operator state for nothing.
     //
     // Nor does any other provider touch it: a Claude or Codex seat has no
     // business rewriting OpenCode configuration, and Kontor holds no marker
@@ -798,8 +797,75 @@ mod tests {
         );
     }
 
+    /// An OpenCode seat leaves the worktree it shares exactly as it found it.
+    ///
+    /// Not "no `opencode.json`" — *nothing*: the whole tree is listed before and
+    /// after, at every posture, with a seat MCP configured and without one. This
+    /// is what lets two OpenCode seats share one worktree, so it is asserted
+    /// against the directory rather than against a path the test picked.
+    #[test]
+    fn an_opencode_seat_leaves_the_shared_worktree_untouched() {
+        fn listing(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+            let mut found = Vec::new();
+            let mut pending = vec![root.to_path_buf()];
+            while let Some(directory) = pending.pop() {
+                for entry in std::fs::read_dir(&directory).expect("readable") {
+                    let path = entry.expect("an entry").path();
+                    if path.is_dir() {
+                        pending.push(path);
+                    } else {
+                        found.push((path.clone(), std::fs::read(&path).expect("readable")));
+                    }
+                }
+            }
+            found.sort();
+            found
+        }
+
+        let repo = repo();
+        let cwd = repo.path();
+        std::fs::write(
+            cwd.join("opencode.json"),
+            r#"{"permission": {"bash": "ask"}}"#,
+        )
+        .expect("an operator file the seat must not touch");
+        let before = listing(cwd);
+        assert!(!before.is_empty(), "the oracle would pass on an empty tree");
+
+        for posture in [
+            SeatPosture::read_only(),
+            crate::posture::seat_posture("opencode", kontor_core::spec::SeatAutonomy::Bounded, &[])
+                .expect("bounded"),
+            crate::posture::seat_posture(
+                "opencode",
+                kontor_core::spec::SeatAutonomy::Supervised,
+                &[],
+            )
+            .expect("supervised"),
+            crate::posture::seat_posture(
+                "opencode",
+                kontor_core::spec::SeatAutonomy::Advisory,
+                &[],
+            )
+            .expect("advisory"),
+        ] {
+            for seat_mcp in [None, Some(seat("/realm/state"))] {
+                compose_for_seat(seat_mcp.as_ref(), "opencode", &posture, cwd)
+                    .expect("an OpenCode seat composes nothing");
+                compose_for_seat(seat_mcp.as_ref(), "opencode-work", &posture, cwd)
+                    .expect("an account alias is still the OpenCode harness");
+            }
+        }
+
+        assert_eq!(
+            listing(cwd),
+            before,
+            "an OpenCode seat wrote into the worktree it shares"
+        );
+    }
+
     /// A provider id selects an account, while MCP composition belongs to the
-    /// harness. A Claude account alias must therefore receive the same local
+    /// harness.""" A Claude account alias must therefore receive the same local
     /// MCP boundary as the built-in `claude` id.
     #[test]
     fn a_claude_account_alias_composes_the_same_seat_mcp_boundary() {
