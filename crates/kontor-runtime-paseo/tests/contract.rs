@@ -1091,6 +1091,11 @@ async fn an_opencode_launch_without_per_agent_environment_is_refused_before_any_
     // proved, so the launch is refused — and refused before anything native.
     // Measured across the launch alone: the workspace above is this test's own
     // setup, not something the refused launch created.
+    //
+    // The invariant is **zero native effects**, not zero calls. Reads are
+    // legitimate on this path — the daemon's own `provider diagnostic` is one —
+    // and the claim being pinned is that nothing was *created*. Here the refusal
+    // lands before even that read, so the count is unchanged as well.
     let before = recorded.calls();
     let error = adapter
         .launch(&request)
@@ -1106,10 +1111,20 @@ async fn an_opencode_launch_without_per_agent_environment_is_refused_before_any_
         0,
         "no seat was spawned on the refused launch"
     );
+    for effectful in ["agent run", "workspace create", "project add"] {
+        assert_eq!(
+            after.iter().filter(|call| call.contains(effectful)).count(),
+            before
+                .iter()
+                .filter(|call| call.contains(effectful))
+                .count(),
+            "the refused launch created nothing: `{effectful}`"
+        );
+    }
     assert_eq!(
         after.len(),
         before.len(),
-        "the refused launch spent no native call at all: {:?}",
+        "and on this branch it read nothing either: {:?}",
         &after[before.len().min(after.len())..]
     );
     // The migration: an OpenCode launch writes nothing into the worktree at all,
