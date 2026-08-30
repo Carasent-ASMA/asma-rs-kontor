@@ -34,9 +34,9 @@ for example `KOP` for “Kontor Operational MVP”. The value is immutable and
 case-insensitively unique within that Kontor project. Jira continues to own full
 issue keys such as `ASMA-8001`. Epics created before schema v72 remain readable
 without a code; reapply them through the preview/apply pair to assign one before
-selecting topology v2.
+selecting topology v4.
 
-Operational topology v2 (`01936f5a-1000-7000-8000-000000000001`, revision `2`)
+Operational topology v4 (`01936f5a-1000-7000-8000-000000000001`, revision `4`)
 uses the typed `ITEM_CODE` projection and renders centered-dot names. Enable it
 in this order:
 

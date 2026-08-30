@@ -241,7 +241,7 @@
     {
       "schema_version": 1,
       "spec_id": "01936f5a-1000-7000-8000-000000000001",
-      "version": 2,
+      "version": 4,
       "name": "Operational project session topology",
       "name_separator": " · ",
       "root_kind": "PSW",
