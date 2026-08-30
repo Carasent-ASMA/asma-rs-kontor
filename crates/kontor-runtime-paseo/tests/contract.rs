@@ -6177,6 +6177,7 @@ async fn a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry() {
             jira_issue_key: external("ASMA-7756"),
             ticket_short_code: external("KON-12"),
             canonical_worktree_cwd: root(),
+            permission_overrides: Vec::new(),
         },
     )]
     .into_iter()

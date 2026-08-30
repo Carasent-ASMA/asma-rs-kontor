@@ -98,6 +98,25 @@ pub struct SeatPosture {
     pub auto_accept: Option<bool>,
 }
 
+impl SeatPosture {
+    /// The posture of a seat that may not act on the tree at all.
+    ///
+    /// Consultation seats are read-only by construction: their mode comes from
+    /// [`consultation_permission_mode`](crate::client::consultation_permission_mode),
+    /// which offers no writing spelling, and they receive no permission block —
+    /// a consultation that could mutate is not a consultation. This is the value
+    /// their composition is handed, so "writes nothing" is stated rather than
+    /// arrived at by rendering a posture they were never given.
+    #[must_use]
+    pub const fn read_only() -> Self {
+        Self {
+            mode: None,
+            permission: None,
+            auto_accept: None,
+        }
+    }
+}
+
 /// Render one declared posture for one provider.
 ///
 /// `allowances` relaxes named patterns inside the permission block and **cannot

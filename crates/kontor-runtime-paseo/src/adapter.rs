@@ -220,6 +220,13 @@ pub struct PaseoTaskScope {
     pub ticket_short_code: ExternalId,
     /// The filesystem-canonical task worktree.
     pub canonical_worktree_cwd: WorkspaceRoot,
+    /// Bounded permission relaxations declared for this ticket alone.
+    ///
+    /// Allow-only and named, never a wildcard — see
+    /// [`PermissionAllowance`](crate::posture::PermissionAllowance). Empty for
+    /// every ticket that has not asked for an exception, which is nearly all of
+    /// them: the destructive floor is the default and stays the default.
+    pub permission_overrides: Vec<crate::posture::PermissionAllowance>,
 }
 
 impl PaseoExecutionScope {
@@ -230,6 +237,9 @@ impl PaseoExecutionScope {
                 jira_issue_key: self.jira_issue_key.clone(),
                 ticket_short_code: self.ticket_short_code.clone(),
                 canonical_worktree_cwd: self.canonical_worktree_cwd.clone(),
+                // An epic-level scope names no ticket, so it can carry no
+                // ticket-scoped exception.
+                permission_overrides: Vec::new(),
             });
         }
         self.task_scopes.get(&task_id).cloned()
@@ -3293,15 +3303,33 @@ impl PaseoAdapter {
             },
         )?;
 
-        // Compose the seat's worktree-local MCP config before anything is
-        // spawned, so a Claude seat starts with exactly one kontor server at
-        // operator tier under the consultation profile instead of whatever
-        // ambient harness config the machine carries. Loud on failure: a seat
-        // silently launched without its control-plane surface would fail later,
-        // further from the cause.
+        // Render the declared posture once. The same value composes the seat's
+        // worktree config below and, through the mode table it shares with
+        // `PaseoCommand::agent_run` and `verify_agent_route`, decides the
+        // `--mode` this seat launches and is verified under — so what the seat
+        // reads on disk and what Kontor later checks cannot disagree.
+        let posture = crate::posture::seat_posture(
+            request.model_rung().provider.0.as_str(),
+            request.autonomy(),
+            &self
+                .config
+                .scope
+                .configured_task_scope(task_scope.task_id)
+                .map(|configured| configured.permission_overrides)
+                .unwrap_or_default(),
+        )?;
+
+        // Compose the seat's worktree-local config before anything is spawned:
+        // a Claude seat starts with exactly one kontor server at operator tier
+        // under the consultation profile, and an opencode seat starts with its
+        // permission posture already on disk, instead of whatever ambient
+        // harness config the machine carries. Loud on failure: a seat silently
+        // launched without its control-plane surface — or without the posture it
+        // was authorized under — would fail later, further from the cause.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
+            &posture,
             std::path::Path::new(task_scope.worktree.as_str()),
         )
         .map_err(|error| {
@@ -3559,6 +3587,10 @@ impl PaseoAdapter {
                 crate::seat_mcp::compose_for_seat(
                     self.config.seat_mcp.as_ref(),
                     request.model_rung.provider.0.as_str(),
+                    // A consultation seat gets no permission block at all: its
+                    // mode is already non-mutating and a consultation that could
+                    // edit the tree is not a consultation.
+                    &crate::posture::SeatPosture::read_only(),
                     std::path::Path::new(request.cwd.as_str()),
                 )
                 .map_err(|error| {
@@ -6874,6 +6906,7 @@ mod task_scope_tests {
                 jira_issue_key: ExternalId::parse("ASMA-7870").expect("ticket"),
                 ticket_short_code: ExternalId::parse("OP-01").expect("short code"),
                 canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
+                permission_overrides: Vec::new(),
             },
         );
         scope.task_scopes.insert(
@@ -6883,6 +6916,7 @@ mod task_scope_tests {
                 jira_issue_key: ExternalId::parse("ASMA-7871").expect("ticket"),
                 ticket_short_code: ExternalId::parse("OP-02").expect("short code"),
                 canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-02").expect("worktree"),
+                permission_overrides: Vec::new(),
             },
         );
 
