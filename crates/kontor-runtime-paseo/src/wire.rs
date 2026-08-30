@@ -208,6 +208,14 @@ pub mod label {
     /// right task and slot but no matching digest was launched under something
     /// else, or by something else, and is not this seat.
     pub const SEAT_POSTURE: &str = "kontor.seat_posture";
+    /// The digest of one exact launch intent.
+    ///
+    /// Binding, agent run, place, slot and posture, hashed together. A census
+    /// looking for a launch whose acknowledgement was lost matches on this, so
+    /// an agent that merely shares a task, a workspace or a slot — a
+    /// predecessor, a neighbouring seat, a similarly-labelled leftover — is not
+    /// mistaken for the one this launch created. A hash, never the values.
+    pub const LAUNCH_INTENT: &str = "kontor.launch_intent";
     /// The logical seat a still-live predecessor formerly filled.
     ///
     /// Paseo's public metadata update surface patches string values and cannot
@@ -798,6 +806,30 @@ impl PaseoAgent {
             .iter()
             .all(|(key, value)| self.label(key) == Some(value.as_str()))
     }
+}
+
+/// The answer to `send_agent_message_request`.
+///
+/// `accepted` is the acknowledgement a delivery seat is admitted on. The
+/// installed 0.6.1 replays the agent's persisted `providerOptions.permission`
+/// into `session.promptAsync` for that turn, and OpenCode installs those rules
+/// on the session before it evaluates a tool call — so a turn the daemon accepts
+/// is a turn that ran under the policy Kontor sent, and a seat is bound on
+/// nothing weaker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoMessageAccepted {
+    /// The correlation id of the send.
+    #[serde(default, rename = "requestId")]
+    pub request_id: String,
+    /// The agent the daemon accepted it for.
+    #[serde(default, rename = "agentId")]
+    pub agent_id: String,
+    /// Whether the daemon took the turn.
+    #[serde(default)]
+    pub accepted: bool,
+    /// The daemon's own refusal text, when it did not.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// The answer to `fetch_agent_request`.

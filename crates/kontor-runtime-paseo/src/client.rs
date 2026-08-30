@@ -1366,6 +1366,21 @@ impl PaseoRpc {
         )
     }
 
+    /// `archive_agent_request` for one exact agent.
+    ///
+    /// Compensation for a seat that was created and could not be proved. Sent
+    /// over the same socket as the create so the archive is correlated the same
+    /// way, rather than reaching for a second surface mid-failure.
+    #[must_use]
+    pub fn agent_archive(request_id: String, agent_id: &str) -> Self {
+        Self::mutate(
+            "archive_agent_request",
+            "status",
+            request_id,
+            serde_json::json!({ "agentId": agent_id }),
+        )
+    }
+
     /// `send_agent_message_request` with the caller's own message id.
     #[must_use]
     pub fn send_message(request_id: String, agent_id: &str, message_id: &str, body: &str) -> Self {

@@ -606,6 +606,46 @@ fn narrow_permissions(base: &Path, directory: &Path, file: &Path) -> io::Result<
     Ok(())
 }
 
+/// Everything that makes one launch *this* launch.
+///
+/// Hashed into a label so a reconciling census can recognise the agent this
+/// launch created and refuse anything else. Named fields rather than a slice of
+/// strings, because the whole value of the digest is that nobody can quietly
+/// leave one of them out.
+#[derive(Debug, Clone, Copy)]
+pub struct LaunchIntent<'a> {
+    /// The Kontor session binding this seat is placed under.
+    pub binding_id: &'a str,
+    /// The agent run being launched.
+    pub agent_run_id: &'a str,
+    /// The native place it is created in.
+    pub workspace_id: &'a str,
+    /// The role slot it fills.
+    pub role_slot_id: &'a str,
+    /// The permission object it is to be created with, when it has one.
+    pub permission: Option<&'a serde_json::Value>,
+}
+
+impl LaunchIntent<'_> {
+    /// The digest that travels in [`label::LAUNCH_INTENT`](crate::wire::label::LAUNCH_INTENT).
+    ///
+    /// Field-separated so no two different intents can hash the same by
+    /// concatenation, and carrying no value of anything it covers.
+    #[must_use]
+    pub fn digest(&self) -> ContentHash {
+        let material = format!(
+            "binding={}\nagent_run={}\nworkspace={}\nrole_slot={}\npermission={}",
+            self.binding_id,
+            self.agent_run_id,
+            self.workspace_id,
+            self.role_slot_id,
+            self.permission
+                .map_or_else(|| "none".to_owned(), ToString::to_string),
+        );
+        ContentHash::of(material.as_bytes())
+    }
+}
+
 /// The non-sensitive digest of one seat's posture, owned config and environment.
 ///
 /// A hash of the three things that decide what the seat may do, so a launch
@@ -1699,5 +1739,81 @@ mod tests {
             !rendered.contains("opencode.json") && !rendered.contains("deny"),
             "a digest carries no value from what it covers: {rendered}"
         );
+    }
+
+    fn intent<'a>(
+        binding: &'a str,
+        run: &'a str,
+        workspace: &'a str,
+        slot: &'a str,
+        permission: Option<&'a serde_json::Value>,
+    ) -> LaunchIntent<'a> {
+        LaunchIntent {
+            binding_id: binding,
+            agent_run_id: run,
+            workspace_id: workspace,
+            role_slot_id: slot,
+            permission,
+        }
+    }
+
+    /// Every field is load-bearing: change one and the census stops matching.
+    #[test]
+    fn a_launch_intent_digest_covers_every_field() {
+        let block = opencode(SeatAutonomy::Bounded, &[]);
+        let base = intent("bind-1", "run-1", "wks-1", "implement-a", Some(&block));
+        let baseline = base.digest();
+
+        assert_ne!(
+            baseline,
+            intent("bind-2", "run-1", "wks-1", "implement-a", Some(&block)).digest()
+        );
+        assert_ne!(
+            baseline,
+            intent("bind-1", "run-2", "wks-1", "implement-a", Some(&block)).digest()
+        );
+        assert_ne!(
+            baseline,
+            intent("bind-1", "run-1", "wks-2", "implement-a", Some(&block)).digest()
+        );
+        assert_ne!(
+            baseline,
+            intent("bind-1", "run-1", "wks-1", "implement-b", Some(&block)).digest()
+        );
+        let other = opencode(SeatAutonomy::Advisory, &[]);
+        assert_ne!(
+            baseline,
+            intent("bind-1", "run-1", "wks-1", "implement-a", Some(&other)).digest(),
+            "a different posture is a different intent"
+        );
+        assert_ne!(
+            baseline,
+            intent("bind-1", "run-1", "wks-1", "implement-a", None).digest()
+        );
+        assert_eq!(baseline, base.digest(), "and it is stable");
+    }
+
+    /// Fields are separated, so no two intents collide by running together.
+    #[test]
+    fn a_launch_intent_digest_cannot_collide_by_concatenation() {
+        assert_ne!(
+            intent("a", "bc", "w", "s", None).digest(),
+            intent("ab", "c", "w", "s", None).digest()
+        );
+    }
+
+    /// It carries no value of what it covers.
+    #[test]
+    fn a_launch_intent_digest_carries_no_value() {
+        let block = opencode(SeatAutonomy::Bounded, &[]);
+        let rendered = intent("bind-1", "run-1", "wks-1", "implement-a", Some(&block))
+            .digest()
+            .to_string();
+        for secret in ["bind-1", "run-1", "wks-1", "implement-a", "deny", "allow"] {
+            assert!(
+                !rendered.contains(secret),
+                "the digest leaks `{secret}`: {rendered}"
+            );
+        }
     }
 }
