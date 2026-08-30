@@ -212,7 +212,9 @@ pub(crate) fn consultation_route_permission_mode(
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
 pub(crate) fn built_in_provider(provider: &str) -> &str {
-    const BUILT_INS: [&str; 7] = ["claude", "codex", "copilot", "cursor", "opencode", "pi", "omp"];
+    const BUILT_INS: [&str; 7] = [
+        "claude", "codex", "copilot", "cursor", "opencode", "pi", "omp",
+    ];
     for built_in in BUILT_INS {
         if provider == built_in {
             return built_in;

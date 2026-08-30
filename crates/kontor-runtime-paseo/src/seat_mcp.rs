@@ -460,7 +460,7 @@ mod tests {
             &SeatPosture::read_only(),
             repo.path(),
         )
-            .expect("a Claude account alias is still the Claude harness");
+        .expect("a Claude account alias is still the Claude harness");
 
         let mcp: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(repo.path().join(".mcp.json")).expect("written"),
@@ -616,7 +616,11 @@ mod tests {
             .expect("git runs");
         let printed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         let path = PathBuf::from(&printed);
-        if path.is_absolute() { path } else { cwd.join(path) }
+        if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        }
     }
 
     /// An autonomous opencode seat starts with its posture already on disk, and
@@ -667,7 +671,10 @@ mod tests {
         std::fs::write(cwd.join("opencode.json"), committed).expect("seeded");
 
         let permission = compose_opencode_seat(cwd, SeatAutonomy::Bounded);
-        assert_eq!(permission["bash"]["*"], "allow", "the posture still applies");
+        assert_eq!(
+            permission["bash"]["*"], "allow",
+            "the posture still applies"
+        );
         assert_eq!(
             std::fs::read_to_string(cwd.join("opencode.json")).expect("still there"),
             committed,

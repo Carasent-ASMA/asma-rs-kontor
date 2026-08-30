@@ -33,6 +33,7 @@ use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeKindKey, TaskId, TopologyNodeId,
 };
+use kontor_core::spec::SeatAutonomy;
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_paseo::adapter::{
@@ -40,6 +41,7 @@ use kontor_runtime_paseo::adapter::{
 };
 use kontor_runtime_paseo::client::PaseoLiveTransport;
 use kontor_runtime_paseo::mcp::PaseoMcpHttp;
+use kontor_runtime_paseo::posture::PermissionAllowance;
 use kontor_runtime_paseo::seat_mcp::SeatMcp;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -47,13 +49,23 @@ use serde::{Deserialize, Serialize};
 /// The file a Realm's runtime fleet is configured in.
 pub const RUNTIMES_FILE: &str = "runtimes.json";
 
-/// The document generation this build writes and is willing to read.
+/// The document generation this build writes.
 ///
 /// Bumped to 4 when ticket and seat display names became explicit configuration
-/// rather than guesses from internal ids. Generation 3 may compose the right
-/// sessions under misleading names and labels, so it is refused rather than
-/// silently upgraded.
-const RUNTIMES_SCHEMA: u32 = 4;
+/// rather than guesses from internal ids. Bumped to 5 when a plane could declare
+/// a default permission posture and a ticket could declare a bounded exception
+/// to the destructive floor.
+const RUNTIMES_SCHEMA: u32 = 5;
+
+/// The generations this build is willing to *read*.
+///
+/// v4 is read as a v5 document whose posture fields are simply absent, which
+/// resolves to the supervised behaviour every seat already had — so upgrading a
+/// fleet never silently grants autonomy to a seat that was not declared to have
+/// it. That tolerance is specific to a purely additive generation and is not the
+/// v3 precedent: v3 could compose the right sessions under misleading names, an
+/// error no default can undo, so it stays refused rather than migrated.
+const READABLE_SCHEMAS: &[u32] = &[4, RUNTIMES_SCHEMA];
 
 /// Families this build knows the name of and deliberately cannot compose.
 ///
@@ -164,6 +176,47 @@ impl RuntimeSetting {
     }
 }
 
+/// What a seat may do before it has to ask a human, as an operator writes it.
+///
+/// Deliberately not [`SeatAutonomy`]'s own spelling. An operator declaring a
+/// fleet default is saying what seats may *do* — `autonomous`, `ask`, `plan` —
+/// while `SeatAutonomy` is Kontor's internal statement of the same three states.
+/// Keeping one vocabulary at the file boundary and one in the domain, with a
+/// total mapping between them, means the words in a realm's `runtimes.json` stay
+/// stable even if the domain enum is renamed, and that no second enum has to be
+/// threaded through the code that launches seats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionPosture {
+    /// Act within what Kontor already authorized, without asking again per call.
+    Autonomous,
+    /// Ask a human before each guarded action. The default, and what every seat
+    /// did before this field existed.
+    Ask,
+    /// Read and propose, never act.
+    Plan,
+}
+
+impl From<PermissionPosture> for SeatAutonomy {
+    fn from(posture: PermissionPosture) -> Self {
+        match posture {
+            PermissionPosture::Autonomous => Self::Bounded,
+            PermissionPosture::Ask => Self::Supervised,
+            PermissionPosture::Plan => Self::Advisory,
+        }
+    }
+}
+
+impl From<SeatAutonomy> for PermissionPosture {
+    fn from(autonomy: SeatAutonomy) -> Self {
+        match autonomy {
+            SeatAutonomy::Bounded => Self::Autonomous,
+            SeatAutonomy::Supervised => Self::Ask,
+            SeatAutonomy::Advisory => Self::Plan,
+        }
+    }
+}
+
 /// One Paseo execution plane.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PaseoSetting {
@@ -189,6 +242,14 @@ pub struct PaseoSetting {
     pub project_root_cwd: String,
     /// The filesystem-canonical task worktree.
     pub canonical_worktree_cwd: String,
+    /// The posture seats on this plane get when their role slot declares none.
+    ///
+    /// Subordinate to the role slot: a team template that declared an autonomy
+    /// for a seat has already made this decision, and a plane-wide default must
+    /// not quietly overrule it. Absent — which is every v4 document — resolves to
+    /// `ask`, so reading an older file never widens a seat's authority.
+    #[serde(default)]
+    pub permission_posture: Option<PermissionPosture>,
     /// Explicit ticket scopes for an epic runtime that serves several tasks.
     #[serde(default)]
     pub task_scopes: BTreeMap<String, PaseoTaskSetting>,
@@ -252,6 +313,15 @@ pub struct PaseoTaskSetting {
     pub ticket_short_code: String,
     /// The filesystem-canonical task worktree.
     pub canonical_worktree_cwd: String,
+    /// Bash patterns this one ticket may run despite the destructive floor.
+    ///
+    /// Allow-only and named. A ticket whose whole job is to remove gitlinks
+    /// needs `*git rm --cached*` and needs nothing else, so it declares that one
+    /// pattern and the rest of the floor still refuses. A wildcard is rejected at
+    /// composition: an exception that can be spelled `*` is not an exception, and
+    /// the floor would hold only until somebody needed it not to.
+    #[serde(default)]
+    pub permission_overrides: Vec<String>,
 }
 
 /// The visible portion of one canonical Paseo seat title.
@@ -312,7 +382,7 @@ pub fn read(state_root: &Path) -> Result<RuntimeSettings, FleetError> {
     }
     let settings: RuntimeSettings =
         serde_json::from_slice(&bytes).map_err(|_| FleetError::Malformed)?;
-    if settings.schema_version != RUNTIMES_SCHEMA {
+    if !READABLE_SCHEMAS.contains(&settings.schema_version) {
         return Err(FleetError::Malformed);
     }
     Ok(settings)
@@ -452,6 +522,14 @@ fn compose_paseo(
                         .map_err(|_| refuse("task_scopes ticket_short_code"))?,
                     canonical_worktree_cwd: WorkspaceRoot::parse(&task.canonical_worktree_cwd)
                         .map_err(|_| refuse("task_scopes canonical_worktree_cwd"))?,
+                    permission_overrides: task
+                        .permission_overrides
+                        .iter()
+                        .map(|pattern| {
+                            PermissionAllowance::parse(pattern)
+                                .ok_or_else(|| refuse("task_scopes permission_overrides"))
+                        })
+                        .collect::<Result<Vec<_>, FleetError>>()?,
                 },
             ))
         })
@@ -513,6 +591,7 @@ fn compose_paseo(
         // An empty map means this plane adopts nothing and creates what it
         // needs, which is right for a topology with one root above the seat.
         adopted_containers,
+        permission_posture: setting.permission_posture.map(SeatAutonomy::from),
         seat_mcp: seat_mcp.cloned(),
     };
     // The credential leaves the settings document here and goes straight into the
@@ -561,6 +640,7 @@ mod tests {
             )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
+            permission_posture: None,
             task_scopes: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
@@ -790,6 +870,7 @@ mod tests {
             )]),
             project_root_cwd: "/w/epic".to_owned(),
             canonical_worktree_cwd: "/w/task".to_owned(),
+            permission_posture: None,
             task_scopes: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
             orchestrator_agent_id: "agent-1".to_owned(),
@@ -871,6 +952,126 @@ mod tests {
         assert!(
             !error.to_string().contains("hunter2"),
             "only the closed deferred list is ever quoted back: {error}"
+        );
+    }
+
+    /// A v4 document is read as a v5 one with no posture declared, and the
+    /// resolution therefore lands on supervised. Upgrading a fleet must never
+    /// silently hand a seat authority its operator did not write down.
+    #[test]
+    fn a_generation_four_document_is_read_and_grants_nothing() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        std::fs::write(
+            path_in(directory.path()),
+            br#"{"schema_version": 4, "runtimes": []}"#,
+        )
+        .expect("the fixture is written");
+
+        let settings = read(directory.path()).expect("v4 is still readable");
+        assert_eq!(settings.schema_version, 4);
+        assert!(settings.runtimes.is_empty());
+    }
+
+    /// The generation this build writes round-trips, posture and all.
+    #[test]
+    fn a_declared_posture_round_trips_through_the_document() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let document = serde_json::json!({
+            "schema_version": 5,
+            "runtimes": [{
+                "family": "paseo",
+                "runtime_kind": "paseo.agent",
+                "host_key": "paseo-host",
+                "mini_project_id": "01890000-0000-7000-8000-000000000001",
+                "jira_epic_key": "ASMA-1",
+                "mini_project_short_title": "Epic",
+                "plan_item_key": "KON-MVP-15",
+                "jira_issue_key": "ASMA-7759",
+                "ticket_short_code": "KON-15",
+                "seat_display_roles": {},
+                "project_root_cwd": "/w/epic",
+                "canonical_worktree_cwd": "/w/task",
+                "permission_posture": "autonomous",
+                "orchestrator_agent_id": "agent-1",
+                "max_concurrent_sessions": 2,
+                "executable": "paseo",
+                "host_target": "https://paseo.example",
+                "endpoint": "ws://127.0.0.1:6767/ws",
+                "client_id": "kontor-mini-1",
+                "timeout_seconds": 30,
+            }],
+        });
+        std::fs::write(path_in(directory.path()), document.to_string()).expect("written");
+
+        let settings = read(directory.path()).expect("v5 is this build's own generation");
+        let RuntimeSetting::Paseo(setting) = &settings.runtimes[0];
+        assert_eq!(
+            setting.permission_posture,
+            Some(PermissionPosture::Autonomous)
+        );
+    }
+
+    /// The operator vocabulary and the domain enum say the same three things.
+    #[test]
+    fn the_configuration_vocabulary_maps_onto_the_domain_both_ways() {
+        for (written, domain) in [
+            (PermissionPosture::Autonomous, SeatAutonomy::Bounded),
+            (PermissionPosture::Ask, SeatAutonomy::Supervised),
+            (PermissionPosture::Plan, SeatAutonomy::Advisory),
+        ] {
+            assert_eq!(SeatAutonomy::from(written), domain);
+            assert_eq!(PermissionPosture::from(domain), written);
+        }
+        assert_eq!(
+            serde_json::to_string(&PermissionPosture::Autonomous).expect("serializes"),
+            "\"autonomous\"",
+            "the file spelling is the operator's, not the domain's"
+        );
+    }
+
+    /// A ticket may name one exception; it may not spell allow-all as one.
+    #[test]
+    fn a_wildcard_task_exception_is_refused_at_composition() {
+        let mut refused = BTreeMap::new();
+        refused.insert(
+            "01890000-0000-7000-8000-0000000000a1".to_owned(),
+            PaseoTaskSetting {
+                plan_item_key: "KON-MVP-15".to_owned(),
+                jira_issue_key: "ASMA-7759".to_owned(),
+                ticket_short_code: "KON-15".to_owned(),
+                canonical_worktree_cwd: "/w/task".to_owned(),
+                permission_overrides: vec!["*".to_owned()],
+            },
+        );
+        let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+        setting.task_scopes = refused;
+        assert!(
+            matches!(
+                compose_paseo(&setting, None),
+                Err(FleetError::Invalid {
+                    rule: "task_scopes permission_overrides",
+                    ..
+                })
+            ),
+            "an exception that can be spelled `*` is not an exception"
+        );
+
+        let mut named = BTreeMap::new();
+        named.insert(
+            "01890000-0000-7000-8000-0000000000a1".to_owned(),
+            PaseoTaskSetting {
+                plan_item_key: "KON-MVP-15".to_owned(),
+                jira_issue_key: "ASMA-7759".to_owned(),
+                ticket_short_code: "KON-15".to_owned(),
+                canonical_worktree_cwd: "/w/task".to_owned(),
+                permission_overrides: vec!["*git rm --cached*".to_owned()],
+            },
+        );
+        let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+        setting.task_scopes = named;
+        assert!(
+            compose_paseo(&setting, None).is_ok(),
+            "a named pattern is a legitimate, bounded exception"
         );
     }
 

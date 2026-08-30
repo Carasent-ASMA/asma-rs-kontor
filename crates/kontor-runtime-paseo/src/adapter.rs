@@ -310,6 +310,12 @@ pub struct PaseoConfig {
     /// is `false`, `kontor_runtime::capability::preflight` refuses every
     /// account-pinned launch on this plane, which is the v1.0 behaviour.
     pub provider_selects_account: bool,
+    /// The posture seats on this plane get when their role slot declares none.
+    ///
+    /// A plane-wide default, subordinate to the role slot. `None` — the only
+    /// thing a v4 `runtimes.json` can express — means the resolution falls
+    /// through to supervised, so reading an older document never widens a seat.
+    pub permission_posture: Option<SeatAutonomy>,
     /// Worktree-local MCP composition for Claude seats, when the daemon
     /// enabled it.
     ///
@@ -4150,6 +4156,10 @@ impl RuntimeAdapter for PaseoAdapter {
         super::client::consultation_route_permission_mode(rung, provenance).map(|_| ())
     }
 
+    fn declared_autonomy(&self) -> Option<SeatAutonomy> {
+        self.config.permission_posture
+    }
+
     fn provider_available(&self, provider: &str) -> bool {
         !self.config.unavailable_providers.contains(provider)
     }
@@ -6691,6 +6701,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -6795,6 +6806,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers,
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -6879,6 +6891,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -6955,6 +6968,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -7084,6 +7098,7 @@ mod governed_pin_tests {
             provider_selects_account,
             provider_fallbacks: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
+            permission_posture: None,
             seat_mcp: None,
         }
     }

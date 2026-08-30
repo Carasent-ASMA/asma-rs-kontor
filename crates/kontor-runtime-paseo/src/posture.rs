@@ -273,8 +273,7 @@ mod tests {
             let permission = opencode(autonomy, &[]);
             for pattern in DESTRUCTIVE_BASH_DENIES {
                 assert_eq!(
-                    permission["bash"][*pattern],
-                    "deny",
+                    permission["bash"][*pattern], "deny",
                     "{autonomy:?} must deny `{pattern}`"
                 );
             }
@@ -285,10 +284,7 @@ mod tests {
     /// of the floor is untouched — CAT-09 gets `git rm --cached`, not a licence.
     #[test]
     fn an_allowance_relaxes_exactly_one_named_pattern() {
-        let permission = opencode(
-            SeatAutonomy::Bounded,
-            &[allowance("*git rm --cached*")],
-        );
+        let permission = opencode(SeatAutonomy::Bounded, &[allowance("*git rm --cached*")]);
         assert_eq!(
             permission["bash"]["*git rm --cached*"], "allow",
             "the named exception is granted"
@@ -338,7 +334,10 @@ mod tests {
                 &[allowance("*git rm --cached*"), allowance("*git clean -*")],
             )
             .expect("posture");
-            assert_eq!(plain.mode, relaxed.mode, "an exception cannot move the mode");
+            assert_eq!(
+                plain.mode, relaxed.mode,
+                "an exception cannot move the mode"
+            );
             assert_eq!(
                 plain.auto_accept, relaxed.auto_accept,
                 "an exception cannot move the feature intent"
@@ -351,7 +350,12 @@ mod tests {
     #[test]
     fn each_provider_spells_each_posture_natively() {
         let expected = [
-            ("claude", Some("bypassPermissions"), Some("auto"), Some("plan")),
+            (
+                "claude",
+                Some("bypassPermissions"),
+                Some("auto"),
+                Some("plan"),
+            ),
             ("codex", Some("full-access"), Some("auto-review"), None),
             ("cursor", Some("agent"), Some("ask"), Some("plan")),
             ("opencode", Some("build"), Some("build"), Some("plan")),

@@ -452,6 +452,7 @@ fn config() -> PaseoConfig {
         adopted_containers: BTreeMap::new(),
         // No seat MCP composition in the contract fixtures: the cwds here are
         // symbolic paths, not real worktrees.
+        permission_posture: None,
         seat_mcp: None,
     }
 }
