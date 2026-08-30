@@ -324,3 +324,46 @@ Closing it needs fd-relative traversal throughout (`openat`/`O_NOFOLLOW`, rename
 anchored to a directory descriptor) with a deterministic race or failpoint test.
 That is **a prerequisite for re-enabling OpenCode delivery**, not something the
 current fail-closed state depends on: no seat reaches this code today.
+
+---
+
+# CURRENT DISPOSITION — 2026-08-31 (supersedes every status above)
+
+**OpenCode delivery is reachable, in two proved stages, and is no longer
+fail-closed.** Every earlier disposition in this file — the environment
+approach, the owned configuration root, the spawn-environment attestation and
+the refusal that rested on it — is superseded and the code implementing them is
+deleted.
+
+## What ships
+
+`launch_admitted` branches for OpenCode alone; every other provider keeps the
+CLI create it had, and Claude's worktree MCP composition is untouched.
+
+1. Gates before any native call: the daemon must accept typed per-agent
+   `providerOptions`, and the provider must express the declared posture.
+2. `create_agent_request` with the rendered permission in
+   `config.providerOptions.permission`, the MCP surface in `config.mcpServers`,
+   a launch-intent digest label over the whole create configuration, and **no**
+   `initialPrompt`.
+3. A lost acknowledgement reconciles by exact-label census — one adopted, none
+   confirmation-unknown, more than one refused — and the create is never resent.
+4. The first real turn, with a message id derived from the launch; the daemon
+   replays the persisted `providerOptions.permission` into `session.promptAsync`
+   and OpenCode installs it before evaluating a tool call.
+5. Binding only on an answer that names that request and that agent and says
+   accepted. Otherwise: archive over the same socket, read back terminal, and a
+   recoverable refusal if that cannot be confirmed.
+
+## Why this is sound where the earlier approaches were not
+
+The policy never passes through a file or an environment variable, so the merge
+order that defeated every earlier design — global, project, `.jsonc` siblings,
+`OPENCODE_*` variables, active-org remote config, managed profiles — has nothing
+to act on. Acceptance of the turn is the acknowledgement, and it is about the
+process that ran it.
+
+## Not claimed
+
+No live authenticating seat has been launched through this path. That is a
+post-integration, post-deployment proof and is not asserted here.
