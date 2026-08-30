@@ -123,7 +123,7 @@ later checks cannot drift apart.
 | --- | --- | --- | --- |
 | `claude` | `bypassPermissions` | `auto` | `plan` |
 | `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
-| `opencode` | `build` + proved block | `build` + proved block | `plan` + proved block |
+| `opencode` | *refused* | *refused* | *refused* |
 | `cursor` | `agent` | *refused* | *refused* |
 
 Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
@@ -132,6 +132,14 @@ writes in `ask` — the same measured finding that keeps cursor out of
 consultation. A mode label is not a permission boundary, and a posture Kontor
 cannot enforce is refused before launch rather than reported as held. `agent`
 means what `autonomous` means, so that one stays.
+
+> **OpenCode delivery is refused today.** Everything below is implemented and
+> tested, and none of it runs: `attest_spawn_environment` refuses first, because
+> Paseo cannot attest the environment or the resolved configuration of the
+> process it spawns. The auth-backed active-org layer and the system managed
+> layer both merge *after* the owned configuration and are only observed at
+> preflight time — and an observation before creation is not proof about the
+> process created afterwards. This lifts when Paseo can attest either.
 
 OpenCode carries its posture in configuration rather than in a mode — `build` is
 documented by the provider as "executes tools based on configured permissions",
@@ -159,7 +167,8 @@ Before anything native is created, and in this order:
    directory, under exactly the environment `agent run` will carry, and its
    **complete** permission object must equal the rendered block.
 
-Only then is the seat created, carrying the same environment on `--env`.
+Only then would the seat be created, carrying the same environment on `--env`.
+Today step 0 refuses before any of it.
 
 ### Why a whole configuration root, and not a few variables
 
@@ -178,9 +187,10 @@ from an auth-backed active-org config or a system managed profile, both of which
 sort after the owned content — survives and, because permissions resolve by last
 match, beats the destructive floor.
 
-What holds is redirecting the configuration root itself, so there is no ambient
-layer left to merge, and then **comparing the complete resolved object** to catch
-anything that still arrives. The six variables Kontor sets are:
+Redirecting the configuration root itself displaces the user global and every
+project layer. It does **not** remove the active-org or managed layers, which
+merge later; those are only *observed*, by comparing the complete resolved
+object — and observed before creation, which is why this is not yet a proof. The six variables Kontor sets are:
 
 | Variable | Purpose |
 | --- | --- |

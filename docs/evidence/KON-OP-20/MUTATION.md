@@ -119,3 +119,40 @@ and the launch-boundary test
   mode tables but the governed model catalog exposes no cursor provider, so no
   route can select it. The containment claim behind an advisory cursor seat rests
   on the catalog, not on this layer.
+
+---
+
+# CURRENT DISPOSITION — 2026-08-30 (supersedes every status above)
+
+**OpenCode delivery is fail-closed.** `preflight::attest_spawn_environment`
+refuses every OpenCode delivery launch, before the capability read, the provider
+diagnostic, the owned root and the preflight — so nothing native is read or
+created.
+
+**Why.** Two inputs to an OpenCode seat's permission are decided outside
+everything Kontor pins: the auth-backed **active-org remote configuration**,
+which follows whichever credentials the spawned process resolves, and the
+**system managed layer**, read at process start. Both sort *after* the owned
+configuration, so both can state a permission the preflight never saw. Whose
+credentials the spawned process uses depends on the inherited `HOME` /
+`XDG_DATA_HOME`, and `paseo provider diagnostic` reports neither — it prints
+`Daemon PATH`, a `Daemon shell`, and an *unexpanded*
+`~/.local/share/opencode/auth.json`. No Paseo call reports the configuration a
+created agent actually resolved.
+
+**Correcting an earlier claim in this file.** The owned root does **not** remove
+the active-org or managed layers. It displaces the user global and every project
+layer; the later two are only *observed* at preflight time by full-object
+comparison, and observation before creation is not proof about the process that
+is created afterwards.
+
+**What is built and stays under test**, waiting on that dependency: the
+`autonomous|ask|plan` vocabulary, schema v5 and resolution order, the shared
+renderer and destructive floor, the exact-floor allowance rule, the Cursor
+correction, the owned per-seat configuration root with no-follow containment, the
+typed six-key `agent run --env` surface with redaction, the daemon version pin,
+the posture digest for lost-acknowledgement recovery, and the installed-binary
+preflight.
+
+**Lifts when** Paseo can attest either the spawned process's environment or the
+configuration a created agent resolved.
