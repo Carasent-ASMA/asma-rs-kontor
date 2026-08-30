@@ -996,16 +996,16 @@ async fn preparation_reuses_an_existing_workspace_without_creating_one() {
     );
 }
 
-/// An OpenCode delivery launch is refused before **any** native call.
+/// An OpenCode launch on a daemon that cannot carry per-agent environment is
+/// refused before **any** native call.
 ///
-/// Its posture is carried by a written permission block, and what the spawned
-/// process actually resolves depends on environment variables Paseo owns —
-/// `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION` and
-/// `OPENCODE_DISABLE_PROJECT_CONFIG` — which `agent run` neither sets nor
-/// reports. Rather than spawn a seat under a posture nothing verifies, the
-/// launch fails closed, and this pins that nothing at all was spent doing it.
+/// Its posture rides in the environment `agent run --env` carries, and a daemon
+/// below that release would accept the flag and drop it — launching a seat with
+/// none of its configuration and no error to say so. So the capability is read
+/// from the identity already fetched, and a daemon that lacks it refuses here,
+/// having created nothing and having written nothing into the worktree.
 #[tokio::test]
-async fn an_opencode_delivery_launch_is_refused_before_any_native_call() {
+async fn an_opencode_launch_without_per_agent_environment_is_refused_before_any_native_call() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-9001-posture-readback";
     let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
@@ -1086,28 +1086,46 @@ async fn an_opencode_delivery_launch_is_refused_before_any_native_call() {
         requested_at: at("2026-08-10T09:00:00Z"),
     });
 
-    let before = recorded.calls().len();
+    // These fixtures pin the 0.3.1 baseline, which has no per-agent `--env`.
+    // An OpenCode posture cannot be carried to the seat there, so it cannot be
+    // proved, so the launch is refused — and refused before anything native.
+    // Measured across the launch alone: the workspace above is this test's own
+    // setup, not something the refused launch created.
+    let before = recorded.calls();
     let error = adapter
         .launch(&request)
         .await
-        .expect_err("an unverifiable posture must not spawn a seat");
+        .expect_err("a posture that cannot be carried must not spawn a seat");
     assert!(
-        matches!(
-            error,
-            RuntimeError::PermissionModeUnsupported { ref provider } if provider == "opencode"
-        ),
-        "refused as an unsupported posture, typed, not as a runtime outage: {error:?}"
+        matches!(error, RuntimeError::LaunchNotAdmitted { .. }),
+        "refused as an admission failure, typed, not as a runtime outage: {error:?}"
+    );
+    let after = recorded.calls();
+    assert_eq!(
+        recorded.count("agent run"),
+        0,
+        "no seat was spawned on the refused launch"
     );
     assert_eq!(
-        recorded.calls().len(),
-        before,
-        "zero native calls of any kind were spent on the refused launch"
+        after.len(),
+        before.len(),
+        "the refused launch spent no native call at all: {:?}",
+        &after[before.len().min(after.len())..]
     );
-    assert_eq!(recorded.count("agent run"), 0, "and no seat was spawned");
+    // The migration: an OpenCode launch writes nothing into the worktree at all,
+    // refused or not. Its posture lives in a Kontor-owned root outside it.
     assert!(
-        !worktree.join(".opencode/opencode.json").exists(),
-        "the refusal precedes composition, so nothing was written into the worktree either"
+        !worktree.join(".opencode").exists() && !worktree.join("opencode.json").exists(),
+        "an OpenCode launch leaves the worktree untouched"
     );
+    let exclude = worktree.join(".git");
+    if exclude.is_file() {
+        let contents = std::fs::read_to_string(&exclude).unwrap_or_default();
+        assert!(
+            !contents.contains("opencode"),
+            "and adds no git exclude entry"
+        );
+    }
 }
 
 /// The control: the same launch on a provider whose posture *is* carried by its

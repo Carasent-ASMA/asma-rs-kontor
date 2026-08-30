@@ -210,6 +210,22 @@ pub struct PaseoExecutionScope {
     pub orchestrator_agent_id: ExternalId,
 }
 
+/// The OpenCode releases this posture has actually been proved against.
+///
+/// Pinned rather than ranged: the proof is an observed resolution from one
+/// build, and a later build could merge its layers differently. A version
+/// outside this set refuses the launch until the boundary suite is re-run
+/// against it.
+const SUPPORTED_OPENCODE_VERSIONS: &[&str] = &["1.18.15"];
+
+/// What proving one OpenCode seat produced.
+struct ProvedPosture {
+    /// The closed six-key environment `agent run` will carry.
+    environment: Vec<(&'static str, String)>,
+    /// The non-sensitive digest recovery must find again.
+    digest: String,
+}
+
 /// The ticket-specific half of one epic-scoped Paseo runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaseoTaskScope {
@@ -3233,7 +3249,6 @@ impl PaseoAdapter {
         declared: &RuntimeCapabilities,
         generation: u64,
         posture: &crate::posture::SeatPosture,
-        allowances: &[crate::posture::PermissionAllowance],
     ) -> RuntimeResult<LaunchOutcome> {
         self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
         // The posture arrives already resolved, from `launch` — see there for why
@@ -3254,13 +3269,22 @@ impl PaseoAdapter {
             });
         }
 
+        // Before the placement readback, the census, and every workspace and
+        // agent call: a seat whose posture cannot be carried or cannot be proved
+        // is refused having spent nothing at all. The only transport this itself
+        // uses is the daemon's read-only provider diagnostic, and only once the
+        // daemon has said it can carry the environment in the first place.
+        let proved = self
+            .prove_opencode_posture(request, task_scope.worktree.as_str(), posture)
+            .await?;
+
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
         // of this gate is that nothing has moved since.
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
         self.verify_workspace_placement(&workspace, &project, &place.root)?;
 
-        let labels = self.seat_labels(
+        let mut labels = self.seat_labels(
             request.agent_run_id(),
             request.team_run_id(),
             request.role_slot_id(),
@@ -3268,6 +3292,15 @@ impl PaseoAdapter {
             &project,
             &workspace_id,
         )?;
+        if let Some(proved) = proved.as_ref() {
+            // In the labels the census matches on, so a launch whose
+            // acknowledgement was lost is adopted only by a seat carrying *this*
+            // posture. A hash, never the values.
+            labels.insert(
+                crate::wire::label::SEAT_POSTURE.to_owned(),
+                proved.digest.clone(),
+            );
+        }
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
         // A native census before the first effect. An exact full-label match is
@@ -3320,18 +3353,19 @@ impl PaseoAdapter {
             },
         )?;
 
-        // Render the declared posture once. The same value composes the seat's
-        // worktree config below and, through the mode table it shares with
-        // `PaseoCommand::agent_run` and `verify_agent_route`, decides the
-        // `--mode` this seat launches and is verified under — so what the seat
-        // reads on disk and what Kontor later checks cannot disagree.
-        // Compose the seat's worktree-local config before anything is spawned:
-        // a Claude seat starts with exactly one kontor server at operator tier
-        // under the consultation profile, and an opencode seat starts with its
-        // permission posture already on disk, instead of whatever ambient
-        // harness config the machine carries. Loud on failure: a seat silently
-        // launched without its control-plane surface — or without the posture it
-        // was authorized under — would fail later, further from the cause.
+        // Compose the seat's worktree-local MCP config before anything is
+        // spawned, so a Claude seat starts with exactly one kontor server at
+        // operator tier under the consultation profile instead of whatever
+        // ambient harness config the machine carries. Loud on failure: a seat
+        // silently launched without its control-plane surface would fail later,
+        // further from the cause.
+        //
+        // An OpenCode seat writes nothing here. Its posture was proved above,
+        // against the resolving binary, out of a Kontor-owned configuration root
+        // outside the worktree — and with project configuration disabled, a file
+        // written into the worktree would not be read at all. Writing one anyway
+        // would put two seats sharing a worktree back in each other's way and
+        // change operator state for no effect.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
@@ -3345,34 +3379,29 @@ impl PaseoAdapter {
             }
         })?;
 
-        // Read the composed posture back out of the seat's effective project
-        // config *before* the one native effect this path has. Metadata cannot
-        // carry this: OpenCode spells both `autonomous` and `ask` as `--mode
-        // build`, so the mode readback below cannot tell the two apart, and the
-        // permission block is the only thing that does. Verified here, a seat
-        // that would have started without its floor never starts at all.
-        crate::seat_mcp::verify_composed_posture(
-            posture,
-            allowances,
-            std::path::Path::new(task_scope.worktree.as_str()),
-        )
-        .map_err(|error| {
-            tracing::warn!(%error, "composed seat posture failed readback");
-            RuntimeError::LaunchNotAdmitted {
-                rule: "the composed seat posture did not read back as rendered",
-            }
-        })?;
-
-        let command = PaseoCommand::agent_run(
-            &workspace_id,
-            task_scope.worktree.as_str(),
-            request.model_rung(),
-            request.autonomy(),
-            request.display_name().as_str(),
-            &labels,
-            None,
-            request.prompt().as_str(),
-        )?;
+        let command = match proved.as_ref() {
+            Some(proved) => PaseoCommand::agent_run_with_environment(
+                &workspace_id,
+                task_scope.worktree.as_str(),
+                request.model_rung(),
+                request.autonomy(),
+                request.display_name().as_str(),
+                &labels,
+                None,
+                request.prompt().as_str(),
+                &proved.environment,
+            )?,
+            None => PaseoCommand::agent_run(
+                &workspace_id,
+                task_scope.worktree.as_str(),
+                request.model_rung(),
+                request.autonomy(),
+                request.display_name().as_str(),
+                &labels,
+                None,
+                request.prompt().as_str(),
+            )?,
+        };
         let native_id = match recovered_id {
             Some(native_id) => native_id,
             None => match self.transport.run(&command).await {
@@ -3395,22 +3424,12 @@ impl PaseoAdapter {
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
         Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
-        // Re-read after placement: the mode readback above proves which mode the
-        // agent carries, and this proves the block that mode does not encode is
-        // still the one that was composed. Cheap, and it closes the window
-        // between composition and the process actually starting.
-        crate::seat_mcp::verify_composed_posture(
-            posture,
-            allowances,
-            std::path::Path::new(task_scope.worktree.as_str()),
-        )
-        .map_err(|error| {
-            tracing::warn!(%error, "composed seat posture drifted during launch");
-            RuntimeError::LaunchNotAdmitted {
-                rule: "the composed seat posture changed between composition and placement",
-            }
-        })?;
-
+        // No post-placement re-read of a worktree file, because there is no
+        // worktree file: an OpenCode seat's posture rides in the environment
+        // `agent run` carried, out of a Kontor-owned root the seat cannot write,
+        // and it was proved against the resolving binary before this call was
+        // made. Nothing between that proof and this line can reach it, so there
+        // is no drift window here to compensate for.
         let snapshot = self.bind(
             request.agent_run_id(),
             request.binding_id(),
@@ -3472,6 +3491,104 @@ impl PaseoAdapter {
             snapshot,
             observation,
         })
+    }
+
+    /// Prove an OpenCode seat's posture, or refuse the launch.
+    ///
+    /// `None` for every other provider: their posture is their mode, and the
+    /// mode readback already proves it.
+    ///
+    /// Everything here happens before the census and before any workspace or
+    /// agent call. The only transport it uses is the daemon's own read-only
+    /// provider diagnostic, which is what makes the binary it proves against the
+    /// binary Paseo will actually spawn.
+    async fn prove_opencode_posture(
+        &self,
+        request: &LaunchRequest,
+        worktree: &str,
+        posture: &crate::posture::SeatPosture,
+    ) -> RuntimeResult<Option<ProvedPosture>> {
+        let provider = request.model_rung().provider.0.as_str();
+        if crate::client::built_in_provider(provider) != "opencode" {
+            return Ok(None);
+        }
+        let Some(permission) = posture.permission.as_ref() else {
+            return Ok(None);
+        };
+
+        // The daemon must *apply* per-agent environment, not merely accept the
+        // flag. Read from the identity `declared()` already fetched, so a
+        // refusal here costs nothing further.
+        let applies_environment = self
+            .lock()
+            .server
+            .as_ref()
+            .is_some_and(crate::wire::PaseoServerInfo::supports_seat_environment);
+        if !applies_environment {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "this Paseo does not apply per-agent environment, so an OpenCode posture cannot be proved",
+            });
+        }
+
+        let output = self
+            .transport
+            .run(&PaseoCommand::provider_diagnostic(provider))
+            .await?;
+        let document: serde_json::Value = output.parse("PaseoProviderDiagnostic")?;
+        let binary = crate::preflight::parse_provider_diagnostic(&document)?;
+
+        let root = crate::posture::SeatConfigRoot::for_seat(
+            &self.config.state_root,
+            &request.agent_run_id().to_string(),
+        )?;
+        // The owned root replaces the operator's configuration wholesale, so the
+        // seat's MCP surface has to travel in it or the seat simply would not
+        // have one.
+        let mcp = self.config.seat_mcp.as_ref().map(|seat| {
+            serde_json::json!({
+                "kontor": {
+                    "type": "local",
+                    "command": [
+                        seat.command.clone(),
+                        "--state-root".to_owned(),
+                        seat.state_root.display().to_string(),
+                        "--credential-tier".to_owned(),
+                        "operator".to_owned(),
+                        "--serve-profile".to_owned(),
+                        "worker".to_owned(),
+                    ],
+                }
+            })
+        });
+        let config = crate::posture::owned_config(permission, mcp.as_ref());
+        let evidence = root.materialize(&config).map_err(|error| {
+            tracing::warn!(%error, "the seat configuration root could not be materialized");
+            RuntimeError::LaunchNotAdmitted {
+                rule: "the seat configuration root could not be materialized",
+            }
+        })?;
+        let environment = crate::posture::seat_environment(&root, &config);
+
+        crate::preflight::prove_posture(
+            &binary,
+            SUPPORTED_OPENCODE_VERSIONS,
+            std::path::Path::new(worktree),
+            permission,
+            &environment,
+        )?;
+        crate::preflight::prove_preserved_roots(&binary, &evidence.path)?;
+
+        // Path and digest only: this is evidence, and evidence reaches records
+        // and logs.
+        tracing::info!(
+            configuration = %evidence.path.display(),
+            digest = %evidence.digest,
+            "seat posture proved before launch"
+        );
+        Ok(Some(ProvedPosture {
+            digest: crate::posture::posture_digest(&config, &environment).to_string(),
+            environment,
+        }))
     }
 
     /// Recover a launch whose acknowledgement was lost.
@@ -5259,7 +5376,7 @@ impl RuntimeAdapter for PaseoAdapter {
         };
 
         let outcome = self
-            .launch_admitted(request, &declared, generation, &posture, &allowances)
+            .launch_admitted(request, &declared, generation, &posture)
             .await;
         if outcome.is_err() {
             self.lock().admissions.release(request);

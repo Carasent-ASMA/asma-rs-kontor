@@ -198,17 +198,12 @@ pub fn seat_posture(
     autonomy: SeatAutonomy,
     allowances: &[PermissionAllowance],
 ) -> RuntimeResult<SeatPosture> {
-    if built_in_provider(provider) == "opencode" {
-        // Still closed. The owned per-seat configuration root below is the
-        // verified way to make an OpenCode posture deterministic, and it is
-        // built and tested — but nothing launches through it yet: the capability
-        // gate on `agent run --env` and the installed-binary preflight are not
-        // wired. Until both are, a delivery launch is refused rather than run
-        // under a posture nothing has checked.
-        return Err(RuntimeError::PermissionModeUnsupported {
-            provider: provider.to_owned(),
-        });
-    }
+    // OpenCode is no longer refused here. It is admitted *only* behind the proof
+    // the launch path runs before creating anything: the daemon must apply
+    // per-agent environment, the binary Paseo resolves must be one this posture
+    // was proved against, and its resolved permission must equal this block
+    // exactly. A Paseo that cannot carry the environment still fails closed —
+    // see `PaseoAdapter::prove_opencode_posture`.
     render_posture(provider, autonomy, allowances)
 }
 
@@ -1204,19 +1199,24 @@ mod tests {
     /// reports. Until that surface exists, claiming a verified posture would be
     /// claiming something nothing checks.
     #[test]
-    fn opencode_delivery_is_refused_until_it_can_be_proved() {
+    fn opencode_renders_here_and_is_proved_at_the_launch_boundary() {
+        // The renderer admits OpenCode: refusing here would refuse it
+        // unconditionally, and what actually governs an OpenCode launch is the
+        // proof the adapter runs before creating anything — the daemon must
+        // apply per-agent environment, the resolving binary must be a version
+        // this posture was proved against, and its resolved permission must
+        // equal this block exactly.
         for autonomy in [
             SeatAutonomy::Bounded,
             SeatAutonomy::Supervised,
             SeatAutonomy::Advisory,
         ] {
             for provider in ["opencode", "opencode-work"] {
+                let posture = seat_posture(provider, autonomy, &[])
+                    .unwrap_or_else(|error| panic!("{provider} {autonomy:?}: {error:?}"));
                 assert!(
-                    matches!(
-                        seat_posture(provider, autonomy, &[]),
-                        Err(RuntimeError::PermissionModeUnsupported { .. })
-                    ),
-                    "{provider} {autonomy:?} must be refused at the delivery gate"
+                    posture.permission.is_some(),
+                    "{provider} {autonomy:?} carries the block the proof compares against"
                 );
             }
         }
