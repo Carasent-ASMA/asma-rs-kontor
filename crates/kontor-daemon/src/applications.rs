@@ -3370,54 +3370,25 @@ impl Services {
             })?,
             _ => None,
         };
-        // Structured, inspectable provenance beside the digest. An opaque hash
-        // proves two observations carried the same thing; it does not let an
-        // operator see *which* item on *which* run authorized a block.
-        let quota_provenance = decision.as_ref().map(|decided| {
-            let source = observation.refusal.as_ref().map(|refusal| {
-                let where_from = refusal.provenance();
-                serde_json::json!({
-                    "agent_run_id": where_from.agent_run_id.to_string(),
-                    "binding_generation": where_from.binding_generation,
-                    "epoch": where_from.position.epoch,
-                    "seq_start": where_from.position.sequence,
-                    "seq_end": where_from.sequence_end,
-                    "source_sequences": where_from
-                        .source_sequences
-                        .iter()
-                        .map(|(from, to)| serde_json::json!({"start": from, "end": to}))
-                        .collect::<Vec<_>>(),
-                    "native_item_type": where_from.item_type,
-                    "item_observed_at": where_from.observed_at.to_string(),
-                })
-            });
-            serde_json::json!({
-                "account_profile_id": decided.classification.account_profile_id.to_string(),
-                "provider": decided.classification.provider,
-                "state": decided.classification.kind.as_str(),
-                "resets_at": decided.classification.resets_at.map(|at| at.to_string()),
-                "evidence_hash": decided.classification.evidence_hash.as_str(),
-                // What this observation *concluded*, never what the store did.
-                // The payload is built before the transaction runs, and an
-                // out-of-order or replayed event is appended while its quota
-                // conclusion is correctly skipped -- so a "recorded" claim here
-                // would be false evidence frozen into immutable history.
-                "disposition": if decided.classification.proposes_write {
-                    "proposed"
-                } else {
-                    "already_current"
-                },
-                "source": source,
-            })
-        });
+        // Structured provenance deliberately does *not* go into this payload.
+        //
+        // The durable control-plane log is a closed vocabulary of flat scalar
+        // fields (`ensure_control_metadata`), and that is load-bearing: it is
+        // the one place a transcript could accumulate, and the flat-scalar rule
+        // exists so a known field name cannot become a lid on an arbitrary
+        // subtree. A nested `quota_classification` object violated both halves,
+        // and the log was right to refuse it.
+        //
+        // What the row itself carries is the digest, which is durable and
+        // atomic with this observation. Where the *inspectable* provenance
+        // belongs is `OQ-KON-OP-21-008`, and this constraint removes one of its
+        // options: the event payload cannot be that home.
         let payload = self.intent(&serde_json::json!({
             "schema_version": 1,
             "observed_state": observation.state.as_str(),
             "contact": observation.contact.as_str(),
             "native_sequence": observation.native_sequence,
             "observed_at": observation.observed_at.to_string(),
-            // Never the refusal text: only what was concluded and from where.
-            "quota_classification": quota_provenance,
         }))?;
         let projection = state
             .with_store(|store| {
