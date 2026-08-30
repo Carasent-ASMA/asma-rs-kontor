@@ -376,6 +376,38 @@ impl SeatConfigRoot {
         self.directory().join("opencode.json")
     }
 
+    /// The trusted root this seat's directories are created beneath.
+    ///
+    /// `<state-root>` itself: everything below it is Kontor's to create, and
+    /// nothing below it may be reached through a link. It must already exist and
+    /// be a real directory — a realm whose state root is a symlink is a question
+    /// for the operator, not something to resolve silently here.
+    fn trusted_root(&self) -> io::Result<PathBuf> {
+        let mut trusted = self.base.clone();
+        for _ in 0..3 {
+            trusted = trusted
+                .parent()
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "a seat root sits three components below the state root",
+                    )
+                })?
+                .to_owned();
+        }
+        let metadata = std::fs::symlink_metadata(&trusted)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} is not a real directory; a seat root cannot be anchored to it",
+                    trusted.display()
+                ),
+            ));
+        }
+        Ok(trusted)
+    }
+
     /// The base the caller owns, for materialization and cleanup.
     #[must_use]
     pub fn base(&self) -> &Path {
@@ -424,17 +456,36 @@ impl SeatConfigRoot {
     /// could redirect the write outside the owned subtree; or a readback whose
     /// bytes differ from what was written.
     pub fn materialize(&self, config: &serde_json::Value) -> io::Result<ConfigEvidence> {
+        // Every component from the trusted root down, created and checked one
+        // level at a time. Checking only the last two was not containment: a
+        // symlink planted at `seats` or `seats/opencode` sits *above* them and
+        // `create_dir_all` would have followed it without a word.
         let directory = self.directory();
-        std::fs::create_dir_all(&directory)?;
-        // After creation, not before: a symlink planted earlier would otherwise
-        // be followed by the write below.
-        refuse_symlinked_path(&self.base, &directory)?;
+        let trusted = self.trusted_root()?;
+        create_unfollowed(&trusted, &directory)?;
 
         let mut rendered = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
         rendered.push('\n');
         let path = self.config_file();
-        std::fs::write(&path, &rendered)?;
-        narrow_permissions(&self.base, &directory, &path)?;
+        // Written to a fresh name that must not already exist, then renamed onto
+        // the target. `std::fs::write` follows a symlink at the destination and
+        // would put a seat's posture wherever it pointed; `rename` replaces the
+        // link itself, so no write ever travels through one.
+        let staged = directory.join("opencode.json.staged");
+        if staged.exists() || std::fs::symlink_metadata(&staged).is_ok() {
+            std::fs::remove_file(&staged)?;
+        }
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&staged)?;
+            file.write_all(rendered.as_bytes())?;
+            file.sync_all()?;
+        }
+        narrow_permissions(&self.base, &directory, &staged)?;
+        std::fs::rename(&staged, &path)?;
 
         let landed = std::fs::read(&path)?;
         if landed != rendered.as_bytes() {
@@ -462,16 +513,43 @@ pub struct ConfigEvidence {
     pub digest: ContentHash,
 }
 
-/// Refuse a path any component of which is a symbolic link.
-fn refuse_symlinked_path(base: &Path, directory: &Path) -> io::Result<()> {
-    for candidate in [base, directory] {
-        let metadata = std::fs::symlink_metadata(candidate)?;
-        if metadata.file_type().is_symlink() {
+/// Create every component from `trusted` down to `directory`, refusing links.
+///
+/// One level at a time, and each level checked with `symlink_metadata` — which
+/// reports the link rather than what it points at — so a link planted anywhere
+/// on the way down is refused instead of followed. `create_dir_all` cannot do
+/// this: it follows whatever it finds.
+fn create_unfollowed(trusted: &Path, directory: &Path) -> io::Result<()> {
+    let relative = directory.strip_prefix(trusted).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a seat directory must sit under its trusted root",
+        )
+    })?;
+    let mut path = trusted.to_owned();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(name) => path.push(name),
+            // `.`, `..`, a root or a prefix would each leave the subtree.
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a seat directory is named only by plain components",
+                ));
+            }
+        }
+        match std::fs::create_dir(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "{} is a symbolic link; a seat's configuration root is a real directory",
-                    candidate.display()
+                    "{} is a link or not a directory; a seat's configuration root is neither",
+                    path.display()
                 ),
             ));
         }
@@ -1469,26 +1547,69 @@ mod tests {
         assert_eq!(again, evidence);
     }
 
-    /// A symlinked component could redirect the write out of the owned subtree.
+    /// A link anywhere on the way down redirects the write out of the owned
+    /// subtree, so every component is checked — not just the last two.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_component_is_refused() {
+    fn a_symlinked_component_anywhere_is_refused() {
+        for planted in ["seats", "seats/opencode", "seats/opencode/agent-1"] {
+            let scratch = tempfile::TempDir::new().expect("a scratch directory");
+            let elsewhere = scratch.path().join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).expect("target");
+
+            let link = scratch.path().join(planted);
+            std::fs::create_dir_all(link.parent().expect("a parent")).expect("parents");
+            std::os::unix::fs::symlink(&elsewhere, &link).expect("planted");
+
+            let root = SeatConfigRoot::for_seat(scratch.path(), "agent-1").expect("a root");
+            let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
+            let error = root
+                .materialize(&config)
+                .expect_err("a link at `{planted}` must refuse the write");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "at `{planted}`");
+            assert!(
+                std::fs::read_dir(&elsewhere)
+                    .expect("readable")
+                    .next()
+                    .is_none(),
+                "a link at `{planted}` wrote nothing through it"
+            );
+        }
+    }
+
+    /// A link *at the file itself* is replaced, not followed: `std::fs::write`
+    /// would have put a seat's posture wherever it pointed.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_config_file_is_replaced_rather_than_followed() {
         let scratch = tempfile::TempDir::new().expect("a scratch directory");
-        let elsewhere = scratch.path().join("elsewhere");
-        std::fs::create_dir_all(&elsewhere).expect("target");
+        let outside = scratch.path().join("outside.json");
+        std::fs::write(&outside, "operator's file\n").expect("seeded");
+
         let root = SeatConfigRoot::for_seat(scratch.path(), "agent-1").expect("a root");
-        std::fs::create_dir_all(root.base()).expect("base");
-        std::os::unix::fs::symlink(&elsewhere, root.directory()).expect("planted");
+        std::fs::create_dir_all(root.directory()).expect("directories");
+        std::os::unix::fs::symlink(&outside, root.config_file()).expect("planted");
 
         let config = owned_config(&opencode(SeatAutonomy::Bounded, &[]), None);
-        let error = root
-            .materialize(&config)
-            .expect_err("a symlinked configuration directory is refused");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(
-            !elsewhere.join("opencode.json").exists(),
-            "and nothing was written through it"
+        let evidence = root.materialize(&config).expect("materialized");
+
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("still there"),
+            "operator's file\n",
+            "the link's target is untouched"
         );
+        assert!(
+            !std::fs::symlink_metadata(&evidence.path)
+                .expect("exists")
+                .file_type()
+                .is_symlink(),
+            "and the link itself was replaced by a real file"
+        );
+        let landed: serde_json::Value = std::fs::read_to_string(&evidence.path)
+            .expect("read")
+            .parse()
+            .expect("JSON");
+        assert_eq!(landed, config);
     }
 
     /// The digest covers the posture *and* the environment that carries it, and
