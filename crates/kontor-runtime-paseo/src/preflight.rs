@@ -259,16 +259,14 @@ pub fn prove_preserved_roots(
     if expanded.is_empty() {
         return Ok(());
     }
-    let matches = reported_data_root
-        .to_string_lossy()
-        .contains("opencode")
-        .then(|| {
-            expanded
-                .trim_start_matches('/')
-                .starts_with(".local/share/opencode")
-                || auth.starts_with(reported_data_root)
-        })
-        .unwrap_or(false);
+    let matches = if reported_data_root.to_string_lossy().contains("opencode") {
+        expanded
+            .trim_start_matches('/')
+            .starts_with(".local/share/opencode")
+            || auth.starts_with(reported_data_root)
+    } else {
+        false
+    };
     if !matches {
         return Err(RuntimeError::LaunchNotAdmitted {
             rule: "the preflight's data root is not the one the daemon reports credentials under",
