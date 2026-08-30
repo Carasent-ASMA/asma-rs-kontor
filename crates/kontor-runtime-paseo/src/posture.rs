@@ -188,7 +188,36 @@ pub fn seat_posture(
     })
 }
 
-/// The `permission` block one posture renders to, or `None` when it needs none.
+/// Tools that cannot change the tree, the machine or the network.
+///
+/// Allowed under every posture: an advisory seat that cannot read cannot advise.
+const READ_ONLY_TOOLS: &[&str] = &[
+    "glob",
+    "grep",
+    "list",
+    "lsp",
+    "question",
+    "read",
+    "skill",
+    "todowrite",
+];
+
+/// Tools that can act — on files, on other agents, or on the network.
+///
+/// `bash` and `external_directory` are effectful too and are rendered
+/// separately because OpenCode spells them as pattern maps rather than actions.
+const EFFECTFUL_TOOLS: &[&str] = &["edit", "patch", "task", "webfetch", "websearch", "write"];
+
+/// The `permission` block one posture renders to, or `None` for a provider that
+/// reads none.
+///
+/// **Every** known tool is named, and a `"*"` catch-all covers the ones this
+/// build has never heard of. That completeness is not tidiness: OpenCode
+/// *merges* configuration layers rather than replacing them, so any tool this
+/// block leaves unnamed keeps whatever a machine-global or repository-committed
+/// config said about it. A block that named only `bash` left `edit: allow` from
+/// an operator's global config standing, and an `ask` seat edited files without
+/// asking. Naming a tool is how this posture actually reaches it.
 fn opencode_permission(
     autonomy: SeatAutonomy,
     allowances: &[PermissionAllowance],
@@ -209,36 +238,45 @@ fn opencode_permission(
         }
         serde_json::Value::Object(patterns)
     }
+
+    /// One complete block: a catch-all, the read-only set, the effectful set,
+    /// and the two pattern-mapped tools.
+    fn block(effectful: &str, allowances: &[PermissionAllowance]) -> serde_json::Value {
+        let mut permission = serde_json::Map::new();
+        // Sorts before every named key, so the named ones are evaluated after it
+        // and win for themselves. An unknown tool matches only this.
+        permission.insert("*".to_owned(), serde_json::Value::from(effectful));
+        for tool in READ_ONLY_TOOLS {
+            permission.insert((*tool).to_owned(), serde_json::Value::from("allow"));
+        }
+        for tool in EFFECTFUL_TOOLS {
+            permission.insert((*tool).to_owned(), serde_json::Value::from(effectful));
+        }
+        permission.insert(
+            "external_directory".to_owned(),
+            serde_json::json!({ "*": effectful }),
+        );
+        permission.insert("bash".to_owned(), bash(effectful, allowances));
+        serde_json::Value::Object(permission)
+    }
+
     match autonomy {
         // Everything Kontor already authorized, without a second question per
         // tool call — including reading outside the worktree, which is what the
         // wedged seats of 2026-08-22 were actually stopped on.
-        SeatAutonomy::Bounded => Some(serde_json::json!({
-            "read": "allow",
-            "edit": "allow",
-            "glob": "allow",
-            "grep": "allow",
-            "list": "allow",
-            "lsp": "allow",
-            "skill": "allow",
-            "task": "allow",
-            "todowrite": "allow",
-            "question": "allow",
-            "webfetch": "allow",
-            "websearch": "allow",
-            "external_directory": { "*": "allow" },
-            "bash": bash("allow", allowances),
-        })),
-        // The floor, and nothing else. Naming only `bash` is deliberate: an
-        // unlisted tool keeps opencode's own default, so a supervised seat asks
-        // exactly what it asked before this existed and gains the denials. A
-        // block that also spelled out `read: ask` would be this change quietly
-        // making supervised seats *more* likely to stall — which is the outage.
-        SeatAutonomy::Supervised => Some(serde_json::json!({ "bash": bash("ask", allowances) })),
-        // Advisory seats launch `--mode plan`, which already refuses every edit.
-        // An allow-list for a seat that may not act would be a second, weaker
-        // statement of the same rule.
-        SeatAutonomy::Advisory => None,
+        SeatAutonomy::Bounded => Some(block("allow", allowances)),
+        // The asking posture, stated for every effectful tool rather than left
+        // to whatever the host's configuration happens to say.
+        SeatAutonomy::Supervised => Some(block("ask", allowances)),
+        // `--mode plan` is *behavioral guidance, not containment*: the
+        // consultation path records a qualified canary in which shell writes
+        // proceeded under it, which is why `consultation_permission_mode`
+        // refuses OpenCode outright. A delivery seat declared `plan` must
+        // therefore be contained by the block or not claimed at all.
+        //
+        // Allowances are ignored: a task exception may relax the destructive
+        // floor for a seat allowed to act, never for one declared unable to.
+        SeatAutonomy::Advisory => Some(block("deny", &[])),
     }
 }
 
@@ -276,30 +314,75 @@ mod tests {
         }
     }
 
-    /// `ask` gains the floor and *only* the floor: this change must never be the
-    /// reason a seat that used to run starts asking about more than it did.
+    /// The asking posture is stated for every effectful tool, not left to the
+    /// host's ambient configuration.
+    ///
+    /// Naming only `bash` was a real hole: OpenCode merges layers, so an
+    /// operator's machine-global `edit: allow` survived for every key the block
+    /// did not name, and an `ask` seat edited files without ever asking.
     #[test]
-    fn ask_gains_the_floor_and_no_new_asks() {
+    fn ask_states_every_effectful_tool_and_keeps_reading_free() {
         let permission = opencode(SeatAutonomy::Supervised, &[]);
         assert_eq!(permission["bash"]["*"], "ask");
+        assert_eq!(permission["*"], "ask", "an unknown tool asks too");
+        for effectful in ["edit", "write", "patch", "task", "webfetch", "websearch"] {
+            assert_eq!(
+                permission[effectful], "ask",
+                "`{effectful}` must ask rather than inherit an ambient allow"
+            );
+        }
+        assert_eq!(permission["external_directory"]["*"], "ask");
+        for reading in ["read", "glob", "grep", "list", "lsp"] {
+            assert_eq!(permission[reading], "allow", "`{reading}` is not effectful");
+        }
         for pattern in DESTRUCTIVE_BASH_DENIES {
             assert_eq!(permission["bash"][*pattern], "deny");
         }
-        let spelled: Vec<&String> = permission.as_object().expect("an object").keys().collect();
-        assert_eq!(
-            spelled,
-            vec!["bash"],
-            "every other tool keeps opencode's own default rather than a new `ask`"
-        );
     }
 
-    /// `plan` is already read-only by mode; a block would restate it weakly.
+    /// `plan` is guidance, not containment — the consultation path records a
+    /// canary where shell writes proceeded under it — so an advisory OpenCode
+    /// seat is contained by the block or it is not contained at all.
     #[test]
-    fn plan_writes_no_block_but_still_pins_the_mode() {
+    fn plan_is_contained_by_the_block_not_by_the_mode() {
         let posture = seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("plan");
-        assert_eq!(posture.mode, Some("plan"));
-        assert!(posture.permission.is_none());
-        assert_eq!(posture.auto_accept, Some(false));
+        assert_eq!(posture.mode, Some("plan"), "the mode is still pinned");
+        let permission = posture.permission.expect("plan is contained by a block");
+
+        assert_eq!(
+            permission["*"], "deny",
+            "deny by default, including tools this build of OpenCode has never heard of"
+        );
+        assert_eq!(permission["bash"]["*"], "deny", "no shell at all");
+        for mutating in ["edit", "write", "patch"] {
+            assert_eq!(permission[mutating], "deny", "`{mutating}` may not act");
+        }
+        for reading in ["read", "glob", "grep", "list", "lsp"] {
+            assert_eq!(
+                permission[reading], "allow",
+                "`{reading}` is how it advises"
+            );
+        }
+    }
+
+    /// A task exception may relax the floor for a seat allowed to act. It may
+    /// not relax anything for a seat declared unable to.
+    #[test]
+    fn an_allowance_cannot_weaken_an_advisory_seat() {
+        let plain = seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("plan");
+        let pressed = seat_posture(
+            "opencode",
+            SeatAutonomy::Advisory,
+            &[allowance("*git rm --cached*"), allowance("*rm -rf *")],
+        )
+        .expect("plan");
+        assert_eq!(
+            plain.permission, pressed.permission,
+            "an advisory block is identical however many exceptions are declared"
+        );
+        let permission = pressed.permission.expect("a block");
+        assert_eq!(permission["bash"]["*git rm --cached*"], "deny");
+        assert_eq!(permission["bash"]["*rm -rf *"], "deny");
     }
 
     /// The floor's membership, written out.
@@ -511,7 +594,11 @@ mod tests {
                 Some("plan"),
             ),
             ("codex", Some("full-access"), Some("auto-review"), None),
-            ("cursor", Some("agent"), Some("ask"), Some("plan")),
+            // Cursor expresses `autonomous` honestly and nothing else: its ACP
+            // runtime permits shell writes in `plan` and shell *and* file writes
+            // in `ask`, which is why consultation refuses it outright. A mode
+            // label is not a permission boundary.
+            ("cursor", Some("agent"), None, None),
             ("opencode", Some("build"), Some("build"), Some("plan")),
         ];
         for (provider, bounded, supervised, advisory) in expected {
@@ -522,13 +609,22 @@ mod tests {
                 bounded,
                 "{provider} autonomous"
             );
-            assert_eq!(
-                seat_posture(provider, SeatAutonomy::Supervised, &[])
-                    .expect("supervised")
-                    .mode,
-                supervised,
-                "{provider} ask"
-            );
+            match supervised {
+                Some(mode) => assert_eq!(
+                    seat_posture(provider, SeatAutonomy::Supervised, &[])
+                        .expect("supervised")
+                        .mode,
+                    Some(mode),
+                    "{provider} ask"
+                ),
+                None => assert!(
+                    matches!(
+                        seat_posture(provider, SeatAutonomy::Supervised, &[]),
+                        Err(RuntimeError::PermissionModeUnsupported { .. })
+                    ),
+                    "{provider} cannot express `ask` and must be refused, not labelled"
+                ),
+            }
             match advisory {
                 Some(mode) => assert_eq!(
                     seat_posture(provider, SeatAutonomy::Advisory, &[])
@@ -537,12 +633,16 @@ mod tests {
                     Some(mode),
                     "{provider} plan"
                 ),
-                // Codex has no read-only mode, so an advisory seat on it is
-                // refused rather than quietly run under a writing one.
-                None => assert!(matches!(
-                    seat_posture(provider, SeatAutonomy::Advisory, &[]),
-                    Err(RuntimeError::PermissionModeUnsupported { .. })
-                )),
+                // Codex has no read-only mode and cursor's is not a boundary, so
+                // an advisory seat on either is refused rather than quietly run
+                // under a mode that does not contain it.
+                None => assert!(
+                    matches!(
+                        seat_posture(provider, SeatAutonomy::Advisory, &[]),
+                        Err(RuntimeError::PermissionModeUnsupported { .. })
+                    ),
+                    "{provider} cannot express `plan` and must be refused"
+                ),
             }
         }
     }
@@ -598,10 +698,17 @@ mod tests {
             seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("harness"),
         );
         assert_eq!(
-            seat_posture("cursor-personal", SeatAutonomy::Supervised, &[])
+            seat_posture("cursor-personal", SeatAutonomy::Bounded, &[])
                 .expect("alias")
                 .mode,
-            Some("ask"),
+            Some("agent"),
+        );
+        assert!(
+            matches!(
+                seat_posture("cursor-personal", SeatAutonomy::Supervised, &[]),
+                Err(RuntimeError::PermissionModeUnsupported { .. })
+            ),
+            "an alias inherits its harness's refusal too"
         );
     }
 
@@ -612,5 +719,168 @@ mod tests {
             seat_posture("new-provider", SeatAutonomy::Bounded, &[]),
             Err(RuntimeError::PermissionModeUnsupported { .. })
         ));
+    }
+
+    // ---- OpenCode evaluator model -------------------------------------------
+    //
+    // A faithful port of the two functions extracted from the installed
+    // OpenCode 1.18.15 binary:
+    //
+    //   fromConfig: walks Object.entries outer and nested, in the order the
+    //               document presents them, emitting {permission, pattern,
+    //               action} records.
+    //   evaluate:   records.findLast(r => match(tool, r.permission)
+    //                                  && match(command, r.pattern))
+    //               ?? {action: "ask"}
+    //
+    // `serde_json::Map` here is a `BTreeMap` (this workspace pins
+    // serde_json =1.0.151 and its lock entry pulls in no indexmap), so iterating
+    // it yields exactly the lexicographic order the file is serialized in —
+    // which is the order OpenCode is handed.
+    //
+    // This models the semantics that were read out of the binary. It is not the
+    // live evaluator, and is not claimed to be.
+
+    fn glob_matches(pattern: &str, value: &str) -> bool {
+        let (pattern, value) = (pattern.as_bytes(), value.as_bytes());
+        let (mut p, mut v) = (0, 0);
+        let (mut star, mut mark) = (None, 0);
+        while v < value.len() {
+            if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == value[v]) {
+                p += 1;
+                v += 1;
+            } else if p < pattern.len() && pattern[p] == b'*' {
+                star = Some(p);
+                mark = v;
+                p += 1;
+            } else if let Some(star) = star {
+                p = star + 1;
+                mark += 1;
+                v = mark;
+            } else {
+                return false;
+            }
+        }
+        while p < pattern.len() && pattern[p] == b'*' {
+            p += 1;
+        }
+        p == pattern.len()
+    }
+
+    /// `evaluate(fromConfig(block), tool, command)`.
+    fn evaluate(block: &serde_json::Value, tool: &str, command: &str) -> String {
+        let mut records: Vec<(String, String, String)> = Vec::new();
+        for (key, value) in block.as_object().expect("a permission object") {
+            match value {
+                serde_json::Value::String(action) => {
+                    records.push((key.clone(), "*".to_owned(), action.clone()));
+                }
+                serde_json::Value::Object(nested) => {
+                    for (pattern, action) in nested {
+                        records.push((
+                            key.clone(),
+                            pattern.clone(),
+                            action.as_str().expect("an action").to_owned(),
+                        ));
+                    }
+                }
+                _ => panic!("unexpected permission shape"),
+            }
+        }
+        records
+            .iter()
+            .rfind(|(permission, pattern, _)| {
+                glob_matches(permission, tool) && glob_matches(pattern, command)
+            })
+            .map_or_else(|| "ask".to_owned(), |(_, _, action)| action.clone())
+    }
+
+    #[test]
+    fn the_evaluator_model_agrees_with_the_extracted_semantics() {
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("*rm -rf *", "sudo rm -rf /tmp"));
+        assert!(!glob_matches("*rm -rf *", "rm -r /tmp"));
+        assert!(glob_matches("*git*", "git clean -fdx"));
+        // An unmatched tool falls to the evaluator's own default.
+        assert_eq!(
+            evaluate(&serde_json::json!({ "read": "allow" }), "bash", "ls"),
+            "ask"
+        );
+    }
+
+    /// An advisory OpenCode seat provably cannot act, under those semantics.
+    #[test]
+    fn an_advisory_seat_can_neither_run_a_shell_nor_edit() {
+        let block = opencode(SeatAutonomy::Advisory, &[]);
+        for command in ["ls", "cat file", "rm -rf /", "git status", "echo hi > f"] {
+            assert_eq!(
+                evaluate(&block, "bash", command),
+                "deny",
+                "an advisory seat must not run `{command}`"
+            );
+        }
+        for tool in ["edit", "write", "patch"] {
+            assert_eq!(evaluate(&block, tool, "*"), "deny", "`{tool}` must not act");
+        }
+        for tool in ["read", "glob", "grep", "list", "lsp"] {
+            assert_eq!(evaluate(&block, tool, "*"), "allow", "`{tool}` is reading");
+        }
+        assert_eq!(
+            evaluate(&block, "some_future_tool", "*"),
+            "deny",
+            "a tool this build has never heard of is denied, not asked"
+        );
+    }
+
+    /// The floor actually wins for a seat that *is* allowed to act.
+    #[test]
+    fn the_floor_wins_over_the_catch_all_under_evaluation() {
+        let bounded = opencode(SeatAutonomy::Bounded, &[]);
+        assert_eq!(evaluate(&bounded, "bash", "ls -la"), "allow");
+        for destructive in [
+            "rm -rf /tmp/x",
+            "git clean -fdx",
+            "git rm --cached thing",
+            "git submodule update --init",
+            "git submodule deinit -f x",
+        ] {
+            assert_eq!(
+                evaluate(&bounded, "bash", destructive),
+                "deny",
+                "`{destructive}` must lose to the floor"
+            );
+        }
+
+        let ask = opencode(SeatAutonomy::Supervised, &[]);
+        assert_eq!(evaluate(&ask, "bash", "ls -la"), "ask");
+        assert_eq!(evaluate(&ask, "bash", "rm -rf /tmp/x"), "deny");
+    }
+
+    /// An exact-key exception flips exactly one command family and no other.
+    #[test]
+    fn an_exact_exception_flips_only_its_own_family_under_evaluation() {
+        let block = opencode(SeatAutonomy::Bounded, &[allowance("*git rm --cached*")]);
+        assert_eq!(evaluate(&block, "bash", "git rm --cached gitlink"), "allow");
+        assert_eq!(evaluate(&block, "bash", "git clean -fdx"), "deny");
+        assert_eq!(evaluate(&block, "bash", "rm -rf /tmp/x"), "deny");
+    }
+
+    /// Why `PermissionAllowance` is restricted to exact floor keys: a broader
+    /// pattern *would* defeat the floor under these semantics. The type cannot
+    /// express this block — this constructs it by hand to show the hazard is
+    /// real rather than theoretical.
+    #[test]
+    fn a_broad_allowance_would_erase_the_floor_which_is_why_it_cannot_be_declared() {
+        let mut block = opencode(SeatAutonomy::Bounded, &[]);
+        block["bash"]["*git*"] = serde_json::Value::from("allow");
+        assert_eq!(
+            evaluate(&block, "bash", "git clean -fdx"),
+            "allow",
+            "a broader pattern sorts after the deny it overlaps and wins"
+        );
+        assert!(
+            PermissionAllowance::parse("*git*").is_none(),
+            "which is exactly why the type refuses to build it"
+        );
     }
 }

@@ -3314,15 +3314,16 @@ impl PaseoAdapter {
         // `PaseoCommand::agent_run` and `verify_agent_route`, decides the
         // `--mode` this seat launches and is verified under — so what the seat
         // reads on disk and what Kontor later checks cannot disagree.
+        let allowances = self
+            .config
+            .scope
+            .configured_task_scope(task_scope.task_id)
+            .map(|configured| configured.permission_overrides)
+            .unwrap_or_default();
         let posture = crate::posture::seat_posture(
             request.model_rung().provider.0.as_str(),
             request.autonomy(),
-            &self
-                .config
-                .scope
-                .configured_task_scope(task_scope.task_id)
-                .map(|configured| configured.permission_overrides)
-                .unwrap_or_default(),
+            &allowances,
         )?;
 
         // Compose the seat's worktree-local config before anything is spawned:
@@ -3342,6 +3343,24 @@ impl PaseoAdapter {
             tracing::warn!(%error, "seat MCP composition failed");
             RuntimeError::LaunchNotAdmitted {
                 rule: "seat MCP composition failed in the task worktree",
+            }
+        })?;
+
+        // Read the composed posture back out of the seat's effective project
+        // config *before* the one native effect this path has. Metadata cannot
+        // carry this: OpenCode spells both `autonomous` and `ask` as `--mode
+        // build`, so the mode readback below cannot tell the two apart, and the
+        // permission block is the only thing that does. Verified here, a seat
+        // that would have started without its floor never starts at all.
+        crate::seat_mcp::verify_composed_posture(
+            &posture,
+            &allowances,
+            std::path::Path::new(task_scope.worktree.as_str()),
+        )
+        .map_err(|error| {
+            tracing::warn!(%error, "composed seat posture failed readback");
+            RuntimeError::LaunchNotAdmitted {
+                rule: "the composed seat posture did not read back as rendered",
             }
         })?;
 
@@ -3377,6 +3396,21 @@ impl PaseoAdapter {
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
         Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
+        // Re-read after placement: the mode readback above proves which mode the
+        // agent carries, and this proves the block that mode does not encode is
+        // still the one that was composed. Cheap, and it closes the window
+        // between composition and the process actually starting.
+        crate::seat_mcp::verify_composed_posture(
+            &posture,
+            &allowances,
+            std::path::Path::new(task_scope.worktree.as_str()),
+        )
+        .map_err(|error| {
+            tracing::warn!(%error, "composed seat posture drifted during launch");
+            RuntimeError::LaunchNotAdmitted {
+                rule: "the composed seat posture changed between composition and placement",
+            }
+        })?;
 
         let snapshot = self.bind(
             request.agent_run_id(),

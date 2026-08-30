@@ -995,6 +995,240 @@ async fn preparation_reuses_an_existing_workspace_without_creating_one() {
     );
 }
 
+/// A declared posture that does not read back refuses the launch **before** the
+/// one native effect this path has.
+///
+/// The floor is composed into the seat's worktree and then read back out of the
+/// effective project config. Here the repository itself commits a rule that
+/// survives OpenCode's merge and widens what the seat could run, so the readback
+/// disagrees with the posture that was rendered — and the seat is never spawned.
+#[tokio::test]
+async fn a_posture_that_does_not_read_back_refuses_before_any_native_effect() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-9001-posture-readback";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
+
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-posture-readback", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    let task_scope = TaskScope {
+        task_id: task(),
+        external_issue_key: external("ASMA-9001"),
+        short_code: external("OP-20"),
+        worktree: WorkspaceRoot::parse(worktree.to_str().expect("UTF-8"))
+            .expect("the declared worktree"),
+    };
+    let workspace = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(epic_scope(), task_scope.clone()),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • ASMA-9001 • OP-20"),
+            root: task_scope.worktree.clone(),
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect("the task worktree is prepared")
+        .snapshot;
+
+    // The repository commits a permission rule of its own. OpenCode merges it
+    // *under* the seat-local block, so the key survives into the effective
+    // configuration and widens what the floor would otherwise refuse.
+    std::fs::write(
+        worktree.join("opencode.json"),
+        r#"{"permission": {"bash": {"*git*": "allow"}}}"#,
+    )
+    .expect("the repository's own config is written");
+
+    let agent_run_id = run(RUN_IMPLEMENT);
+    let binding_id = RuntimeBindingId::generate();
+    let authority = adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id,
+            binding_id,
+            replaces: None,
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect("admission")
+        .into_authority()
+        .expect("an authority");
+    let request = authority.into_request(LaunchParts {
+        scope: ExecutionScope::for_task(epic_scope(), task_scope.clone()),
+        display_name: name("Implement • OP-20"),
+        agent_run_id,
+        team_run_id: team_run(),
+        role_slot_id: slot("implement-a"),
+        task_id: task(),
+        binding_id,
+        placement: Some(LaunchPlacement::Workspace(workspace)),
+        cwd: task_scope.worktree.clone(),
+        account_profile_id: None,
+        prompt: text("bootstrap the role"),
+        model_rung: ModelRung {
+            provider: ProviderRef("opencode".to_owned()),
+            model: ModelRef("deepseek/deepseek-v4-flash".to_owned()),
+            effort: None,
+        },
+        context_policy: standard_context_policy(),
+        autonomy: kontor_core::spec::SeatAutonomy::Bounded,
+        requested_at: at("2026-08-10T09:00:00Z"),
+    });
+
+    let error = adapter
+        .launch(&request)
+        .await
+        .expect_err("a posture that does not read back must not spawn a seat");
+    assert!(
+        matches!(error, RuntimeError::LaunchNotAdmitted { .. }),
+        "refused as a launch admission failure, not as a runtime outage: {error:?}"
+    );
+    assert_eq!(
+        recorded.count("agent run"),
+        0,
+        "zero native effects: the seat was never spawned"
+    );
+    // The floor *was* composed first — the refusal is the readback, not a
+    // missing composition.
+    assert!(
+        worktree.join(".opencode/opencode.json").is_file(),
+        "the block is composed before it is verified"
+    );
+}
+
+/// The control for the test above: with no widening rule committed, the same
+/// launch passes the readback and reaches the native effect. Without this, the
+/// refusal test would pass even if the launch had failed for some unrelated
+/// reason before composition.
+#[tokio::test]
+async fn the_same_posture_reaches_the_native_effect_when_it_does_read_back() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-9002-posture-control";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
+
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-posture-control", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    let task_scope = TaskScope {
+        task_id: task(),
+        external_issue_key: external("ASMA-9002"),
+        short_code: external("OP-20"),
+        worktree: WorkspaceRoot::parse(worktree.to_str().expect("UTF-8"))
+            .expect("the declared worktree"),
+    };
+    let workspace = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(epic_scope(), task_scope.clone()),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • ASMA-9002 • OP-20"),
+            root: task_scope.worktree.clone(),
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect("the task worktree is prepared")
+        .snapshot;
+
+    let agent_run_id = run(RUN_IMPLEMENT);
+    let binding_id = RuntimeBindingId::generate();
+    let authority = adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id,
+            binding_id,
+            replaces: None,
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect("admission")
+        .into_authority()
+        .expect("an authority");
+    let request = authority.into_request(LaunchParts {
+        scope: ExecutionScope::for_task(epic_scope(), task_scope.clone()),
+        display_name: name("Implement • OP-20"),
+        agent_run_id,
+        team_run_id: team_run(),
+        role_slot_id: slot("implement-a"),
+        task_id: task(),
+        binding_id,
+        placement: Some(LaunchPlacement::Workspace(workspace)),
+        cwd: task_scope.worktree.clone(),
+        account_profile_id: None,
+        prompt: text("bootstrap the role"),
+        model_rung: ModelRung {
+            provider: ProviderRef("opencode".to_owned()),
+            model: ModelRef("deepseek/deepseek-v4-flash".to_owned()),
+            effort: None,
+        },
+        context_policy: standard_context_policy(),
+        autonomy: kontor_core::spec::SeatAutonomy::Bounded,
+        requested_at: at("2026-08-10T09:00:00Z"),
+    });
+
+    // The launch still fails further on — these fixtures answer for a Claude
+    // agent, so the route readback disagrees — but it gets *past* the posture
+    // readback and spends the native effect, which is the point being pinned.
+    let _ = adapter.launch(&request).await;
+    assert_eq!(
+        recorded.count("agent run"),
+        1,
+        "a posture that reads back cleanly does not block the spawn"
+    );
+
+    let composed: serde_json::Value =
+        std::fs::read_to_string(worktree.join(".opencode/opencode.json"))
+            .expect("the floor is composed")
+            .parse()
+            .expect("JSON");
+    for pattern in [
+        "*submodule update*",
+        "*submodule deinit*",
+        "*git rm --cached*",
+        "*git clean -*",
+        "*rm -rf *",
+    ] {
+        assert_eq!(
+            composed["permission"]["bash"][pattern], "deny",
+            "`{pattern}` is on disk before the seat is spawned"
+        );
+    }
+}
+
 #[tokio::test]
 async fn preparation_creates_an_absent_declared_git_worktree_before_registering_it() {
     let repository = temporary_repository();

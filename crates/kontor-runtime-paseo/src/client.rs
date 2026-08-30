@@ -112,7 +112,12 @@ pub(crate) fn paseo_mode(
             }),
         },
         SeatAutonomy::Advisory => match built_in_provider(provider) {
-            "claude" | "cursor" | "opencode" => Ok(Some("plan")),
+            // Cursor is deliberately absent: `consultation_permission_mode`
+            // refuses it on measured behaviour — its ACP runtime permits shell
+            // writes in `plan` and shell *and* file writes in `ask`. A mode
+            // label is not a permission boundary, and delivery must not claim
+            // the containment consultation already refuses to claim.
+            "claude" | "opencode" => Ok(Some("plan")),
             "copilot" => Ok(Some(
                 "https://agentclientprotocol.com/protocol/session-modes#plan",
             )),
@@ -136,9 +141,11 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
         "copilot" => Ok(Some(
             "https://agentclientprotocol.com/protocol/session-modes#agent",
         )),
-        // Cursor spells the asking posture as a mode; opencode does not, which
-        // is why opencode alone needs a written permission block to express it.
-        "cursor" => Ok(Some("ask")),
+        // Cursor has an `ask` mode and it is *not* an asking posture: the same
+        // measured finding that keeps cursor out of consultation records file
+        // and shell writes proceeding under it. Refused until Paseo exposes an
+        // attested permission boundary for cursor, rather than mapped to a
+        // label that would report a guarantee nothing enforces.
         "opencode" => Ok(Some("build")),
         "pi" => Ok(None),
         "omp" => Ok(Some("full")),

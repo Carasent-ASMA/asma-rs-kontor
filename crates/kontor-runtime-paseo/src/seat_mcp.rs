@@ -46,13 +46,15 @@
 //!
 //! `KONTOR_SEAT_MCP=off` in the daemon's environment disables composition for
 //! the whole process — the daemon resolves it once at fleet composition and
-//! hands the adapter `None`, which withdraws the permission block along with
-//! the MCP files. Providers other than Claude and opencode are a no-op: only the
+//! hands the adapter `None`. That withdraws the MCP files **and nothing else**:
+//! a declared permission posture is a safety boundary rather than part of this
+//! surface, so it is composed either way. Providers other than Claude and
+//! opencode are a no-op for MCP: only the
 //! Claude harness reads `.mcp.json` from its cwd (codex/opencode are follow-up).
 //! Account-qualified Claude provider ids such as `claude-work` and
 //! `claude-personal` are the same harness boundary and are composed too.
 
-use crate::posture::SeatPosture;
+use crate::posture::{DESTRUCTIVE_BASH_DENIES, PermissionAllowance, SeatPosture};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -131,13 +133,25 @@ pub fn compose_for_seat(
     posture: &SeatPosture,
     cwd: &Path,
 ) -> io::Result<()> {
+    let harness = crate::client::built_in_provider(provider);
+    // The posture is composed for an OpenCode seat regardless of `seat`. It is
+    // this seat's permission floor, not part of the MCP surface: gating it on
+    // `Option<SeatMcp>` meant `KONTOR_SEAT_MCP=off` — a kill switch for a
+    // convenience feature — silently launched autonomous seats with no floor at
+    // all, while `permission_posture` still parsed, the seat still spawned
+    // `--mode build`, and readback still passed on the mode alone.
+    //
+    // It is equally deliberate that **no other provider touches this file**. A
+    // Claude or Codex seat has no business rewriting OpenCode configuration, and
+    // Kontor holds no marker proving a `permission` block found there is one it
+    // wrote rather than one a human did. An OpenCode seat overwrites the block
+    // because deciding that seat's posture is precisely this code's job; every
+    // other seat leaves the file exactly as it found it.
+    if harness == "opencode" {
+        compose_permission_block(posture, cwd)?;
+    }
     match seat {
-        Some(seat) if crate::client::built_in_provider(provider) == "claude" => {
-            seat.compose(cwd, "consultation")
-        }
-        Some(_) if crate::client::built_in_provider(provider) == "opencode" => {
-            compose_opencode(posture, cwd)
-        }
+        Some(seat) if harness == "claude" => seat.compose(cwd, "consultation"),
         _ => Ok(()),
     }
 }
@@ -147,11 +161,14 @@ pub fn compose_for_seat(
 /// Idempotent like [`SeatMcp::compose`], and merging for the same reason: only
 /// the `permission` key is ours, so a `model` or an `mcp` entry somebody put in
 /// the seat's own `.opencode/` config outlives the composition.
-fn compose_opencode(posture: &SeatPosture, cwd: &Path) -> io::Result<()> {
+fn compose_permission_block(posture: &SeatPosture, cwd: &Path) -> io::Result<()> {
     let Some(permission) = posture.permission.clone() else {
-        // A posture that renders no block — `plan` — is already read-only by
-        // mode. Writing an allow-list for a seat that may not act would be a
-        // second, weaker statement of the same rule.
+        // Nothing to state, so nothing is touched. A stale block cannot outlive
+        // its usefulness here: every OpenCode posture renders a block, so the
+        // next OpenCode seat in this worktree overwrites it wholesale before it
+        // starts. Deleting somebody's `permission` key on the strength of "no
+        // OpenCode seat is launching right now" would be destroying state this
+        // code cannot prove it owns.
         return Ok(());
     };
     let directory = cwd.join(".opencode");
@@ -255,6 +272,202 @@ fn merge_json(
     std::fs::write(path, rendered)
 }
 
+/// Every configuration layer OpenCode merges for one seat, lowest precedence
+/// first within `global`, then the repository's root config, then the block
+/// Kontor composed.
+///
+/// Named explicitly rather than resolved inline so a test can present an exact
+/// three-layer shape without depending on the machine it runs on — and so the
+/// set of layers this verification believes in is reviewable in one place.
+#[derive(Debug, Clone)]
+pub struct ConfigLayers {
+    /// Machine and provider-home configuration. **Read only, never written.**
+    pub global: Vec<PathBuf>,
+    /// The repository's own committed `opencode.json` at the seat's cwd.
+    pub root: PathBuf,
+    /// The block this composition wrote.
+    pub seat_local: PathBuf,
+}
+
+impl ConfigLayers {
+    /// The layers a seat spawned in `cwd` will actually read.
+    ///
+    /// `OPENCODE_CONFIG` names a single file and is merged under everything
+    /// else; `OPENCODE_CONFIG_DIR`, `XDG_CONFIG_HOME` and `HOME` each resolve a
+    /// configuration directory, whose `opencode.json` and `opencode.jsonc` are
+    /// both read — the installed 1.18.15 accepts either spelling.
+    #[must_use]
+    pub fn for_seat(cwd: &Path) -> Self {
+        let mut global = Vec::new();
+        if let Some(file) = std::env::var_os("OPENCODE_CONFIG") {
+            global.push(PathBuf::from(file));
+        }
+        let directory = std::env::var_os("OPENCODE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("XDG_CONFIG_HOME").map(|xdg| PathBuf::from(xdg).join("opencode"))
+            })
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".config").join("opencode"))
+            });
+        if let Some(directory) = directory {
+            global.push(directory.join("opencode.json"));
+            global.push(directory.join("opencode.jsonc"));
+        }
+        Self {
+            global,
+            root: cwd.join("opencode.json"),
+            seat_local: cwd.join(".opencode/opencode.json"),
+        }
+    }
+}
+
+/// Read the seat's **effective** permission back and refuse the launch unless it
+/// states exactly the posture that was rendered.
+///
+/// # Why every layer is read
+///
+/// OpenCode merges configuration rather than replacing it, and resolves a call
+/// by last match. Comparing only the file Kontor wrote therefore proves nothing:
+/// an operator's machine-global config carrying `edit: allow`, `task: allow` or
+/// `external_directory: {"*": "allow"}` merges *underneath* the composed block
+/// and survives for every key the block does not name, and a rule committed in
+/// the repository's own root `opencode.json` survives the same way. Both were
+/// reproduced against the installed 1.18.15. So the whole stack is merged here
+/// in the same order OpenCode merges it, and the result must equal the rendered
+/// posture exactly — any surviving rule that the posture did not state, widening
+/// or not, refuses the launch.
+///
+/// # What it does and does not prove
+///
+/// It proves that the configuration OpenCode will resolve at process start says
+/// what Kontor decided it should say. It does **not** observe provider-internal
+/// evaluator state after start, which no surface exposes; and it cannot prevent
+/// a file changing between this check and the process reading it, which is why
+/// the launch path runs it again after placement.
+///
+/// # Errors
+/// A missing, unreadable, unparseable or non-object layer; an effective
+/// `permission` differing in any way from the rendered posture; or a floor
+/// pattern that is not denied and was not exactly relaxed by a declared
+/// allowance. Each refuses before the seat is spawned.
+pub fn verify_composed_posture(
+    posture: &SeatPosture,
+    allowances: &[PermissionAllowance],
+    cwd: &Path,
+) -> io::Result<()> {
+    verify_composed_posture_in(&ConfigLayers::for_seat(cwd), posture, allowances)
+}
+
+/// [`verify_composed_posture`] against an explicit set of layers.
+///
+/// # Errors
+/// As [`verify_composed_posture`].
+pub fn verify_composed_posture_in(
+    layers: &ConfigLayers,
+    posture: &SeatPosture,
+    allowances: &[PermissionAllowance],
+) -> io::Result<()> {
+    let Some(rendered) = posture.permission.as_ref() else {
+        return Ok(());
+    };
+    let effective = effective_permission(layers)?;
+    if effective != *rendered {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: the effective permission OpenCode would resolve does not match the \
+                 posture this seat was rendered for; refusing to spawn",
+                layers.seat_local.display()
+            ),
+        ));
+    }
+    // Checked again against the floor itself rather than against the value just
+    // compared to: an equality test is only as good as what it was handed, and
+    // this is the one property that must hold however the block was produced.
+    let relaxed: Vec<&str> = allowances
+        .iter()
+        .map(PermissionAllowance::pattern)
+        .collect();
+    for pattern in DESTRUCTIVE_BASH_DENIES {
+        let expected = if relaxed.contains(pattern) {
+            "allow"
+        } else {
+            "deny"
+        };
+        if effective["bash"][*pattern] != *expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the destructive floor pattern `{pattern}` is not `{expected}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The `permission` OpenCode resolves from these layers, merged in its order.
+fn effective_permission(layers: &ConfigLayers) -> io::Result<serde_json::Value> {
+    fn permission_of(path: &Path) -> io::Result<Option<serde_json::Value>> {
+        match std::fs::read(path) {
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(serde_json::Value::Object(document)) => Ok(document.get("permission").cloned()),
+                Ok(_) | Err(_) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is not a JSON object; the effective permission cannot be proved",
+                        path.display()
+                    ),
+                )),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    /// OpenCode deep-merges nested objects, the later document winning per key.
+    fn merge(under: &serde_json::Value, over: &serde_json::Value) -> serde_json::Value {
+        match (under, over) {
+            (serde_json::Value::Object(under), serde_json::Value::Object(over)) => {
+                let mut merged = under.clone();
+                for (key, value) in over {
+                    let combined = merged
+                        .get(key)
+                        .map_or_else(|| value.clone(), |existing| merge(existing, value));
+                    merged.insert(key.clone(), combined);
+                }
+                serde_json::Value::Object(merged)
+            }
+            _ => over.clone(),
+        }
+    }
+
+    if permission_of(&layers.seat_local)?.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{} states no permission block; refusing to spawn",
+                layers.seat_local.display()
+            ),
+        ));
+    }
+    let ordered = layers
+        .global
+        .iter()
+        .cloned()
+        .chain([layers.root.clone(), layers.seat_local.clone()]);
+    let mut effective = serde_json::Value::Null;
+    for path in ordered {
+        if let Some(permission) = permission_of(&path)? {
+            effective = if effective.is_null() {
+                permission
+            } else {
+                merge(&effective, &permission)
+            };
+        }
+    }
+    Ok(effective)
+}
+
 /// The lines a composed Claude seat must never surface as in `git status`.
 const CLAUDE_EXCLUDED: &[&str] = &[".mcp.json", ".claude/"];
 
@@ -343,6 +556,26 @@ mod tests {
             command: "kontor-mcp".to_owned(),
             state_root: PathBuf::from(state_root),
         }
+    }
+
+    /// The layers a test presents: no global unless one is named explicitly, so
+    /// a suite never depends on the machine it happens to run on.
+    fn layers(cwd: &Path) -> ConfigLayers {
+        ConfigLayers {
+            global: Vec::new(),
+            root: cwd.join("opencode.json"),
+            seat_local: cwd.join(".opencode/opencode.json"),
+        }
+    }
+
+    /// The `permission` block currently composed into a worktree.
+    fn read_permission(cwd: &Path) -> serde_json::Value {
+        let document: serde_json::Value =
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
+                .expect("a composed config")
+                .parse()
+                .expect("JSON");
+        document["permission"].clone()
     }
 
     fn porcelain(cwd: &Path) -> String {
@@ -643,15 +876,14 @@ mod tests {
         );
     }
 
-    /// A posture that renders no block writes no file.
+    /// A consultation seat states no block, so none is written.
     #[test]
     fn a_read_only_seat_has_nothing_composed_for_it() {
         let repo = repo();
         compose_for_seat(
             Some(&seat("/realm/state")),
             "opencode",
-            &crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[])
-                .expect("plan renders no block"),
+            &SeatPosture::read_only(),
             repo.path(),
         )
         .expect("a no-op");
@@ -725,16 +957,235 @@ mod tests {
         }
     }
 
-    /// The kill switch withdraws the permission block, not just the MCP files.
+    /// The kill switch withdraws MCP scaffolding and **never** the floor.
+    ///
+    /// `KONTOR_SEAT_MCP=off` resolves to `None` in the daemon, and that used to
+    /// take the permission block with it — so a switch for a convenience feature
+    /// silently launched autonomous seats with no floor, while the posture still
+    /// parsed and readback still passed on the mode alone. A kill switch for MCP
+    /// may not withdraw a declared permission boundary.
     #[test]
-    fn the_kill_switch_withdraws_the_permission_block_too() {
+    fn the_kill_switch_withdraws_mcp_scaffolding_but_never_the_floor() {
         let repo = repo();
+        let cwd = repo.path();
         let posture =
             crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
-        compose_for_seat(None, "opencode", &posture, repo.path()).expect("a no-op");
+
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+
         assert!(
-            !repo.path().join(".opencode/opencode.json").exists(),
-            "`KONTOR_SEAT_MCP=off` disables every kind of composition"
+            !cwd.join(".mcp.json").exists(),
+            "MCP scaffolding is withdrawn"
+        );
+        assert!(!cwd.join(".claude").exists(), "so is the Claude trust file");
+
+        let document: serde_json::Value =
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
+                .expect("the floor is composed regardless")
+                .parse()
+                .expect("JSON");
+        assert_eq!(document["permission"]["bash"]["*"], "allow");
+        for pattern in [
+            "*submodule update*",
+            "*submodule deinit*",
+            "*git rm --cached*",
+            "*git clean -*",
+            "*rm -rf *",
+        ] {
+            assert_eq!(
+                document["permission"]["bash"][pattern], "deny",
+                "`{pattern}` is denied even with no seat MCP configured"
+            );
+        }
+        // And it reads back as rendered, before anything could be spawned.
+        verify_composed_posture_in(&layers(cwd), &posture, &[]).expect("readback");
+    }
+
+    /// The same for the asking posture: no seat MCP, floor still present.
+    #[test]
+    fn an_ask_floor_is_composed_with_no_seat_mcp_configured() {
+        let repo = repo();
+        let cwd = repo.path();
+        let posture = crate::posture::seat_posture("opencode", SeatAutonomy::Supervised, &[])
+            .expect("posture");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+
+        let document: serde_json::Value =
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
+                .expect("composed")
+                .parse()
+                .expect("JSON");
+        assert_eq!(document["permission"]["bash"]["*"], "ask");
+        for pattern in [
+            "*submodule update*",
+            "*submodule deinit*",
+            "*git rm --cached*",
+            "*git clean -*",
+            "*rm -rf *",
+        ] {
+            assert_eq!(document["permission"]["bash"][pattern], "deny");
+        }
+        verify_composed_posture_in(&layers(cwd), &posture, &[]).expect("readback");
+    }
+
+    /// A worktree reused for `plan` must not keep the last seat's authority.
+    #[test]
+    fn a_worktree_reused_for_plan_does_not_keep_the_previous_allow_block() {
+        let repo = repo();
+        let cwd = repo.path();
+        let autonomous =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &autonomous, cwd).expect("first seat");
+        assert_eq!(
+            read_permission(cwd)["bash"]["*"],
+            "allow",
+            "the first seat may act"
+        );
+
+        let advisory =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &advisory, cwd).expect("second seat");
+
+        let permission = read_permission(cwd);
+        assert_eq!(
+            permission["bash"]["*"], "deny",
+            "the reused worktree must not hand the plan seat the last seat's shell"
+        );
+        assert_eq!(permission["*"], "deny");
+        assert_eq!(permission["edit"], "deny");
+        verify_composed_posture_in(&layers(cwd), &advisory, &[]).expect("readback");
+    }
+
+    /// A `permission` block Kontor cannot prove it wrote is never touched by a
+    /// seat that has no business with OpenCode configuration.
+    #[test]
+    fn a_user_owned_permission_block_survives_a_non_opencode_launch() {
+        let repo = repo();
+        let cwd = repo.path();
+        std::fs::create_dir_all(cwd.join(".opencode")).expect("directory");
+        let owned = r#"{"permission": {"bash": {"*": "ask"}}, "model": "mine"}"#;
+        std::fs::write(cwd.join(".opencode/opencode.json"), owned).expect("seeded");
+
+        for provider in ["claude", "codex", "cursor"] {
+            let posture = crate::posture::seat_posture(provider, SeatAutonomy::Bounded, &[])
+                .expect("a posture");
+            compose_for_seat(Some(&seat("/realm/state")), provider, &posture, cwd)
+                .expect("composition");
+            assert_eq!(
+                std::fs::read_to_string(cwd.join(".opencode/opencode.json")).expect("still there"),
+                owned,
+                "a {provider} seat must not rewrite OpenCode configuration it does not own"
+            );
+        }
+
+        // An OpenCode seat *does* own the posture decision, and replaces it.
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+        assert_eq!(read_permission(cwd)["bash"]["*"], "allow");
+        let document: serde_json::Value =
+            std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
+                .expect("read")
+                .parse()
+                .expect("JSON");
+        assert_eq!(
+            document["model"], "mine",
+            "and still only the permission key is ours"
+        );
+    }
+
+    /// The readback refuses everything that would let a seat start unprotected.
+    #[test]
+    fn the_readback_refuses_a_config_that_is_not_what_was_rendered() {
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+
+        {
+            // missing
+            let missing = repo();
+            assert_eq!(
+                verify_composed_posture_in(&layers(missing.path()), &posture, &[])
+                    .expect_err("a missing config is refused")
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+        }
+        {
+            // unparseable
+            let broken = repo();
+            std::fs::create_dir_all(broken.path().join(".opencode")).expect("directory");
+            std::fs::write(broken.path().join(".opencode/opencode.json"), "not json")
+                .expect("seeded");
+            assert_eq!(
+                verify_composed_posture_in(&layers(broken.path()), &posture, &[])
+                    .expect_err("an unparseable config is refused")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        {
+            // tampered: the floor quietly relaxed after composition
+            let tampered = repo();
+            let cwd = tampered.path();
+            compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+            let mut document: serde_json::Value =
+                std::fs::read_to_string(cwd.join(".opencode/opencode.json"))
+                    .expect("read")
+                    .parse()
+                    .expect("JSON");
+            document["permission"]["bash"]["*rm -rf *"] = serde_json::Value::from("allow");
+            std::fs::write(
+                cwd.join(".opencode/opencode.json"),
+                serde_json::to_string_pretty(&document).expect("render"),
+            )
+            .expect("tampered");
+            assert!(
+                verify_composed_posture_in(&layers(cwd), &posture, &[]).is_err(),
+                "a floor pattern flipped after composition must refuse the launch"
+            );
+        }
+    }
+
+    /// A repository's own root config cannot widen the effective permission:
+    /// OpenCode merges it underneath ours, so a root-only key would survive.
+    #[test]
+    fn the_readback_refuses_a_root_config_that_widens_the_effective_permission() {
+        let repo = repo();
+        let cwd = repo.path();
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, &[]).expect("posture");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+        verify_composed_posture_in(&layers(cwd), &posture, &[]).expect("clean worktree reads back");
+
+        std::fs::write(
+            cwd.join("opencode.json"),
+            r#"{"permission": {"bash": {"*git*": "allow"}}}"#,
+        )
+        .expect("seeded");
+        assert!(
+            verify_composed_posture_in(&layers(cwd), &posture, &[]).is_err(),
+            "a root-committed rule that survives the merge must refuse the launch"
+        );
+    }
+
+    /// An exactly-declared relaxation reads back as the posture that was built
+    /// with it, and only for the pattern it names.
+    #[test]
+    fn the_readback_accepts_an_exactly_declared_relaxation() {
+        let repo = repo();
+        let cwd = repo.path();
+        let allowance =
+            crate::posture::PermissionAllowance::parse("*git rm --cached*").expect("floor member");
+        let allowances = std::slice::from_ref(&allowance);
+        let posture = crate::posture::seat_posture("opencode", SeatAutonomy::Bounded, allowances)
+            .expect("posture");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+
+        verify_composed_posture_in(&layers(cwd), &posture, allowances)
+            .expect("the declared relaxation");
+        assert!(
+            verify_composed_posture_in(&layers(cwd), &posture, &[]).is_err(),
+            "the same file is refused when no relaxation was declared for it"
         );
     }
 
@@ -763,6 +1214,103 @@ mod tests {
         assert_eq!(
             document["permission"]["bash"]["*rm -rf *"], "deny",
             "the rest of the floor is untouched by one ticket's exception"
+        );
+    }
+
+    /// The permission block an operator host actually carries, verbatim from
+    /// `~/.config/opencode/opencode.json` on the machine this was built on.
+    const LIVE_GLOBAL: &str = r#"{
+      "permission": {
+        "read": "allow", "edit": "allow", "glob": "allow", "grep": "allow",
+        "list": "allow", "lsp": "allow", "skill": "allow", "task": "allow",
+        "todowrite": "allow", "question": "allow", "webfetch": "allow",
+        "websearch": "allow",
+        "external_directory": { "*": "allow" },
+        "bash": {
+          "*": "allow",
+          "*submodule update*": "deny", "*submodule deinit*": "deny",
+          "*git rm --cached*": "deny", "*git clean -*": "deny", "*rm -rf *": "deny"
+        }
+      }
+    }"#;
+
+    /// A permissive machine-global config cannot widen any posture.
+    ///
+    /// This is the three-layer merge OpenCode actually performs. The global here
+    /// says `edit: allow`, `task: allow`, `webfetch: allow` and
+    /// `external_directory: {"*": "allow"}` — every one of which used to survive
+    /// into the effective configuration, because the composed block did not name
+    /// those keys. An `ask` seat therefore edited without asking and a `plan`
+    /// seat was not contained. The block now names them, so the merge resolves
+    /// to exactly the rendered posture, and the readback proves it did.
+    #[test]
+    fn a_permissive_operator_global_cannot_widen_any_posture() {
+        for autonomy in [
+            SeatAutonomy::Bounded,
+            SeatAutonomy::Supervised,
+            SeatAutonomy::Advisory,
+        ] {
+            let repo = repo();
+            let cwd = repo.path();
+            let global = cwd.join("operator-global.json");
+            std::fs::write(&global, LIVE_GLOBAL).expect("the operator's config");
+
+            let posture = crate::posture::seat_posture("opencode", autonomy, &[]).expect("posture");
+            compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+
+            let layered = ConfigLayers {
+                global: vec![global],
+                root: cwd.join("opencode.json"),
+                seat_local: cwd.join(".opencode/opencode.json"),
+            };
+            verify_composed_posture_in(&layered, &posture, &[]).unwrap_or_else(|error| {
+                panic!("{autonomy:?} must survive a permissive global unchanged: {error}")
+            });
+        }
+    }
+
+    /// A rule that survives the merge from *any* layer refuses the launch.
+    #[test]
+    fn a_widening_rule_in_any_layer_refuses_the_launch() {
+        let posture =
+            crate::posture::seat_posture("opencode", SeatAutonomy::Advisory, &[]).expect("posture");
+
+        // (1) the machine-global names a tool the posture does not
+        let global_case = repo();
+        let cwd = global_case.path();
+        let global = cwd.join("operator-global.json");
+        std::fs::write(
+            &global,
+            r#"{"permission": {"browser": "allow", "read": "allow"}}"#,
+        )
+        .expect("seeded");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+        assert!(
+            verify_composed_posture_in(
+                &ConfigLayers {
+                    global: vec![global],
+                    root: cwd.join("opencode.json"),
+                    seat_local: cwd.join(".opencode/opencode.json"),
+                },
+                &posture,
+                &[]
+            )
+            .is_err(),
+            "a global rule the posture never stated must refuse the launch"
+        );
+
+        // (2) the repository commits a bash rule that outsorts the floor
+        let root_case = repo();
+        let cwd = root_case.path();
+        std::fs::write(
+            cwd.join("opencode.json"),
+            r#"{"permission": {"bash": {"*git*": "allow"}}}"#,
+        )
+        .expect("seeded");
+        compose_for_seat(None, "opencode", &posture, cwd).expect("composition");
+        assert!(
+            verify_composed_posture_in(&layers(cwd), &posture, &[]).is_err(),
+            "a repository-committed rule that survives the merge must refuse the launch"
         );
     }
 }
