@@ -90,11 +90,7 @@ impl QuotaSignalsDocument {
             // message so its byte offsets stay valid char boundaries. That is
             // exact only while the needles are ASCII, so the vendor grammar is
             // enforced here rather than assumed there.
-            if signal
-                .markers
-                .iter()
-                .any(|marker| !marker.is_ascii())
-            {
+            if signal.markers.iter().any(|marker| !marker.is_ascii()) {
                 return invalid("a marker must be ASCII vendor wording");
             }
             if signal
@@ -184,9 +180,15 @@ fn invalid<T>(rule: &'static str) -> Result<T, QuotaSignalsError> {
 mod tests {
     use super::*;
     use crate::quota::classify;
+    use kontor_core::id::parse_utc_timestamp;
     use kontor_core::spec::ProviderQuotaKind;
 
     const EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
+
+    /// The captured 2026-08-30 Claude refusal shape: the three components the
+    /// resume audit records, with the bare time-of-day session reset.
+    const CLAUDE_LIMIT: &str = "You've reached your individual spend limit. Manage it at \
+         https://console.anthropic.com/settings/limits — your session limit will reset at 10:40pm.";
 
     /// The text Codex actually produced on 2026-08-21, from the report Igor filed.
     const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
@@ -202,7 +204,13 @@ mod tests {
             .iter()
             .map(|signal| signal.provider.as_str())
             .collect();
-        for alias in ["codex-work", "codex-personal", "opencode"] {
+        for alias in [
+            "claude-work",
+            "claude-personal",
+            "codex-work",
+            "codex-personal",
+            "opencode",
+        ] {
             assert!(providers.contains(&alias), "missing {alias}: {providers:?}");
         }
         assert!(
@@ -211,9 +219,11 @@ mod tests {
         );
         // Unverified vendor copy must not ship as active authority: a false
         // positive archives live work, a false negative costs nothing.
-        assert!(
-            !providers.iter().any(|p| p.starts_with("claude")),
-            "no Claude refusal has been captured, so no Claude signal is active: {providers:?}",
+        // Captured 2026-08-30, so the Claude aliases are now active authority.
+        assert_eq!(
+            providers.iter().filter(|p| p.starts_with("claude")).count(),
+            2,
+            "one entry per Claude login: {providers:?}",
         );
     }
 
@@ -221,6 +231,8 @@ mod tests {
     fn every_active_alias_classifies_its_own_vendor_wording() {
         let document = parse(EXAMPLE).expect("valid document");
         for (alias, text) in [
+            ("claude-work", CLAUDE_LIMIT),
+            ("claude-personal", CLAUDE_LIMIT),
             ("codex-work", CODEX_LIMIT),
             ("codex-personal", CODEX_LIMIT),
             ("opencode", "insufficient credits remaining"),
@@ -232,8 +244,12 @@ mod tests {
                 .cloned()
                 .collect();
             assert!(!eligible.is_empty(), "{alias} is not declared");
-            let observed =
-                classify(text, &eligible).unwrap_or_else(|| panic!("{alias} classifies nothing"));
+            let observed = classify(
+                text,
+                &eligible,
+                parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant"),
+            )
+            .unwrap_or_else(|| panic!("{alias} classifies nothing"));
             assert_eq!(observed.provider, alias);
         }
     }
@@ -256,7 +272,12 @@ mod tests {
             "[System Error] the tool call failed; try again at your convenience.",
         ] {
             assert!(
-                classify(innocuous, &codex).is_none(),
+                classify(
+                    innocuous,
+                    &codex,
+                    parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant")
+                )
+                .is_none(),
                 "ordinary prose must never retire a seat: {innocuous:?}",
             );
         }
@@ -271,7 +292,12 @@ mod tests {
             .filter(|signal| signal.provider == "codex-work")
             .cloned()
             .collect();
-        let observed = classify(CODEX_LIMIT, &eligible).expect("a quota refusal");
+        let observed = classify(
+            CODEX_LIMIT,
+            &eligible,
+            parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant"),
+        )
+        .expect("a quota refusal");
         assert_eq!(observed.provider, "codex-work");
         assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
     }
@@ -292,7 +318,12 @@ mod tests {
             Some("Europe/Oslo"),
             "the captured 2026-08-21/23 message is Oslo-authored provenance",
         );
-        let observed = classify(CODEX_LIMIT, &eligible).expect("a quota refusal");
+        let observed = classify(
+            CODEX_LIMIT,
+            &eligible,
+            parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant"),
+        )
+        .expect("a quota refusal");
         // 09:35 in Oslo during August is CEST, two hours ahead of UTC.
         assert_eq!(
             observed.resets_at,
@@ -352,7 +383,14 @@ mod tests {
     #[test]
     fn an_ordinary_error_is_not_a_quota_refusal() {
         let document = parse(EXAMPLE).expect("valid document");
-        assert!(classify("connection reset by peer", &document.signals).is_none());
+        assert!(
+            classify(
+                "connection reset by peer",
+                &document.signals,
+                parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant")
+            )
+            .is_none()
+        );
     }
 
     /// Absent, unreadable and invalid are **three** outcomes, not two. Only the
@@ -430,10 +468,7 @@ mod tests {
     #[test]
     fn an_unknown_field_is_refused() {
         let document = "schema_version: 1\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_after: nonsense\n";
-        assert!(matches!(
-            parse(document),
-            Err(QuotaSignalsError::Document)
-        ));
+        assert!(matches!(parse(document), Err(QuotaSignalsError::Document)));
     }
 
     #[test]
@@ -449,8 +484,7 @@ mod tests {
 
     #[test]
     fn a_signal_without_markers_is_refused() {
-        let document =
-            "schema_version: 1\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: []\n";
+        let document = "schema_version: 1\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: []\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {

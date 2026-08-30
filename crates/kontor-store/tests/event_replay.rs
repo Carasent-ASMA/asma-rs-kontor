@@ -1309,6 +1309,7 @@ fn the_session_content_boundary_holds_on_every_append_path() {
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: fixture.revision(fixture.run),
+                quota_state: None,
             })
             .is_err(),
         "a reducing append is not a way around it either"
@@ -1597,4 +1598,452 @@ fn an_unlisted_alias_does_not_walk_session_content_past_the_boundary() {
             ..observation(&fixture, 2, "n-2")
         })
         .expect("control metadata is welcome however it is spelled");
+}
+
+// ---------------------------------------------------------------------------
+// Observation and quota land together, and only when the observation is the one
+// that actually reduces.
+// ---------------------------------------------------------------------------
+
+fn account(fixture: &Fixture) -> kontor_core::id::AccountProfileId {
+    use kontor_core::id::CredentialAlias;
+    use kontor_core::repository::{
+        CredentialReference, CredentialReferenceKind, NewAccountProfile, ProjectRepository,
+    };
+    let id = kontor_core::id::AccountProfileId::generate();
+    fixture
+        .store
+        .create_account_profile(&NewAccountProfile {
+            id,
+            project_id: fixture.project,
+            label: ExternalName::parse("codex-work").expect("a label"),
+            external_account_id: None,
+            harness: RuntimeKindKey::parse("generic.runtime").expect("a runtime key"),
+            credential_ref: CredentialReference {
+                kind: CredentialReferenceKind::ConfigHome,
+                alias: CredentialAlias::parse("codex-work").expect("an alias"),
+            },
+            environment: document("environment"),
+            routing: document("routing"),
+            capability: document("capability"),
+            provider_identity: None,
+            enabled: true,
+            created_at: now(),
+        })
+        .expect("the account profile is created");
+    id
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quota_at(
+    fixture: &Fixture,
+    id: kontor_core::id::AccountProfileId,
+    state: kontor_core::spec::ProviderQuotaKind,
+    resets_at: Option<Timestamp>,
+    marker: &str,
+    expected_revision: AggregateRevision,
+    source: kontor_core::spec::ProviderQuotaSource,
+    observed_at: Timestamp,
+) -> kontor_core::repository::NewProviderQuotaState {
+    kontor_core::repository::NewProviderQuotaState {
+        project_id: fixture.project,
+        account_profile_id: id,
+        provider: "codex-work".to_owned(),
+        state,
+        resets_at,
+        windows: Vec::new(),
+        credit: None,
+        evidence_hash: document(marker).hash().clone(),
+        source,
+        observed_at,
+        expected_revision,
+        updated_at: observed_at,
+    }
+}
+
+fn quota(
+    fixture: &Fixture,
+    id: kontor_core::id::AccountProfileId,
+    state: kontor_core::spec::ProviderQuotaKind,
+    resets_at: Option<Timestamp>,
+    marker: &str,
+    expected_revision: AggregateRevision,
+) -> kontor_core::repository::NewProviderQuotaState {
+    kontor_core::repository::NewProviderQuotaState {
+        project_id: fixture.project,
+        account_profile_id: id,
+        provider: "codex-work".to_owned(),
+        state,
+        resets_at,
+        windows: Vec::new(),
+        credit: None,
+        evidence_hash: document(marker).hash().clone(),
+        source: kontor_core::spec::ProviderQuotaSource::RuntimeObservation,
+        observed_at: now(),
+        expected_revision,
+        updated_at: now(),
+    }
+}
+
+fn current_quota(
+    fixture: &Fixture,
+    id: kontor_core::id::AccountProfileId,
+) -> Option<kontor_core::repository::ProviderQuotaState> {
+    use kontor_core::repository::CapacityRepository;
+    fixture
+        .store
+        .list_provider_quota_states(fixture.project)
+        .expect("quota states")
+        .into_iter()
+        .find(|row| row.account_profile_id == id)
+}
+
+fn observe_with_quota(
+    fixture: &Fixture,
+    sequence: u64,
+    marker: &str,
+    quota_state: Option<kontor_core::repository::NewProviderQuotaState>,
+) -> Result<(), kontor_core::repository::RepositoryError> {
+    fixture
+        .store
+        .record_observation(&NewObservation {
+            event: NewRuntimeEvent {
+                project_id: fixture.project,
+                agent_run_id: fixture.run,
+                identity: identity("session-1"),
+                native_event_id: Some(external(marker)),
+                native_sequence: sequence,
+                payload: document(marker),
+                observed_at: now(),
+            },
+            observed: ObservedRunState::Running,
+            contact: RuntimeContact::Reachable,
+            freshness: Freshness::Fresh,
+            expected_revision: fixture.revision(fixture.run),
+            quota_state,
+        })
+        .map(|_| ())
+}
+
+#[test]
+fn a_reducible_observation_writes_its_event_projection_and_quota_together() {
+    let fixture = fixture();
+    let id = account(&fixture);
+    let before = fixture.revision(fixture.run);
+
+    observe_with_quota(
+        &fixture,
+        10,
+        "refusal",
+        Some(quota(
+            &fixture,
+            id,
+            kontor_core::spec::ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "refusal",
+            AggregateRevision::INITIAL,
+        )),
+    )
+    .expect("the observation reduces");
+
+    assert!(
+        fixture.revision(fixture.run) > before,
+        "the projection advanced",
+    );
+    let row = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(row.state, kontor_core::spec::ProviderQuotaKind::Exhausted);
+}
+
+#[test]
+fn an_older_refusal_cannot_regress_a_newer_availability_row() {
+    let fixture = fixture();
+    let id = account(&fixture);
+
+    // A newer observation already concluded the account is fine.
+    observe_with_quota(
+        &fixture,
+        20,
+        "available",
+        Some(quota(
+            &fixture,
+            id,
+            kontor_core::spec::ProviderQuotaKind::Available,
+            None,
+            "available",
+            AggregateRevision::INITIAL,
+        )),
+    )
+    .expect("the newer observation reduces");
+    let newer = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(newer.state, kontor_core::spec::ProviderQuotaKind::Available);
+
+    // Now an *older* refusal arrives out of order. Its raw evidence may append;
+    // it must not move current quota, because it is not the authoritative
+    // observation any more.
+    let _ = observe_with_quota(
+        &fixture,
+        10,
+        "stale-refusal",
+        Some(quota(
+            &fixture,
+            id,
+            kontor_core::spec::ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "stale-refusal",
+            newer.revision,
+        )),
+    );
+
+    let after = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(
+        after.state,
+        kontor_core::spec::ProviderQuotaKind::Available,
+        "an out-of-order refusal must not regress current quota",
+    );
+    assert_eq!(after.revision, newer.revision, "the row is untouched");
+}
+
+#[test]
+fn a_duplicate_replay_cannot_mutate_quota() {
+    let fixture = fixture();
+    let id = account(&fixture);
+
+    observe_with_quota(
+        &fixture,
+        30,
+        "refusal",
+        Some(quota(
+            &fixture,
+            id,
+            kontor_core::spec::ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "refusal",
+            AggregateRevision::INITIAL,
+        )),
+    )
+    .expect("the first delivery reduces");
+    let first = current_quota(&fixture, id).expect("a quota row");
+
+    // The identical event, delivered twice.
+    let _ = observe_with_quota(
+        &fixture,
+        30,
+        "refusal",
+        Some(quota(
+            &fixture,
+            id,
+            kontor_core::spec::ProviderQuotaKind::Unknown,
+            None,
+            "replay",
+            first.revision,
+        )),
+    );
+
+    let after = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(
+        after.revision, first.revision,
+        "a replay changes no projection, so it changes no quota either",
+    );
+    assert_eq!(after.state, kontor_core::spec::ProviderQuotaKind::Exhausted);
+}
+
+#[test]
+fn a_refused_quota_write_rolls_back_the_event_and_the_projection() {
+    let fixture = fixture();
+    let id = account(&fixture);
+    let before = fixture.revision(fixture.run);
+    let events_before = census(&fixture);
+
+    // A stale expected revision makes the quota half refuse; the whole
+    // transaction must roll back with it.
+    let refused = observe_with_quota(
+        &fixture,
+        40,
+        "refusal",
+        Some(quota(
+            &fixture,
+            id,
+            kontor_core::spec::ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "refusal",
+            AggregateRevision::INITIAL
+                .next()
+                .expect("a next revision")
+                .next()
+                .expect("a next revision"),
+        )),
+    );
+    assert!(refused.is_err(), "a stale quota revision refuses the write");
+
+    assert_eq!(
+        fixture.revision(fixture.run),
+        before,
+        "the projection did not advance",
+    );
+    assert_eq!(
+        census(&fixture),
+        events_before,
+        "the event did not survive its own transaction",
+    );
+    assert!(current_quota(&fixture, id).is_none(), "no quota row landed");
+}
+
+/// Per-run native sequence orders one run's events. It is not an authority
+/// order for an `(account, provider)` pair, which the poller, an operator and
+/// any run holding the account all write.
+///
+/// So a refusal can be the newest reducible event *for its run* and still
+/// describe a moment older than a `ProviderReport` that has already restored
+/// availability. It must not overwrite it.
+#[test]
+fn a_late_runtime_refusal_cannot_overwrite_a_newer_provider_report() {
+    use kontor_core::repository::CapacityRepository;
+    use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+
+    let fixture = fixture();
+    let id = account(&fixture);
+
+    // The poller answered at 10:05: this account is fine.
+    fixture
+        .store
+        .set_provider_quota_state(&quota_at(
+            &fixture,
+            id,
+            ProviderQuotaKind::Available,
+            None,
+            "poller",
+            AggregateRevision::INITIAL,
+            ProviderQuotaSource::ProviderReport,
+            at("2026-08-09T10:05:00Z"),
+        ))
+        .expect("the poller's report is stored");
+    let newer = current_quota(&fixture, id).expect("a quota row");
+
+    // A refusal observed at 10:00 arrives afterwards, and is the newest
+    // reducible sequence for its own run.
+    observe_with_quota(
+        &fixture,
+        50,
+        "late-refusal",
+        Some(quota_at(
+            &fixture,
+            id,
+            ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "late-refusal",
+            newer.revision,
+            ProviderQuotaSource::RuntimeObservation,
+            at("2026-08-09T10:00:00Z"),
+        )),
+    )
+    .expect("the observation itself still reduces");
+
+    let after = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(
+        after.state,
+        ProviderQuotaKind::Available,
+        "an older runtime refusal must not regress a newer provider report",
+    );
+    assert_eq!(after.revision, newer.revision, "the row is untouched");
+    assert_eq!(after.source, ProviderQuotaSource::ProviderReport);
+}
+
+/// On an identical instant the structured answer wins: a `ProviderReport` is
+/// the only source that can restore availability without a human, while a
+/// runtime observation only ever learns after something was already refused.
+#[test]
+fn on_an_equal_instant_the_provider_report_outranks_a_runtime_refusal() {
+    use kontor_core::repository::CapacityRepository;
+    use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+
+    let fixture = fixture();
+    let id = account(&fixture);
+    let instant = at("2026-08-09T10:00:00Z");
+
+    fixture
+        .store
+        .set_provider_quota_state(&quota_at(
+            &fixture,
+            id,
+            ProviderQuotaKind::Available,
+            None,
+            "poller",
+            AggregateRevision::INITIAL,
+            ProviderQuotaSource::ProviderReport,
+            instant,
+        ))
+        .expect("the poller's report is stored");
+    let newer = current_quota(&fixture, id).expect("a quota row");
+
+    observe_with_quota(
+        &fixture,
+        60,
+        "equal-instant",
+        Some(quota_at(
+            &fixture,
+            id,
+            ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "equal-instant",
+            newer.revision,
+            ProviderQuotaSource::RuntimeObservation,
+            instant,
+        )),
+    )
+    .expect("the observation reduces");
+
+    let after = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(after.state, ProviderQuotaKind::Available);
+    assert_eq!(after.revision, newer.revision);
+}
+
+/// A newer runtime refusal is still allowed to block, so the guard fences
+/// staleness rather than the source.
+#[test]
+fn a_newer_runtime_refusal_still_blocks_over_an_older_report() {
+    use kontor_core::repository::CapacityRepository;
+    use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+
+    let fixture = fixture();
+    let id = account(&fixture);
+
+    fixture
+        .store
+        .set_provider_quota_state(&quota_at(
+            &fixture,
+            id,
+            ProviderQuotaKind::Available,
+            None,
+            "poller",
+            AggregateRevision::INITIAL,
+            ProviderQuotaSource::ProviderReport,
+            at("2026-08-09T09:00:00Z"),
+        ))
+        .expect("the poller's report is stored");
+    let older = current_quota(&fixture, id).expect("a quota row");
+
+    observe_with_quota(
+        &fixture,
+        70,
+        "fresh-refusal",
+        Some(quota_at(
+            &fixture,
+            id,
+            ProviderQuotaKind::Exhausted,
+            Some(at("2099-01-01T00:00:00Z")),
+            "fresh-refusal",
+            older.revision,
+            ProviderQuotaSource::RuntimeObservation,
+            at("2026-08-09T10:00:00Z"),
+        )),
+    )
+    .expect("the observation reduces");
+
+    let after = current_quota(&fixture, id).expect("a quota row");
+    assert_eq!(
+        after.state,
+        ProviderQuotaKind::Exhausted,
+        "a refusal newer than the report is exactly what must be recorded",
+    );
+    assert!(after.revision > older.revision);
 }

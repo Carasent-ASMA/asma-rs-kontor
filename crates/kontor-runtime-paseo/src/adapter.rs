@@ -44,6 +44,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
+use crate::wire::parse_wire_timestamp;
 use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
@@ -105,8 +106,8 @@ use crate::wire::{
     PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
     PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
-    PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
-    label, normalize_entry, stream_permission_external_id,
+    PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
+    PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -845,8 +846,12 @@ pub struct PaseoAdapter {
 /// `Log` and be read as something the provider said. Quota authority fails
 /// closed on provenance, so an unknown type authorizes nothing.
 ///
-/// Adding a type here requires a captured fixture showing the provider emits it.
-const PROVIDER_ORIGIN_ITEM_TYPES: &[&str] = &["assistant_message", "plain_text"];
+/// Adding a type here requires a **captured** fixture showing the provider emits
+/// it. `plain_text` was here and is not any more: it appears in the protocol
+/// fixtures only as the synthetic filler string `"synthetic text"`, which
+/// proves the type exists on the wire and says nothing about who produces it.
+/// A type whose provenance is merely plausible authorizes nothing.
+const PROVIDER_ORIGIN_ITEM_TYPES: &[&str] = &["assistant_message"];
 
 /// The native item type that ends one turn and begins the next.
 const TURN_BOUNDARY_ITEM_TYPE: &str = "user_message";
@@ -929,6 +934,10 @@ fn select_terminal_refusal(
             sequence_end: terminal.seq_end,
             source_sequences,
             item_type: terminal.item.item_type.clone(),
+            // The item's own instant, never the probe's. An inspection hours
+            // after the turn ended must not make a stale refusal look fresh.
+            observed_at: parse_wire_timestamp("PaseoTimelineEntry.timestamp", &terminal.timestamp)
+                .ok()?,
         },
     )
 }
@@ -7325,8 +7334,10 @@ mod refusal_probe_tests {
     #[test]
     fn only_observed_provider_content_is_selected() {
         assert!(provider_originated("assistant_message"));
-        assert!(provider_originated("plain_text"));
         assert!(!provider_originated("user_message"));
+        // Present in the protocol fixtures only as synthetic filler, so its
+        // provenance is unproven and it authorizes nothing.
+        assert!(!provider_originated("plain_text"));
         assert!(!provider_originated("tool_call"));
         // Fail closed on provenance: `classify_item` calls these `Log`, which
         // is right for the timeline and wrong for authority.
@@ -7395,8 +7406,16 @@ mod refusal_probe_tests {
     fn text_is_never_joined_across_items() {
         let entries = [
             entry(1, "user_message", Some("go")),
-            entry(2, "assistant_message", Some("[System Error] you've hit your")),
-            entry(3, "assistant_message", Some("usage limit, try again at Aug 23rd, 2026 9:35 AM")),
+            entry(
+                2,
+                "assistant_message",
+                Some("[System Error] you've hit your"),
+            ),
+            entry(
+                3,
+                "assistant_message",
+                Some("usage limit, try again at Aug 23rd, 2026 9:35 AM"),
+            ),
         ];
         let refusal = select(&entries).expect("the terminal item");
         assert_eq!(
@@ -7481,7 +7500,13 @@ mod refusal_probe_tests {
 
     #[test]
     fn an_empty_or_textless_terminal_item_is_inert() {
-        assert!(select(&[entry(1, "user_message", Some("go")), entry(2, "assistant_message", None)]).is_none());
+        assert!(
+            select(&[
+                entry(1, "user_message", Some("go")),
+                entry(2, "assistant_message", None)
+            ])
+            .is_none()
+        );
         assert!(
             select(&[
                 entry(1, "user_message", Some("go")),

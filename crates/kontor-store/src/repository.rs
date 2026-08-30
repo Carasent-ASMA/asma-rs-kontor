@@ -7741,7 +7741,7 @@ fn validate_provider_quota_state(request: &NewProviderQuotaState) -> RepositoryR
     Ok(())
 }
 
-fn set_provider_quota_state_in(
+pub(crate) fn set_provider_quota_state_in(
     transaction: &Transaction<'_>,
     request: &NewProviderQuotaState,
 ) -> RepositoryResult<ProviderQuotaState> {
@@ -7769,6 +7769,36 @@ fn set_provider_quota_state_in(
         .optional()
         .map_err(backend)?;
     let current = current.transpose()?;
+
+    // Cross-producer recency. A run's native sequence orders that run's own
+    // events and says nothing about this `(account, provider)` pair, which
+    // several producers write: the usage poller's `ProviderReport`, an
+    // operator's override, and any run that happens to hold the account. So a
+    // refusal can be the newest reducible event *for its run* and still be
+    // older than a `ProviderReport` that already restored availability — and
+    // taking the current revision, as a caller must, would quietly overwrite
+    // the newer truth with the older one.
+    //
+    // Only a `RuntimeObservation` is fenced here, and deliberately: it is the
+    // one source that learns anything only *after* something was refused, so it
+    // is always describing a moment that has already passed. A `ProviderReport`
+    // is a structured answer about now and is the only source that can move a
+    // state back to available without a human, so on an equal instant it wins.
+    // An operator override is a judgement and is never fenced by a machine.
+    //
+    // Regression is a no-op rather than an error: the caller's conclusion was
+    // true when it was observed, it is simply no longer current, and failing
+    // the whole observation transaction over stale-but-honest evidence would
+    // lose the runtime event as well.
+    if request.source == kontor_core::spec::ProviderQuotaSource::RuntimeObservation
+        && let Some(existing) = current.as_ref()
+        && (existing.observed_at > request.observed_at
+            || (existing.observed_at == request.observed_at
+                && existing.source == kontor_core::spec::ProviderQuotaSource::ProviderReport))
+    {
+        return Ok(existing.clone());
+    }
+
     let next = match &current {
         Some(existing) => {
             existing

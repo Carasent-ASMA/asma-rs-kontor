@@ -3343,18 +3343,11 @@ impl Services {
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
-        // Classify *before* the event is persisted, so the row an operator can
-        // act on never lags the observation that proved it. What crosses into
-        // the store is a `ProviderQuotaKind`, an optional instant and a digest;
-        // the sentence stays in the transient value and is dropped with it.
-        if let Some(refusal) = observation.refusal.as_ref()
-            && let Some(account_profile_id) = run.account_profile_id
-        {
-            // Propagated, never swallowed. A realm that cannot record the limit
-            // it just observed must not go on to report the observation as
-            // fine: the next admission would route straight back onto the
-            // account that refused.
-            crate::quota_observation::classify_and_record(
+        // Decide here, write in the observation's own transaction below. A
+        // quota row whose citing observation was never durable is a block an
+        // operator cannot explain, so the two land together or not at all.
+        let decision = match (observation.refusal.as_ref(), run.account_profile_id) {
+            (Some(refusal), Some(account_profile_id)) => crate::quota_observation::decide(
                 state,
                 project_id,
                 account_profile_id,
@@ -3374,14 +3367,57 @@ impl Services {
                     ApiErrorCode::Unavailable,
                     "the observed provider limit could not be recorded",
                 )
-            })?;
-        }
+            })?,
+            _ => None,
+        };
+        // Structured, inspectable provenance beside the digest. An opaque hash
+        // proves two observations carried the same thing; it does not let an
+        // operator see *which* item on *which* run authorized a block.
+        let quota_provenance = decision.as_ref().map(|decided| {
+            let source = observation.refusal.as_ref().map(|refusal| {
+                let where_from = refusal.provenance();
+                serde_json::json!({
+                    "agent_run_id": where_from.agent_run_id.to_string(),
+                    "binding_generation": where_from.binding_generation,
+                    "epoch": where_from.position.epoch,
+                    "seq_start": where_from.position.sequence,
+                    "seq_end": where_from.sequence_end,
+                    "source_sequences": where_from
+                        .source_sequences
+                        .iter()
+                        .map(|(from, to)| serde_json::json!({"start": from, "end": to}))
+                        .collect::<Vec<_>>(),
+                    "native_item_type": where_from.item_type,
+                    "item_observed_at": where_from.observed_at.to_string(),
+                })
+            });
+            serde_json::json!({
+                "account_profile_id": decided.classification.account_profile_id.to_string(),
+                "provider": decided.classification.provider,
+                "state": decided.classification.kind.as_str(),
+                "resets_at": decided.classification.resets_at.map(|at| at.to_string()),
+                "evidence_hash": decided.classification.evidence_hash.as_str(),
+                // What this observation *concluded*, never what the store did.
+                // The payload is built before the transaction runs, and an
+                // out-of-order or replayed event is appended while its quota
+                // conclusion is correctly skipped -- so a "recorded" claim here
+                // would be false evidence frozen into immutable history.
+                "disposition": if decided.classification.proposes_write {
+                    "proposed"
+                } else {
+                    "already_current"
+                },
+                "source": source,
+            })
+        });
         let payload = self.intent(&serde_json::json!({
             "schema_version": 1,
             "observed_state": observation.state.as_str(),
             "contact": observation.contact.as_str(),
             "native_sequence": observation.native_sequence,
             "observed_at": observation.observed_at.to_string(),
+            // Never the refusal text: only what was concluded and from where.
+            "quota_classification": quota_provenance,
         }))?;
         let projection = state
             .with_store(|store| {
@@ -3403,6 +3439,9 @@ impl Services {
                         jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     ),
                     expected_revision: run.revision,
+                    quota_state: decision
+                        .as_ref()
+                        .and_then(|decided| decided.request.clone()),
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -23169,6 +23208,7 @@ impl Services {
                         jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     ),
                     expected_revision: predecessor.revision,
+                    quota_state: None,
                 })
             })
             .map_err(|error| self.refuse(&error))?;

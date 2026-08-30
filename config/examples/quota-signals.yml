@@ -33,30 +33,37 @@ schema_version: 1
 signals:
   # ---- Claude, one entry per login ---------------------------------------
   #
-  # DELIBERATELY NOT SHIPPED ACTIVE. No live Claude refusal has been captured
-  # into this repository, so any marker set here would be unverified copy with
-  # the authority to archive a running seat. A false negative costs nothing --
-  # the 300-second poll and the operator still work -- while a false positive
-  # retires live work, so an unverified vendor fingerprint stays commented out
-  # until a real message is recorded.
+  # Captured 2026-08-30: all three ASMA-7869 builders received the same refusal
+  # when the `claude-work` allowance was spent, and the resume audit records its
+  # three distinctive components -- the individual-spend-limit wording, the
+  # provider settings endpoint, and the session-reset marker. All three must
+  # appear together, so an assistant merely *discussing* limits cannot retire a
+  # seat.
   #
-  # When one is captured, uncomment and replace the markers with the full
-  # distinctive framing of that message, not a phrase an assistant might use
-  # while *discussing* usage limits. `parse_wall_clock` needs a full
-  # `<Month> <day>, <year> <HH:MM> [AM|PM]`; declare `reset_prefix`/`reset_zone`
-  # only if the captured message actually states one.
+  # The reset this vendor states is a bare time of day, not a date. It is read
+  # as the next such instant *from the provider item's own timestamp* in the
+  # zone below -- never from when Kontor happened to look, which on a delayed
+  # probe would roll the reset forward a whole day.
   #
-  # - provider: claude-work
-  #   basis: plan_allowance
-  #   markers:
-  #     - "<captured system-refusal framing>"
-  #     - "<captured distinctive phrase>"
-  #
-  # - provider: claude-personal
-  #   basis: plan_allowance
-  #   markers:
-  #     - "<captured system-refusal framing>"
-  #     - "<captured distinctive phrase>"
+  # Listed before Codex: an account able to select both families must be tried
+  # against the more specific fingerprint first.
+  - provider: claude-work
+    basis: plan_allowance
+    markers:
+      - individual spend limit
+      - /settings/limits
+      - session limit will reset
+    reset_prefix: 'session limit will reset at '
+    reset_zone: Europe/Oslo
+
+  - provider: claude-personal
+    basis: plan_allowance
+    markers:
+      - individual spend limit
+      - /settings/limits
+      - session limit will reset
+    reset_prefix: 'session limit will reset at '
+    reset_zone: Europe/Oslo
 
   # ---- Codex, one entry per login --------------------------------------
   #

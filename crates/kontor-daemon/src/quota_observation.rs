@@ -34,6 +34,31 @@ use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
 use kontor_runtime::refusal::TransientRefusal;
 use tracing::debug;
 
+/// A conclusion, and the write that would make it durable.
+///
+/// Split from the write on purpose: the row has to land in the *same*
+/// transaction as the observation that proves it, so this produces the request
+/// and the caller hands it to `record_observation` rather than writing here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaDecision {
+    /// What the refusal was read as.
+    pub classification: QuotaClassification,
+    /// The row to write, or `None` when the Realm already holds exactly this
+    /// conclusion and nothing needs to change.
+    pub request: Option<NewProviderQuotaState>,
+}
+
+impl QuotaDecision {
+    /// Whether the proposal flag and the presence of a request agree.
+    ///
+    /// They are two spellings of one fact, and a caller serializing the flag
+    /// into durable evidence needs them not to drift.
+    #[must_use]
+    pub const fn proposes_write_matches_request(&self) -> bool {
+        self.classification.proposes_write == self.request.is_some()
+    }
+}
+
 /// Why a refusal could not be turned into a durable conclusion.
 ///
 /// Distinct from "this text is not a quota refusal", which is an ordinary
@@ -73,11 +98,18 @@ pub struct QuotaClassification {
     pub resets_at: Option<Timestamp>,
     /// Digest of the refusal text. The text itself is never kept.
     pub evidence_hash: ContentHash,
-    /// Whether this observation actually wrote a row.
+    /// Whether this decision *proposes* a write.
     ///
-    /// `false` means the Realm already held exactly this conclusion from a
-    /// runtime observation, so the repeat was recognised and dropped.
-    pub recorded: bool,
+    /// Deliberately not called `recorded`. This is decided before the store is
+    /// touched, and the store may still decline to apply it — an out-of-order
+    /// or replayed observation is appended as evidence but reduces nothing, and
+    /// its quota conclusion is correctly skipped. A field named for a write
+    /// that had not happened yet was serialized into immutable raw evidence and
+    /// told an operator a row had changed when none had.
+    ///
+    /// `false` means the Realm already holds exactly this conclusion, so there
+    /// is nothing to propose.
+    pub proposes_write: bool,
 }
 
 /// Classify one transient refusal and record what it proves.
@@ -86,14 +118,14 @@ pub struct QuotaClassification {
 /// when the text is not a quota refusal at all (the overwhelmingly common
 /// case), when the run is not pinned to an account, or when the matching signal
 /// names a provider this account cannot select.
-pub fn classify_and_record(
+pub fn decide(
     state: &ApiState,
     project_id: ProjectId,
     account_profile_id: AccountProfileId,
     signals: &[QuotaSignal],
     refusal: &TransientRefusal,
     now: Timestamp,
-) -> Result<Option<QuotaClassification>, QuotaObservationError> {
+) -> Result<Option<QuotaDecision>, QuotaObservationError> {
     if signals.is_empty() {
         return Ok(None);
     }
@@ -111,15 +143,14 @@ pub fn classify_and_record(
     // account may actually select, in the configured order, makes both
     // impossible: every candidate is eligible by construction, and no
     // ineligible entry can stand in front of an eligible one.
-    let profile = match state
-        .with_store(|store| store.get_account_profile(project_id, account_profile_id))
-    {
-        Ok(Some(profile)) => profile,
-        // A run pointing at an account that no longer exists is a legitimate
-        // no-op, not a storage failure.
-        Ok(None) => return Ok(None),
-        Err(error) => return Err(QuotaObservationError::Repository(error)),
-    };
+    let profile =
+        match state.with_store(|store| store.get_account_profile(project_id, account_profile_id)) {
+            Ok(Some(profile)) => profile,
+            // A run pointing at an account that no longer exists is a legitimate
+            // no-op, not a storage failure.
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(QuotaObservationError::Repository(error)),
+        };
     let selectable = match kontor_accounts::selectable_providers(&profile) {
         Ok(aliases) => aliases,
         Err(error) => return Err(QuotaObservationError::Routing(error)),
@@ -145,7 +176,12 @@ pub fn classify_and_record(
         );
         return Ok(None);
     }
-    let Some(mut observed) = classify(refusal.as_str(), &eligible) else {
+    // The basis for a time-only reset is the provider item's own instant.
+    let Some(mut observed) = classify(
+        refusal.as_str(),
+        &eligible,
+        refusal.provenance().observed_at,
+    ) else {
         return Ok(None);
     };
 
@@ -174,88 +210,68 @@ pub fn classify_and_record(
     }
 
     let evidence_hash = refusal.digest();
-    // Read, decide, write — and after *any* conflict, including the last one,
-    // read again before concluding anything.
-    //
-    // Two things were wrong here. A conflict was treated as "somebody stored
-    // our row", which it is not: the winner may have written the poller's
-    // `available` or a different refusal entirely. And a conflict on the final
-    // attempt fell straight through to `Unsettled`, which refuses a call whose
-    // exact conclusion the concurrent winner had in fact just made durable.
-    //
-    // `recorded` means *this call performed the write*. A row that already
-    // holds the exact conclusion — whether it was there all along or a
-    // concurrent writer put it there — is `recorded: false`, because the effect
-    // happened once and this call is not what did it.
-    const ATTEMPTS: u32 = 2;
-    let mut attempt = 0;
-    loop {
-        let existing = current_row(state, project_id, account_profile_id, &observed.provider)?;
-        if existing
-            .as_ref()
-            .is_some_and(|row| already_records(row, &observed, &evidence_hash))
-        {
-            return Ok(Some(QuotaClassification {
+    let existing = current_row(state, project_id, account_profile_id, &observed.provider)?;
+    if existing
+        .as_ref()
+        .is_some_and(|row| already_records(row, &observed, &evidence_hash))
+    {
+        // The Realm already holds exactly this conclusion. Nothing to write, and
+        // `recorded` says so: the effect happened once and this is not it.
+        return Ok(Some(QuotaDecision {
+            classification: QuotaClassification {
                 account_profile_id,
                 provider: observed.provider,
                 kind: observed.kind,
                 resets_at: observed.resets_at,
                 evidence_hash,
-                recorded: false,
-            }));
-        }
-        if attempt >= ATTEMPTS {
-            // The row exists, differs from our conclusion, and we are out of
-            // attempts. Refusing is the honest answer: the caller asked for a
-            // durable conclusion and does not have one.
-            return Err(QuotaObservationError::Unsettled { attempts: ATTEMPTS });
-        }
-        attempt += 1;
-
-        let expected_revision = existing
-            .as_ref()
-            .map_or(kontor_core::id::AggregateRevision::INITIAL, |row| {
-                row.revision
-            });
-        // Windows and credit belong to the poller and to the operator. A
-        // refusal says "we were turned away", which is not evidence about how
-        // many windows this account has or where its reserve sits, so whatever
-        // is stored is carried forward untouched rather than replaced with an
-        // empty set.
-        let request = NewProviderQuotaState {
-            project_id,
-            account_profile_id,
-            provider: observed.provider.clone(),
-            state: observed.kind,
-            resets_at: observed.resets_at,
-            windows: existing
-                .as_ref()
-                .map(|row| row.windows.clone())
-                .unwrap_or_default(),
-            credit: existing.as_ref().and_then(|row| row.credit),
-            evidence_hash: evidence_hash.clone(),
-            source: ProviderQuotaSource::RuntimeObservation,
-            observed_at: now,
-            expected_revision,
-            updated_at: now,
-        };
-        match state.with_store(|store| store.set_provider_quota_state(&request)) {
-            Ok(_) => {
-                return Ok(Some(QuotaClassification {
-                    account_profile_id,
-                    provider: observed.provider,
-                    kind: observed.kind,
-                    resets_at: observed.resets_at,
-                    evidence_hash,
-                    recorded: true,
-                }));
-            }
-            // Loop: the top re-reads and decides again, so an exact concurrent
-            // winner is accepted and anything else is retried or refused.
-            Err(RepositoryError::Conflict { .. }) => {}
-            Err(error) => return Err(QuotaObservationError::Repository(error)),
-        }
+                proposes_write: false,
+            },
+            request: None,
+        }));
     }
+
+    let expected_revision = existing
+        .as_ref()
+        .map_or(kontor_core::id::AggregateRevision::INITIAL, |row| {
+            row.revision
+        });
+    // Windows and credit belong to the poller and to the operator. A refusal
+    // says "we were turned away", which is not evidence about how many windows
+    // this account has or where its reserve sits, so whatever is stored is
+    // carried forward untouched rather than replaced with an empty set.
+    let request = NewProviderQuotaState {
+        project_id,
+        account_profile_id,
+        provider: observed.provider.clone(),
+        state: observed.kind,
+        resets_at: observed.resets_at,
+        windows: existing
+            .as_ref()
+            .map(|row| row.windows.clone())
+            .unwrap_or_default(),
+        credit: existing.as_ref().and_then(|row| row.credit),
+        evidence_hash: evidence_hash.clone(),
+        source: ProviderQuotaSource::RuntimeObservation,
+        // The instant the *item* was emitted, not the instant we looked. A
+        // probe runs on inspection, so `now` would make a refusal captured
+        // hours ago look freshly observed and let it overwrite a newer poller
+        // report -- which is exactly what the store's recency rule exists to
+        // stop, and it cannot stop it if the caller lies about when.
+        observed_at: refusal.provenance().observed_at,
+        expected_revision,
+        updated_at: now,
+    };
+    Ok(Some(QuotaDecision {
+        classification: QuotaClassification {
+            account_profile_id,
+            provider: observed.provider,
+            kind: observed.kind,
+            resets_at: observed.resets_at,
+            evidence_hash,
+            proposes_write: true,
+        },
+        request: Some(request),
+    }))
 }
 
 /// The stored row for one `(account, provider)` pair, if there is one.

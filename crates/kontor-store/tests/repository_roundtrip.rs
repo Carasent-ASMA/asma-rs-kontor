@@ -1375,6 +1375,7 @@ fn runtime_closure(
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: current.revision,
+            quota_state: None,
         })
         .expect("the terminal observation is recorded");
     let stored = fixture
@@ -1454,6 +1455,7 @@ fn a_raw_event_is_appended_before_state_is_reduced_and_replays_are_idempotent() 
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: current.revision,
+            quota_state: None,
         })
         .expect("the observation is recorded");
     assert_eq!(projection.observed, ObservedRunState::Running);
@@ -1492,6 +1494,7 @@ fn a_disappeared_process_never_closes_a_run() {
             contact: RuntimeContact::ProcessMissing,
             freshness: Freshness::Fresh,
             expected_revision: AggregateRevision::INITIAL,
+            quota_state: None,
         })
         .expect("the observation is recorded");
     assert_eq!(projection.derived, DerivedRunState::LostContact);
@@ -1546,6 +1549,7 @@ fn desired_observed_and_derived_all_survive_a_restart_with_different_values() {
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: current.revision,
+            quota_state: None,
         })
         .expect("the observation is recorded");
 
@@ -1642,6 +1646,7 @@ fn a_closed_run_is_immutable_and_recovery_creates_a_successor() {
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: closed.revision,
+                quota_state: None,
             })
             .is_err(),
         "a closed run accepts no further observation"
@@ -3946,6 +3951,7 @@ fn a_mismatched_realm_envelope_or_foreign_id_fails_atomically() {
                     contact: RuntimeContact::Reachable,
                     freshness: Freshness::Fresh,
                     expected_revision: state_before.0,
+                    quota_state: None,
                 },
             ))
             .is_err()
@@ -4135,6 +4141,7 @@ fn replayed_or_out_of_order_native_events_never_regress_projection_or_revision()
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: current.revision,
+            quota_state: None,
         })
     };
 
@@ -4223,6 +4230,7 @@ fn replayed_or_out_of_order_native_events_never_regress_projection_or_revision()
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: current,
+                quota_state: None,
             })
             .is_err(),
         "an event from another generation must not reduce this run"
@@ -4317,6 +4325,7 @@ fn terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash() {
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: sibling_current.revision,
+                quota_state: None,
             })
             .expect("the sibling observation is recorded");
         fixture
@@ -4420,6 +4429,7 @@ fn terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash() {
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: current.revision,
+            quota_state: None,
         })
         .expect("an older event is still appended");
     let stale_cursor = fixture
@@ -5294,6 +5304,7 @@ fn an_empty_ledger_snapshot_resumes_without_a_gap_or_an_overlap() {
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: state.0,
+            quota_state: None,
         })
         .expect("the first observation is recorded");
 

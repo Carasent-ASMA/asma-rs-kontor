@@ -1492,6 +1492,16 @@ pub struct NewObservation {
     pub freshness: crate::state::Freshness,
     /// The revision the caller believes is current.
     pub expected_revision: AggregateRevision,
+    /// A provider quota conclusion this same observation proves.
+    ///
+    /// Written in the **same transaction** as the observation, for the reason
+    /// [`NewProviderUsageObservation::quota_state`] is: a quota row whose citing
+    /// observation was never durable is a block an operator cannot explain and
+    /// cannot audit. Either both land or neither does.
+    ///
+    /// `None` is the overwhelmingly common case — almost nothing a runtime says
+    /// is a quota refusal.
+    pub quota_state: Option<NewProviderQuotaState>,
 }
 
 /// A request to close a run with evidence.

@@ -22,7 +22,7 @@ use kontor_accounts::{QuotaBasis, QuotaSignal};
 use kontor_core::id::AccountProfileId;
 use kontor_core::repository::CapacityRepository;
 use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
-use kontor_daemon::quota_observation::classify_and_record;
+use kontor_daemon::quota_observation::{QuotaClassification, QuotaObservationError, decide};
 use kontor_runtime::refusal::{RefusalProvenance, TransientRefusal};
 
 /// The text Codex actually produced on 2026-08-21, from the report Igor filed.
@@ -58,13 +58,42 @@ async fn account(world: &World, label: &str, alias: &str) -> AccountProfileId {
     .send(world)
     .await;
     assert_eq!(created.status, 200, "{}", created.body);
-    AccountProfileId::parse(created.json()["account_profile_id"].as_str().expect("an id"))
-        .expect("a canonical account id")
+    AccountProfileId::parse(
+        created.json()["account_profile_id"]
+            .as_str()
+            .expect("an id"),
+    )
+    .expect("a canonical account id")
+}
+
+/// Decide, then perform the write the observation transaction would perform.
+///
+/// The production path hands the decided row to `record_observation` so the two
+/// land atomically; these tests exercise the decision and its durable effect,
+/// and the atomicity itself is proven at the store layer in `event_replay`.
+fn classify_and_record(
+    state: &kontor_api::state::ApiState,
+    project: kontor_core::id::ProjectId,
+    account_profile_id: AccountProfileId,
+    signals: &[QuotaSignal],
+    refusal: &TransientRefusal,
+    now: kontor_core::id::Timestamp,
+) -> Result<Option<QuotaClassification>, QuotaObservationError> {
+    let Some(decided) = decide(state, project, account_profile_id, signals, refusal, now)? else {
+        return Ok(None);
+    };
+    if let Some(request) = decided.request.as_ref() {
+        state
+            .with_store(|store| store.set_provider_quota_state(request))
+            .map_err(QuotaObservationError::Repository)?;
+    }
+    Ok(Some(decided.classification))
 }
 
 fn where_from() -> RefusalProvenance {
     RefusalProvenance {
-        agent_run_id: kontor_core::id::AgentRunId::parse("01a0306f-9398-7a51-a612-8c2b58251d58").expect("a canonical run id"),
+        agent_run_id: kontor_core::id::AgentRunId::parse("01a0306f-9398-7a51-a612-8c2b58251d58")
+            .expect("a canonical run id"),
         binding_generation: 1,
         position: kontor_runtime::timeline::TimelinePosition {
             epoch: 1,
@@ -73,6 +102,7 @@ fn where_from() -> RefusalProvenance {
         sequence_end: 7,
         source_sequences: vec![(7, 7)],
         item_type: "assistant_message".to_owned(),
+        observed_at: at("2026-08-21T09:00:00Z"),
     }
 }
 
@@ -97,7 +127,10 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
     .expect("the write settles")
     .expect("a quota refusal");
 
-    assert!(classified.recorded, "the first observation must write a row");
+    assert!(
+        classified.proposes_write,
+        "the first observation must write a row"
+    );
     assert_eq!(classified.kind, ProviderQuotaKind::Exhausted);
     assert_eq!(classified.provider, "codex-work");
     // 09:35 in Oslo during August is CEST, two hours ahead of UTC.
@@ -133,7 +166,7 @@ async fn the_same_limit_observed_three_times_writes_one_row() {
         )
         .expect("the write settles")
         .expect("a quota refusal every time");
-        if classification.recorded {
+        if classification.proposes_write {
             recorded += 1;
         }
     }
@@ -211,7 +244,11 @@ async fn a_realm_with_no_signals_document_stays_inert() {
     let stored = state
         .with_store(|store| store.list_provider_quota_states(world.project))
         .expect("quota states");
-    assert!(stored.iter().all(|entry| entry.account_profile_id != profile));
+    assert!(
+        stored
+            .iter()
+            .all(|entry| entry.account_profile_id != profile)
+    );
 }
 
 #[tokio::test]
@@ -238,7 +275,11 @@ async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
     let stored = state
         .with_store(|store| store.list_provider_quota_states(world.project))
         .expect("quota states");
-    assert!(stored.iter().all(|entry| entry.account_profile_id != profile));
+    assert!(
+        stored
+            .iter()
+            .all(|entry| entry.account_profile_id != profile)
+    );
 }
 
 #[tokio::test]
@@ -283,7 +324,10 @@ async fn the_refusal_sentence_never_reaches_the_store() {
 #[tokio::test]
 async fn a_credential_shaped_refusal_is_refused_before_it_is_ever_classified() {
     // The guard is in construction, so there is no path that classifies one.
-    assert!(TransientRefusal::parse("authorization: Bearer sk-livesecretvalue00", where_from()).is_none());
+    assert!(
+        TransientRefusal::parse("authorization: Bearer sk-livesecretvalue00", where_from())
+            .is_none()
+    );
     let carried = TransientRefusal::parse(CODEX_LIMIT, where_from()).expect("an ordinary refusal");
     assert!(!format!("{carried:?}").contains("usage limit"));
 }
@@ -314,7 +358,7 @@ async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
         .expect("the write settles")
         .unwrap_or_else(|| panic!("{expected} classifies its own wording"));
         assert_eq!(classified.provider, expected);
-        assert!(classified.recorded);
+        assert!(classified.proposes_write);
     }
 
     let stored = state
@@ -384,7 +428,11 @@ async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() 
     let stored = state
         .with_store(|store| store.list_provider_quota_states(world.project))
         .expect("quota states");
-    assert!(stored.iter().all(|entry| entry.account_profile_id != profile));
+    assert!(
+        stored
+            .iter()
+            .all(|entry| entry.account_profile_id != profile)
+    );
 }
 
 /// A reset the vendor states as already past must not be recorded as a live
@@ -428,35 +476,39 @@ async fn a_reset_that_is_not_in_the_future_records_a_blocking_unknown_instead() 
     );
 }
 
-/// A conflicting concurrent write is not evidence that somebody stored *our*
-/// row. The previous version assumed it was and reported success; here the
-/// competing row is an operator `available`, and the observation must either
-/// settle its own conclusion or fail typed — never claim a false success.
+/// A row that already exists on the pair is not our conclusion. It is only
+/// skipped when it matches exactly; otherwise our conclusion is written --
+/// provided ours is the more recent observation, which the store enforces.
 #[tokio::test]
-async fn a_foreign_concurrent_row_is_never_mistaken_for_our_own() {
+async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
+    use kontor_core::repository::CapacityRepository as _;
+
     let world = World::open().await;
     let profile = account(&world, "cas-foreign", "codex-work").await;
     let state = world.daemon.state();
 
-    // Somebody else's conclusion about the same pair, from a different source.
-    let recorded = Call::post(
-        format!(
-            "/v1/projects/{}/provider-quota-states:record",
-            world.project
-        ),
-        &serde_json::json!({
-            "account_profile_id": profile.to_string(),
-            "provider": "codex-work",
-            "state": "available",
-            "expected_revision": 1
-        }),
-    )
-    .signed_as(&world, "admin")
-    .with_key("cas-foreign-available")
-    .send(&world)
-    .await;
-    assert_eq!(recorded.status, 200, "{}", recorded.body);
+    // Somebody else's conclusion about the same pair, from a different source
+    // and observed *before* the item we are about to classify.
+    state
+        .with_store(|store| {
+            store.set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
+                project_id: world.project,
+                account_profile_id: profile,
+                provider: "codex-work".to_owned(),
+                state: ProviderQuotaKind::Available,
+                resets_at: None,
+                windows: Vec::new(),
+                credit: None,
+                evidence_hash: kontor_core::id::ContentHash::of(b"poller"),
+                source: ProviderQuotaSource::ProviderReport,
+                observed_at: at("2026-08-21T08:00:00Z"),
+                expected_revision: kontor_core::id::AggregateRevision::INITIAL,
+                updated_at: at("2026-08-21T08:00:00Z"),
+            })
+        })
+        .expect("the foreign row is stored");
 
+    // Our refusal's item is newer, so it must win.
     let classified = classify_and_record(
         &state,
         world.project,
@@ -469,8 +521,8 @@ async fn a_foreign_concurrent_row_is_never_mistaken_for_our_own() {
     .expect("a quota refusal");
 
     assert!(
-        classified.recorded,
-        "an existing foreign row is not our conclusion; ours must still be written",
+        classified.proposes_write,
+        "an existing foreign row is not our conclusion; ours must still be proposed",
     );
     let stored = state
         .with_store(|store| store.list_provider_quota_states(world.project))
@@ -482,7 +534,7 @@ async fn a_foreign_concurrent_row_is_never_mistaken_for_our_own() {
     assert_eq!(
         row.source,
         ProviderQuotaSource::RuntimeObservation,
-        "the refusal's own conclusion is what is stored",
+        "the newer refusal's conclusion is what is stored",
     );
     assert_eq!(row.state, ProviderQuotaKind::Exhausted);
     assert_eq!(
@@ -493,6 +545,67 @@ async fn a_foreign_concurrent_row_is_never_mistaken_for_our_own() {
         1,
         "one pair holds one row; no duplicate effect",
     );
+}
+
+/// The symmetric case, and the invariant the store now enforces: a refusal
+/// whose *item* predates the current row must not regress it, however recently
+/// Kontor happened to look.
+#[tokio::test]
+async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
+    use kontor_core::repository::CapacityRepository as _;
+
+    let world = World::open().await;
+    let profile = account(&world, "cas-stale", "codex-work").await;
+    let state = world.daemon.state();
+
+    state
+        .with_store(|store| {
+            store.set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
+                project_id: world.project,
+                account_profile_id: profile,
+                provider: "codex-work".to_owned(),
+                state: ProviderQuotaKind::Available,
+                resets_at: None,
+                windows: Vec::new(),
+                credit: None,
+                evidence_hash: kontor_core::id::ContentHash::of(b"poller"),
+                source: ProviderQuotaSource::ProviderReport,
+                observed_at: at("2026-08-21T12:00:00Z"),
+                expected_revision: kontor_core::id::AggregateRevision::INITIAL,
+                updated_at: at("2026-08-21T12:00:00Z"),
+            })
+        })
+        .expect("the newer report is stored");
+    let before = state
+        .with_store(|store| store.list_provider_quota_states(world.project))
+        .expect("quota states")
+        .into_iter()
+        .find(|row| row.account_profile_id == profile)
+        .expect("a row");
+
+    // The item is dated 09:00 -- older than the report, however late the probe.
+    let _ = classify_and_record(
+        &state,
+        world.project,
+        profile,
+        &[codex_signal_for("codex-work")],
+        &refusal(CODEX_LIMIT),
+        at("2026-08-21T18:00:00Z"),
+    )
+    .expect("the write settles");
+
+    let after = state
+        .with_store(|store| store.list_provider_quota_states(world.project))
+        .expect("quota states")
+        .into_iter()
+        .find(|row| row.account_profile_id == profile)
+        .expect("a row");
+    assert_eq!(
+        after.state,
+        ProviderQuotaKind::Available,
+        "a stale refusal must not regress a newer report",
+    );
+    assert_eq!(after.revision, before.revision, "the row is untouched");
 }
 
 /// An account the run points at that no longer exists is an ordinary no-op, not
@@ -538,7 +651,7 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
     )
     .expect("the write settles")
     .expect("a quota refusal");
-    assert!(first.recorded, "the first call performs the write");
+    assert!(first.proposes_write, "the first call performs the write");
 
     let revision_after_first = state
         .with_store(|store| store.list_provider_quota_states(world.project))
@@ -561,7 +674,7 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
     .expect("the write settles")
     .expect("a quota refusal");
     assert!(
-        !second.recorded,
+        !second.proposes_write,
         "an exact row already present is not a write this call performed",
     );
 
@@ -596,7 +709,7 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
     )
     .expect("the write settles")
     .expect("a quota refusal");
-    assert!(first.recorded);
+    assert!(first.proposes_write);
 
     // A *different* refusal on the same pair carries a different digest, so it
     // is a new conclusion and must be written.
@@ -618,7 +731,78 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
     .expect("the write settles")
     .expect("a quota refusal");
     assert!(
-        second.recorded,
+        second.proposes_write,
         "a different conclusion on the same pair is a new write, not a replay",
+    );
+}
+
+/// A probe runs on inspection, which may be long after the turn ended. The
+/// conclusion must be dated by the *item*, not by the read: dating it now would
+/// make a stale refusal look freshly observed and let it overwrite a newer
+/// poller report.
+#[tokio::test]
+async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
+    let world = World::open().await;
+    let profile = account(&world, "late-probe", "codex-work").await;
+    let state = world.daemon.state();
+
+    // The item was emitted at 09:00; Kontor inspects at 15:00.
+    let decided = decide(
+        &state,
+        world.project,
+        profile,
+        &[codex_signal_for("codex-work")],
+        &refusal(CODEX_LIMIT),
+        at("2026-08-21T15:00:00Z"),
+    )
+    .expect("the decision settles")
+    .expect("a quota refusal");
+    let request = decided.request.expect("a proposed write");
+
+    assert_eq!(
+        request.observed_at,
+        at("2026-08-21T09:00:00Z"),
+        "the conclusion is dated by the item, not by the inspection",
+    );
+    assert_ne!(
+        request.observed_at,
+        at("2026-08-21T15:00:00Z"),
+        "wall-clock now is not source authority",
+    );
+    // And the reset the vendor stated is still read from the message.
+    assert_eq!(
+        decided.classification.resets_at,
+        Some(at("2026-08-23T07:35:00Z")),
+        "delayed inspection preserves the item's own reset instant",
+    );
+}
+
+/// The pre-write claim must never be reported as a write. `decide` runs before
+/// the store knows whether the event is even reducible.
+#[tokio::test]
+async fn a_decision_reports_a_proposal_and_never_a_completed_write() {
+    let world = World::open().await;
+    let profile = account(&world, "proposal-only", "codex-work").await;
+    let state = world.daemon.state();
+
+    let decided = decide(
+        &state,
+        world.project,
+        profile,
+        &[codex_signal_for("codex-work")],
+        &refusal(CODEX_LIMIT),
+        at("2026-08-21T10:00:00Z"),
+    )
+    .expect("the decision settles")
+    .expect("a quota refusal");
+
+    assert!(decided.proposes_write_matches_request());
+    // Nothing was written: `decide` does not touch the store.
+    let stored = state
+        .with_store(|store| store.list_provider_quota_states(world.project))
+        .expect("quota states");
+    assert!(
+        stored.iter().all(|row| row.account_profile_id != profile),
+        "deciding proposes; it does not write",
     );
 }

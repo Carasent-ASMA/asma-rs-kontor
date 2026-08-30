@@ -223,6 +223,7 @@ fn observe(world: &World, run: AgentRunId, sequence: u64, revision: u64) {
                 freshness: Freshness::Fresh,
                 expected_revision: kontor_core::id::AggregateRevision::parse(revision)
                     .expect("a positive revision"),
+                quota_state: None,
             })
             .expect("the observation is recorded");
     });
@@ -1288,6 +1289,7 @@ async fn a_message_resume_reduces_the_run_and_team_run_back_to_running() {
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: before.revision,
+                quota_state: None,
             })
             .expect("waiting input is persisted through the shared reducer");
     });
@@ -12208,6 +12210,7 @@ async fn a_runtime_cancelled_run_accepts_one_guarded_late_handoff_without_reopen
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: run.revision,
+                quota_state: None,
             })
             .expect("the cancellation observation is durable")
     });

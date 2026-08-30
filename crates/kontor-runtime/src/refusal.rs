@@ -28,7 +28,7 @@
 
 use std::fmt;
 
-use kontor_core::id::{AgentRunId, ContentHash, reject_sensitive_text};
+use kontor_core::id::{AgentRunId, ContentHash, Timestamp, reject_sensitive_text};
 
 use crate::timeline::TimelinePosition;
 
@@ -73,6 +73,15 @@ pub struct RefusalProvenance {
     pub source_sequences: Vec<(u64, u64)>,
     /// The runtime's own item type, as it spelled it.
     pub item_type: String,
+    /// When the runtime emitted **the item**, not when Kontor looked at it.
+    ///
+    /// The distinction is the whole point. A probe runs on inspection, which
+    /// may be hours after the turn ended, so using the read's wall clock would
+    /// make a stale refusal look freshly observed — defeating the
+    /// account/provider recency rule that stops an old refusal overwriting a
+    /// newer poller report — and would parse relative reset wording against the
+    /// wrong basis.
+    pub observed_at: Timestamp,
 }
 
 impl RefusalProvenance {
@@ -84,7 +93,7 @@ impl RefusalProvenance {
             .map(|(start, end)| format!("{start}-{end}"))
             .collect();
         format!(
-            "v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "v3\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             self.agent_run_id,
             self.binding_generation,
             self.position.epoch,
@@ -92,6 +101,7 @@ impl RefusalProvenance {
             self.sequence_end,
             ranges.join(","),
             self.item_type,
+            self.observed_at,
         )
     }
 }
@@ -186,6 +196,7 @@ impl fmt::Debug for TransientRefusal {
             .field("position", &self.provenance.position)
             .field("sequence_end", &self.provenance.sequence_end)
             .field("item_type", &self.provenance.item_type)
+            .field("observed_at", &self.provenance.observed_at)
             .field("digest", &self.digest().as_str())
             .finish()
     }
@@ -197,7 +208,8 @@ mod tests {
 
     fn where_from() -> RefusalProvenance {
         RefusalProvenance {
-            agent_run_id: AgentRunId::parse("01a0306f-9398-7a51-a612-8c2b58251d58").expect("a canonical run id"),
+            agent_run_id: AgentRunId::parse("01a0306f-9398-7a51-a612-8c2b58251d58")
+                .expect("a canonical run id"),
             binding_generation: 1,
             position: TimelinePosition {
                 epoch: 1,
@@ -206,6 +218,8 @@ mod tests {
             sequence_end: 7,
             source_sequences: vec![(7, 7)],
             item_type: "assistant_message".to_owned(),
+            observed_at: kontor_core::id::parse_utc_timestamp("2026-08-23T09:00:00Z")
+                .expect("a canonical instant"),
         }
     }
 
@@ -224,14 +238,18 @@ mod tests {
 
     #[test]
     fn sensitive_material_is_refused_rather_than_carried() {
-        assert!(TransientRefusal::parse("authorization: Bearer sk-abcdefghijklmnop", where_from()).is_none());
+        assert!(
+            TransientRefusal::parse("authorization: Bearer sk-abcdefghijklmnop", where_from())
+                .is_none()
+        );
     }
 
     #[test]
     fn over_long_text_keeps_its_tail_where_a_refusal_lands() {
         let padding = "a".repeat(MAX_REFUSAL_CHARS);
-        let refusal = TransientRefusal::parse(&format!("{padding} usage limit reached"), where_from())
-            .expect("a bounded refusal");
+        let refusal =
+            TransientRefusal::parse(&format!("{padding} usage limit reached"), where_from())
+                .expect("a bounded refusal");
         assert_eq!(refusal.as_str().chars().count(), MAX_REFUSAL_CHARS);
         assert!(refusal.as_str().ends_with("usage limit reached"));
     }
@@ -264,7 +282,8 @@ mod tests {
 
     #[test]
     fn debug_redacts_the_text_it_carries() {
-        let refusal = TransientRefusal::parse("You've hit your usage limit.", where_from()).expect("a refusal");
+        let refusal = TransientRefusal::parse("You've hit your usage limit.", where_from())
+            .expect("a refusal");
         let rendered = format!("{refusal:?}");
         assert!(!rendered.contains("usage limit"));
         assert!(rendered.contains("chars"));
@@ -273,8 +292,10 @@ mod tests {
 
     #[test]
     fn the_same_sentence_digests_the_same_way() {
-        let first = TransientRefusal::parse("You've hit your usage limit.", where_from()).expect("a refusal");
-        let second = TransientRefusal::parse("You've hit your usage limit.", where_from()).expect("a refusal");
+        let first = TransientRefusal::parse("You've hit your usage limit.", where_from())
+            .expect("a refusal");
+        let second = TransientRefusal::parse("You've hit your usage limit.", where_from())
+            .expect("a refusal");
         assert_eq!(first.digest(), second.digest());
     }
 }

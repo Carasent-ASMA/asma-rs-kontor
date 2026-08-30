@@ -41,8 +41,12 @@ async fn account(world: &World, label: &str, alias: &str) -> AccountProfileId {
     .send(world)
     .await;
     assert_eq!(created.status, 200, "{}", created.body);
-    AccountProfileId::parse(created.json()["account_profile_id"].as_str().expect("an id"))
-        .expect("a canonical account id")
+    AccountProfileId::parse(
+        created.json()["account_profile_id"]
+            .as_str()
+            .expect("an id"),
+    )
+    .expect("a canonical account id")
 }
 
 #[tokio::test]
@@ -182,6 +186,8 @@ async fn a_legacy_unpinned_run_is_left_exactly_as_it_is() {
             sequence_end: 7,
             source_sequences: vec![(7, 7)],
             item_type: "assistant_message".to_owned(),
+            observed_at: kontor_core::id::parse_utc_timestamp("2026-08-21T09:00:00Z")
+                .expect("a canonical instant"),
         },
     )
     .expect("a refusal");

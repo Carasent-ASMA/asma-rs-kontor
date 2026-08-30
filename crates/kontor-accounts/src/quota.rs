@@ -92,7 +92,11 @@ pub struct ObservedQuota {
 ///   returns", which is a visible prompt to fix the signal. Recording a plan
 ///   allowance as a drained balance would assert that money is the remedy.
 #[must_use]
-pub fn classify(text: &str, signals: &[QuotaSignal]) -> Option<ObservedQuota> {
+pub fn classify(
+    text: &str,
+    signals: &[QuotaSignal],
+    observed_at: Timestamp,
+) -> Option<ObservedQuota> {
     let signal = signals.iter().find(|signal| {
         !signal.markers.is_empty()
             && signal
@@ -113,7 +117,16 @@ pub fn classify(text: &str, signals: &[QuotaSignal]) -> Option<ObservedQuota> {
         .reset_prefix
         .as_deref()
         .and_then(|prefix| after_prefix(text, prefix))
-        .and_then(|tail| parse_wall_clock(tail, signal.reset_zone.as_deref()));
+        .and_then(|tail| {
+            parse_wall_clock(tail, signal.reset_zone.as_deref())
+                // A vendor that states only a time of day -- "your session
+                // limit will reset at 10:40pm" -- is describing the next such
+                // instant *from when it said so*. The basis is therefore the
+                // provider item's own timestamp, never the moment Kontor
+                // happened to read it: a probe running hours later would
+                // otherwise roll the reset forward a whole day.
+                .or_else(|| parse_time_of_day(tail, signal.reset_zone.as_deref(), observed_at))
+        });
 
     Some(match resets_at {
         Some(instant) => ObservedQuota {
@@ -200,6 +213,84 @@ fn parse_wall_clock(text: &str, zone: Option<&str>) -> Option<Timestamp> {
         .compatible()
         .ok()
         .map(|zoned| zoned.timestamp())
+}
+
+/// Which half of a 12-hour clock a vendor printed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Meridiem {
+    Am,
+    Pm,
+}
+
+/// Parse a bare time of day into the next such instant at or after `basis`.
+///
+/// Accepts `10:40pm`, `10:40 PM` and 24-hour `22:40`. The date comes from
+/// `basis` read in `zone`, and when the stated time has already passed on that
+/// day the **next occurrence** is taken — a limit cannot reset in the past.
+///
+/// A spring-forward gap or a fall-back overlap is resolved by jiff's compatible
+/// rule, as the dated parser does: a reset an hour out beats no reset at all,
+/// which would record `Unknown` and block until a human intervened.
+fn parse_time_of_day(text: &str, zone: Option<&str>, basis: Timestamp) -> Option<Timestamp> {
+    let zone = match zone {
+        Some(name) => TimeZone::get(name).ok()?,
+        None => TimeZone::UTC,
+    };
+    // `10:40pm` arrives as one token, `10:40 PM` as two, and `22:40` with no
+    // meridiem at all.
+    let mut words = text.split_whitespace();
+    // Trailing punctuation first: the vendor writes "…reset at 10:40pm." and a
+    // meridiem suffix check against `10:40PM.` silently fails, reading the
+    // clock as 10:40 and then rolling it to the next morning.
+    let token = words
+        .next()?
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_ascii_uppercase();
+    let (clock, mut meridiem) = if let Some(stripped) = token.strip_suffix("AM") {
+        (stripped, Some(Meridiem::Am))
+    } else if let Some(stripped) = token.strip_suffix("PM") {
+        (stripped, Some(Meridiem::Pm))
+    } else {
+        (token.as_str(), None)
+    };
+    if meridiem.is_none() {
+        meridiem = match words.next().map(str::to_ascii_uppercase) {
+            Some(word) if word.starts_with("AM") => Some(Meridiem::Am),
+            Some(word) if word.starts_with("PM") => Some(Meridiem::Pm),
+            _ => None,
+        };
+    }
+    let clock = clock.trim_end_matches(|c: char| !c.is_ascii_digit());
+    let (hour_text, minute_text) = clock.split_once(':')?;
+    let mut hour: i8 = hour_text.trim().parse().ok()?;
+    let minute: i8 = minute_text.trim().parse().ok()?;
+    match meridiem {
+        // A 12-hour clock only when the vendor printed a meridiem; 24-hour text
+        // simply has none and must not be shifted.
+        Some(Meridiem::Pm) if hour < 12 => hour += 12,
+        Some(Meridiem::Am) if hour == 12 => hour = 0,
+        _ => {}
+    }
+    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) {
+        return None;
+    }
+    let local = basis.to_zoned(zone.clone()).date();
+    for day in 0..=1 {
+        let date = if day == 0 {
+            local
+        } else {
+            local.tomorrow().ok()?
+        };
+        let candidate = zone
+            .to_ambiguous_zoned(date.at(hour, minute, 0, 0))
+            .compatible()
+            .ok()?
+            .timestamp();
+        if candidate > basis {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// `23rd` -> `23`.
