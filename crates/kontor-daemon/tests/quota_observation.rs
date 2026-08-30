@@ -13,6 +13,8 @@
 //! * letting the refusal sentence — or a credential inside it — reach the store,
 //!   a stored event row, or a `Debug` line.
 
+// This binary uses part of the shared harness; the rest is not dead code.
+#[allow(dead_code)]
 mod harness;
 
 use harness::{Call, World, at};

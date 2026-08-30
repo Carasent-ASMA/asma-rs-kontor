@@ -28722,6 +28722,45 @@ async fn a_seat_launch_claims_the_account_the_headroom_walk_selected() {
     }
 }
 
+/// Claiming an account in the launch *request* is not the same as the run
+/// owning one. `ProviderQuotaState` is keyed by `(project, account, provider)`
+/// and there is no other key, so a seat that reached a provider before its
+/// account was durable could have neither its refusal attributed nor its
+/// replacement evidenced — which is the state every delivery seat was in.
+///
+/// This asserts the durable half, and it is the pin-before-effect boundary:
+/// the seat has already launched by the time these rows are read, so a pin
+/// written after the native effect, or not at all, fails here.
+#[tokio::test]
+async fn a_started_seat_owns_its_account_durably_and_not_only_in_its_launch_request() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        work,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("a canonical project id");
+    let state = world.daemon.state();
+    assert!(!seats.is_empty(), "the epic started at least one seat");
+    for seat in &seats {
+        let run = seat["agent_run_id"]
+            .as_str()
+            .and_then(|run| AgentRunId::parse(run).ok())
+            .expect("a started run");
+        let stored = state
+            .with_store(|store| store.get_agent_run(project_id, run))
+            .expect("the run is readable")
+            .expect("the run exists");
+        assert_eq!(
+            stored.account_profile_id.map(|id| id.to_string()),
+            Some(work.clone()),
+            "the started seat owns the account the walk selected: {seat}",
+        );
+    }
+}
+
 /// The 2026-08-23 incident, replayed against the fix: the first account's
 /// allowance is exhausted with a far reset, so the walk moves to the second
 /// account on the *same* model — account before rung — and the launch lands on

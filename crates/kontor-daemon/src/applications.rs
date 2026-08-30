@@ -21411,6 +21411,17 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
         };
+        // A successor claims its account before it touches the runtime, exactly
+        // as a first launch does. Succession exists to move a seat off an
+        // exhausted account, so the account it lands on is the one whose future
+        // refusals must be attributable.
+        if let Some(account) = predecessor.account_profile_id.or(routed_account) {
+            state
+                .with_store(|store| {
+                    store.pin_agent_run_account(project_id, successor_agent_run_id, account)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         let admission = permit.admission_request(&launch);
         let admitted = match adapter.admit_launch(&admission).await {
             Err(RuntimeError::ReplacementNotEvidenced {
@@ -23507,6 +23518,20 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
                 .map_err(|error| self.refuse_domain(&error))?;
+            // The account is durable *before* the first native effect. A seat
+            // that reaches a provider before its account is stored is a seat
+            // whose refusal cannot be attributed and whose replacement cannot
+            // be evidenced -- `ProviderQuotaState` is keyed by
+            // `(project, account, provider)` and there is no other key.
+            // Re-presenting the same account is a replay that writes nothing,
+            // so a restarted launch does not pin twice.
+            if let Some(account) = admitted.account_profile_id.or(routed_account) {
+                state
+                    .with_store(|store| {
+                        store.pin_agent_run_account(project_id, agent_run_id, account)
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
                     scope: scope.clone(),
@@ -24957,6 +24982,14 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
             .map_err(|error| self.refuse_domain(&error))?;
+        // Durable before the first native effect, as in the admitted path: a
+        // seat that reaches a provider unpinned cannot have its refusal
+        // attributed or its replacement evidenced.
+        if let Some(account) = admitted.account_profile_id.or(routed_account) {
+            state
+                .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
+                .map_err(|error| self.refuse(&error))?;
+        }
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
                 scope: scope.clone(),
