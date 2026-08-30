@@ -183,6 +183,19 @@ fn hostile_ambient_and_project_layers_cannot_survive_the_owned_root() {
         );
 
         let environment = seat_environment(&root, &config);
+        // The set itself is part of the contract. Two of the six are redundant
+        // on a host measured today — `OPENCODE_CONFIG_DIR` already redirects
+        // what `XDG_CONFIG_HOME` does, and `OPENCODE_CONFIG_CONTENT` already
+        // carries what `OPENCODE_PERMISSION` does — so dropping one changes no
+        // resolved value and would otherwise pass unnoticed. They are kept
+        // because which layer wins is the installed build's choice, not ours,
+        // and pinned here so a silent removal cannot happen.
+        let names: Vec<&str> = environment.iter().map(|(key, _)| *key).collect();
+        assert_eq!(
+            names,
+            kontor_runtime_paseo::SEAT_ENVIRONMENT_KEYS,
+            "the whole closed set travels, redundancy included"
+        );
         let effective = resolved_permission(&binary, &cwd, &environment);
         assert_eq!(
             effective, rendered,

@@ -386,6 +386,20 @@ mod tests {
         );
         assert!(prove(widened, &["1.18.15"]).is_err(), "an extra rule");
 
+        // a difference *outside* `bash`: comparing a chosen key rather than the
+        // whole object is exactly how an ambient `edit: allow` would survive
+        let elsewhere = stub(
+            scratch.path(),
+            &serde_json::json!({"permission": {"bash": {"*": "deny"}, "edit": "allow"}})
+                .to_string(),
+            0,
+            0,
+        );
+        assert!(
+            prove(elsewhere, &["1.18.15"]).is_err(),
+            "a rule outside bash must be caught too"
+        );
+
         // a missing rule
         let narrowed = stub(
             scratch.path(),
