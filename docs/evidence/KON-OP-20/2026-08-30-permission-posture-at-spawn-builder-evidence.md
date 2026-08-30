@@ -423,3 +423,16 @@ also not "through the recorded topology", so it is not taken unasked either.
 Builder acceptance at the time of the attempt: paseo lib 107, paseo contract
 161, daemon lib 57, daemon integration 232, clippy 0, fmt clean, both trees
 clean, mutation 9/9 + 5/5.
+
+### Dispatch taken — 2026-08-31
+
+The operator chose the bounded direct-prompt fallback. The existing inspector
+seat — native agent `10fd5152-c9b9-499d-b9ec-1cec2876901b`, run
+`01a0306f-0816-7ab3-a790-036a6ef11cdc` — was prompted through Paseo and accepted
+the turn. No session or workspace was created, no run state was written, and
+`kontor_runtime_settle` was still not called.
+
+The handoff tells the inspector how it was reached, so its own close-out does not
+mistake this for a governed message: its turn settlement will hit the same
+`stale_binding` refusal, and it is asked to record that rather than work around
+it. Reconciliation through Kontor waits on the ASMA-7869 gap.
