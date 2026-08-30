@@ -8,7 +8,7 @@
 - **Reviewed:** `feat/KON-OP-20-permission-posture-at-spawn` at `e2863bb`
   (one commit beyond the `32fccde` named in the handoff), baseline `e814661`.
   Outer repo `7832934f`.
-- **Verdict:** **BLOCKED.** Eight blocking findings. The first is the load-bearing
+- **Verdict:** **BLOCKED.** Nine blocking findings. The first is the load-bearing
   external fact the builder asked to be pressed on, and it does not hold.
 
 ## B1 — BLOCKING, decisive · the rendered permission never reaches OpenCode
@@ -286,6 +286,43 @@ falsifies it. The following comment — "no drift window, because there is nothi
 on disk for anything to drift from" — is true about disk and beside the point:
 given B1 there is no policy anywhere.
 
+## B9 — BLOCKING · an accepted turn can still end unbound (the inverse of B8)
+
+Recorded after the turn receipt below was settled; it belongs to this review.
+
+`prove_first_turn` returning `Ok` means the seat **has started work**. Eight
+fallible steps then stand between that and the binding (adapter.rs:3444-3494):
+
+```rust
+let snapshot   = self.bind(...)?;                                   // 1
+let observation= self.observation(...)?;                            // 2
+let record = PaseoSeatRecord {
+    mini_project_id: Self::external_epic_id(&effective_scope)?,     // 3
+    plan_item_key:   self.scoped_plan_item_key(&effective_scope)?,  // 4
+    workspace_id:    ExternalId::parse(&workspace_id)?,             // 5
+    agent_id:        ExternalId::parse(&agent.id)?,                 // 6
+    provider_session_id: agent.provider_session_id().map(ExternalId::parse).transpose()?, // 7
+    ...
+};
+{ let state = &mut *self.lock();
+  state.admissions.occupy(request, ExternalId::parse(&agent.id)?)?;  // 8, inside the section
+```
+
+A malformed native id or provider session id, or an evidence/timestamp
+conversion in `observation`, therefore returns `Err` **after work has begun**.
+The compensation block fires only on first-turn *failure*, so this path gets no
+archive and no readback, and `launch` then releases the admission (B2). The seat
+is running, unbound, unowned and re-admissible.
+
+Note `ExternalId::parse(&agent.id)` is evaluated twice — at (6) and again at (8)
+inside the critical section — so the same malformed value can fail after the
+snapshot and observation have already been built.
+
+**Required.** Every fallible snapshot, observation and record preparation must
+happen **before** the seat is prompted. After a typed acceptance the
+commit-to-binding path should be infallible, or durably recoverable. Add a
+malformed-readback failpoint proving no accepted turn can be left unbound.
+
 ## The fixture-unreachable shape generalizes
 
 The builder asked whether the census-fixture defect recurs. It does, and in the
@@ -321,3 +358,14 @@ No live authenticating OpenCode seat was launched, and none may be. B1 is
 established from the installed bundles by source reading, not from a running seat.
 OpenCode operator configuration was not modified; the user's global config was
 read only.
+
+## Turn receipt
+
+Settled through the governed surface, contrary to the handoff's expectation that
+`stale_binding` would block it: `kontor_turn_settle` returned **200**,
+`applied: created`, turn `01a054f9-7e66-7e71-ae96-b10f26cda005`, ordinal 1,
+`seat_live: false`, with an undispatched follow-up to the `tester` slot
+(`01a0306e-e068-78e0-95c7-75528d0cda9a`). Artifacts were rejected once for key
+charset — settlement artifact keys accept only lowercase ASCII letters, digits,
+`.`, `_` and `-`, so a path or a `repo@sha` is refused. B9 was appended after
+that receipt.
