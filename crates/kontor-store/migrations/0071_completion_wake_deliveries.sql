@@ -56,4 +56,4 @@ BEGIN
     SELECT RAISE(ABORT, 'completion wake delivery history is permanent');
 END;
 
-PRAGMA user_version = 70;
+PRAGMA user_version = 71;

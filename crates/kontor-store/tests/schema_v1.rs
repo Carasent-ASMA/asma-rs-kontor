@@ -471,11 +471,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
         SCHEMA_VERSION
     );
     // Pinned deliberately: appending a migration must be a decision, not a
-    // side effect. v68 adds immutable native-less materialization reroute
-    // lineage and receipt authority; v69 widens global Committee recovery
-    // rounds to the scheduler's positive u8 domain; v70 adds exact-occupancy
-    // durable Completion-wake delivery evidence.
-    assert_eq!(SCHEMA_VERSION, 70);
+    // side effect. v68 adds immutable native-less materialization reroute;
+    // v69 widens global Committee recovery rounds; v70 reconciles intermediate
+    // v69 projections; and v71 adds exact-occupancy durable Completion-wake
+    // delivery evidence.
+    assert_eq!(SCHEMA_VERSION, 71);
 }
 
 #[test]
@@ -1186,6 +1186,109 @@ fn v69_preserves_global_round_rows_and_opens_the_positive_u8_domain() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("the schema version reads"),
         69
+    );
+
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys disable around the reconciliation rebuilds");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0070_reconcile_global_committee_rounds.sql"
+        ))
+        .expect("the v70 round-domain reconciliation applies over v69");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys re-enable after the reconciliation rebuilds");
+
+    let reconciled: (i64, i64, i64, i64) = connection
+        .query_row(
+            "SELECT
+                 (SELECT count(*) FROM consultation_runs WHERE round IN (2, 3)),
+                 (SELECT count(*) FROM committee_findings WHERE round IN (2, 3)),
+                 (SELECT count(*) FROM epic_completion_remediation_command_claims
+                    WHERE round IN (2, 3)),
+                 (SELECT count(*) FROM run_children WHERE run_id = ?1)",
+            [RUN_TWO],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("all round-bearing rows survive the reconciliation");
+    assert_eq!(reconciled, (2, 2, 2, 1));
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("the reconciled foreign-key graph is readable"),
+        0
+    );
+    for table in [
+        "consultation_runs",
+        "committee_findings",
+        "epic_completion_remediation_command_claims",
+    ] {
+        let definition: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("the reconciled table definition reads");
+        assert!(
+            definition.contains("round BETWEEN 1 AND 255"),
+            "{table} retained a partial v69 round domain: {definition}"
+        );
+    }
+    assert!(
+        connection
+            .execute(
+                "UPDATE consultation_runs SET context = '{\"changed-again\":true}'",
+                []
+            )
+            .is_err(),
+        "the run input-freeze trigger must survive reconciliation"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM committee_findings WHERE round = 3", [])
+            .is_err(),
+        "the finding permanence trigger must survive reconciliation"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE epic_completion_remediation_command_claims
+                 SET intent_hash = intent_hash WHERE round = 3",
+                [],
+            )
+            .is_err(),
+        "the command-claim immutability trigger must survive reconciliation"
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the reconciled schema version reads"),
+        70
+    );
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0071_completion_wake_deliveries.sql"
+        ))
+        .expect("the v71 wake-delivery migration applies over deployed v70");
+    let delivery_table: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema
+             WHERE type = 'table' AND name = 'epic_completion_wake_deliveries'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the wake-delivery table is installed");
+    assert!(delivery_table.contains("occupancy_generation"));
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("the wake-delivery schema version reads"),
+        71
     );
 }
 
