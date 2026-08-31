@@ -380,3 +380,16 @@ An earlier sweep also recorded a mutant that appeared to survive because the
 edit landed on the wrong `if !complete` — there are three in this file. Mutants
 are now anchored on enough surrounding text to be unambiguous, and the harness
 reports `NOT-APPLIED` rather than `SURVIVED` when its anchor is missing.
+
+### Envelope pins — 2026-08-31 (2/2 killed)
+
+| Mutation | Result |
+| --- | --- |
+| the create declares response type `create_agent_response` | killed |
+| `initialPrompt` moves off the message top level | killed |
+
+Both are wire details no fixture can falsify: the recorded transport answers
+with whatever response type the request declared, and nothing else asserts where
+the daemon reads the prompt from. They are pinned against
+`PaseoRpc::hosted_seat_agent_create`, which is evidenced in production, rather
+than against a fixture.

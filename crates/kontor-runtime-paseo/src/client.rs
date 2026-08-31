@@ -1008,8 +1008,13 @@ impl PaseoRpc {
             parts.agent_run_id, parts.binding_id
         );
 
+        // The envelope is the one `PaseoRpc::agent_create` already uses against
+        // the live daemon: `initialPrompt` and `labels` are siblings of `config`,
+        // not fields inside it, and the answer arrives as a `status` frame. The
+        // session config carries what belongs to the session — route, title,
+        // mode, provider options, MCP surface.
         let mut config = serde_json::json!({
-            "provider": built_in_provider(provider),
+            "provider": parts.model_rung.provider.0,
             "cwd": parts.canonical_cwd,
             "model": parts.model_rung.model.0,
             "title": parts.title,
@@ -1017,21 +1022,34 @@ impl PaseoRpc {
         if let Some(mode) = posture.mode {
             config["modeId"] = serde_json::json!(mode);
         }
+        if let Some(effort) = parts.model_rung.effort {
+            config["thinkingOptionId"] = serde_json::json!(effort.as_str());
+        }
         if let Some(permission) = posture.permission.clone() {
             config["providerOptions"] = serde_json::json!({ "permission": permission });
         }
         if let Some(seat) = parts.seat_mcp {
             config["mcpServers"] = seat.server_config(parts.serve_profile);
         }
-        config["initialPrompt"] = serde_json::json!(parts.prompt);
-        config["clientMessageId"] = serde_json::json!(client_message_id);
+
+        // The digest covers the message about to be sent, not a subset of it, so
+        // a field added to the create is covered the day it is added. The
+        // correlation id is written by the constructor afterwards and is
+        // deliberately outside: it differs per attempt, and a retry has to
+        // recognise the agent the first attempt made.
+        let mut message = serde_json::json!({
+            "workspaceId": parts.workspace_id,
+            "config": config,
+            "initialPrompt": parts.prompt,
+            "clientMessageId": client_message_id,
+        });
 
         let digest = crate::posture::LaunchIntent {
             binding_id: parts.binding_id,
             agent_run_id: parts.agent_run_id,
             workspace_id: parts.workspace_id,
             role_slot_id: parts.role_slot_id,
-            config: &config,
+            config: &message,
             prompt: parts.prompt,
             client_message_id: &client_message_id,
         }
@@ -1040,17 +1058,12 @@ impl PaseoRpc {
 
         let mut labels = parts.labels.clone();
         labels.insert(crate::wire::label::LAUNCH_INTENT.to_owned(), digest.clone());
-
-        let mut message = serde_json::json!({
-            "workspaceId": parts.workspace_id,
-            "config": config,
-        });
-        message["config"]["labels"] = serde_json::json!(labels);
+        message["labels"] = serde_json::json!(labels);
 
         Ok(DeliveryCreateRequest {
             rpc: Self::mutate(
                 "create_agent_request",
-                "create_agent_response",
+                "status",
                 parts.request_id.to_owned(),
                 message,
             ),
@@ -2869,6 +2882,83 @@ mod tests {
                     .into()
             ))
             .is_some()
+        );
+    }
+
+    /// The delivery create speaks the envelope the live daemon already answers.
+    ///
+    /// No fixture can catch this. The recorded transport builds its reply from
+    /// whatever `response_type` the request declared, so a create that declared
+    /// the wrong one passes every test here and fails correlation against the
+    /// real daemon — the same shape of blind spot as a permission field that is
+    /// accepted and never applied. So it is pinned against
+    /// [`PaseoRpc::hosted_seat_agent_create`], which is evidenced in production.
+    #[test]
+    fn the_delivery_create_matches_the_evidenced_create_envelope() {
+        let rung = route("opencode", "deepseek/deepseek-v4-flash", None);
+        let labels: BTreeMap<String, String> =
+            [("kontor.role".to_owned(), "implement-a".to_owned())]
+                .into_iter()
+                .collect();
+        let evidenced = PaseoRpc::hosted_seat_agent_create(
+            "req-1".to_owned(),
+            "wks_1",
+            "/w/task-1",
+            &route("claude", "claude-opus-5", None),
+            "Lead",
+            &labels,
+            "go",
+            "secret",
+        )
+        .expect("the evidenced create builds");
+
+        let delivery = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            request_id: "req-1",
+            workspace_id: "wks_1",
+            canonical_cwd: "/w/task-1",
+            model_rung: &rung,
+            autonomy: SeatAutonomy::Bounded,
+            title: "Implement",
+            labels: &labels,
+            allowances: &[],
+            seat_mcp: None,
+            serve_profile: "worker",
+            binding_id: "bind-1",
+            agent_run_id: "run-1",
+            role_slot_id: "implement-a",
+            prompt: "go",
+        })
+        .expect("the delivery create builds");
+
+        assert_eq!(
+            delivery.rpc.request_type, evidenced.request_type,
+            "same request type"
+        );
+        assert_eq!(
+            delivery.rpc.response_type, evidenced.response_type,
+            "and the same answer is expected: a create that declares a response \
+             type the daemon never sends fails correlation on every launch"
+        );
+
+        // The fields the daemon reads from the top level, not from `config`.
+        for key in ["workspaceId", "config", "initialPrompt", "labels"] {
+            assert!(
+                evidenced.message.get(key).is_some(),
+                "the evidenced create carries `{key}` at the top level"
+            );
+            assert!(
+                delivery.rpc.message.get(key).is_some(),
+                "so the delivery create must too: `{key}`"
+            );
+        }
+        assert_eq!(delivery.rpc.message["initialPrompt"], "go");
+        assert_eq!(
+            delivery.rpc.message["clientMessageId"], "kontor-first-turn-run-1-bind-1",
+            "derived from the launch, so a retry asks about the same turn"
+        );
+        assert!(
+            delivery.rpc.message["config"]["providerOptions"]["permission"].is_object(),
+            "and the posture rides in the session config"
         );
     }
 

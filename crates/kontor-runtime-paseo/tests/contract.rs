@@ -1042,14 +1042,20 @@ fn expected_intent(
     config["modeId"] = serde_json::json!(posture.mode.expect("a mode"));
     config["providerOptions"] =
         serde_json::json!({ "permission": posture.permission.expect("a block") });
-    config["initialPrompt"] = serde_json::json!(prompt);
-    config["clientMessageId"] = serde_json::json!(client_message_id);
+    // The digest covers the whole message, in the envelope the daemon is sent:
+    // `initialPrompt` and `clientMessageId` are siblings of `config`.
+    let message = serde_json::json!({
+        "workspaceId": WORKSPACE_ID,
+        "config": config,
+        "initialPrompt": prompt,
+        "clientMessageId": client_message_id,
+    });
     kontor_runtime_paseo::LaunchIntent {
         binding_id: &binding.to_string(),
         agent_run_id: &run.to_string(),
         workspace_id: WORKSPACE_ID,
         role_slot_id,
-        config: &config,
+        config: &message,
         prompt,
         client_message_id: &client_message_id,
     }
@@ -1361,18 +1367,23 @@ async fn an_opencode_delivery_is_one_create_and_one_binding() {
     let [create] = sent.as_slice() else {
         panic!("exactly one create was sent: {sent:?}")
     };
-    let config = &create["config"];
     assert!(
-        config["providerOptions"]["permission"].is_object(),
-        "the permission travels on the create: {config}"
+        create["config"]["providerOptions"]["permission"].is_object(),
+        "the permission travels on the create: {create}"
     );
-    assert_eq!(config["initialPrompt"], "bootstrap the role");
+    // In the envelope the live daemon is sent: siblings of `config`, exactly
+    // where `PaseoRpc::agent_create` already puts them.
+    assert_eq!(create["initialPrompt"], "bootstrap the role");
     assert_eq!(
-        config["clientMessageId"],
+        create["clientMessageId"],
         first_turn_id(agent_run_id, binding_id),
         "the message id is derived from the launch, so a retry asks about the same turn"
     );
-    assert_eq!(config["labels"]["kontor.launch_intent"], intent);
+    assert_eq!(create["labels"]["kontor.launch_intent"], intent);
+    assert_eq!(
+        create["type"], "create_agent_request",
+        "and it is the request type whose answer this adapter correlates"
+    );
 }
 
 /// A daemon that does not answer the applied question refuses the launch, and

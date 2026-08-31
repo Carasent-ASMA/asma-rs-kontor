@@ -82,6 +82,31 @@ Claude, Codex and Cursor keep the CLI create and readback unchanged.
     prompt changed, so the existing assertions could not see the concatenation
     collision. One now can.
 
+## A correction found by reading the evidenced builder, not by a test
+
+The first version of this create declared response type `create_agent_response`
+and put `initialPrompt` and `clientMessageId` inside `config`. Every test passed.
+They could not have failed: the recorded transport builds its reply from
+whatever `response_type` the request declared, and no fixture asserts where the
+daemon reads the prompt from.
+
+Against the live daemon it would have failed correlation on every launch, and
+the prompt and labels would have been ignored — the same shape as B1, a field
+accepted by the harness and never acted on by the thing that matters.
+
+`PaseoRpc::hosted_seat_agent_create` is the evidenced envelope: response type
+`status`, with `initialPrompt` and `labels` as siblings of `config`. The
+delivery create now matches it, and
+`the_delivery_create_matches_the_evidenced_create_envelope` pins the two
+together so they cannot drift. Two mutants confirm it — a wrong response type
+and a prompt moved off the top level are both caught.
+
+**Still unverified from here:** the exact placement of `clientMessageId` in the
+upstream backport. It is a sibling of `initialPrompt`, which is the consistent
+reading of the evidenced envelope, but the ASMA-7869 source is not on this
+machine and no test can establish it. This is the one field to check against
+upstream before a live launch.
+
 ## Not claimed
 
 No live authenticating OpenCode seat has been launched through this path from
