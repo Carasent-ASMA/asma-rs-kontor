@@ -71,16 +71,20 @@ and depend on who the seat authenticated as.
 
 A create whose answer is lost may have landed, so it is never sent again.
 Reconciliation is an exact-label paginated census on the launch intent: one
-unbound match adopts, one already-bound match refuses, none on a *complete*
-enumeration is `DeliveryConfirmationUnknown`, and several — or an enumeration
-that did not finish — is quarantined.
+unbound match **whose first turn is proved on its canonical timeline** adopts;
+one match without that proof refuses; one already-bound match refuses; none on a
+*complete* enumeration is `DeliveryConfirmationUnknown`; and several — or an
+enumeration that did not finish — is quarantined.
 
-`DeliveryConfirmationUnknown` no longer releases the seat claim. Releasing it is
-what would licence a second create for the same run. Only the daemon's own
-`agent_create_failed` releases, because only that states nothing was made.
+**Nothing releases the seat claim on an ambiguous outcome**, including
+`agent_create_failed`. Releasing is what would licence a second create for a run
+that may already own a native. See the finding below for why the daemon's word
+about a failed create is not a statement about the world.
 
-A created seat that fails any check is archived and read back terminal; an
-unconfirmable archive refuses recoverably. A durable bind failure returns
+A created seat that fails any check is archived and read back terminal. The
+archive acknowledgement is not the cleanup — it can be lost after the daemon
+acted — so the readback runs regardless, and only a fresh reading of that exact
+agent as terminal counts. A durable bind failure returns
 confirmation-unknown, keeping the claim and the intent label so reconciliation
 adopts that very agent.
 
