@@ -393,7 +393,7 @@ Kontor separately assigns each epic one immutable namespace inside its project,
 for example `KOP`. Omission derives a candidate from title initials and expands
 unused title characters until it is unique; an operator may instead supply a
 manual code. Once Jira readback confirms `ASMA-8001` for the epic and
-`ASMA-7869` for a task, Operational topology v2 may render `ESW · KOP-8001` and
+`ASMA-7869` for a task, Operational topology v4 may render `ESW · KOP-8001` and
 `TSW · KOP-7869`. Those item codes are projections, not tracker identities. A
 missing, malformed or ambiguous confirmed Jira binding blocks v2 placement
 rather than falling back to a title, UUID or imported short code. Existing v1

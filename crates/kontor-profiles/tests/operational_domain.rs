@@ -172,19 +172,27 @@ fn operational_v1_owns_the_exact_native_name_matrix_and_separator_bytes() {
 }
 
 #[test]
-fn operational_v2_renders_only_area_and_confirmed_jira_derived_item_code() {
+fn operational_v4_renders_only_area_and_confirmed_jira_derived_item_code() {
     let v1 = topology_at(1);
-    let v2 = topology_at(2);
-    assert_eq!(v2.spec_id, v1.spec_id, "this is one immutable spec lineage");
-    assert_eq!(v2.name, v1.name, "a revision does not rename its lineage");
-    assert_eq!(v2.name_separator.as_str().as_bytes(), " · ".as_bytes());
+    let v4 = topology_at(4);
+    assert_eq!(v4.spec_id, v1.spec_id, "this is one immutable spec lineage");
+    assert_eq!(v4.name, v1.name, "a revision does not rename its lineage");
+    assert_eq!(v4.name_separator.as_str().as_bytes(), " · ".as_bytes());
+    assert!(
+        bundled_operational_domain()
+            .expect("the bundled domain validates")
+            .topology_specs
+            .iter()
+            .all(|spec| !matches!(spec.version.get(), 2 | 3)),
+        "deployed immutable revisions two and three are reserved and must never be reseeded"
+    );
 
     let item_scoped = [
         token(NativeNameToken::AreaCode),
         token(NativeNameToken::ItemCode),
     ];
     for area in ["ESW", "ECP", "TSW"] {
-        let declared = declared(&v2, area);
+        let declared = declared(&v4, area);
         assert_eq!(
             declared.name_template.segments(),
             Some(item_scoped.as_slice()),
@@ -201,7 +209,7 @@ fn operational_v2_renders_only_area_and_confirmed_jira_derived_item_code() {
             );
         }
     }
-    let serialized = serde_json::to_string(&v2).expect("the seed serializes");
+    let serialized = serde_json::to_string(&v4).expect("the seed serializes");
     assert!(serialized.contains("ITEM_CODE"));
     assert!(!serialized.contains("JIRA_CODE"));
     assert!(!serialized.contains("KONTOR_BACKLOG_CODE"));

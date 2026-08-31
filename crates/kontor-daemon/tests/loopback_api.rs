@@ -21267,9 +21267,73 @@ async fn code_help_explains_the_codes_an_epic_is_actually_pinned_to() {
     }
 }
 
-/// An epic's pin moves only through the exact preview that was authorized.
+/// A bundled revision must not collide with immutable versions already deployed.
 #[tokio::test]
-async fn operational_v2_names_epics_and_tasks_from_confirmed_jira_item_codes() {
+async fn bundled_item_code_revision_skips_deployed_immutable_v2_and_v3() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "item-code-upgraded-realm",
+        "Kontor upgraded realm",
+        "/tmp/kontor-item-code-upgraded-realm",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("the project id")
+        .to_owned();
+    let topology_lineage = "01936f5a-1000-7000-8000-000000000001";
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    for version in [2, 3] {
+        connection
+            .execute(
+                "INSERT INTO topology_specs
+                     (project_id, spec_id, version, name, root_kind, definition,
+                      definition_hash, published_at)
+                 VALUES (?1, ?2, ?3, 'Previously deployed topology', 'PSW', '{}',
+                         ?4, '2026-08-20T00:00:00Z')",
+                rusqlite::params![
+                    project,
+                    topology_lineage,
+                    version,
+                    format!("{version:064x}")
+                ],
+            )
+            .expect("the previously deployed immutable revision is planted");
+    }
+    drop(connection);
+
+    let preview = Call::post(
+        format!("/v1/projects/{project}/topology-selection:preview"),
+        &serde_json::json!({
+            "target_spec": {"id": topology_lineage, "version": 4}
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["target_spec"]["version"], 4);
+
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    let definition: String = connection
+        .query_row(
+            "SELECT definition FROM topology_specs
+             WHERE project_id = ?1 AND spec_id = ?2 AND version = 4",
+            rusqlite::params![project, topology_lineage],
+            |row| row.get(0),
+        )
+        .expect("the collision-free item-code revision is published");
+    assert!(definition.contains("ITEM_CODE"));
+}
+
+/// The collision-free Operational revision renders confirmed item codes.
+#[tokio::test]
+async fn operational_v4_names_epics_and_tasks_from_confirmed_jira_item_codes() {
     let world = World::open_empty_with_a_plane().await;
     world.daemon.reconcile().await;
     let created = ensure_project(
@@ -21331,7 +21395,7 @@ async fn operational_v2_names_epics_and_tasks_from_confirmed_jira_item_codes() {
     let project_preview = Call::post(
         format!("/v1/projects/{project}/topology-selection:preview"),
         &serde_json::json!({
-            "target_spec": {"id": topology_lineage, "version": 2}
+            "target_spec": {"id": topology_lineage, "version": 4}
         }),
     )
     .signed_as(&world, "admin")
@@ -21353,7 +21417,7 @@ async fn operational_v2_names_epics_and_tasks_from_confirmed_jira_item_codes() {
     let upgrade_preview = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/topology:upgrade-preview"),
         &serde_json::json!({
-            "target_spec": {"id": topology_lineage, "version": 2}
+            "target_spec": {"id": topology_lineage, "version": 4}
         }),
     )
     .signed_as(&world, "admin")
@@ -21372,7 +21436,7 @@ async fn operational_v2_names_epics_and_tasks_from_confirmed_jira_item_codes() {
     .send(&world)
     .await;
     assert_eq!(upgraded.status, 200, "{}", upgraded.body);
-    assert_eq!(upgraded.json()["pinned_spec"]["version"], 2);
+    assert_eq!(upgraded.json()["pinned_spec"]["version"], 4);
 
     world.fake.take_calls();
     let refused = Call::post(
@@ -21564,12 +21628,12 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(materialized.status, 200, "{}", materialized.body);
 
-    // Publish a third revision of the *bundled* lineage whose sole semantic
-    // change from bundled v2 is the ESW native-name template. Existing kinds,
+    // Publish the next revision of the *bundled* lineage whose sole semantic
+    // change from bundled v4 is the ESW native-name template. Existing kinds,
     // hierarchy, capabilities, nodes, containers and seats remain valid in place.
     let bundled = pinned_before["id"].as_str().expect("a spec id").to_owned();
     let current = Call::get(format!(
-        "/v1/projects/{}/topology-specs/{bundled}/2",
+        "/v1/projects/{}/topology-specs/{bundled}/4",
         composed.project
     ))
     .signed_as(world, "admin")
@@ -21592,7 +21656,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     let drafted = Call::post(
         format!("/v1/projects/{}/topology-specs:draft", composed.project),
         &serde_json::json!({
-            "base": {"id": bundled, "version": 2},
+            "base": {"id": bundled, "version": 4},
             "name": "Retitled epic workspace vocabulary",
             "root_kind": "PSW",
             "node_kinds": node_kinds,
@@ -21606,7 +21670,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     assert_eq!(drafted.status, 200, "{}", drafted.body);
     assert_eq!(
         drafted.json()["candidate"]["version"],
-        3,
+        5,
         "an edit drafts the next version of the lineage: {}",
         drafted.body
     );
@@ -21638,14 +21702,14 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
             "/v1/projects/{}/topology-selection:preview",
             composed.project
         ),
-        &serde_json::json!({"target_spec": {"id": bundled, "version": 3}}),
+        &serde_json::json!({"target_spec": {"id": bundled, "version": 5}}),
     )
     .signed_as(world, "admin")
     .send(world)
     .await;
     assert_eq!(project_preview.status, 200, "{}", project_preview.body);
     assert_eq!(project_preview.json()["current_spec"]["version"], 1);
-    assert_eq!(project_preview.json()["target_spec"]["version"], 3);
+    assert_eq!(project_preview.json()["target_spec"]["version"], 5);
     let project_preview_hash = project_preview.json()["preview_hash"]
         .as_str()
         .expect("a project selection hash")
@@ -21663,7 +21727,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .send(world)
     .await;
     assert_eq!(selected.status, 200, "{}", selected.body);
-    assert_eq!(selected.json()["selected_spec"]["version"], 3);
+    assert_eq!(selected.json()["selected_spec"]["version"], 5);
     assert_eq!(selected.json()["receipt"]["applied"], "updated");
 
     let selected_replay = Call::post(
@@ -21695,7 +21759,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
             "/v1/projects/{}/epics/{}/topology:upgrade-preview",
             composed.project, composed.epic
         ),
-        &serde_json::json!({"target_spec": {"id": bundled, "version": 3}}),
+        &serde_json::json!({"target_spec": {"id": bundled, "version": 5}}),
     )
     .signed_as(world, "admin")
     .with_key("upgrade-preview")
@@ -21703,7 +21767,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(preview.status, 200, "{}", preview.body);
     assert_eq!(preview.json()["current_spec"]["version"], 1);
-    assert_eq!(preview.json()["target_spec"]["version"], 3);
+    assert_eq!(preview.json()["target_spec"]["version"], 5);
     let effects = preview.json()["effects"]
         .as_array()
         .expect("effects")
@@ -21784,10 +21848,10 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .send(world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
-    assert_eq!(applied.json()["pinned_spec"]["version"], 3);
+    assert_eq!(applied.json()["pinned_spec"]["version"], 5);
     assert_eq!(
         applied.json()["projection"]["pinned_spec"]["version"],
-        3,
+        5,
         "the embedded epic projection reports the epic pin: {}",
         applied.body
     );
@@ -21801,7 +21865,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
         .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
         .expect("the epic nodes read");
     assert!(
-        nodes.iter().all(|node| node.topology.version.get() == 3),
+        nodes.iter().all(|node| node.topology.version.get() == 5),
         "the exact existing nodes move to the target revision in place"
     );
 
@@ -21839,7 +21903,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
         desired_title.starts_with("Upgraded ESW • ")
             && !desired_title.contains('<')
             && desired_title != old_title,
-        "the v2 template is rendered from typed scope: {}",
+        "the v5 template is rendered from typed scope: {}",
         preview_retitle.body
     );
     let retitled = Call::post(
@@ -21875,7 +21939,7 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     .await;
     assert_eq!(replayed.status, 200, "{}", replayed.body);
     assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
-    assert_eq!(replayed.json()["pinned_spec"]["version"], 3);
+    assert_eq!(replayed.json()["pinned_spec"]["version"], 5);
 
     // The revision the epic *left* is untouched — it is immutable, and other
     // epics may still be pinned to it.
