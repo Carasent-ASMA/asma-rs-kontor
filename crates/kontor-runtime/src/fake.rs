@@ -18,6 +18,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
+use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId,
     ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp,
@@ -30,6 +31,8 @@ use serde::Deserialize;
 
 use crate::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
+    ConsultationPermissionAck, ConsultationPermissionInspectRequest,
+    ConsultationPermissionInspection, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatInspectRequest, HostedSeatInspection, HostedSeatLaunchRequest,
@@ -296,6 +299,10 @@ pub enum AdapterCall {
     LaunchConsultation(SeatBindingId),
     /// An exact idle consultation predecessor was retired for recovery.
     RetireConsultation(SeatBindingId),
+    /// One consultation seat's pending permissions were read.
+    InspectConsultationPermissions(SeatBindingId),
+    /// One consultation seat permission was answered.
+    RespondConsultationPermission(SeatBindingId),
     /// A persistent topology leadership seat was launched or recovered.
     LaunchHostedSeat(SeatBindingId),
     /// An already-running persistent topology seat claim was previewed.
@@ -498,6 +505,9 @@ struct FakeState {
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    consultation_runs: BTreeMap<SeatBindingId, ConsultationRunId>,
+    consultation_permissions: BTreeMap<SeatBindingId, BTreeSet<ExternalId>>,
+    consultation_permission_acks: BTreeMap<(SeatBindingId, ExternalId), ConsultationPermissionAck>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
@@ -977,6 +987,9 @@ impl ScriptedFakeRuntime {
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
                 consultations: BTreeMap::new(),
+                consultation_runs: BTreeMap::new(),
+                consultation_permissions: BTreeMap::new(),
+                consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
@@ -1426,6 +1439,26 @@ impl ScriptedFakeRuntime {
             .consultations
             .get(&seat)
             .map(|outcome| outcome.identity.clone())
+    }
+
+    /// Plant one native permission request on an already-launched consultation seat.
+    pub fn raise_consultation_permission(
+        &self,
+        seat: SeatBindingId,
+        permission_id: ExternalId,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        if !state.consultations.contains_key(&seat) {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the consultation seat is absent",
+            });
+        }
+        state
+            .consultation_permissions
+            .entry(seat)
+            .or_default()
+            .insert(permission_id);
+        Ok(())
     }
 
     /// Take the recorded calls and start a fresh log.
@@ -2082,6 +2115,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .consultations
             .insert(request.seat_binding_id, outcome.clone());
+        state
+            .consultation_runs
+            .insert(request.seat_binding_id, request.run_id);
         state.seat_titles.insert(
             outcome.identity.native_id.clone(),
             (
@@ -2109,6 +2145,95 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(())
     }
 
+    async fn inspect_consultation_permissions(
+        &self,
+        request: &ConsultationPermissionInspectRequest,
+    ) -> RuntimeResult<ConsultationPermissionInspection> {
+        let mut state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let held = state.consultations.get(&request.seat_binding_id).ok_or(
+            RuntimeError::StaleBinding {
+                rule: "the consultation seat is absent",
+            },
+        )?;
+        if held.identity != request.identity
+            || state.consultation_runs.get(&request.seat_binding_id) != Some(&request.run_id)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let pending_permissions = state
+            .consultation_permissions
+            .get(&request.seat_binding_id)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        state
+            .calls
+            .push(AdapterCall::InspectConsultationPermissions(
+                request.seat_binding_id,
+            ));
+        Ok(ConsultationPermissionInspection {
+            seat_binding_id: request.seat_binding_id,
+            pending_permissions,
+            observed_at: request.requested_at,
+        })
+    }
+
+    async fn respond_consultation_permission(
+        &self,
+        request: &ConsultationPermissionResponseRequest,
+    ) -> RuntimeResult<ConsultationPermissionAck> {
+        let mut state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::PermissionResponse),
+        )?;
+        let held = state.consultations.get(&request.seat_binding_id).ok_or(
+            RuntimeError::StaleBinding {
+                rule: "the consultation seat is absent",
+            },
+        )?;
+        if held.identity != request.identity
+            || state.consultation_runs.get(&request.seat_binding_id) != Some(&request.run_id)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let key = (request.seat_binding_id, request.permission_id.clone());
+        if let Some(ack) = state.consultation_permission_acks.get(&key) {
+            if ack.response_id == request.response_id && ack.decision == request.decision {
+                return Ok(ack.clone());
+            }
+            return Err(RuntimeError::PermissionConflict {
+                rule: "was already answered differently",
+            });
+        }
+        let pending = state
+            .consultation_permissions
+            .get_mut(&request.seat_binding_id)
+            .is_some_and(|permissions| permissions.remove(&request.permission_id));
+        if !pending {
+            return Err(RuntimeError::PermissionConflict {
+                rule: "is not pending on this exact consultation seat",
+            });
+        }
+        let ack = ConsultationPermissionAck {
+            seat_binding_id: request.seat_binding_id,
+            permission_id: request.permission_id.clone(),
+            response_id: request.response_id,
+            decision: request.decision,
+            accepted_at: request.responded_at,
+        };
+        state.consultation_permission_acks.insert(key, ack.clone());
+        state.calls.push(AdapterCall::RespondConsultationPermission(
+            request.seat_binding_id,
+        ));
+        Ok(ack)
+    }
+
     async fn retire_consultation_seat(
         &self,
         request: &ConsultationSeatRetireRequest,
@@ -2129,6 +2254,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Err(RuntimeError::CorrelationFailed);
         }
         state.consultations.remove(&request.seat_binding_id);
+        state.consultation_runs.remove(&request.seat_binding_id);
+        state
+            .consultation_permissions
+            .remove(&request.seat_binding_id);
         state.seat_titles.remove(&request.identity.native_id);
         state
             .calls

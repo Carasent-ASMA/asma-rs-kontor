@@ -702,6 +702,64 @@ pub struct ConsultationMessageRequest {
     pub sent_at: Timestamp,
 }
 
+/// Inspect the permission requests currently open on one exact consultation seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationPermissionInspectRequest {
+    /// Owning consultation, verified against the runtime label.
+    pub run_id: ConsultationRunId,
+    /// Persistent logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native filler currently persisted for that seat.
+    pub identity: NativeRuntimeIdentity,
+    /// Observation instant.
+    pub requested_at: Timestamp,
+}
+
+/// Fresh runtime readback of one consultation seat's pending permissions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationPermissionInspection {
+    /// Persistent logical seat that was inspected.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact pending runtime request ids, in stable order.
+    pub pending_permissions: Vec<kontor_core::id::ExternalId>,
+    /// Observation instant.
+    pub observed_at: Timestamp,
+}
+
+/// Answer one permission request on an exact consultation native filler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationPermissionResponseRequest {
+    /// Owning consultation, verified against the runtime label.
+    pub run_id: ConsultationRunId,
+    /// Persistent logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native filler currently persisted for that seat.
+    pub identity: NativeRuntimeIdentity,
+    /// Runtime request being answered.
+    pub permission_id: kontor_core::id::ExternalId,
+    /// Stable Kontor idempotency identity for the answer.
+    pub response_id: MessageId,
+    /// Allow or deny.
+    pub decision: PermissionDecision,
+    /// Response instant.
+    pub responded_at: Timestamp,
+}
+
+/// Runtime acknowledgement for one consultation permission answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationPermissionAck {
+    /// Persistent logical seat whose native accepted the answer.
+    pub seat_binding_id: SeatBindingId,
+    /// Runtime request that was answered.
+    pub permission_id: kontor_core::id::ExternalId,
+    /// Stable Kontor idempotency identity for the answer.
+    pub response_id: MessageId,
+    /// Applied answer.
+    pub decision: PermissionDecision,
+    /// When the runtime accepted it.
+    pub accepted_at: Timestamp,
+}
+
 /// The runtime's answer to one delivered message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageAck {
@@ -950,6 +1008,26 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::SendMessage,
+        })
+    }
+
+    /// Read the pending permission ids from one exact consultation seat.
+    async fn inspect_consultation_permissions(
+        &self,
+        _request: &ConsultationPermissionInspectRequest,
+    ) -> RuntimeResult<ConsultationPermissionInspection> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PermissionResponse,
+        })
+    }
+
+    /// Answer one still-pending permission on an exact consultation seat.
+    async fn respond_consultation_permission(
+        &self,
+        _request: &ConsultationPermissionResponseRequest,
+    ) -> RuntimeResult<ConsultationPermissionAck> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PermissionResponse,
         })
     }
 

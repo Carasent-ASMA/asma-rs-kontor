@@ -11,8 +11,8 @@ use kontor_core::repository::{
 };
 use kontor_core::state::TaskState;
 use kontor_store::{
-    JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,
-    SqliteStore,
+    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
+    NewJiraMaterializationItem, SqliteStore,
 };
 
 fn external(value: impl AsRef<str>) -> ExternalId {
@@ -284,6 +284,324 @@ fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery()
         .expect("task links");
     assert_eq!(links.len(), 1, "recovery never creates a duplicate link");
     assert_eq!(links[0].id, recovered_link_id);
+}
+
+#[test]
+fn a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch() {
+    let root = tempfile::tempdir().expect("state root");
+    let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
+    let (project_id, epic_id, _, now) = seed_graph(&store);
+
+    let first_batch = external(uuid::Uuid::now_v7().to_string());
+    let first_item = NewJiraMaterializationItem {
+        id: external(uuid::Uuid::now_v7().to_string()),
+        batch_id: first_batch.clone(),
+        project_id,
+        epic_id,
+        task_id: None,
+        link_id: None,
+        ordinal: 0,
+        item_kind: JiraItemKind::Epic,
+        intent_kind: JiraIntentKind::Link,
+        requested_key: Some(external("ASMA-8049")),
+        marker: external("kontor-epic-binding-first"),
+    };
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: first_batch.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "epic-binding-first".to_owned(),
+                preview_hash: ContentHash::of(b"epic-binding-first"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[first_item],
+        )
+        .expect("first plan");
+    let first = store
+        .jira_materialization_items(project_id, &first_batch)
+        .expect("first item")
+        .remove(0);
+    store
+        .confirm_jira_materialization_item(
+            &first,
+            &external("ASMA-8049"),
+            &ContentHash::of(b"ASMA-8049"),
+            now,
+        )
+        .expect("first binding confirms");
+
+    let second_batch = external(uuid::Uuid::now_v7().to_string());
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: second_batch.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "epic-binding-second".to_owned(),
+                preview_hash: ContentHash::of(b"epic-binding-second"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: second_batch.clone(),
+                project_id,
+                epic_id,
+                task_id: None,
+                link_id: None,
+                ordinal: 0,
+                item_kind: JiraItemKind::Epic,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(external("ASMA-9999")),
+                marker: external("kontor-epic-binding-second"),
+            }],
+        )
+        .expect("second plan");
+    let second = store
+        .jira_materialization_items(project_id, &second_batch)
+        .expect("second item")
+        .remove(0);
+    assert!(
+        store
+            .confirm_jira_materialization_item(
+                &second,
+                &external("ASMA-9999"),
+                &ContentHash::of(b"ASMA-9999"),
+                now,
+            )
+            .is_err(),
+        "a later batch may not replace a confirmed epic identity"
+    );
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("original binding")
+            .as_ref()
+            .map(ExternalId::as_str),
+        Some("ASMA-8049")
+    );
+}
+
+#[test]
+fn planning_refuses_a_non_exact_item_set_without_persisting_a_partial_batch() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let batch_id = external(uuid::Uuid::now_v7().to_string());
+    let result = store.plan_jira_materialization(
+        &NewJiraMaterializationBatch {
+            id: batch_id.clone(),
+            project_id,
+            epic_id,
+            idempotency_key: "duplicate-ordinal-plan".to_owned(),
+            preview_hash: ContentHash::of(b"duplicate-ordinal-plan"),
+            expected_revision: AggregateRevision::INITIAL,
+            created_at: now,
+        },
+        &[
+            NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: None,
+                link_id: None,
+                ordinal: 0,
+                item_kind: JiraItemKind::Epic,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(external("ASMA-8049")),
+                marker: external("kontor-duplicate-ordinal-epic"),
+            },
+            NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: Some(task_id),
+                link_id: Some(TicketLinkId::generate()),
+                ordinal: 0,
+                item_kind: JiraItemKind::Task,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(external("ASMA-8050")),
+                marker: external("kontor-duplicate-ordinal-task"),
+            },
+        ],
+    );
+    assert!(result.is_err(), "duplicate ordinals must be rejected");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(path).expect("database reopens");
+    let batches: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_batches WHERE id = ?1",
+            [batch_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("batch count");
+    assert_eq!(batches, 0, "an invalid item set leaves no partial batch");
+}
+
+#[test]
+fn link_recovery_adopts_the_original_pending_create_batch_in_place() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let original_batch_id = external(uuid::Uuid::now_v7().to_string());
+    let original_epic_item_id = external(uuid::Uuid::now_v7().to_string());
+    let original_task_item_id = external(uuid::Uuid::now_v7().to_string());
+    let epic_marker = external("kontor-epic-kbi-8050");
+    let task_marker = external("kontor-task-kbi-8050");
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: original_batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "kbi-jira-materialize-20260830-v1".to_owned(),
+                preview_hash: ContentHash::of(b"failed-create-preview"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[
+                NewJiraMaterializationItem {
+                    id: original_epic_item_id.clone(),
+                    batch_id: original_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: None,
+                    link_id: None,
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Epic,
+                    intent_kind: JiraIntentKind::Create,
+                    requested_key: None,
+                    marker: epic_marker.clone(),
+                },
+                NewJiraMaterializationItem {
+                    id: original_task_item_id.clone(),
+                    batch_id: original_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(task_id),
+                    link_id: Some(TicketLinkId::generate()),
+                    ordinal: 1,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Create,
+                    requested_key: None,
+                    marker: task_marker.clone(),
+                },
+            ],
+        )
+        .expect("original create plan");
+
+    let recovery_receipt_id = CommandReceiptId::generate();
+    let recovery_preview_hash = ContentHash::of(b"exact-link-recovery-preview");
+    store
+        .record_local_command(&NewLocalCommand {
+            project_id,
+            receipt_id: recovery_receipt_id,
+            idempotency_key: IdempotencyKey::parse("kbi-jira-recovery-20260831-v1")
+                .expect("recovery key"),
+            kind: CommandKind::MaterializeJira,
+            target: AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "jira_materialization_apply",
+                "preview_hash": recovery_preview_hash.as_str(),
+            }))
+            .expect("recovery intent"),
+            created_at: now,
+        })
+        .expect("recovery command");
+    let recovery_items = vec![
+        JiraMaterializationRecoveryItem {
+            ordinal: 0,
+            item_kind: JiraItemKind::Epic,
+            task_id: None,
+            requested_key: external("ASMA-8049"),
+            marker: epic_marker.clone(),
+        },
+        JiraMaterializationRecoveryItem {
+            ordinal: 1,
+            item_kind: JiraItemKind::Task,
+            task_id: Some(task_id),
+            requested_key: external("ASMA-8050"),
+            marker: task_marker.clone(),
+        },
+    ];
+    let mut wrong_marker = recovery_items.clone();
+    wrong_marker[1].marker = external("kontor-task-another-scope");
+    assert!(
+        store
+            .recover_pending_jira_materialization(
+                project_id,
+                epic_id,
+                recovery_receipt_id,
+                &recovery_preview_hash,
+                &wrong_marker,
+                now,
+            )
+            .is_err(),
+        "approximate marker scope may not recover a create batch"
+    );
+    let recovered = store
+        .recover_pending_jira_materialization(
+            project_id,
+            epic_id,
+            recovery_receipt_id,
+            &recovery_preview_hash,
+            &recovery_items,
+            now,
+        )
+        .expect("exact recovery")
+        .expect("pending batch found");
+    assert_eq!(recovered.batch_id, original_batch_id);
+    assert_eq!(
+        recovered
+            .items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>(),
+        vec![original_epic_item_id, original_task_item_id]
+    );
+    let replayed = store
+        .recover_pending_jira_materialization(
+            project_id,
+            epic_id,
+            recovery_receipt_id,
+            &recovery_preview_hash,
+            &recovery_items,
+            now,
+        )
+        .expect("recovery replay")
+        .expect("the ledger resolves the same original batch");
+    assert_eq!(replayed.batch_id, recovered.batch_id);
+
+    drop(store);
+    let connection = rusqlite::Connection::open(path).expect("recovery readback");
+    let batches: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_batches",
+            [],
+            |row| row.get(0),
+        )
+        .expect("batch count");
+    let recoveries: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_recoveries",
+            [],
+            |row| row.get(0),
+        )
+        .expect("recovery count");
+    assert_eq!(batches, 1, "recovery creates no replacement batch");
+    assert_eq!(recoveries, 2, "every adopted item is durably ledgered");
 }
 
 #[test]

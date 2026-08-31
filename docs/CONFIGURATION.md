@@ -36,13 +36,14 @@ issue keys such as `ASMA-8001`. Epics created before schema v72 remain readable
 without a code; reapply them through the preview/apply pair to assign one before
 selecting topology v4.
 
-Schema v73 keeps failed create attempts as immutable incident evidence while
-allowing a later explicit `link` materialization for the same epic/task and
-stable marker. Only create intents retain marker uniqueness, so recovery cannot
-emit a second Jira object; the linked key must still be read back and confirmed
-before an item code exists. Link readback proves the requested key, Jira project,
-issue type and epic parent; it deliberately does not claim ownership of an
-existing issue's summary, description or current workflow status.
+Schema v74 recovers a failed create attempt in place: the original batch, create
+intent and marker remain immutable, while an append-only recovery row authorizes
+adoption of an exact existing issue. Recovery requires the requested Jira key,
+project, issue type, epic parent, summary, description and stable marker to match
+the original plan and maps results by ordinal, not connector response position.
+An ordinary explicit `link` still validates key/project/type/parent without
+claiming ownership of an existing issue's summary, description or workflow
+status; it cannot silently replace the original create batch.
 
 Operational topology v4 (`01936f5a-1000-7000-8000-000000000001`, revision `4`)
 uses the typed `ITEM_CODE` projection and renders centered-dot names. Enable it
@@ -109,6 +110,13 @@ not in the seat file: a free-form tool list in configuration would be a second
 authority model that drifts. An unknown profile name refuses to start, and a tool
 the profile excludes is refused at call time as well as hidden from the list. See
 [`../crates/kontor-mcp/seats/README.md`](../crates/kontor-mcp/seats/README.md).
+
+The dynamically composed `leadership` profile for persistent LSA/TPM seats is
+limited to completion read/remediation and exact Committee-seat permission
+inspection/response. A response uses a canonical UUIDv7 `Idempotency-Key` and is
+persisted in schema v75 before the runtime effect. Confirmed replay is inert;
+confirmation-unknown dispatch fails closed instead of guessing or answering a
+second time.
 
 ## Other deployment data
 

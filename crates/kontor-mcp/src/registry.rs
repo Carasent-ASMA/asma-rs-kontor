@@ -635,7 +635,12 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
     },
     ServeProfile {
         name: "leadership",
-        tools: &["kontor_completion_get", "kontor_completion_remediate"],
+        tools: &[
+            "kontor_completion_get",
+            "kontor_completion_remediate",
+            "kontor_committee_permissions_inspect",
+            "kontor_committee_permission_respond",
+        ],
     },
 ];
 
@@ -4779,6 +4784,75 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Read one Committee run, its remediation, findings, and result.",
     },
     ToolSpec {
+        name: "kontor_committee_permissions_inspect",
+        tier: CallerTier::Operator,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "committee_run_id",
+                Place::Path,
+                ArgType::CommitteeRunId,
+                "The running Committee consultation.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The exact persistent Committee seat whose native filler is inspected.",
+            ),
+        ],
+        about: "Read fresh pending runtime permissions from one exact Committee seat.",
+    },
+    ToolSpec {
+        name: "kontor_committee_permission_respond",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions/{permission_id}",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "committee_run_id",
+                Place::Path,
+                ArgType::CommitteeRunId,
+                "The running Committee consultation.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The exact persistent Committee seat whose native filler raised it.",
+            ),
+            req(
+                "permission_id",
+                Place::Path,
+                ArgType::Text,
+                "The runtime's exact pending permission identifier.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "decision",
+                Place::Body,
+                ArgType::Enum(PERMISSION_DECISIONS),
+                "Whether the exact pending action may proceed.",
+            ),
+        ],
+        about: "Durably answer one permission request on one exact Committee seat.",
+    },
+    ToolSpec {
         name: "kontor_consultation_seat_recover",
         tier: CallerTier::Admin,
         method: Method::Post,
@@ -5461,7 +5535,12 @@ mod tests {
             ServeProfile::find("leadership").expect("the leadership profile is declared");
         assert_eq!(
             leadership.tools,
-            ["kontor_completion_get", "kontor_completion_remediate"]
+            [
+                "kontor_completion_get",
+                "kontor_completion_remediate",
+                "kontor_committee_permissions_inspect",
+                "kontor_committee_permission_respond",
+            ]
         );
     }
 

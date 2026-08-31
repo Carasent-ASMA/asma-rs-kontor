@@ -58,6 +58,7 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
 use kontor_runtime::observation::ControlPlaneObservation;
+use kontor_runtime::request::{MessageId, PermissionDecision};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -1287,6 +1288,54 @@ pub struct ConsultationSeatDto {
     /// Native runtime identity after launch/recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_binding: Option<ObservedBindingDto>,
+}
+
+/// Fresh pending-permission readback for one exact Committee seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ConsultationPermissionInspectionDto {
+    /// Realm that performed the readback.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning Committee run.
+    #[schema(value_type = String)]
+    pub committee_run_id: CommitteeRunId,
+    /// Persistent logical seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native filler that was inspected.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Runtime permission request ids still awaiting a decision.
+    #[schema(value_type = Vec<String>)]
+    pub pending_permissions: Vec<ExternalId>,
+    /// Runtime observation instant.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: Timestamp,
+}
+
+/// Durable acknowledgement for one Committee permission answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ConsultationPermissionAckDto {
+    /// Realm that performed the effect.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning Committee run.
+    #[schema(value_type = String)]
+    pub committee_run_id: CommitteeRunId,
+    /// Persistent logical seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Runtime request that was answered.
+    #[schema(value_type = String)]
+    pub permission_id: ExternalId,
+    /// Stable response identity from `Idempotency-Key`.
+    pub response_id: String,
+    /// Applied decision.
+    #[schema(value_type = String)]
+    pub decision: PermissionDecision,
+    /// Runtime acceptance instant.
+    #[schema(value_type = String, format = DateTime)]
+    pub accepted_at: Timestamp,
 }
 
 /// One Advisor consultation.
@@ -5735,6 +5784,23 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
     ) -> Result<CommitteeRunDto, ApiError>;
+    /// Read pending native permission requests from one exact Committee seat.
+    async fn inspect_consultation_permissions(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<ConsultationPermissionInspectionDto, ApiError>;
+    /// Answer one pending native permission through the Kontor control plane.
+    async fn respond_consultation_permission(
+        &self,
+        response_id: MessageId,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        permission_id: ExternalId,
+        decision: PermissionDecision,
+    ) -> Result<ConsultationPermissionAckDto, ApiError>;
     /// Replace one idle Committee native filler without changing its logical seat.
     async fn recover_consultation_seat(
         &self,
@@ -8202,6 +8268,88 @@ pub async fn committee_run(
         state
             .applications()
             .committee_run(project_id, committee_run_id)?,
+    ))
+}
+
+/// Read pending runtime permission requests from one exact Committee seat.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions", tag = "applications",
+    params(
+        ("project_id" = String, Path), ("committee_run_id" = String, Path),
+        ("seat_binding_id" = String, Path)
+    ),
+    responses(
+        (status = 200, body = ConsultationPermissionInspectionDto),
+        (status = 401), (status = 403), (status = 404), (status = 409), (status = 503)
+    )
+)]
+pub async fn inspect_consultation_permissions(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id, seat_binding_id)): Path<(String, String, String)>,
+) -> Result<Json<ConsultationPermissionInspectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .inspect_consultation_permissions(project_id, committee_run_id, seat_binding_id)
+            .await?,
+    ))
+}
+
+/// Answer one pending runtime permission on an exact Committee seat.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions/{permission_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path), ("committee_run_id" = String, Path),
+        ("seat_binding_id" = String, Path), ("permission_id" = String, Path),
+        ("Idempotency-Key" = String, Header)
+    ),
+    request_body = crate::dto::PermissionRequestBody,
+    responses(
+        (status = 200, body = ConsultationPermissionAckDto),
+        (status = 401), (status = 403), (status = 404), (status = 409), (status = 503)
+    )
+)]
+pub async fn respond_consultation_permission(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id, seat_binding_id, permission_id)): Path<(
+        String,
+        String,
+        String,
+        String,
+    )>,
+    headers: HeaderMap,
+    Json(request): Json<crate::dto::PermissionRequestBody>,
+) -> Result<Json<ConsultationPermissionAckDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let permission_id = parse_id(&state, ExternalId::parse(&permission_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    let response_id = MessageId::parse(key.as_str()).map_err(|_| {
+        state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "a Committee permission Idempotency-Key must be a canonical UUID v7",
+        )
+    })?;
+    Ok(Json(
+        state
+            .applications()
+            .respond_consultation_permission(
+                response_id,
+                project_id,
+                committee_run_id,
+                seat_binding_id,
+                permission_id,
+                request.decision,
+            )
+            .await?,
     ))
 }
 

@@ -30,6 +30,7 @@
 pub mod authority;
 pub mod backup;
 mod commands;
+mod consultation_permissions;
 mod events;
 mod graph;
 mod intake;
@@ -56,6 +57,10 @@ pub use commands::receipts::{
     CommandRecovery, CommandTransition, LaunchReceiptReconciliation, ReceiptTransition,
     RecordedTransition,
 };
+pub use consultation_permissions::{
+    ConsultationPermissionDecision, ConsultationPermissionResponseStatus,
+    StoredConsultationPermissionResponse,
+};
 pub use events::types::{
     ConsumerPage, ContentDiscontinuity, ContentGapOutcome, ControlGap, ControlObservation,
     ControlObservationOutcome,
@@ -69,8 +74,8 @@ pub use graph::{
     StoredWaiver, TeamTemplateSource, TurnDispatch,
 };
 pub use jira::{
-    JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,
-    StoredJiraMaterializationItem,
+    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
+    NewJiraMaterializationItem, RecoveredJiraMaterialization, StoredJiraMaterializationItem,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use policy::{

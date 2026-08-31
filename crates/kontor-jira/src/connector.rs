@@ -139,6 +139,10 @@ pub struct JiraIssuePlan {
     pub kind: JiraIssueKind,
     pub requested_key: Option<ExternalId>,
     pub marker: ExternalId,
+    /// Whether an explicit link must prove the original create marker and
+    /// exact Kontor-authored content. Ordinary operator links do not claim
+    /// authority over summary or description; in-place recovery does.
+    pub require_marker: bool,
     pub summary: String,
     pub description: String,
     pub parent_key: Option<ExternalId>,
@@ -653,9 +657,10 @@ impl JiraConnector {
             .cloned()
             .unwrap_or(Value::Null);
         let explicit_link = plan.requested_key.is_some();
+        let strict_content = !explicit_link || plan.require_marker;
         if text_at(&value, &["fields", "project", "key"])? != self.project_key.as_str()
             || optional_external_at(&value, &["fields", "parent", "key"])? != plan.parent_key
-            || (!explicit_link
+            || (strict_content
                 && (observed_summary != plan.summary
                     || observed_description != adf(&plan.description)))
         {
@@ -672,7 +677,7 @@ impl JiraConnector {
             JiraIssueKind::Task => text_at(&value, &["fields", "issuetype", "name"])
                 .is_ok_and(|name| normalize(name) == "task"),
         };
-        let marker_matches = plan.requested_key.is_some()
+        let marker_matches = (explicit_link && !plan.require_marker)
             || value_at(&value, &["fields", "labels"])
                 .and_then(Value::as_array)
                 .is_some_and(|labels| {
@@ -686,7 +691,19 @@ impl JiraConnector {
                 kind: kontor_core::ticket::StatusConflictKind::IncompatibleHumanMove,
             });
         }
-        let readback = if explicit_link {
+        let readback = if explicit_link && plan.require_marker {
+            json!({
+                "schema_version": 1,
+                "mode": "recover",
+                "key": key.as_str(),
+                "project": self.project_key.as_str(),
+                "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
+                "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
+                "summary": plan.summary,
+                "description": plan.description,
+                "marker": plan.marker.as_str(),
+            })
+        } else if explicit_link {
             json!({
                 "schema_version": 1,
                 "mode": "link",

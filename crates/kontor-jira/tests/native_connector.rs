@@ -46,10 +46,23 @@ struct ExistingLinkedTask(Arc<AtomicUsize>);
 
 impl Respond for ExistingLinkedTask {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
-        let parent = if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-            "ASMA-8049"
+        let call = self.0.fetch_add(1, Ordering::SeqCst);
+        let parent = if call < 4 { "ASMA-8049" } else { "ASMA-9999" };
+        let labels = if call >= 2 {
+            serde_json::json!(["kontor-task-link-fixture"])
         } else {
-            "ASMA-9999"
+            serde_json::json!([])
+        };
+        let (summary, description) = if call >= 3 {
+            (
+                "Kontor-derived recovery summary",
+                "Kontor-derived recovery description",
+            )
+        } else {
+            (
+                "Existing operator-owned Jira summary",
+                "Existing Jira description",
+            )
         };
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8050",
@@ -57,11 +70,11 @@ impl Respond for ExistingLinkedTask {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Task", "hierarchyLevel": 0},
                 "parent": {"key": parent},
-                "summary": "Existing operator-owned Jira summary",
+                "summary": summary,
                 "description": {"type":"doc","version":1,"content":[{
-                    "type":"paragraph","content":[{"type":"text","text":"Existing Jira description"}]
+                    "type":"paragraph","content":[{"type":"text","text":description}]
                 }]},
-                "labels": []
+                "labels": labels
             }
         }))
     }
@@ -138,6 +151,7 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
         kind: JiraIssueKind::Epic,
         requested_key: None,
         marker: ExternalId::parse("kontor-epic-fixture").expect("marker"),
+        require_marker: false,
         summary: "Operational MVP".to_owned(),
         description: "Server derived".to_owned(),
         parent_key: None,
@@ -163,7 +177,7 @@ async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_de
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-8050"))
         .respond_with(ExistingLinkedTask(Arc::clone(&readbacks)))
-        .expect(2)
+        .expect(5)
         .mount(&server)
         .await;
 
@@ -190,8 +204,9 @@ async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_de
         kind: JiraIssueKind::Task,
         requested_key: Some(ExternalId::parse("ASMA-8050").expect("issue key")),
         marker: ExternalId::parse("kontor-task-link-fixture").expect("marker"),
-        summary: "Kontor-derived summary is not linked-field authority".to_owned(),
-        description: "Kontor-derived description is not linked-field authority".to_owned(),
+        require_marker: false,
+        summary: "Kontor-derived recovery summary".to_owned(),
+        description: "Kontor-derived recovery description".to_owned(),
         parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent key")),
     };
 
@@ -202,11 +217,37 @@ async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_de
         .await
         .expect("the exact existing Jira identity is confirmed");
     assert_eq!(confirmed.issue_key.as_str(), "ASMA-8050");
+    let mut recovery_plan = plan.clone();
+    recovery_plan.require_marker = true;
     assert!(
         connector
             .for_project(project_id)
             .expect("project remains configured")
-            .materialize(&plan)
+            .materialize(&recovery_plan)
+            .await
+            .is_err(),
+        "pending-create recovery refuses an existing issue without its marker"
+    );
+    assert!(
+        connector
+            .for_project(project_id)
+            .expect("project remains configured")
+            .materialize(&recovery_plan)
+            .await
+            .is_err(),
+        "a marker alone does not authorize mismatched recovery content"
+    );
+    connector
+        .for_project(project_id)
+        .expect("project remains configured")
+        .materialize(&recovery_plan)
+        .await
+        .expect("exact marker, content, kind, project and parent recover in place");
+    assert!(
+        connector
+            .for_project(project_id)
+            .expect("project remains configured")
+            .materialize(&recovery_plan)
             .await
             .is_err(),
         "an explicit link still refuses a task attached to another epic"

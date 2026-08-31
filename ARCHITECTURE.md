@@ -162,13 +162,31 @@ Pre-v72 epics with no legacy code remain readable and operable; assignment is an
 explicit write, and any topology needing the projection stays blocked until it
 has happened.
 
-Operational topology revision 1 remains byte-immutable. Revision 2 opts into the
+Operational topology revision 1 remains byte-immutable. Revision 4 opts into the
 typed `ITEM_CODE` token and centered-dot separator, yielding names such as
 `ESW · KOP-8001`, `ECP · KOP-8001` and `TSW · KOP-7869`. Projects and epics move
 to it only through their existing preview/apply selection and upgrade seams. A
 template asking for `ITEM_CODE` fails `placement_blocked` before any runtime
 mutation unless the epic namespace is active and the relevant Jira binding has
 exactly one confirmed readback.
+
+Jira materialization recovery preserves the failed create batch as the sole
+intent. Schema v74 adds an append-only recovery ledger keyed to its exact item,
+ordinal and marker; the daemon may adopt an already-created Jira issue only when
+project, issue kind, parent, summary, description and marker all match that
+original create plan. Response items are mapped by ordinal, never by connector
+array position, and a confirmed epic binding cannot be changed to another Jira
+key.
+
+Runtime permissions raised by a Committee filler remain runtime-owned, but the
+authority to answer them is a Kontor control-plane effect. Inspection addresses
+the exact Committee run, logical SeatBinding and attested native filler. Schema
+v75 records the exact occupancy generation, native id, request id, UUIDv7
+response identity and decision before dispatch; only runtime acknowledgement
+advances it to confirmed. Confirmed calls replay without a second native effect,
+while confirmation-unknown dispatches fail closed. The `leadership` MCP profile
+contains only completion read/remediation plus these exact Committee permission
+operations.
 
 ## Deterministic scheduling and policy
 
@@ -310,7 +328,8 @@ can never widen it. Profiles are declared in the registry beside the tier
 declarations — deliberately not in a seat file, because a free-form tool list in
 configuration would be a second authority model that drifts. `worker` is the
 everyday delivery surface; `consultation` is an advisor or committee filler's
-minimum; `leadership` is completion read and remediation. An unknown profile name
+minimum; `leadership` is completion read/remediation plus exact Committee-seat
+permission inspection and response. An unknown profile name
 refuses to start. See [`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
 
 This is also the context-tax control: a seat is given the surface its role needs,

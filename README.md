@@ -101,7 +101,7 @@ The current repository includes:
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 146 tools — exposed through the stdio MCP server and
+- one capability catalogue — 150 tools — exposed through the stdio MCP server and
   a `kontor` CLI *generated from the same registry*, with credential tiers and
   narrow serve profiles;
 - a responsive React operator console and Tauri desktop shell.
@@ -395,7 +395,7 @@ unused title characters until it is unique; an operator may instead supply a
 manual code. Once Jira readback confirms `ASMA-8001` for the epic and
 `ASMA-7869` for a task, Operational topology v4 may render `ESW · KOP-8001` and
 `TSW · KOP-7869`. Those item codes are projections, not tracker identities. A
-missing, malformed or ambiguous confirmed Jira binding blocks v2 placement
+missing, malformed or ambiguous confirmed Jira binding blocks v4 placement
 rather than falling back to a title, UUID or imported short code. Existing v1
 topology pins remain immutable and keep their historical names until an
 explicit preview/apply upgrade.

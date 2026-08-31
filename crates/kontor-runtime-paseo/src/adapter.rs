@@ -56,6 +56,8 @@ use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
+    ConsultationPermissionAck, ConsultationPermissionInspectRequest,
+    ConsultationPermissionInspection, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
     HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
     HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
@@ -4713,6 +4715,122 @@ impl RuntimeAdapter for PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         Ok(())
+    }
+
+    async fn inspect_consultation_permissions(
+        &self,
+        request: &ConsultationPermissionInspectRequest,
+    ) -> RuntimeResult<ConsultationPermissionInspection> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation != self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the consultation seat belongs to another runtime generation",
+            });
+        }
+        let agent = self
+            .fetch_agent(request.identity.native_id.as_str())
+            .await?;
+        let expected_run = format!(
+            "{}/{}",
+            request.run_id.family().as_str(),
+            request.run_id.as_text()
+        );
+        let expected_seat = request.seat_binding_id.to_string();
+        if agent.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
+            || agent.label(label::CONSULTATION_RUN) != Some(expected_run.as_str())
+            || agent.is_archived()
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let mut pending_permissions = agent
+            .pending_permissions
+            .iter()
+            .map(|pending| ExternalId::parse(&pending.id).map_err(RuntimeError::from))
+            .collect::<RuntimeResult<Vec<_>>>()?;
+        pending_permissions.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(ConsultationPermissionInspection {
+            seat_binding_id: request.seat_binding_id,
+            pending_permissions,
+            observed_at: request.requested_at,
+        })
+    }
+
+    async fn respond_consultation_permission(
+        &self,
+        request: &ConsultationPermissionResponseRequest,
+    ) -> RuntimeResult<ConsultationPermissionAck> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::PermissionResponse,
+                autonomous: false,
+                account_pinned: false,
+                binding: None,
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+        let inspection = self
+            .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                run_id: request.run_id,
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                requested_at: request.responded_at,
+            })
+            .await?;
+        if !inspection
+            .pending_permissions
+            .contains(&request.permission_id)
+        {
+            return Err(RuntimeError::PermissionConflict {
+                rule: "is not pending on this exact consultation seat",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let rpc = PaseoRpc::permission_response(
+            native_id,
+            request.permission_id.as_str(),
+            request.decision == PermissionDecision::Allow,
+        );
+        let frame = self.transport.request(&rpc).await?;
+        let accepted: PaseoPermissionResolved = frame.resolve(&rpc, "PaseoPermissionResolved")?;
+        let expected_behavior = match request.decision {
+            PermissionDecision::Allow => "allow",
+            PermissionDecision::Deny => "deny",
+        };
+        if accepted.agent_id != native_id || accepted.resolution.behavior != expected_behavior {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let after = self
+            .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                run_id: request.run_id,
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                requested_at: request.responded_at,
+            })
+            .await?;
+        if after.pending_permissions.contains(&request.permission_id) {
+            return Err(RuntimeError::Transport {
+                rule: "the consultation permission remains pending after acknowledgement",
+            });
+        }
+        Ok(ConsultationPermissionAck {
+            seat_binding_id: request.seat_binding_id,
+            permission_id: request.permission_id.clone(),
+            response_id: request.response_id,
+            decision: request.decision,
+            accepted_at: request.responded_at,
+        })
     }
 
     /// Admission is bookkeeping about seats: it starts nothing and reaches no

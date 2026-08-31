@@ -59,23 +59,23 @@ use kontor_api::applications::{
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeReReviewProvenance, CommitteeRunDto,
     CommitteeVerdictDto, CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto,
     CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
-    ConsultationSeatDto, ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto,
-    ConsultationVerdictDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
-    CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
-    CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
-    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
-    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
-    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
-    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
-    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
-    InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest, ProfileCatalogDto,
-    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
-    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
-    RecordFindingsRequest, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
-    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    ConsultationPermissionAckDto, ConsultationPermissionInspectionDto, ConsultationSeatDto,
+    ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
+    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
+    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
+    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
+    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
+    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
+    IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
+    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
+    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
+    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -185,6 +185,7 @@ use kontor_profiles::pack::{
 };
 use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationFallbackDisposition, ConsultationLaunchRequest,
+    ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationRouteSource, ConsultationSeatRetireRequest,
     HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatInspectRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
@@ -198,7 +199,7 @@ use kontor_runtime::container::{
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
-    LaunchParts, LaunchPlacement, MessageId, ReconcileSessionLabelsRequest,
+    LaunchParts, LaunchPlacement, MessageId, PermissionDecision, ReconcileSessionLabelsRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
@@ -218,10 +219,12 @@ use kontor_scheduler::{
 };
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport, EpicApplication,
+    AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport,
+    ConsultationPermissionDecision, ConsultationPermissionResponseStatus, EpicApplication,
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
-    JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem, NewRoleTurn,
-    ProfileSelection, ProjectEnsure, RegisteredPack, SettledTurn, SqliteStore, StoredConflict,
+    JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
+    NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
+    SettledTurn, SqliteStore, StoredConflict, StoredConsultationPermissionResponse,
     StoredTeamDraft, StoredTeamsProjection, TeamTemplateSource, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
@@ -362,7 +365,7 @@ struct PreparedTicketPlan {
 struct PreparedJiraMaterialization {
     epic: MiniProject,
     preview: JiraMaterializationPreviewDto,
-    plans: Vec<JiraIssuePlan>,
+    plans: BTreeMap<u32, JiraIssuePlan>,
 }
 
 /// One validated epic request, ready for preview or apply under the same rules.
@@ -2048,14 +2051,18 @@ impl Services {
 
         let epic_marker = ExternalId::parse(&format!("kontor-epic-{epic_id}"))
             .map_err(|error| self.refuse_domain(&error))?;
-        let mut plans = vec![JiraIssuePlan {
-            kind: JiraIssueKind::Epic,
-            requested_key: request.epic.issue_key.clone(),
-            marker: epic_marker,
-            summary: epic.name.as_str().to_owned(),
-            description: format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
-            parent_key: None,
-        }];
+        let mut plans = BTreeMap::from([(
+            0,
+            JiraIssuePlan {
+                kind: JiraIssueKind::Epic,
+                requested_key: request.epic.issue_key.clone(),
+                marker: epic_marker,
+                require_marker: false,
+                summary: epic.name.as_str().to_owned(),
+                description: format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                parent_key: None,
+            },
+        )]);
         let mut items = vec![JiraMaterializationItemDto {
             item_kind: "epic".to_owned(),
             task_id: None,
@@ -2096,14 +2103,24 @@ impl Services {
             }
             let marker = ExternalId::parse(&format!("kontor-task-{}", task.id))
                 .map_err(|error| self.refuse_domain(&error))?;
-            plans.push(JiraIssuePlan {
-                kind: JiraIssueKind::Task,
-                requested_key: intent.issue_key.clone(),
-                marker,
-                summary: task.title.as_str().to_owned(),
-                description: format!("Kontor task {}: {}", task.id, task.title.as_str()),
-                parent_key: None,
-            });
+            let ordinal = u32::try_from(items.len()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "too many Jira materialization items",
+                )
+            })?;
+            plans.insert(
+                ordinal,
+                JiraIssuePlan {
+                    kind: JiraIssueKind::Task,
+                    requested_key: intent.issue_key.clone(),
+                    marker,
+                    require_marker: false,
+                    summary: task.title.as_str().to_owned(),
+                    description: format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                    parent_key: None,
+                },
+            );
             items.push(JiraMaterializationItemDto {
                 item_kind: "task".to_owned(),
                 task_id: Some(task.id),
@@ -2119,7 +2136,7 @@ impl Services {
                 "project_id": project_id.to_string(),
                 "epic_id": epic_id.to_string(),
                 "epic_revision": epic.revision.get(),
-                "items": plans.iter().map(|plan| serde_json::json!({
+                "items": plans.values().map(|plan| serde_json::json!({
                     "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
                     "requested_key": plan.requested_key.as_ref().map(ExternalId::as_str),
                     "marker": plan.marker.as_str(),
@@ -13585,17 +13602,40 @@ impl ApplicationOperations for Services {
             prepared.epic.revision,
             &intent,
         )?;
-        let batch_id = ExternalId::parse(&receipt_id.to_string())
+        let proposed_batch_id = ExternalId::parse(&receipt_id.to_string())
             .map_err(|error| self.refuse_domain(&error))?;
         let now = kontor_api::now();
 
+        if prepared.plans.len() != prepared.preview.items.len() {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the Jira materialization preview and execution plan differ",
+            ));
+        }
         let mut planned = Vec::with_capacity(prepared.plans.len());
-        for (ordinal, (plan, item)) in prepared
-            .plans
-            .iter()
-            .zip(prepared.preview.items.iter())
-            .enumerate()
-        {
+        for (ordinal, item) in prepared.preview.items.iter().enumerate() {
+            let ordinal = u32::try_from(ordinal).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "too many Jira materialization items",
+                )
+            })?;
+            let plan = prepared.plans.get(&ordinal).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Jira materialization plan has a missing ordinal",
+                )
+            })?;
+            let kind_matches = matches!(
+                (plan.kind, item.item_kind.as_str(), item.task_id),
+                (JiraIssueKind::Epic, "epic", None) | (JiraIssueKind::Task, "task", Some(_))
+            );
+            if !kind_matches || plan.requested_key != item.requested_key {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Jira materialization plan does not exactly match its preview item",
+                ));
+            }
             let link_id = if let Some(task_id) = item.task_id {
                 let existing = state
                     .with_store(|store| store.list_task_ticket_links(project_id, task_id))
@@ -13613,17 +13653,12 @@ impl ApplicationOperations for Services {
             planned.push(NewJiraMaterializationItem {
                 id: ExternalId::parse(&uuid::Uuid::now_v7().to_string())
                     .map_err(|error| self.refuse_domain(&error))?,
-                batch_id: batch_id.clone(),
+                batch_id: proposed_batch_id.clone(),
                 project_id,
                 epic_id,
                 task_id: item.task_id,
                 link_id,
-                ordinal: u32::try_from(ordinal).map_err(|_| {
-                    self.deny(
-                        ApiErrorCode::InvalidRequest,
-                        "too many Jira materialization items",
-                    )
-                })?,
+                ordinal,
                 item_kind: if item.task_id.is_some() {
                     JiraItemKind::Task
                 } else {
@@ -13637,33 +13672,148 @@ impl ApplicationOperations for Services {
                 marker: plan.marker.clone(),
             });
         }
-        state
-            .with_store(|store| {
-                store.plan_jira_materialization(
-                    &NewJiraMaterializationBatch {
-                        id: batch_id.clone(),
+        let recovery = if planned
+            .iter()
+            .all(|item| item.intent_kind == JiraIntentKind::Link)
+        {
+            Some(
+                planned
+                    .iter()
+                    .map(|item| {
+                        Ok(JiraMaterializationRecoveryItem {
+                            ordinal: item.ordinal,
+                            item_kind: item.item_kind,
+                            task_id: item.task_id,
+                            requested_key: item.requested_key.clone().ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::InvalidRequest,
+                                    "link recovery requires one exact Jira key per item",
+                                )
+                            })?,
+                            marker: item.marker.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ApiError>>()?,
+            )
+        } else {
+            None
+        };
+        let recovered = match recovery {
+            Some(recovery) => state
+                .with_store(|store| {
+                    store.recover_pending_jira_materialization(
                         project_id,
                         epic_id,
-                        idempotency_key: key.as_str().to_owned(),
-                        preview_hash: request.preview_hash.clone(),
-                        expected_revision: request.expected_revision,
-                        created_at: now,
-                    },
-                    &planned,
-                )
-            })
-            .map_err(|error| self.refuse(&error))?;
+                        receipt_id,
+                        &request.preview_hash,
+                        &recovery,
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?,
+            None => None,
+        };
+        let recovered_in_place = recovered.is_some();
+        let (batch_id, stored) = if let Some(recovered) = recovered {
+            (recovered.batch_id, recovered.items)
+        } else {
+            state
+                .with_store(|store| {
+                    store.plan_jira_materialization(
+                        &NewJiraMaterializationBatch {
+                            id: proposed_batch_id.clone(),
+                            project_id,
+                            epic_id,
+                            idempotency_key: key.as_str().to_owned(),
+                            preview_hash: request.preview_hash.clone(),
+                            expected_revision: request.expected_revision,
+                            created_at: now,
+                        },
+                        &planned,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let stored = state
+                .with_store(|store| {
+                    store.jira_materialization_items(project_id, &proposed_batch_id)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            (proposed_batch_id, stored)
+        };
 
         let connector = self.jira(project_id)?;
-        let stored = state
-            .with_store(|store| store.jira_materialization_items(project_id, &batch_id))
-            .map_err(|error| self.refuse(&error))?;
-        let mut epic_key = stored.first().and_then(|item| item.confirmed_key.clone());
-        for (item, base_plan) in stored.iter().zip(prepared.plans.iter()) {
+        let stored_by_ordinal = stored
+            .iter()
+            .map(|item| (item.ordinal, item))
+            .collect::<BTreeMap<_, _>>();
+        if stored_by_ordinal.len() != stored.len() || stored.len() != prepared.plans.len() {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the durable Jira materialization item set is not exact",
+            ));
+        }
+        for (ordinal, base_plan) in &prepared.plans {
+            let item = stored_by_ordinal.get(ordinal).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the durable Jira materialization item set has a missing ordinal",
+                )
+            })?;
+            let requested = prepared
+                .preview
+                .items
+                .get(usize::try_from(*ordinal).map_err(|_| {
+                    self.deny(ApiErrorCode::Unavailable, "the Jira ordinal is invalid")
+                })?)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Jira preview has a missing ordinal",
+                    )
+                })?;
+            let expected_kind = match base_plan.kind {
+                JiraIssueKind::Epic => JiraItemKind::Epic,
+                JiraIssueKind::Task => JiraItemKind::Task,
+            };
+            let expected_intent = if recovered_in_place {
+                JiraIntentKind::Create
+            } else {
+                match requested.mode {
+                    JiraMaterializationModeDto::Create => JiraIntentKind::Create,
+                    JiraMaterializationModeDto::Link => JiraIntentKind::Link,
+                }
+            };
+            let expected_stored_key = if recovered_in_place {
+                None
+            } else {
+                requested.requested_key.as_ref()
+            };
+            if item.project_id != project_id
+                || item.epic_id != epic_id
+                || item.item_kind != expected_kind
+                || item.intent_kind != expected_intent
+                || item.task_id != requested.task_id
+                || item.marker != base_plan.marker
+                || item.requested_key.as_ref() != expected_stored_key
+            {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the durable Jira item does not match the authorized ordinal",
+                ));
+            }
+        }
+        let mut epic_key = stored_by_ordinal
+            .get(&0)
+            .and_then(|item| item.confirmed_key.clone());
+        for (ordinal, base_plan) in &prepared.plans {
+            let item = stored_by_ordinal
+                .get(ordinal)
+                .expect("the complete ordinal map was validated above");
             if item.confirmed_key.is_some() {
                 continue;
             }
             let mut plan = base_plan.clone();
+            plan.require_marker = recovered_in_place;
             if item.item_kind == JiraItemKind::Task {
                 plan.parent_key = Some(epic_key.clone().ok_or_else(|| {
                     self.deny(
@@ -13729,23 +13879,44 @@ impl ApplicationOperations for Services {
         let confirmed = state
             .with_store(|store| store.jira_materialization_items(project_id, &batch_id))
             .map_err(|error| self.refuse(&error))?;
-        let items = confirmed
+        let confirmed_by_ordinal = confirmed
             .into_iter()
-            .map(|item| JiraMaterializationItemDto {
-                item_kind: match item.item_kind {
-                    JiraItemKind::Epic => "epic",
-                    JiraItemKind::Task => "task",
-                }
-                .to_owned(),
-                task_id: item.task_id,
-                mode: match item.intent_kind {
-                    JiraIntentKind::Create => JiraMaterializationModeDto::Create,
-                    JiraIntentKind::Link => JiraMaterializationModeDto::Link,
-                },
-                requested_key: item.requested_key,
-                confirmed_key: item.confirmed_key,
+            .map(|item| (item.ordinal, item))
+            .collect::<BTreeMap<_, _>>();
+        if confirmed_by_ordinal.len() != prepared.preview.items.len() {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the confirmed Jira materialization item set is not exact",
+            ));
+        }
+        let items = prepared
+            .preview
+            .items
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, requested)| {
+                let ordinal = u32::try_from(ordinal).map_err(|_| {
+                    self.deny(ApiErrorCode::Unavailable, "the Jira ordinal is invalid")
+                })?;
+                let item = confirmed_by_ordinal.get(&ordinal).ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the confirmed Jira item set has a missing ordinal",
+                    )
+                })?;
+                Ok(JiraMaterializationItemDto {
+                    item_kind: match item.item_kind {
+                        JiraItemKind::Epic => "epic",
+                        JiraItemKind::Task => "task",
+                    }
+                    .to_owned(),
+                    task_id: item.task_id,
+                    mode: requested.mode,
+                    requested_key: requested.requested_key,
+                    confirmed_key: item.confirmed_key.clone(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ApiError>>()?;
         Ok(JiraMaterializationAppliedDto {
             realm_id: state.realm_id(),
             epic_id,
@@ -16754,6 +16925,232 @@ impl ApplicationOperations for Services {
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
         self.committee_run_dto(&run, None, AppliedDto::Unchanged)
     }
+
+    async fn inspect_consultation_permissions(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<ConsultationPermissionInspectionDto, ApiError> {
+        let state = self.state()?;
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let seat = state
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.run_id == run.id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee has no such logical consultation seat",
+                )
+            })?;
+        let identity = seat.native_identity.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee permission target has no attested native filler",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime that owns the Committee seat is not configured",
+                )
+            })?;
+        let inspection = adapter
+            .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                run_id: run.id,
+                seat_binding_id,
+                identity: identity.clone(),
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        Ok(ConsultationPermissionInspectionDto {
+            realm_id: state.realm_id(),
+            committee_run_id,
+            seat_binding_id,
+            native_id: identity.native_id,
+            pending_permissions: inspection.pending_permissions,
+            observed_at: inspection.observed_at,
+        })
+    }
+
+    async fn respond_consultation_permission(
+        &self,
+        response_id: MessageId,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        permission_id: ExternalId,
+        decision: PermissionDecision,
+    ) -> Result<ConsultationPermissionAckDto, ApiError> {
+        let state = self.state()?;
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let seat = state
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.run_id == run.id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee has no such logical consultation seat",
+                )
+            })?;
+        let identity = seat.native_identity.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee permission target has no attested native filler",
+            )
+        })?;
+        let now = kontor_api::now();
+        let durable_response_id = ExternalId::parse(&response_id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let durable_decision = match decision {
+            PermissionDecision::Allow => ConsultationPermissionDecision::Allow,
+            PermissionDecision::Deny => ConsultationPermissionDecision::Deny,
+        };
+        let intended = StoredConsultationPermissionResponse {
+            project_id,
+            committee_run_id,
+            seat_binding_id,
+            occupancy_generation: seat.occupancy_generation,
+            native_id: identity.native_id.clone(),
+            permission_id: permission_id.clone(),
+            response_id: durable_response_id.clone(),
+            decision: durable_decision,
+            status: ConsultationPermissionResponseStatus::Planned,
+            planned_at: now,
+            accepted_at: None,
+        };
+        let existing = state
+            .with_store(|store| store.get_consultation_permission_response(&durable_response_id))
+            .map_err(|error| self.refuse(&error))?;
+        if let Some(existing) = &existing
+            && (existing.project_id != intended.project_id
+                || existing.committee_run_id != intended.committee_run_id
+                || existing.seat_binding_id != intended.seat_binding_id
+                || existing.occupancy_generation != intended.occupancy_generation
+                || existing.native_id != intended.native_id
+                || existing.permission_id != intended.permission_id
+                || existing.response_id != intended.response_id
+                || existing.decision != intended.decision)
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the Committee permission response id already names another exact answer",
+            ));
+        }
+        if existing.as_ref().is_some_and(|response| {
+            response.status == ConsultationPermissionResponseStatus::Confirmed
+        }) {
+            let confirmed = existing
+                .as_ref()
+                .expect("the confirmed response was just matched");
+            return Ok(ConsultationPermissionAckDto {
+                realm_id: state.realm_id(),
+                committee_run_id,
+                seat_binding_id,
+                permission_id,
+                response_id: response_id.to_string(),
+                decision,
+                accepted_at: confirmed.accepted_at.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the confirmed Committee permission response has no acceptance time",
+                    )
+                })?,
+            });
+        }
+        if existing.as_ref().is_some_and(|response| {
+            response.status == ConsultationPermissionResponseStatus::Dispatching
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the Committee permission response is in confirmation-unknown recovery",
+            ));
+        }
+        if matches!(
+            run.state,
+            ConsultationRunState::Settled | ConsultationRunState::NeedsHuman
+        ) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal Committee cannot authorize a new native permission effect",
+            ));
+        }
+        let adapter = state
+            .runtimes()
+            .get(&identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime that owns the Committee seat is not configured",
+                )
+            })?;
+        let inspection = adapter
+            .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                run_id: run.id,
+                seat_binding_id,
+                identity: identity.clone(),
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if !inspection.pending_permissions.contains(&permission_id) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the named permission is not pending on this exact Committee seat",
+            ));
+        }
+        if existing.is_none() {
+            state
+                .with_store(|store| store.plan_consultation_permission_response(&intended))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        state
+            .with_store(|store| store.claim_consultation_permission_response(&durable_response_id))
+            .map_err(|error| self.refuse(&error))?;
+        let acknowledged = adapter
+            .respond_consultation_permission(&ConsultationPermissionResponseRequest {
+                run_id: run.id,
+                seat_binding_id,
+                identity,
+                permission_id: permission_id.clone(),
+                response_id,
+                decision,
+                responded_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let confirmed = state
+            .with_store(|store| {
+                store.confirm_consultation_permission_response(
+                    &durable_response_id,
+                    acknowledged.accepted_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(ConsultationPermissionAckDto {
+            realm_id: state.realm_id(),
+            committee_run_id,
+            seat_binding_id,
+            permission_id,
+            response_id: response_id.to_string(),
+            decision,
+            accepted_at: confirmed.accepted_at.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the confirmed Committee permission response has no acceptance time",
+                )
+            })?,
+        })
+    }
+
     async fn recover_consultation_seat(
         &self,
         key: &IdempotencyKey,
