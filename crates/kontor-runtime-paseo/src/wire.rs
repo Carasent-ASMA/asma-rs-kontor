@@ -829,14 +829,20 @@ impl PaseoAgentCreated {
             .flatten()
     }
 
-    /// Whether the daemon stated, explicitly, that no agent was created.
+    /// Whether the daemon reported this create as failed.
     ///
-    /// This is what separates "nothing happened, take the slot back" from "the
-    /// answer was not understood". Only the daemon's own word releases a claim;
-    /// an unrecognised status leaves the attempt unresolved, because a seat that
-    /// exists and is not owned is worse than a slot held too long.
+    /// **Not a statement that no agent exists**, and callers must not treat it
+    /// as one. In the exact v0.6.1 backport the session path sets
+    /// `promptFailure: "throw"` and `createAgentCommand` creates the agent
+    /// *before* sending the initial prompt, so a failing prompt throws out of the
+    /// command with `createdAgentId` still null and the catch emits
+    /// `agent_create_failed` — while the agent exists.
+    ///
+    /// So this reports what the daemon said, and nothing about the world. The
+    /// launch path routes it to the same census every other ambiguous outcome
+    /// goes to, and releases the seat claim for none of them.
     #[must_use]
-    pub fn created_nothing(&self) -> bool {
+    pub fn reported_failure(&self) -> bool {
         self.status == Self::FAILED
     }
 }

@@ -164,11 +164,13 @@ pub fn compose_for_seat(
     let harness = crate::client::built_in_provider(provider);
     // **No OpenCode configuration is written here, by any provider.**
     //
-    // No OpenCode delivery seat launches at all, so there is nothing here to
-    // configure. And a file could not carry the posture even if one did: the
-    // layers that decide it merge after anything Kontor writes and depend on who
-    // the seat authenticated as. Writing one would only put two seats sharing a
-    // worktree in each other's way, and change operator state for nothing.
+    // An OpenCode seat reaches this function and leaves with nothing written.
+    // Its posture and its MCP surface both travel in the create's `config`, so
+    // there is nothing here to carry — and a file could not carry the posture
+    // anyway: the layers that decide it merge after anything Kontor writes and
+    // depend on who the seat authenticated as. Writing one would only put two
+    // seats sharing a worktree in each other's way, and change operator state
+    // for nothing.
     //
     // Nor does any other provider touch it: a Claude or Codex seat has no
     // business rewriting OpenCode configuration, and Kontor holds no marker

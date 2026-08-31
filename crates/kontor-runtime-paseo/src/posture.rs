@@ -16,9 +16,10 @@
 //!
 //! An opencode session mode is the shape of the turn, not its permission
 //! posture: `--mode build` says nothing about what the seat may do without
-//! asking. Posture lives in a `permission` block — and Paseo 0.6.1 offers no way
-//! to deliver one to the spawned process, so opencode delivery is refused rather
-//! than launched unproved. On 2026-08-22 that gap stalled the ASMA-8001 epic for
+//! asking. Posture lives in a `permission` block, which the daemon applies to
+//! the session and acknowledges per agent; a daemon that will not acknowledge is
+//! refused rather than launched unproved. On 2026-08-22 that gap stalled the
+//! ASMA-8001 epic for
 //! ~2.5h — twelve of fifteen delivery seats blocked mid-turn on prompts no human
 //! was watching, while Kontor recorded them as running.
 //!
@@ -120,15 +121,18 @@ impl PermissionAllowance {
 pub struct SeatPosture {
     /// The provider-native `--mode`, when the provider spells one.
     pub mode: Option<&'static str>,
-    /// The `permission` object a seat would be created with, when the provider
-    /// takes one. Only OpenCode does, and **no carrier delivers it today**.
+    /// The `permission` object the seat is created with, when the provider takes
+    /// one. Only OpenCode does.
     ///
-    /// The block is rendered so the posture has one specification and the floor
-    /// and allowance rules have something to be tested against. It is not
-    /// written into the worktree, not put in the environment, and not sent on
-    /// the create: on Paseo 0.6.1 every one of those routes is either outranked
-    /// by a later layer or silently dropped, so an OpenCode delivery launch is
-    /// refused instead. See `PaseoAdapter::refuse_opencode_delivery`.
+    /// It travels in `create_agent_request`'s
+    /// `config.providerOptions.permission`, and the daemon applies it to the
+    /// OpenCode session at `session.create`/`session.update` and reports having
+    /// done so as `providerOptionsApplied` on the agent. It is **not** written
+    /// into the worktree and not put in the environment: those layers merge
+    /// after anything Kontor writes and depend on who the seat authenticated as.
+    ///
+    /// A launch binds only on the per-agent acknowledgement — see
+    /// `PaseoAdapter::opencode_delivery_gate`.
     pub permission: Option<serde_json::Value>,
     /// Whether the harness should accept its own tool calls without asking.
     ///
@@ -162,28 +166,29 @@ impl SeatPosture {
 
 /// The posture a delivery seat launches under, or a refusal.
 ///
-/// # OpenCode renders a block here that nothing can currently deliver
+/// # How OpenCode's block reaches the seat
 ///
-/// **No OpenCode delivery seat launches.** The renderer still produces the block
-/// — it is the specification of the posture, and the floor and allowance rules
-/// below are tested against it — but on Paseo 0.6.1 there is no carrier, so the
-/// launch is refused before any native effect. See
-/// `PaseoAdapter::refuse_opencode_delivery`.
+/// It rides in `create_agent_request`'s `config.providerOptions.permission`,
+/// and the daemon applies it to the OpenCode session at
+/// `session.create`/`session.update`, then reports having done so as
+/// `providerOptionsApplied` on the agent. A launch binds only on that per-agent
+/// acknowledgement.
 ///
-/// A file or an environment variable cannot deliver it: the deciding inputs are
-/// read by the *spawned* process, and several sit above anything Kontor could
-/// write — `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` inject
+/// A file or an environment variable could not deliver it: the deciding inputs
+/// are read by the *spawned* process, and several sit above anything Kontor
+/// could write — `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` inject
 /// permissions outright, `OPENCODE_DISABLE_PROJECT_CONFIG` discards the project
 /// layer, and the active-org remote config and managed profiles merge later
 /// still and depend on who the seat authenticated as.
 ///
-/// Nor does `create_agent_request`'s `providerOptions`, which an earlier build
-/// used. Read from the installed bundles: Paseo's `@opencode-ai/sdk/v2/client`
-/// `promptAsync` allow-lists the body keys `messageID, model, agent, noReply,
-/// tools, format, system, variant, parts` and `buildClientParams` drops the
-/// rest, and OpenCode 1.18.15's `SessionPrompt.prompt` builds its rules from
-/// `Object.entries(t.tools)` alone. The daemon accepts the field and no seat
-/// ever sees it.
+/// **Nor did `providerOptions` alone, before ASMA-7869.** An earlier build sent
+/// exactly this field and it never reached a seat: Paseo's
+/// `@opencode-ai/sdk/v2/client` `promptAsync` allow-lists the body keys
+/// `messageID, model, agent, noReply, tools, format, system, variant, parts`
+/// and `buildClientParams` drops the rest, while OpenCode 1.18.15's
+/// `SessionPrompt.prompt` builds its rules from `Object.entries(t.tools)` alone.
+/// The daemon accepted the field and no seat ever saw it. That is why the gate
+/// is an acknowledgement the daemon makes about the agent, and never a version.
 ///
 /// Consultation is unaffected — it runs through
 /// [`consultation_route_permission_mode`](crate::client::consultation_route_permission_mode),
@@ -206,12 +211,12 @@ pub fn seat_posture(
     autonomy: SeatAutonomy,
     allowances: &[PermissionAllowance],
 ) -> RuntimeResult<SeatPosture> {
-    // OpenCode is no longer refused here. It is admitted *only* behind the proof
-    // the launch path runs before creating anything: the daemon must apply
-    // per-agent environment, the binary Paseo resolves must be one this posture
-    // was proved against, and its resolved permission must equal this block
-    // exactly. A Paseo that cannot carry the environment still fails closed —
-    // see `PaseoAdapter::prove_opencode_posture`.
+    // OpenCode is not refused here. It is admitted behind two gates the launch
+    // path applies instead: the daemon must advertise `providerOptionsApplied`
+    // before any native call, and the created agent must report
+    // `providerOptionsApplied: true` before it is bound. A daemon that does not
+    // advertise the capability still fails closed — see
+    // `PaseoAdapter::opencode_delivery_gate`.
     render_posture(provider, autonomy, allowances)
 }
 
@@ -724,9 +729,9 @@ mod tests {
             // label is not a permission boundary.
             ("cursor", Some("agent"), None, None),
             // OpenCode's own row is asserted through `render_posture` in
-            // `each_opencode_posture_still_renders`; at the delivery gate it is
-            // refused, which `opencode_delivery_is_refused_until_it_can_be_proved`
-            // pins.
+            // `each_opencode_posture_still_renders`. What governs a delivery
+            // launch is not this table but the two acknowledgement gates, pinned
+            // by the contract suite.
         ];
         for (provider, bounded, supervised, advisory) in expected {
             assert_eq!(

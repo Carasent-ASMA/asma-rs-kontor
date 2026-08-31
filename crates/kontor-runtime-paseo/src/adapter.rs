@@ -3363,8 +3363,12 @@ impl PaseoAdapter {
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
         //
-        // An OpenCode seat writes nothing here, and does not reach this line at
-        // all: its delivery launch was refused above.
+        // An OpenCode seat *does* reach this line now that delivery is enabled,
+        // and `compose_for_seat` is a no-op for it: its posture rides in the
+        // create's `providerOptions`, so there is nothing here to write. That is
+        // also why two OpenCode seats can share one worktree — they have no file
+        // to race over. `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
+        // holds it to that against a real directory.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
@@ -3617,7 +3621,7 @@ impl PaseoAdapter {
             // The create may have landed. Never sent again: that is how one seat
             // acquires two sessions, each holding a worktree.
             Err(RuntimeError::Transport { .. }) => {
-                return self.reconcile_delivery_create(&delivery.labels).await;
+                return self.reconcile_delivery_create(delivery).await;
             }
             Err(other) => return Err(other),
         };
@@ -3626,16 +3630,19 @@ impl PaseoAdapter {
         if let Some(agent) = answer.created() {
             return Ok(agent.clone());
         }
-        if answer.created_nothing() {
-            // The daemon's own word that no agent exists. Only this releases the
-            // claim, and it is a plain admission failure for that reason.
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "the runtime refused this delivery seat's creation and created nothing",
-            });
-        }
-        // A status this adapter does not recognise says nothing about whether an
-        // agent exists. Reconcile rather than assume either way.
-        self.reconcile_delivery_create(&delivery.labels).await
+        // `agent_create_failed` is **not** evidence that nothing was created.
+        //
+        // Read from the exact v0.6.1 backport: `resolveSessionCreateAgent` sets
+        // `promptFailure: "throw"`, and `createAgentCommand` creates the agent
+        // *before* it sends the initial prompt. A prompt that fails therefore
+        // throws out of the command, `createdAgentId = snapshot.id` is never
+        // reached, and the catch emits `agent_create_failed` while a native agent
+        // exists — one the daemon's own worktree cleanup also skips, because it
+        // was handed a null id.
+        //
+        // So every outcome that is not a correlated `agent_created` goes to the
+        // census, and none of them releases the claim.
+        self.reconcile_delivery_create(delivery).await
     }
 
     /// Decide an ambiguous delivery create from the agent directory alone.
@@ -3658,8 +3665,9 @@ impl PaseoAdapter {
     ///   adoption, no create, no release.
     async fn reconcile_delivery_create(
         &self,
-        labels: &BTreeMap<String, String>,
+        delivery: &crate::client::DeliveryCreateRequest,
     ) -> RuntimeResult<PaseoAgent> {
+        let labels = &delivery.labels;
         let (agents, complete) = self.census_by_labels(labels, false).await?;
         if !complete {
             return Err(RuntimeError::DeliveryConfirmationUnknown {
@@ -3678,6 +3686,14 @@ impl PaseoAdapter {
                         rule: "an agent carrying this launch intent is already bound to a run",
                     });
                 }
+                // Labels prove a create happened; they do not prove the turn did.
+                // The create carries the prompt, and the prompt is sent *after*
+                // the agent exists, so an agent can carry this exact intent and
+                // never have been told anything. Binding it would seat a run on a
+                // session that will sit idle forever, and the launch would report
+                // success. The turn has to be found on the agent's own timeline.
+                self.first_turn_proved(&agent.id, &delivery.client_message_id)
+                    .await?;
                 Ok(agent)
             }
             0 => Err(RuntimeError::DeliveryConfirmationUnknown {
@@ -3687,6 +3703,91 @@ impl PaseoAdapter {
                 rule: "several agents carry this launch intent; the plane has diverged",
             }),
         }
+    }
+
+    /// Prove the launch's first turn is on this agent's canonical timeline.
+    ///
+    /// Recovery adopts an agent it did not watch being created, so "the labels
+    /// match" is only half the question. The create sends the prompt after the
+    /// agent exists, and that send can fail on its own — the upstream
+    /// `promptFailure: "throw"` path is exactly this — leaving a correctly
+    /// labelled seat that was never given its instructions.
+    ///
+    /// The scan follows the same discipline as
+    /// [`Self::scan_canonical`]: canonical projection, backward from the tail
+    /// because that is the only cursor-free read Paseo exposes, bounded pages,
+    /// and **complete-or-refuse**. It does not reuse that function, which is
+    /// keyed on a `RuntimeBindingSnapshot` for cursor bookkeeping — there is no
+    /// binding here yet, and inventing one to satisfy a helper would write
+    /// continuity state for a session that may never be adopted.
+    ///
+    /// Epoch stability is held within the scan by the raw epoch string: the
+    /// first page fixes it and any later page that disagrees refuses, so two
+    /// halves of two different transcripts are never read as one.
+    ///
+    /// # Errors
+    /// [`RuntimeError::DeliveryConfirmationUnknown`] when the id is absent, the
+    /// enumeration does not finish, the epoch changes mid-scan, or the daemon
+    /// reports a gap. Every one of them means "do not bind, do not create".
+    async fn first_turn_proved(
+        &self,
+        native_id: &str,
+        client_message_id: &str,
+    ) -> RuntimeResult<()> {
+        let mut before: Option<crate::wire::PaseoTimelineCursor> = None;
+        let mut epoch: Option<String> = None;
+        for _ in 0..RECONCILE_PAGE_BUDGET {
+            let page = self
+                .fetch_canonical(
+                    native_id,
+                    if before.is_some() {
+                        PaseoDirection::Before
+                    } else {
+                        PaseoDirection::Tail
+                    },
+                    before.as_ref(),
+                    MAX_HISTORY_PAGE,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            if page.gap {
+                return Err(RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "the daemon reports dropped timeline entries, so this first turn cannot be proved",
+                });
+            }
+            match &epoch {
+                None => epoch = Some(page.epoch.clone()),
+                Some(fixed) if *fixed == page.epoch => {}
+                Some(_) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the timeline was renumbered mid-scan, so these pages are not one transcript",
+                    });
+                }
+            }
+            if page
+                .entries
+                .iter()
+                .any(|entry| entry.item.client_message_id.as_deref() == Some(client_message_id))
+            {
+                return Ok(());
+            }
+            match (page.has_older, page.start_cursor) {
+                (true, Some(start)) => before = Some(start),
+                (false, _) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "this launch's first turn is not on the agent's timeline; it was created but never told anything",
+                    });
+                }
+                (true, None) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the timeline offers no cursor onward, so this first turn cannot be proved",
+                    });
+                }
+            }
+        }
+        Err(RuntimeError::DeliveryConfirmationUnknown {
+            rule: "the timeline scan reached its page budget before proving this first turn",
+        })
     }
 
     /// Whether some binding on this plane already owns `native_id`.
@@ -3733,19 +3834,52 @@ impl PaseoAdapter {
     /// back terminal.
     ///
     /// A created agent Kontor refuses is a live session nobody owns. It is
-    /// archived over the same socket the create used, and then *read back*: an
-    /// archive whose effect cannot be confirmed leaves the seat recoverable and
-    /// says so, rather than reporting a cleanup that may not have happened.
+    /// archived over the same socket the create used, and then *read back*.
+    ///
+    /// **The archive acknowledgement is not the proof, and its loss is not a
+    /// failure.** An acknowledgement can go missing after the daemon has already
+    /// archived the seat; treating that as an error would report a cleanup as
+    /// undone, and — because a plain transport error releases the launch claim —
+    /// would licence a second create for a run that already has a native. So the
+    /// readback runs whether or not the send was acknowledged, and only a fresh
+    /// reading of *this exact agent* as terminal counts.
+    ///
+    /// Every other outcome — live, unfetchable, or an answer about a different
+    /// agent — returns [`RuntimeError::DeliveryConfirmationUnknown`], which keeps
+    /// the claim and leaves the seat recoverable.
     async fn compensate_invalid_seat(&self, native_id: &str) -> RuntimeResult<()> {
+        // The archive request is *attempted*, and its acknowledgement is never
+        // the proof. An acknowledgement can be lost after the daemon acted, so
+        // failing here would report "the archive did not happen" about a seat
+        // that is already gone — and, because a plain transport error releases
+        // the launch claim, would licence a second create for a run that already
+        // has a native. So the send's outcome is recorded and the readback runs
+        // either way.
         let archive = PaseoRpc::agent_archive(self.next_request_id(), native_id);
-        self.transport.request(&archive).await?;
-        let agent = self.fetch_agent(native_id).await?;
-        if agent.is_archived() {
-            return Ok(());
+        let sent = self.transport.request(&archive).await;
+        if let Err(error) = &sent {
+            tracing::warn!(%error, agent = %native_id, "archive acknowledgement lost; reading the seat back anyway");
         }
-        Err(RuntimeError::DeliveryConfirmationUnknown {
-            rule: "an invalid delivery seat could not be confirmed archived; it is left recoverable",
-        })
+
+        // Only the agent's own state settles it. Anything that is not a fresh
+        // reading of *this* agent as terminal — a live seat, a readback that
+        // cannot be fetched, an answer about something else — leaves the seat
+        // recoverable and keeps the claim.
+        match self.fetch_agent(native_id).await {
+            Ok(agent) if agent.id == native_id && agent.is_archived() => Ok(()),
+            Ok(agent) if agent.id != native_id => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the compensating readback answered about another agent; the seat is left recoverable",
+            }),
+            Ok(_) => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "an invalid delivery seat still reads back live; it is left recoverable",
+            }),
+            Err(error) => {
+                tracing::warn!(%error, agent = %native_id, "compensating readback failed");
+                Err(RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "an invalid delivery seat could not be read back; it is left recoverable",
+                })
+            }
+        }
     }
 
     /// Recover a launch whose acknowledgement was lost.

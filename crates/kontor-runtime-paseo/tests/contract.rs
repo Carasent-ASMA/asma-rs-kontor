@@ -1109,6 +1109,21 @@ fn opencode_agent(intent: &str, applied: Option<bool>, archived: bool) -> serde_
     agent
 }
 
+/// A canonical timeline page for the recovery scan.
+///
+/// `client_message_id` present means the first turn is provably on the agent;
+/// `None` means the page carries somebody else's turn instead.
+fn first_turn_page(client_message_id: Option<&str>) -> serde_json::Value {
+    let mut page = v(TIMELINE_MESSAGE_LANDED);
+    page["entries"][0]["item"]["clientMessageId"] = match client_message_id {
+        Some(id) => serde_json::json!(id),
+        None => serde_json::json!("some-other-turn"),
+    };
+    page["hasOlder"] = serde_json::json!(false);
+    page["gap"] = serde_json::json!(false);
+    page
+}
+
 /// The `create_agent_request` answer for a created seat.
 fn created_answer(agent: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "status": "agent_created", "agent": agent["agent"] })
@@ -1487,6 +1502,110 @@ async fn an_unconfirmed_compensation_refuses_recoverably() {
     );
 }
 
+/// A lost archive acknowledgement does not make a completed cleanup a failure.
+///
+/// The acknowledgement can go missing after the daemon has already archived the
+/// seat. Reporting that as an error would call a finished cleanup undone — and
+/// because a plain transport error releases the launch claim, it would licence a
+/// second create for a run that already has a native. The readback runs anyway,
+/// and the agent's own terminal state settles it.
+#[tokio::test]
+async fn a_lost_archive_acknowledgement_still_reads_the_seat_back() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    // Created, and refused: the daemon did not report the policy applied.
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&intent, None, false)),
+    );
+    // The archive lands; its acknowledgement does not.
+    plane.daemon.lose_next_rpc("archive_agent_request");
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", opencode_agent(&intent, None, true));
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an unproved seat is never bound");
+
+    // The refusal is the posture one, not a transport failure: compensation
+    // succeeded, so the launch fails for the reason it actually had.
+    assert!(
+        matches!(&error, RuntimeError::LaunchNotAdmitted { rule }
+            if rule.contains("providerOptionsApplied")),
+        "the lost ack must not become the reported cause: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        1,
+        "the archive was attempted exactly once"
+    );
+    assert!(
+        plane.daemon.count("rpc fetch_agent_request") >= 1,
+        "and the seat was read back despite the lost acknowledgement: {:?}",
+        plane.daemon.calls()
+    );
+}
+
+/// A lost archive acknowledgement whose readback shows a live seat is
+/// unresolved, and keeps the claim.
+#[tokio::test]
+async fn a_lost_archive_acknowledgement_over_a_live_seat_stays_unresolved() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&intent, None, false)),
+    );
+    plane.daemon.lose_next_rpc("archive_agent_request");
+    // Still live: the archive cannot be shown to have taken.
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", opencode_agent(&intent, None, false));
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an unproved seat is never bound");
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "the seat stays recoverable and the claim is kept: {error:?}"
+    );
+}
+
+/// A compensating readback that cannot be fetched is unresolved too.
+#[tokio::test]
+async fn an_unfetchable_compensating_readback_stays_unresolved() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&intent, None, false)),
+    );
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    plane.daemon.lose_next_rpc("fetch_agent_request");
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an archive nobody could read back proves nothing");
+    assert!(
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("could not be read back")),
+        "unresolved for the unreadable readback: {error:?}"
+    );
+}
+
 /// A lost create answer is settled by the exact-intent census, never by a second
 /// create: one native, one prompt, one binding.
 ///
@@ -1511,6 +1630,12 @@ async fn a_lost_create_answer_adopts_the_one_agent_it_made() {
             .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
     }
     plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+    // Labels prove a create happened; the timeline proves the turn did. Both are
+    // required before an unwatched seat is adopted.
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_timeline_request",
+        first_turn_page(Some(&first_turn_id(agent_run_id, binding_id))),
+    );
 
     let outcome = plane.adapter.launch(&request).await;
     let ledger = plane.daemon.calls();
@@ -1575,33 +1700,44 @@ async fn a_lost_create_answer_with_no_match_keeps_the_claim() {
     );
 }
 
-/// The daemon's own "I made nothing" is the one answer that releases the claim.
+/// `agent_create_failed` does **not** release the claim.
+///
+/// It is not evidence that no agent exists. In the exact v0.6.1 backport the
+/// session path sets `promptFailure: "throw"` and `createAgentCommand` creates
+/// the agent before it sends the initial prompt — so a prompt that fails throws
+/// out of the command with `createdAgentId` still null, and the catch reports
+/// `agent_create_failed` while the agent is running. Releasing on that word
+/// would licence a second create for a run that already has a native.
 #[tokio::test]
-async fn an_explicit_create_failure_releases_the_claim() {
+async fn a_reported_create_failure_keeps_the_claim_and_censuses() {
     let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
     let (request, _, _) = opencode_launch(&plane, &workspace).await;
     plane.daemon.set_answer_rpc(
         "create_agent_request",
-        serde_json::json!({ "status": "agent_create_failed", "error": "no capacity" }),
+        serde_json::json!({
+            "status": "agent_create_failed",
+            "error": "initial prompt failed after the agent was created",
+        }),
     );
 
     let error = plane
         .adapter
         .launch(&request)
         .await
-        .expect_err("the daemon refused to create anything");
+        .expect_err("a reported failure is not proof that nothing was made");
     assert!(
-        matches!(error, RuntimeError::LaunchNotAdmitted { .. }),
-        "a stated non-creation is a plain admission failure: {error:?}"
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "unresolved, so the claim is kept: {error:?}"
     );
-    assert_eq!(
-        plane.daemon.count("rpc archive_agent_request"),
-        0,
-        "there is nothing to compensate"
+    assert!(
+        plane.daemon.count("rpc fetch_agents_request") >= 3,
+        "and the census ran rather than the word being believed: {:?}",
+        plane.daemon.calls()
     );
 
-    // And the slot is free again, because nothing was made.
-    let authority = plane
+    // The slot is still held. Handing it back is what would allow a second
+    // create for a run that may already own a native agent.
+    let retry = plane
         .adapter
         .admit_launch(&AdmissionRequest {
             slot: RoleSlotKey::new(team_run(), slot("implement-a")),
@@ -1610,13 +1746,158 @@ async fn an_explicit_create_failure_releases_the_claim() {
             replaces: None,
             requested_at: at("2026-08-10T09:05:00Z"),
         })
-        .await
-        .expect("admission")
-        .into_authority();
-    assert!(
-        authority.is_ok(),
-        "a create that made nothing gives the seat back"
+        .await;
+    let held = match retry {
+        Err(_) => true,
+        Ok(outcome) => outcome.into_authority().is_err(),
+    };
+    assert!(held, "a reported create failure must not free the seat");
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "and nothing was created a second time"
     );
+}
+
+/// An agent carrying the launch intent whose first turn is *not* on its timeline
+/// is never bound — it was created and never told anything.
+#[tokio::test]
+async fn a_matching_agent_without_its_first_turn_is_not_adopted() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    let agent = opencode_agent(&intent, Some(true), false);
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+
+    plane.daemon.lose_next_rpc("create_agent_request");
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+    // The agent exists and carries the right labels, but its timeline holds
+    // somebody else's turn.
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", first_turn_page(None));
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("a seat that was never prompted is not this launch's seat to bind");
+    assert!(
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("never told anything")),
+        "refused because the turn is absent: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "and no second create"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "nor is a seat we cannot account for archived"
+    );
+}
+
+/// A timeline renumbered mid-scan is two transcripts, not one.
+#[tokio::test]
+async fn a_renumbered_timeline_refuses_rather_than_stitching_pages() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    let agent = opencode_agent(&intent, Some(true), false);
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+
+    plane.daemon.lose_next_rpc("create_agent_request");
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+
+    // The tail page says an older page follows; that older page arrives under a
+    // different epoch.
+    let mut tail = first_turn_page(None);
+    tail["hasOlder"] = serde_json::json!(true);
+    tail["startCursor"] =
+        serde_json::json!({ "epoch": "8f2b1c34-0000-4000-8000-000000000001", "seq": 1 });
+    let mut renumbered = first_turn_page(Some(&first_turn_id(agent_run_id, binding_id)));
+    renumbered["epoch"] = serde_json::json!("8f2b1c34-0000-4000-8000-000000000002");
+    // The walk asks `tail` first and `before` after, and a page must answer the
+    // direction it was asked for.
+    renumbered["direction"] = serde_json::json!("before");
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_agent_timeline_request", tail);
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", renumbered);
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("two numberings are not one transcript");
+    assert!(
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("renumbered")),
+        "refused for the renumbering, not incidentally: {error:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+}
+
+/// A scan that runs out of pages proves nothing, and says so.
+#[tokio::test]
+async fn an_unfinished_timeline_scan_refuses_rather_than_concluding() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    let agent = opencode_agent(&intent, Some(true), false);
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+
+    plane.daemon.lose_next_rpc("create_agent_request");
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+
+    // Every page says an older one follows, so the walk never reaches the origin.
+    let mut endless = first_turn_page(None);
+    endless["hasOlder"] = serde_json::json!(true);
+    endless["startCursor"] =
+        serde_json::json!({ "epoch": "8f2b1c34-0000-4000-8000-000000000001", "seq": 1 });
+    let mut endless_tail = endless.clone();
+    endless_tail["direction"] = serde_json::json!("tail");
+    endless["direction"] = serde_json::json!("before");
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_agent_timeline_request", endless_tail);
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", endless);
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("a scan that did not finish settles nothing");
+    assert!(
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("page budget")),
+        "refused for the budget, not for an absent id: {error:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
 }
 
 /// A census that could not enumerate fully never concludes "no agent exists".
