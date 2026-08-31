@@ -65,3 +65,18 @@ The remediation candidate passed the complete repository gate set on
 The contract canaries read back 150 mapped operations, 149 advertised MCP
 tools, and 151 documented OpenAPI operations. Both new Committee permission
 routes are explicitly operator-scoped.
+
+## Live-database migration rehearsal
+
+A consistent online backup of the serving schema-73 ASMA realm was started on
+isolated loopback port 17717 through the remediation daemon's real startup
+path. It migrated atomically to schema 75, retained realm
+`01a00649-9ee6-73e0-ba1b-6a6c35cfd065`, project
+`01a0064a-e056-7603-9968-ef64fdaacb75`, the original planned create batch and
+the confirmed fallback batch, and created no recovery or permission rows.
+
+`PRAGMA integrity_check` returned `ok`; `PRAGMA foreign_key_check` returned no
+rows. After a clean stop, the migrated copy produced a verified 15,126,528-byte
+snapshot and restarted idempotently at schema 75 with the same project
+identity. The copy intentionally did not contact Jira or Paseo: exact Jira
+recovery is exercised against the authoritative realm only after deployment.
