@@ -49,6 +49,7 @@
 //! earn a refusal are refused rather than escalated.
 
 use crate::client::{built_in_provider, paseo_mode};
+use kontor_core::id::ContentHash;
 use kontor_core::spec::SeatAutonomy;
 use kontor_runtime::adapter::RuntimeResult;
 
@@ -341,6 +342,68 @@ fn opencode_permission(
 /// Hashed into a label so a reconciling census can recognise the agent this
 /// launch created and refuse anything else.
 ///
+/// The identity of one exact launch, hashed into a label a census can match.
+///
+/// # Why the whole create *and* the prompt
+///
+/// The digest is taken over the create configuration that is actually sent —
+/// the whole value, not a hand-listed subset. Listing fields is how a digest
+/// quietly stops covering what it names: an earlier version covered only
+/// binding, run, place and slot, and so said nothing about provider, model, cwd,
+/// mode, title, MCP surface or permission block, every one of which changes what
+/// the create does. Passing the config itself means a field added to the create
+/// is covered the day it is added.
+///
+/// The prompt and its client message id are covered too, and separately, because
+/// this create carries them. A digest over configuration alone would give the
+/// same value to two launches of one seat with different instructions — and
+/// since the message id is derived from the launch, a reconciling census would
+/// match a turn that said something else and call it this one.
+///
+/// Excluded, necessarily: the correlation id, which differs per attempt and
+/// would make a retry's digest disagree with the agent the first attempt made.
+/// That is the whole point of the digest — it is what a retry recognises its own
+/// earlier effect by.
+#[derive(Debug, Clone, Copy)]
+pub struct LaunchIntent<'a> {
+    /// The Kontor session binding.
+    pub binding_id: &'a str,
+    /// The agent run.
+    pub agent_run_id: &'a str,
+    /// The native place.
+    pub workspace_id: &'a str,
+    /// The role slot.
+    pub role_slot_id: &'a str,
+    /// The complete create configuration, as sent.
+    pub config: &'a serde_json::Value,
+    /// The first turn's text, as sent.
+    pub prompt: &'a str,
+    /// The deterministic client message id that turn carries.
+    pub client_message_id: &'a str,
+}
+
+impl LaunchIntent<'_> {
+    /// The digest planted as
+    /// [`label::LAUNCH_INTENT`](crate::wire::label::LAUNCH_INTENT).
+    ///
+    /// A hash, never the values: labels are readable by anyone who can list
+    /// agents, and the prompt is task content.
+    #[must_use]
+    pub fn digest(&self) -> ContentHash {
+        let material = format!(
+            "binding={}\nagent_run={}\nworkspace={}\nrole_slot={}\nconfig={}\nprompt={}\nclient_message_id={}",
+            self.binding_id,
+            self.agent_run_id,
+            self.workspace_id,
+            self.role_slot_id,
+            self.config,
+            self.prompt,
+            self.client_message_id,
+        );
+        ContentHash::of(material.as_bytes())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

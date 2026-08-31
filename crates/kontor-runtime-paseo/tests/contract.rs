@@ -39,6 +39,7 @@ use kontor_core::id::{
     AgentRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
     RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
 };
+use kontor_core::spec::SeatAutonomy;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
@@ -996,18 +997,181 @@ async fn preparation_reuses_an_existing_workspace_without_creating_one() {
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode delivery is refused: no carrier for its permission block
+// OpenCode delivery: one create, gated on an applied-policy acknowledgement
 // ---------------------------------------------------------------------------
 
-/// An OpenCode delivery launch is refused before **any** native call.
+/// A daemon that advertises `providerOptionsApplied`.
+fn opencode_capable_daemon() -> RecordedPaseo {
+    let mut identity = v(SERVER_INFO);
+    identity["features"]["providerOptionsApplied"] = serde_json::json!(true);
+    daemon().announcing(&identity)
+}
+
+fn opencode_rung() -> ModelRung {
+    ModelRung {
+        provider: ProviderRef("opencode".to_owned()),
+        model: ModelRef("deepseek/deepseek-v4-flash".to_owned()),
+        effort: None,
+    }
+}
+
+/// The message id the create is built with, derived from the launch.
+fn first_turn_id(agent_run_id: AgentRunId, binding_id: RuntimeBindingId) -> String {
+    format!("kontor-first-turn-{agent_run_id}-{binding_id}")
+}
+
+/// The launch-intent digest this launch will carry, derived independently of the
+/// adapter from the same inputs it is given.
+fn expected_intent(
+    binding: RuntimeBindingId,
+    run: AgentRunId,
+    autonomy: SeatAutonomy,
+    role_slot_id: &str,
+    title: &str,
+    prompt: &str,
+) -> String {
+    let posture = kontor_runtime_paseo::render_posture("opencode", autonomy, &[])
+        .expect("opencode expresses this posture");
+    let client_message_id = first_turn_id(run, binding);
+    let mut config = serde_json::json!({
+        "provider": "opencode",
+        "cwd": CWD,
+        "model": "deepseek/deepseek-v4-flash",
+        "title": title,
+    });
+    config["modeId"] = serde_json::json!(posture.mode.expect("a mode"));
+    config["providerOptions"] =
+        serde_json::json!({ "permission": posture.permission.expect("a block") });
+    config["initialPrompt"] = serde_json::json!(prompt);
+    config["clientMessageId"] = serde_json::json!(client_message_id);
+    kontor_runtime_paseo::LaunchIntent {
+        binding_id: &binding.to_string(),
+        agent_run_id: &run.to_string(),
+        workspace_id: WORKSPACE_ID,
+        role_slot_id,
+        config: &config,
+        prompt,
+        client_message_id: &client_message_id,
+    }
+    .digest()
+    .to_string()
+}
+
+/// The intent for the standard single-seat launch below.
+fn standard_intent(binding: RuntimeBindingId, run: AgentRunId) -> String {
+    expected_intent(
+        binding,
+        run,
+        SeatAutonomy::Bounded,
+        "implement-a",
+        "Implement • KON-19",
+        "bootstrap the role",
+    )
+}
+
+/// The agent the daemon reports for a created OpenCode seat.
 ///
-/// Paseo 0.6.1 carries no applied OpenCode permission policy. The block cannot
-/// travel in a file or an environment variable, and the `providerOptions` route
-/// an earlier build used is inert: the v2 SDK's `promptAsync` allow-lists its
-/// body keys and drops it, and OpenCode's own `SessionPrompt.prompt` reads only
-/// `t.tools`. A create the daemon accepts therefore proves nothing about the
-/// posture the seat runs under, so no seat is created at all — nothing spawned,
-/// nothing messaged, nothing archived, nothing written into the worktree.
+/// `applied` is the per-agent acknowledgement: `Some(true)` is the only value a
+/// launch may bind on, `Some(false)` the daemon saying it did not apply the
+/// policy, and `None` a daemon that does not answer.
+fn opencode_agent(intent: &str, applied: Option<bool>, archived: bool) -> serde_json::Value {
+    let mut agent = v(AGENT);
+    let body = agent["agent"].as_object_mut().expect("an agent object");
+    body.insert("provider".to_owned(), serde_json::json!("opencode"));
+    body.insert(
+        "model".to_owned(),
+        serde_json::json!("deepseek/deepseek-v4-flash"),
+    );
+    body.insert("currentModeId".to_owned(), serde_json::json!("build"));
+    if let Some(applied) = applied {
+        body.insert(
+            "providerOptionsApplied".to_owned(),
+            serde_json::json!(applied),
+        );
+    }
+    if archived {
+        body.insert(
+            "archivedAt".to_owned(),
+            serde_json::json!("2026-08-10T09:00:00.000Z"),
+        );
+    }
+    let labels = body
+        .get_mut("labels")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("labels");
+    labels.insert("kontor.launch_intent".to_owned(), serde_json::json!(intent));
+    agent
+}
+
+/// The `create_agent_request` answer for a created seat.
+fn created_answer(agent: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "status": "agent_created", "agent": agent["agent"] })
+}
+
+/// Build one OpenCode launch request against a plane.
+async fn opencode_launch_in_slot(
+    plane: &Plane,
+    workspace: &WorkspaceBindingSnapshot,
+    role_slot_id: &str,
+    title: &str,
+    agent_run_id: AgentRunId,
+) -> (LaunchRequest, RuntimeBindingId, AgentRunId) {
+    let binding_id = RuntimeBindingId::generate();
+    let authority = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot(role_slot_id)),
+            agent_run_id,
+            binding_id,
+            replaces: None,
+            requested_at: at("2026-08-10T09:00:00Z"),
+        })
+        .await
+        .expect("admission")
+        .into_authority()
+        .expect("an authority");
+    let request = authority.into_request(LaunchParts {
+        scope: execution_scope(),
+        display_name: name(title),
+        agent_run_id,
+        team_run_id: team_run(),
+        role_slot_id: slot(role_slot_id),
+        task_id: task(),
+        binding_id,
+        placement: Some(LaunchPlacement::Workspace(workspace.clone())),
+        cwd: root(),
+        account_profile_id: None,
+        prompt: text("bootstrap the role"),
+        model_rung: opencode_rung(),
+        context_policy: standard_context_policy(),
+        autonomy: SeatAutonomy::Bounded,
+        requested_at: at("2026-08-10T09:00:00Z"),
+    });
+    (request, binding_id, agent_run_id)
+}
+
+async fn opencode_launch(
+    plane: &Plane,
+    workspace: &WorkspaceBindingSnapshot,
+) -> (LaunchRequest, RuntimeBindingId, AgentRunId) {
+    opencode_launch_in_slot(
+        plane,
+        workspace,
+        "implement-a",
+        "Implement • KON-19",
+        run(RUN_IMPLEMENT),
+    )
+    .await
+}
+
+/// An OpenCode delivery launch on a daemon that does not advertise
+/// `providerOptionsApplied` is refused before **any** native call.
+///
+/// The feature is the whole gate, and deliberately not a version: Kontor shipped
+/// a version-gated path once whose permission the daemon validated, persisted and
+/// dropped. A daemon that will not assert the capability is refused however new
+/// it is — having created nothing, messaged nothing, archived nothing, and
+/// written nothing into the worktree.
 #[tokio::test]
 async fn an_opencode_delivery_launch_is_refused_with_no_native_effect() {
     let repository = temporary_repository();
@@ -1102,13 +1266,13 @@ async fn an_opencode_delivery_launch_is_refused_with_no_native_effect() {
         .launch(&request)
         .await
         .expect_err("a posture that cannot be carried must not spawn a seat");
-    // The *reason* matters: this must be the posture refusal, not some later
+    // The *reason* matters: this must be the capability gate, not some later
     // refusal that happens to land first. Without naming it, deleting the gate
     // would leave something else refusing and this test still green.
     match error {
         RuntimeError::LaunchNotAdmitted { rule } => assert!(
-            rule.contains("applied OpenCode permission policy"),
-            "refused because the posture cannot be proved, not incidentally: {rule}"
+            rule.contains("providerOptionsApplied"),
+            "refused for the advertised capability, not incidentally: {rule}"
         ),
         other => panic!("refused as an admission failure, typed: {other:?}"),
     }
@@ -1155,6 +1319,512 @@ async fn an_opencode_delivery_launch_is_refused_with_no_native_effect() {
             "and adds no git exclude entry"
         );
     }
+}
+
+/// The whole path: one create carrying everything, one binding, no second effect.
+#[tokio::test]
+async fn an_opencode_delivery_is_one_create_and_one_binding() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    let agent = opencode_agent(&intent, Some(true), false);
+    plane
+        .daemon
+        .set_answer_rpc("create_agent_request", created_answer(&agent));
+
+    plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("an applied posture is what a delivery seat binds on");
+
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+    assert_eq!(
+        plane.daemon.count("agent run"),
+        0,
+        "OpenCode never goes through the CLI create"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        0,
+        "the prompt rides on the create; a separate turn is a second effect"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_request"),
+        0,
+        "the create's own snapshot is what the seat is judged from"
+    );
+    assert_eq!(plane.daemon.count("rpc archive_agent_request"), 0);
+
+    // Everything the seat needs is on that one request.
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    let [create] = sent.as_slice() else {
+        panic!("exactly one create was sent: {sent:?}")
+    };
+    let config = &create["config"];
+    assert!(
+        config["providerOptions"]["permission"].is_object(),
+        "the permission travels on the create: {config}"
+    );
+    assert_eq!(config["initialPrompt"], "bootstrap the role");
+    assert_eq!(
+        config["clientMessageId"],
+        first_turn_id(agent_run_id, binding_id),
+        "the message id is derived from the launch, so a retry asks about the same turn"
+    );
+    assert_eq!(config["labels"]["kontor.launch_intent"], intent);
+}
+
+/// A daemon that does not answer the applied question refuses the launch, and
+/// the seat it made is archived and read back terminal.
+#[tokio::test]
+async fn a_missing_applied_acknowledgement_refuses_and_compensates() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    // Created, but the snapshot carries no `providerOptionsApplied` at all.
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&intent, None, false)),
+    );
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", opencode_agent(&intent, None, true));
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an unproved posture is never bound");
+
+    assert!(
+        matches!(&error, RuntimeError::LaunchNotAdmitted { rule } if rule.contains("providerOptionsApplied")),
+        "refused for the missing acknowledgement: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        1,
+        "the seat that could not be proved was archived"
+    );
+}
+
+/// A daemon that says it did *not* apply the policy is refused just as hard.
+#[tokio::test]
+async fn a_false_applied_acknowledgement_refuses_and_compensates() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&intent, Some(false), false)),
+    );
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_request",
+        opencode_agent(&intent, Some(false), true),
+    );
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("`false` is the daemon saying the policy did not apply");
+    assert!(
+        matches!(&error, RuntimeError::LaunchNotAdmitted { rule } if rule.contains("providerOptionsApplied")),
+        "{error:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc archive_agent_request"), 1);
+}
+
+/// An archive whose effect cannot be confirmed leaves the seat recoverable and
+/// says so, rather than reporting a cleanup that may not have happened.
+#[tokio::test]
+async fn an_unconfirmed_compensation_refuses_recoverably() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&intent, Some(false), false)),
+    );
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    // The readback still reports a live agent: the archive did not take, or
+    // cannot be shown to have taken.
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_request",
+        opencode_agent(&intent, Some(false), false),
+    );
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("an unproved seat is never bound");
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "the refusal says the cleanup is unconfirmed: {error:?}"
+    );
+}
+
+/// A lost create answer is settled by the exact-intent census, never by a second
+/// create: one native, one prompt, one binding.
+///
+/// The create lands and its answer is lost. Reconciliation looks for the launch
+/// intent it planted, finds the one agent carrying it, and adopts that — so the
+/// seat this launch already made is the seat it binds.
+#[tokio::test]
+async fn a_lost_create_answer_adopts_the_one_agent_it_made() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    let agent = opencode_agent(&intent, Some(true), false);
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+
+    // The slot census and the capacity census run before the create and find
+    // nothing. Every census after it sees the agent the create actually made.
+    plane.daemon.lose_next_rpc("create_agent_request");
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+
+    let outcome = plane.adapter.launch(&request).await;
+    let ledger = plane.daemon.calls();
+    outcome.unwrap_or_else(|error| {
+        panic!("reconciliation should adopt the created agent: {error:?} after {ledger:?}")
+    });
+
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "exactly one native create: resending is how one seat gets two sessions"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        0,
+        "and one prompt, which rode on that create"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "the adopted seat is this launch's own; nothing is compensated"
+    );
+}
+
+/// A lost create answer with **no** matching agent is unresolved — and the seat
+/// claim is kept, so the next attempt cannot create a second agent.
+#[tokio::test]
+async fn a_lost_create_answer_with_no_match_keeps_the_claim() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, _, _) = opencode_launch(&plane, &workspace).await;
+    plane.daemon.lose_next_rpc("create_agent_request");
+
+    let error =
+        plane.adapter.launch(&request).await.expect_err(
+            "a create whose answer was lost and whose effect is invisible is unresolved",
+        );
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "unresolved, not a plain failure: {error:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+
+    // The claim is still held. A second admission for the same slot must not be
+    // granted, because granting it is what licences a second create.
+    let retry = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_QA),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: at("2026-08-10T09:05:00Z"),
+        })
+        .await;
+    let held = match retry {
+        Err(_) => true,
+        Ok(outcome) => outcome.into_authority().is_err(),
+    };
+    assert!(
+        held,
+        "an unresolved create must keep the seat claim, or the next attempt makes a second agent"
+    );
+}
+
+/// The daemon's own "I made nothing" is the one answer that releases the claim.
+#[tokio::test]
+async fn an_explicit_create_failure_releases_the_claim() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, _, _) = opencode_launch(&plane, &workspace).await;
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        serde_json::json!({ "status": "agent_create_failed", "error": "no capacity" }),
+    );
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("the daemon refused to create anything");
+    assert!(
+        matches!(error, RuntimeError::LaunchNotAdmitted { .. }),
+        "a stated non-creation is a plain admission failure: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "there is nothing to compensate"
+    );
+
+    // And the slot is free again, because nothing was made.
+    let authority = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_QA),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: at("2026-08-10T09:05:00Z"),
+        })
+        .await
+        .expect("admission")
+        .into_authority();
+    assert!(
+        authority.is_ok(),
+        "a create that made nothing gives the seat back"
+    );
+}
+
+/// A census that could not enumerate fully never concludes "no agent exists".
+#[tokio::test]
+async fn an_incomplete_census_quarantines_rather_than_concluding() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, _, _) = opencode_launch(&plane, &workspace).await;
+    plane.daemon.lose_next_rpc("create_agent_request");
+
+    // The two censuses before the create answer normally. After it, every page
+    // claims another page follows, so the enumeration never ends.
+    let mut endless = v(AGENT_LIST_EMPTY);
+    endless["pageInfo"] = serde_json::json!({ "nextCursor": "cur_next", "hasMore": true });
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", endless);
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("a partial enumeration settles nothing");
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "quarantined rather than concluded: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "and no second create was attempted"
+    );
+}
+
+/// A create that lands but cannot be bound is unresolved, not stranded: the
+/// launch intent is on the agent and the claim is kept so a census adopts it.
+#[tokio::test]
+async fn a_bind_failure_after_a_created_seat_stays_unresolved() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    // A snapshot that verifies — the id is non-empty, so placement accepts it —
+    // but that the durable bind refuses, because an external id may not carry
+    // whitespace.
+    let mut agent = opencode_agent(&intent, Some(true), false);
+    agent["agent"]["id"] = serde_json::json!("agt implement");
+    plane
+        .daemon
+        .set_answer_rpc("create_agent_request", created_answer(&agent));
+
+    let error = plane.adapter.launch(&request).await.expect_err(
+        "a seat that exists and could not be bound is unresolved, never silently dropped",
+    );
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "unresolved so reconciliation adopts it: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "and no second create"
+    );
+}
+
+/// A created seat whose snapshot does not verify is archived and read back
+/// terminal, not left running for nobody.
+#[tokio::test]
+async fn an_invalid_created_native_is_archived_and_read_back() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    // Created, and placed in a workspace this launch never asked for.
+    let mut agent = opencode_agent(&intent, Some(true), false);
+    agent["agent"]["workspaceId"] = serde_json::json!("wks_somewhere_else");
+    plane
+        .daemon
+        .set_answer_rpc("create_agent_request", created_answer(&agent));
+    plane.daemon.set_answer_rpc(
+        "archive_agent_request",
+        serde_json::json!({ "status": "agent_archived" }),
+    );
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_request",
+        opencode_agent(&intent, Some(true), true),
+    );
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("a seat in the wrong place is never bound");
+    assert!(
+        matches!(error, RuntimeError::WorkspaceMismatch { .. }),
+        "refused for the placement it actually has: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        1,
+        "the seat that was created and refused is archived"
+    );
+}
+
+/// Two OpenCode seats in one worktree get two creates, two intents and two
+/// bindings, and neither writes anything into the tree they share.
+#[tokio::test]
+async fn two_opencode_seats_in_one_worktree_are_created_independently() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (first, first_binding, first_run) = opencode_launch(&plane, &workspace).await;
+    let (second, second_binding, second_run) = opencode_launch_in_slot(
+        &plane,
+        &workspace,
+        "implement-b",
+        "Implement • KON-19 • B",
+        run(RUN_QA),
+    )
+    .await;
+
+    let first_intent = standard_intent(first_binding, first_run);
+    let second_intent = expected_intent(
+        second_binding,
+        second_run,
+        SeatAutonomy::Bounded,
+        "implement-b",
+        "Implement • KON-19 • B",
+        "bootstrap the role",
+    );
+    assert_ne!(
+        first_intent, second_intent,
+        "two seats in one worktree must be distinguishable to the census"
+    );
+
+    let mut second_agent = opencode_agent(&second_intent, Some(true), false);
+    second_agent["agent"]["id"] = serde_json::json!("agt_implement_b");
+    {
+        let labels = second_agent["agent"]["labels"]
+            .as_object_mut()
+            .expect("labels");
+        labels.insert(
+            "kontor.agent-run".to_owned(),
+            serde_json::json!(format!("kontor-run-{RUN_QA}")),
+        );
+        labels.insert("kontor.role".to_owned(), serde_json::json!("implement-b"));
+        labels.insert(
+            "kontor.role_slot_id".to_owned(),
+            serde_json::json!("implement-b"),
+        );
+    }
+    let seats = [
+        (&first, opencode_agent(&first_intent, Some(true), false)),
+        (&second, second_agent),
+    ];
+
+    for (index, (request, agent)) in seats.iter().enumerate() {
+        plane
+            .daemon
+            .set_answer_rpc("create_agent_request", created_answer(agent));
+        plane
+            .adapter
+            .launch(request)
+            .await
+            .unwrap_or_else(|error| panic!("{error:?} after {:?}", plane.daemon.calls()));
+
+        // The seat just launched is live and visible to every census that
+        // follows. Its neighbour must still get through: a census keyed on
+        // anything broader than one slot would find it and refuse.
+        if index == 0 {
+            let mut census = v(AGENT_LIST_IMPLEMENT);
+            census["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+            plane.daemon.set_answer_rpc("fetch_agents_request", census);
+        }
+    }
+
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        2,
+        "one create each: {:?}",
+        plane.daemon.calls()
+    );
+    assert_eq!(plane.daemon.count("rpc archive_agent_request"), 0);
+}
+
+/// Changing only the prompt changes the launch intent.
+///
+/// The message id is derived from the launch, so without the prompt inside the
+/// digest a reconciling census would match a turn that said something else and
+/// call it this one.
+#[test]
+fn the_launch_intent_covers_the_prompt_and_its_message_id() {
+    let binding = RuntimeBindingId::generate();
+    let agent_run = run(RUN_IMPLEMENT);
+    let config = serde_json::json!({ "provider": "opencode", "cwd": CWD });
+    let intent = |prompt: &str, message_id: &str| {
+        kontor_runtime_paseo::LaunchIntent {
+            binding_id: &binding.to_string(),
+            agent_run_id: &agent_run.to_string(),
+            workspace_id: WORKSPACE_ID,
+            role_slot_id: "implement-a",
+            config: &config,
+            prompt,
+            client_message_id: message_id,
+        }
+        .digest()
+        .to_string()
+    };
+
+    let base = intent("do the work", "msg-1");
+    assert_eq!(base, intent("do the work", "msg-1"), "and it is stable");
+    assert_ne!(
+        base,
+        intent("do something else entirely", "msg-1"),
+        "a different instruction is a different launch"
+    );
+    assert_ne!(
+        base,
+        intent("do the work", "msg-2"),
+        "and so is a different turn identity"
+    );
 }
 
 /// The control: the same launch on a provider whose posture *is* carried by its

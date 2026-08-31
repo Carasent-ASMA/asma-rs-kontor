@@ -3247,9 +3247,11 @@ impl PaseoAdapter {
         }
 
         // Before the placement readback, the census, and every workspace and
-        // agent call: an OpenCode delivery launch is refused having spent no
-        // native call at all. The check is local, so the refusal costs nothing.
-        Self::refuse_opencode_delivery(request)?;
+        // agent call: a seat whose posture cannot be proved is refused having
+        // spent no native call at all. Both inputs are local — the daemon's
+        // advertised feature from the identity already read, expressibility from
+        // a table.
+        let opencode_delivery = self.opencode_delivery_gate(request)?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
@@ -3257,7 +3259,7 @@ impl PaseoAdapter {
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
         self.verify_workspace_placement(&workspace, &project, &place.root)?;
 
-        let labels = self.seat_labels(
+        let mut labels = self.seat_labels(
             request.agent_run_id(),
             request.team_run_id(),
             request.role_slot_id(),
@@ -3265,6 +3267,38 @@ impl PaseoAdapter {
             &project,
             &workspace_id,
         )?;
+        // Built before the census, not after, because the create carries a
+        // launch-intent digest and the census must match the labels the created
+        // agent will actually have. This is also the reconciliation claim: the
+        // digest exists, and is identical on every attempt, before any effect.
+        let delivery = if opencode_delivery {
+            let allowances = self
+                .config
+                .scope
+                .configured_task_scope(request.task_id())
+                .map(|configured| configured.permission_overrides)
+                .unwrap_or_default();
+            let created = PaseoRpc::delivery_agent_create(crate::client::DeliveryCreate {
+                request_id: &self.next_request_id(),
+                workspace_id: &workspace_id,
+                canonical_cwd: task_scope.worktree.as_str(),
+                model_rung: request.model_rung(),
+                autonomy: request.autonomy(),
+                title: request.display_name().as_str(),
+                labels: &labels,
+                allowances: &allowances,
+                seat_mcp: self.config.seat_mcp.as_ref(),
+                serve_profile: "worker",
+                binding_id: &request.binding_id().to_string(),
+                agent_run_id: &request.agent_run_id().to_string(),
+                role_slot_id: request.role_slot_id().as_str(),
+                prompt: request.prompt().as_str(),
+            })?;
+            labels = created.labels.clone();
+            Some(created)
+        } else {
+            None
+        };
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
         // A native census before the first effect. An exact full-label match is
@@ -3275,11 +3309,16 @@ impl PaseoAdapter {
             .iter()
             .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
             .collect::<Vec<_>>();
-        let recovered_id = match exact.as_slice() {
-            [agent] => Some(agent.id.clone()),
+        // A delivery seat keeps the whole snapshot, not just the id: it is judged
+        // and bound from this read, and a follow-up fetch would answer about a
+        // later moment. The CLI providers keep taking the id and reading back,
+        // exactly as before.
+        let recovered = match exact.as_slice() {
+            [agent] => Some((*agent).clone()),
             [] => None,
             _ => return Err(RuntimeError::CorrelationFailed),
         };
+        let recovered_id = recovered.as_ref().map(|agent| agent.id.clone());
         if recovered_id.is_none()
             && census
                 .iter()
@@ -3353,37 +3392,95 @@ impl PaseoAdapter {
             request.prompt().as_str(),
         )?;
 
-        let native_id = match recovered_id {
-            Some(native_id) => native_id,
-            None => match self.transport.run(&command).await {
-                Ok(output) => {
-                    let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
-                    started.agent_id
-                }
-                // The command may have landed. An exact-label census before deciding
-                // anything is the whole of the recovery rule; running `agent run`
-                // again would be how one seat acquires two agents.
-                Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                Err(other) => return Err(other),
-            },
+        let agent = match (recovered, delivery.as_ref()) {
+            // An OpenCode seat this launch already made, found by its exact
+            // launch intent. The census snapshot is this attempt's own read.
+            (Some(agent), Some(_)) => agent,
+            // Every CLI provider keeps the path it had: the census gives an id,
+            // and every placement rule is decided from a session readback.
+            (Some(agent), None) => self.fetch_agent(&agent.id).await?,
+            // One create carrying permission, MCP, prompt and message id, and the
+            // snapshot it answers with is what the seat is judged from.
+            (None, Some(delivery)) => self.create_opencode_seat(delivery).await?,
+            (None, None) => {
+                let native_id = match self.transport.run(&command).await {
+                    Ok(output) => {
+                        let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
+                        started.agent_id
+                    }
+                    // The command may have landed. An exact-label census before
+                    // deciding anything is the whole of the recovery rule;
+                    // running `agent run` again would be how one seat acquires
+                    // two agents.
+                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                    Err(other) => return Err(other),
+                };
+                // The CLI's answer is an id, a status, a provider and two display
+                // strings — no project, no workspace, no labels, no parent. Every
+                // placement rule is decided from the session readback, which is
+                // why trusting the CLI here is a defect the fixtures name
+                // explicitly.
+                self.fetch_agent(&native_id).await?
+            }
         };
 
-        // The CLI's answer is an id, a status, a provider and two display
-        // strings — no project, no workspace, no labels, no parent. Every
-        // placement rule is decided from the session readback, which is why
-        // trusting the CLI here is a defect the fixtures name explicitly.
-        let agent = self.fetch_agent(&native_id).await?;
-        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
+        // Everything the seat is admitted on, judged from that one snapshot. A
+        // delivery seat adds the per-agent acknowledgement: the daemon saying it
+        // applied *this agent's* typed providerOptions to the provider session.
+        // The advertised feature said the daemon can; only this says it did, and
+        // a seat whose policy was not applied runs under whatever the provider's
+        // own layers resolve.
+        //
+        // A delivery seat that fails any of these exists and will not be bound,
+        // so it is archived and read back terminal before the refusal is
+        // returned. Doing that for the CLI providers too would change a launch
+        // path this task has no evidence about.
+        let verdict = self
+            .verify_agent_placement(&agent, &workspace_id, &labels)
+            .and_then(|()| {
+                Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())
+            })
+            .and_then(|()| {
+                if delivery.is_none() || agent.provider_options_applied() {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::LaunchNotAdmitted {
+                        rule: "the runtime did not report providerOptionsApplied for this seat, so its posture is unproved",
+                    })
+                }
+            });
+        if let Err(invalid) = verdict {
+            if delivery.is_some() {
+                self.compensate_invalid_seat(&agent.id).await?;
+            }
+            return Err(invalid);
+        }
 
-        let snapshot = self.bind(
+        // A delivery seat exists by now, carrying this launch's exact intent. If
+        // the durable bind fails, the seat is neither stranded nor duplicated:
+        // the intent label is still on it, so the next attempt's census adopts
+        // this very agent — but only if the claim is still held, which is what
+        // `DeliveryConfirmationUnknown` preserves. Reporting the plain error
+        // would release the seat and licence a second create.
+        let bound = self.bind(
             request.agent_run_id(),
             request.binding_id(),
             &agent,
             request.requested_at(),
             generation,
             declared.clone(),
-        )?;
+        );
+        let unresolved = |error: RuntimeError, agent_id: &str| {
+            tracing::warn!(%error, agent = %agent_id, "delivery bind failed after the seat was created");
+            RuntimeError::DeliveryConfirmationUnknown {
+                rule: "this delivery seat was created but could not be bound; its launch intent is on the agent and reconciliation adopts it",
+            }
+        };
+        let snapshot = match bound {
+            Ok(snapshot) => snapshot,
+            Err(error) if delivery.is_some() => return Err(unresolved(error, &agent.id)),
+            Err(error) => return Err(error),
+        };
         let observation = self.observation(
             request.agent_run_id(),
             snapshot.identity().clone(),
@@ -3439,52 +3536,215 @@ impl PaseoAdapter {
         })
     }
 
-    /// Refuse an OpenCode delivery launch before it can have any native effect.
+    /// Whether this launch is an OpenCode delivery, refusing it if it cannot be
+    /// proved.
     ///
-    /// `Ok(())` for every other provider: their posture *is* their mode, the
-    /// mode readback proves it, and their launch path is untouched.
+    /// `Ok(false)` for every other provider: their posture *is* their mode, the
+    /// mode readback proves it, and their CLI launch path is untouched.
     ///
-    /// # Why OpenCode cannot be launched at all
+    /// # What is asked, and what deliberately is not
     ///
-    /// OpenCode expresses its posture as a permission block, and on Paseo 0.6.1
-    /// there is no carrier for one. The block cannot go in a file or an
-    /// environment variable, because `OPENCODE_CONFIG_CONTENT`,
-    /// `OPENCODE_PERMISSION`, `OPENCODE_DISABLE_PROJECT_CONFIG`, the active-org
-    /// remote config and managed profiles all merge later and depend on who the
-    /// seat authenticated as. An earlier build therefore sent it as
-    /// `config.providerOptions.permission` on the create — and that is inert,
-    /// read from the installed bundles:
+    /// Exactly one thing: does this daemon advertise
+    /// [`PaseoFeature::ProviderOptionsApplied`](crate::wire::PaseoFeature::ProviderOptionsApplied)?
     ///
-    /// * Paseo imports `@opencode-ai/sdk/v2/client`, whose `promptAsync`
-    ///   allow-lists the body keys `messageID, model, agent, noReply, tools,
-    ///   format, system, variant, parts`. `buildClientParams` silently drops
-    ///   everything else, so the permission never leaves the daemon process.
-    /// * OpenCode 1.18.15's `SessionPrompt.prompt` builds its session rules from
-    ///   `Object.entries(t.tools)` alone. That route reads no `t.permission`.
+    /// **Not the version.** Kontor already shipped a path gated on `0.6.1` that
+    /// sent a permission block the daemon validated, persisted, and dropped
+    /// before it reached the provider: the v2 SDK's `promptAsync` allow-lists its
+    /// body keys, and OpenCode's own prompt route reads only `t.tools`. The
+    /// version was correct and the policy never applied. A release number
+    /// describes a build; it cannot assert what that build does with a field.
     ///
-    /// A create the daemon accepts therefore proves only that the daemon parsed
-    /// it. The seat would run under whatever OpenCode's own layers resolved,
-    /// which on a clean host is the evaluator's `ask` default for every
-    /// unmatched tool — the wedging this task exists to prevent. Launching under
-    /// an unproved posture is the failure, so the launch is refused instead.
+    /// **Not the environment, a config root, or any file.** Those layers merge
+    /// after anything Kontor could write and depend on who the seat
+    /// authenticated as.
     ///
-    /// The refusal lifts when Paseo attaches the typed permission through
-    /// OpenCode's `session.create` or `session.update` — both of which *do*
-    /// allow-list it, and where `SessionHttpApi.update` installs it via
-    /// `setPermission` — and returns a correlated applied-policy acknowledgement
-    /// or effective-permission readback that a launch can bind on. That is an
-    /// upstream dependency; see `docs/evidence/KON-OP-20/`.
+    /// So the daemon must assert the capability itself, and the agent it creates
+    /// must then confirm it *for that agent* — see
+    /// [`PaseoAgent::provider_options_applied`](crate::wire::PaseoAgent::provider_options_applied).
+    /// The feature says the daemon can; the per-agent flag says it did. A launch
+    /// binds on the second, never the first.
+    ///
+    /// Both inputs here are local — the identity was already read — so a refusal
+    /// costs no native call at all.
     ///
     /// # Errors
-    /// [`RuntimeError::LaunchNotAdmitted`] for any OpenCode provider, before any
-    /// transport call, native effect or worktree write.
-    fn refuse_opencode_delivery(request: &LaunchRequest) -> RuntimeResult<()> {
-        if crate::client::built_in_provider(request.model_rung().provider.0.as_str()) != "opencode"
-        {
+    /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise the
+    /// feature, or when the provider cannot express the declared posture.
+    fn opencode_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<bool> {
+        let provider = request.model_rung().provider.0.as_str();
+        if crate::client::built_in_provider(provider) != "opencode" {
+            return Ok(false);
+        }
+        let applies = self
+            .lock()
+            .server
+            .as_ref()
+            .is_some_and(crate::wire::PaseoServerInfo::applies_provider_options);
+        if !applies {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "this Paseo does not advertise providerOptionsApplied, so an OpenCode posture cannot be proved",
+            });
+        }
+        // And the provider must be able to express the declared posture at all.
+        // The refusal is `paseo_mode`'s own, so an advisory seat on a provider
+        // with no contained mode is refused here rather than at the wire.
+        crate::posture::render_posture(provider, request.autonomy(), &[])?;
+        Ok(true)
+    }
+
+    /// Create one OpenCode delivery seat, and return the snapshot it is judged
+    /// from.
+    ///
+    /// One `create_agent_request` carries the permission, the MCP surface, the
+    /// prompt and its deterministic message id. There is no second effect to
+    /// reconcile, and **no follow-up fetch**: the snapshot in the answer is the
+    /// state the daemon produced for this create, and a later read answers a
+    /// question about a later moment.
+    ///
+    /// The three ways this can end:
+    ///
+    /// * the daemon says `agent_created` and hands back the agent;
+    /// * the daemon says `agent_create_failed` — it made nothing, and that is the
+    ///   one answer that lets the caller release the seat claim;
+    /// * the answer is lost or unrecognised, and reconciliation decides, never a
+    ///   second create.
+    async fn create_opencode_seat(
+        &self,
+        delivery: &crate::client::DeliveryCreateRequest,
+    ) -> RuntimeResult<PaseoAgent> {
+        let frame = match self.transport.request(&delivery.rpc).await {
+            Ok(frame) => frame,
+            // The create may have landed. Never sent again: that is how one seat
+            // acquires two sessions, each holding a worktree.
+            Err(RuntimeError::Transport { .. }) => {
+                return self.reconcile_delivery_create(&delivery.labels).await;
+            }
+            Err(other) => return Err(other),
+        };
+        let answer: crate::wire::PaseoAgentCreated =
+            frame.resolve(&delivery.rpc, "PaseoAgentCreated")?;
+        if let Some(agent) = answer.created() {
+            return Ok(agent.clone());
+        }
+        if answer.created_nothing() {
+            // The daemon's own word that no agent exists. Only this releases the
+            // claim, and it is a plain admission failure for that reason.
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the runtime refused this delivery seat's creation and created nothing",
+            });
+        }
+        // A status this adapter does not recognise says nothing about whether an
+        // agent exists. Reconcile rather than assume either way.
+        self.reconcile_delivery_create(&delivery.labels).await
+    }
+
+    /// Decide an ambiguous delivery create from the agent directory alone.
+    ///
+    /// The launch-intent digest is in `labels`, and it covers the create
+    /// configuration *and* the prompt, so at most one agent in this project can
+    /// legitimately match. Four outcomes, and none of them is a second create:
+    ///
+    /// * **one match, unbound** — it is this launch's own effect; adopt it.
+    /// * **one match, already bound** — it belongs to another run. Refusing is
+    ///   the only safe answer; binding it twice would give one session two
+    ///   owners.
+    /// * **none, on a complete enumeration** — it is *not* known whether Paseo
+    ///   created an agent, because a create can land after its answer is lost and
+    ///   before this census reads. [`RuntimeError::DeliveryConfirmationUnknown`]
+    ///   says so, and the caller keeps the seat claim: a released claim is a
+    ///   licence for the next attempt to create a second seat.
+    /// * **several, or an enumeration that did not finish** — the plane has
+    ///   diverged, or this census cannot see all of it. Quarantined: no
+    ///   adoption, no create, no release.
+    async fn reconcile_delivery_create(
+        &self,
+        labels: &BTreeMap<String, String>,
+    ) -> RuntimeResult<PaseoAgent> {
+        let (agents, complete) = self.census_by_labels(labels, false).await?;
+        if !complete {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the agent directory did not enumerate fully, so this create cannot be settled",
+            });
+        }
+        let mut matches = agents
+            .into_iter()
+            .filter(|agent| agent.matches_labels(labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        match matches.len() {
+            1 => {
+                let agent = matches.remove(0);
+                if self.is_bound_native(&agent.id) {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "an agent carrying this launch intent is already bound to a run",
+                    });
+                }
+                Ok(agent)
+            }
+            0 => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "this create is unresolved: no agent carries its launch intent yet",
+            }),
+            _ => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "several agents carry this launch intent; the plane has diverged",
+            }),
+        }
+    }
+
+    /// Whether some binding on this plane already owns `native_id`.
+    fn is_bound_native(&self, native_id: &str) -> bool {
+        self.lock()
+            .bindings
+            .snapshots()
+            .any(|snapshot| snapshot.identity().native_id.as_str() == native_id)
+    }
+
+    /// Every agent matching `labels`, and whether the enumeration finished.
+    ///
+    /// [`Self::fetch_agents`] turns an exhausted page budget into a transport
+    /// error, which is right where a partial answer is useless. Here the *fact*
+    /// of incompleteness is the answer — a census that stopped early cannot say
+    /// "no agent carries this intent" — so it is returned rather than raised.
+    async fn census_by_labels(
+        &self,
+        labels: &BTreeMap<String, String>,
+        include_archived: bool,
+    ) -> RuntimeResult<(Vec<PaseoAgent>, bool)> {
+        let mut found = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_DIRECTORY_PAGES {
+            let request = PaseoRpc::agent_list(
+                self.next_request_id(),
+                labels,
+                include_archived,
+                MAX_DIRECTORY_PAGE,
+                cursor.as_deref(),
+            );
+            let frame = self.transport.request(&request).await?;
+            let page: crate::wire::PaseoAgentPage = frame.resolve(&request, "PaseoAgentPage")?;
+            found.extend(page.entries.into_iter().map(|entry| entry.agent));
+            match page.page_info.next() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return Ok((found, true)),
+            }
+        }
+        Ok((found, false))
+    }
+
+    /// Archive a delivery seat this launch will not bind, and require it to read
+    /// back terminal.
+    ///
+    /// A created agent Kontor refuses is a live session nobody owns. It is
+    /// archived over the same socket the create used, and then *read back*: an
+    /// archive whose effect cannot be confirmed leaves the seat recoverable and
+    /// says so, rather than reporting a cleanup that may not have happened.
+    async fn compensate_invalid_seat(&self, native_id: &str) -> RuntimeResult<()> {
+        let archive = PaseoRpc::agent_archive(self.next_request_id(), native_id);
+        self.transport.request(&archive).await?;
+        let agent = self.fetch_agent(native_id).await?;
+        if agent.is_archived() {
             return Ok(());
         }
-        Err(RuntimeError::LaunchNotAdmitted {
-            rule: "Paseo carries no applied OpenCode permission policy, so a delivery seat's posture cannot be proved",
+        Err(RuntimeError::DeliveryConfirmationUnknown {
+            rule: "an invalid delivery seat could not be confirmed archived; it is left recoverable",
         })
     }
 
@@ -5286,6 +5546,17 @@ impl RuntimeAdapter for PaseoAdapter {
         let outcome = self
             .launch_admitted(request, &declared, generation, &posture)
             .await;
+        // A failed launch gives the seat back — except when it is not known
+        // whether a native seat exists. Releasing there would let the next
+        // attempt claim the slot and create a *second* agent for the same run,
+        // which is the one outcome the reconciliation claim exists to prevent.
+        // The claim is held until a census can settle it.
+        if matches!(
+            outcome,
+            Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+        ) {
+            return outcome;
+        }
         if outcome.is_err() {
             self.lock().admissions.release(request);
         }

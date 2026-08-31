@@ -192,6 +192,16 @@ pub mod label {
     /// whose restriction depends on model behavior.
     pub const OPERATOR_ACCEPTED_FALLBACK: &str = "kontor.operator_accepted_fallback";
 
+    /// The digest of one exact launch intent.
+    ///
+    /// Binding, agent run, place, slot, the whole create configuration, and the
+    /// first turn's text and message id, hashed together. A census looking for a
+    /// launch whose acknowledgement was lost matches on this, so an agent that
+    /// merely shares a task, a workspace or a slot — a predecessor, a
+    /// neighbouring seat, a similarly-labelled leftover — is not mistaken for
+    /// the one this launch created. A hash, never the values.
+    pub const LAUNCH_INTENT: &str = "kontor.launch_intent";
+
     /// Every label key, in the order they are applied.
     pub const ALL: &[&str] = &[
         AGENT_RUN,
@@ -237,6 +247,18 @@ pub enum PaseoFeature {
     /// Also absent in 0.3.1, and also never simulated with a reload or a
     /// replacement.
     Compaction,
+    /// The daemon applies typed per-agent `providerOptions` to the provider
+    /// session, and reports on the agent snapshot whether it did.
+    ///
+    /// The **only** admissible evidence for an OpenCode delivery launch, and
+    /// deliberately not a version floor. A version says which build is running;
+    /// it does not say this build applied anything. Kontor already shipped a
+    /// path gated on `0.6.1` that sent a permission the daemon validated,
+    /// persisted, and dropped before it reached the seat — the version was
+    /// right and the policy never applied. So this is asked as a capability the
+    /// daemon asserts about itself, and a daemon that does not assert it is
+    /// refused however new it is.
+    ProviderOptionsApplied,
 }
 
 impl PaseoFeature {
@@ -251,6 +273,7 @@ impl PaseoFeature {
             Self::SelectiveAgentTimeline => "selectiveAgentTimeline",
             Self::ProjectRename => "projectRename",
             Self::Compaction => "compaction",
+            Self::ProviderOptionsApplied => "providerOptionsApplied",
         }
     }
 }
@@ -295,6 +318,19 @@ impl PaseoServerInfo {
     #[must_use]
     pub fn supports(&self, feature: PaseoFeature) -> bool {
         self.features.get(feature.as_str()) == Some(&true)
+    }
+
+    /// Whether this daemon applies typed per-agent `providerOptions` and says so.
+    ///
+    /// No version fallback, unlike [`Self::supports_project_rename`]. A rename
+    /// is verified by reading the title back, so trusting a release floor there
+    /// risks only a failed readback. Here the thing being gated *is* whether the
+    /// policy reached the process, and no readback of a create can establish it
+    /// — which is exactly how the previous version-gated path shipped a seat
+    /// with no policy at all.
+    #[must_use]
+    pub fn applies_provider_options(&self) -> bool {
+        self.supports(PaseoFeature::ProviderOptionsApplied)
     }
 
     /// Whether this exact daemon connection supports native project retitle.
@@ -653,6 +689,15 @@ pub struct PaseoAgent {
     /// The provider-native permission mode Paseo actually applied.
     #[serde(default, rename = "currentModeId")]
     pub current_mode_id: Option<String>,
+    /// Whether the daemon applied this agent's typed `providerOptions` to the
+    /// provider session.
+    ///
+    /// `Some(true)` is the only value a delivery launch binds on. `Some(false)`
+    /// is the daemon saying it did not, and `None` is a daemon that does not
+    /// answer the question — both refuse, because a seat whose policy was not
+    /// applied runs under whatever the provider's own layers resolve.
+    #[serde(default, rename = "providerOptionsApplied")]
+    pub provider_options_applied: Option<bool>,
     /// The workspace it runs in.
     ///
     /// Optional on the wire, and its absence is a refusal rather than a
@@ -693,6 +738,17 @@ pub struct PaseoAgent {
 }
 
 impl PaseoAgent {
+    /// Whether the daemon says it applied this agent's typed `providerOptions`.
+    ///
+    /// Only an explicit `true` counts. `Some(false)` and `None` are both
+    /// refusals: one is a daemon reporting it did not apply the policy, the
+    /// other a daemon that does not report at all, and a seat is bound on
+    /// neither.
+    #[must_use]
+    pub fn provider_options_applied(&self) -> bool {
+        self.provider_options_applied == Some(true)
+    }
+
     /// One label, if present.
     #[must_use]
     pub fn label(&self, key: &str) -> Option<&str> {
@@ -735,6 +791,53 @@ impl PaseoAgent {
         wanted
             .iter()
             .all(|(key, value)| self.label(key) == Some(value.as_str()))
+    }
+}
+
+/// The answer to `create_agent_request`.
+///
+/// Three outcomes, and the difference between them decides whether the seat
+/// claim may be released. `agent_created` carries the snapshot a launch is
+/// verified and bound from — there is no follow-up fetch, because a second read
+/// answers a question about a later moment. `agent_create_failed` is the daemon
+/// stating it made nothing, which is the one answer that lets a launch release
+/// its admission. Anything else is unrecognised and refuses without releasing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoAgentCreated {
+    /// The daemon's own outcome word.
+    #[serde(default)]
+    pub status: String,
+    /// The created agent, present exactly when the create succeeded.
+    #[serde(default)]
+    pub agent: Option<PaseoAgent>,
+    /// The daemon's refusal text, when it refused.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl PaseoAgentCreated {
+    /// The wire word for a create that produced an agent.
+    pub const CREATED: &'static str = "agent_created";
+    /// The wire word for a create the daemon declined, having made nothing.
+    pub const FAILED: &'static str = "agent_create_failed";
+
+    /// The created agent, when the daemon says it created one.
+    #[must_use]
+    pub fn created(&self) -> Option<&PaseoAgent> {
+        (self.status == Self::CREATED)
+            .then_some(self.agent.as_ref())
+            .flatten()
+    }
+
+    /// Whether the daemon stated, explicitly, that no agent was created.
+    ///
+    /// This is what separates "nothing happened, take the slot back" from "the
+    /// answer was not understood". Only the daemon's own word releases a claim;
+    /// an unrecognised status leaves the attempt unresolved, because a seat that
+    /// exists and is not owned is worse than a slot held too long.
+    #[must_use]
+    pub fn created_nothing(&self) -> bool {
+        self.status == Self::FAILED
     }
 }
 
@@ -1480,6 +1583,7 @@ mod tests {
             thinking_option_id: None,
             effective_thinking_option_id: None,
             current_mode_id: Some("auto".to_owned()),
+            provider_options_applied: None,
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: Some("KON-MVP-11 Implement".to_owned()),
@@ -1524,6 +1628,7 @@ mod tests {
             thinking_option_id: None,
             effective_thinking_option_id: None,
             current_mode_id: Some("auto".to_owned()),
+            provider_options_applied: None,
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: None,

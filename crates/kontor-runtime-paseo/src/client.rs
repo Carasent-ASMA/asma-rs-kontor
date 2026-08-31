@@ -239,6 +239,58 @@ pub(crate) fn built_in_provider(provider: &str) -> &str {
 // CLI commands
 // ---------------------------------------------------------------------------
 
+/// Everything one delivery `create_agent_request` is built from.
+///
+/// A struct rather than fourteen positional arguments, because the digest below
+/// covers all of them and a call site that silently passed the wrong one for the
+/// right type is precisely what that digest exists to catch.
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveryCreate<'a> {
+    /// The correlation id for this attempt. Deliberately outside the digest: it
+    /// differs per attempt, and a retry must still recognise the agent the first
+    /// attempt may have created.
+    pub request_id: &'a str,
+    /// The native place the seat is created in.
+    pub workspace_id: &'a str,
+    /// The seat's canonical worktree.
+    pub canonical_cwd: &'a str,
+    /// The frozen route.
+    pub model_rung: &'a ModelRung,
+    /// The declared posture.
+    pub autonomy: SeatAutonomy,
+    /// The visible seat title.
+    pub title: &'a str,
+    /// The seat labels, before the launch-intent digest is added.
+    pub labels: &'a BTreeMap<String, String>,
+    /// The ticket's declared floor relaxations.
+    pub allowances: &'a [crate::posture::PermissionAllowance],
+    /// The seat's MCP surface, when the daemon composes one.
+    pub seat_mcp: Option<&'a crate::seat_mcp::SeatMcp>,
+    /// The serve profile that surface runs under.
+    pub serve_profile: &'a str,
+    /// The Kontor session binding.
+    pub binding_id: &'a str,
+    /// The agent run.
+    pub agent_run_id: &'a str,
+    /// The role slot.
+    pub role_slot_id: &'a str,
+    /// The first turn, carried on the create itself.
+    pub prompt: &'a str,
+}
+
+/// One built delivery create, with the labels a census must match.
+#[derive(Debug, Clone)]
+pub struct DeliveryCreateRequest {
+    /// The request to send.
+    pub rpc: PaseoRpc,
+    /// The exact labels the created agent will carry, digest included.
+    pub labels: BTreeMap<String, String>,
+    /// The launch-intent digest, for the reconciliation claim.
+    pub intent_digest: String,
+    /// The deterministic client message id the first turn carries.
+    pub client_message_id: String,
+}
+
 /// One Paseo CLI invocation, as an argv array.
 ///
 /// `argv` never contains `--host`: the live transport appends it. The
@@ -920,6 +972,92 @@ impl PaseoRpc {
                 "page": page,
             }),
         )
+    }
+
+    /// One `create_agent_request` that is the whole delivery launch.
+    ///
+    /// # Why one stage and not two
+    ///
+    /// An earlier design created the seat with no prompt, then sent the first
+    /// turn separately so that acceptance of that turn could be the proof the
+    /// posture applied. That proof was never real — the permission was dropped
+    /// before it reached the provider — and with the daemon now reporting
+    /// `providerOptionsApplied` on the agent itself, the turn proves nothing the
+    /// snapshot does not already say. Two effects to reconcile instead of one is
+    /// then pure hazard: a create that lands and a prompt that does not leaves a
+    /// seat that exists, is bound to nothing, and has no instructions.
+    ///
+    /// So the create carries the permission, the MCP surface, the prompt and its
+    /// deterministic message id together. It either happened or it did not, and
+    /// the launch-intent digest says which.
+    ///
+    /// # Errors
+    /// Propagates the renderer's own refusal when the provider cannot express
+    /// the declared posture. The posture is rendered *here*, once, so no caller
+    /// can supply a mode and a permission block that disagree.
+    pub fn delivery_agent_create(
+        parts: DeliveryCreate<'_>,
+    ) -> RuntimeResult<DeliveryCreateRequest> {
+        let provider = parts.model_rung.provider.0.as_str();
+        let posture = crate::posture::render_posture(provider, parts.autonomy, parts.allowances)?;
+
+        // Derived from the launch, never generated: a retry must ask about the
+        // same message the first attempt sent.
+        let client_message_id = format!(
+            "kontor-first-turn-{}-{}",
+            parts.agent_run_id, parts.binding_id
+        );
+
+        let mut config = serde_json::json!({
+            "provider": built_in_provider(provider),
+            "cwd": parts.canonical_cwd,
+            "model": parts.model_rung.model.0,
+            "title": parts.title,
+        });
+        if let Some(mode) = posture.mode {
+            config["modeId"] = serde_json::json!(mode);
+        }
+        if let Some(permission) = posture.permission.clone() {
+            config["providerOptions"] = serde_json::json!({ "permission": permission });
+        }
+        if let Some(seat) = parts.seat_mcp {
+            config["mcpServers"] = seat.server_config(parts.serve_profile);
+        }
+        config["initialPrompt"] = serde_json::json!(parts.prompt);
+        config["clientMessageId"] = serde_json::json!(client_message_id);
+
+        let digest = crate::posture::LaunchIntent {
+            binding_id: parts.binding_id,
+            agent_run_id: parts.agent_run_id,
+            workspace_id: parts.workspace_id,
+            role_slot_id: parts.role_slot_id,
+            config: &config,
+            prompt: parts.prompt,
+            client_message_id: &client_message_id,
+        }
+        .digest()
+        .to_string();
+
+        let mut labels = parts.labels.clone();
+        labels.insert(crate::wire::label::LAUNCH_INTENT.to_owned(), digest.clone());
+
+        let mut message = serde_json::json!({
+            "workspaceId": parts.workspace_id,
+            "config": config,
+        });
+        message["config"]["labels"] = serde_json::json!(labels);
+
+        Ok(DeliveryCreateRequest {
+            rpc: Self::mutate(
+                "create_agent_request",
+                "create_agent_response",
+                parts.request_id.to_owned(),
+                message,
+            ),
+            labels,
+            intent_digest: digest,
+            client_message_id,
+        })
     }
 
     /// `fetch_agents_request`, narrowed by exact labels and one bounded page.
