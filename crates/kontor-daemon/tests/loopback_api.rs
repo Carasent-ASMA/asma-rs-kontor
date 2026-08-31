@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
-use kontor_accounts::UsageReading;
+use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, UsageReading};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
@@ -82,6 +82,9 @@ use kontor_store::{
     IdempotencyBinding, JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch,
     NewJiraMaterializationItem, RegisteredPack, TeamTemplateSource,
 };
+use secrecy::SecretString;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -92,6 +95,19 @@ struct ScriptedUsageReporter {
     replies: tokio::sync::Mutex<VecDeque<Result<UsageReading, ProviderUsageProbeFailure>>>,
     calls: AtomicUsize,
     delay: Duration,
+}
+
+#[derive(Default)]
+struct JiraFixtureKeychain;
+
+impl KeychainBackend for JiraFixtureKeychain {
+    fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
+        assert_eq!(target.service(), "kontor-jira");
+        assert_eq!(target.account(), "work");
+        Ok(SecretString::from(
+            r#"{"email":"operator@example.test","api_token":"secret"}"#.to_owned(),
+        ))
+    }
 }
 
 impl ScriptedUsageReporter {
@@ -7359,6 +7375,218 @@ async fn jira_materialization_preview_is_server_derived_and_epic_first() {
         body["preview_hash"].as_str().expect("preview hash").len(),
         64
     );
+}
+
+#[tokio::test]
+async fn jira_link_apply_recovers_the_original_pending_create_batch_in_place() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let task_id = TaskId::generate();
+    let epic_marker = format!("kontor-epic-{epic_id}");
+    let task_marker = format!("kontor-task-{task_id}");
+    let epic_description = format!("Kontor epic {epic_id}: Kontor recovery epic");
+    let task_description = format!("Kontor task {task_id}: Recover original Jira batch");
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8049"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8049",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                "parent": null,
+                "summary": "Kontor recovery epic",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":epic_description}]
+                }]},
+                "labels": [epic_marker]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8050"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8050",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                "parent": {"key": "ASMA-8049"},
+                "summary": "Recover original Jira batch",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":task_description}]
+                }]},
+                "labels": [task_marker]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config_root = tempfile::tempdir().expect("Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("Jira configuration serializes"),
+    )
+    .expect("Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    let now = at("2026-08-31T01:00:00Z");
+    let original_batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("batch id");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Jira recovery project"),
+                root_path: name("/tmp/kontor-jira-recovery"),
+                created_at: now,
+            })
+            .expect("project");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Kontor recovery epic"),
+                created_at: now,
+            })
+            .expect("epic");
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                title: name("Recover original Jira batch"),
+                module: None,
+                state: kontor_core::state::TaskState::Ready,
+                created_at: now,
+            })
+            .expect("task");
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: original_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: "original-failed-create".to_owned(),
+                    preview_hash: ContentHash::of(b"original-failed-create"),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &[
+                    NewJiraMaterializationItem {
+                        id: ExternalId::parse(&uuid::Uuid::now_v7().to_string())
+                            .expect("epic item"),
+                        batch_id: original_batch_id.clone(),
+                        project_id,
+                        epic_id,
+                        task_id: None,
+                        link_id: None,
+                        ordinal: 0,
+                        item_kind: JiraItemKind::Epic,
+                        intent_kind: JiraIntentKind::Create,
+                        requested_key: None,
+                        marker: ExternalId::parse(&format!("kontor-epic-{epic_id}"))
+                            .expect("epic marker"),
+                    },
+                    NewJiraMaterializationItem {
+                        id: ExternalId::parse(&uuid::Uuid::now_v7().to_string())
+                            .expect("task item"),
+                        batch_id: original_batch_id.clone(),
+                        project_id,
+                        epic_id,
+                        task_id: Some(task_id),
+                        link_id: Some(TicketLinkId::generate()),
+                        ordinal: 1,
+                        item_kind: JiraItemKind::Task,
+                        intent_kind: JiraIntentKind::Create,
+                        requested_key: None,
+                        marker: ExternalId::parse(&format!("kontor-task-{task_id}"))
+                            .expect("task marker"),
+                    },
+                ],
+            )
+            .expect("the failed create plan is durable");
+    });
+
+    let materialization = serde_json::json!({
+        "epic": {"mode": "link", "issue_key": "ASMA-8049"},
+        "tasks": {(task_id.to_string()): {"mode": "link", "issue_key": "ASMA-8050"}}
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:preview"),
+        &materialization,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let apply_body = serde_json::json!({
+        "materialization": materialization,
+        "preview_hash": preview.json()["preview_hash"],
+        "expected_revision": 1
+    });
+    let applied = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("recover-original-jira-batch")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["batch_id"], original_batch_id.as_str());
+    assert_eq!(applied.json()["items"][0]["mode"], "link");
+    assert_eq!(applied.json()["items"][1]["mode"], "link");
+    assert_eq!(applied.json()["activated"], true);
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("recover-original-jira-batch")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["batch_id"], original_batch_id.as_str());
+
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("database readback");
+    let batches: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_batches",
+            [],
+            |row| row.get(0),
+        )
+        .expect("batch count");
+    let recoveries: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_recoveries",
+            [],
+            |row| row.get(0),
+        )
+        .expect("recovery count");
+    assert_eq!(
+        batches, 1,
+        "no replacement batch is created, including replay"
+    );
+    assert_eq!(recoveries, 2, "the exact recovery set is durable");
 }
 
 #[tokio::test]

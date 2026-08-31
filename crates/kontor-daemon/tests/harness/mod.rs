@@ -142,6 +142,20 @@ impl World {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
+    /// Start an empty Realm with an already-validated native Jira boundary.
+    pub(crate) async fn open_empty_with_jira(connectors: kontor_jira::JiraConnectors) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            None,
+            Some(connectors),
+        )
+        .await
+    }
+
     /// Start an empty Realm whose exact-provider calls use a non-secret scripted
     /// reporter. The legacy/background poller remains composed from the empty
     /// temporary state root.
@@ -155,6 +169,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             Some(reporter),
+            None,
         )
         .await
     }
@@ -246,7 +261,16 @@ impl World {
         planed: bool,
         capacity: CapacityConfig,
     ) -> Self {
-        Self::compose_with_connector(capabilities, configured, seeded, planed, capacity, None).await
+        Self::compose_with_connector(
+            capabilities,
+            configured,
+            seeded,
+            planed,
+            capacity,
+            None,
+            None,
+        )
+        .await
     }
 
     async fn compose_with_connector(
@@ -256,6 +280,7 @@ impl World {
         planed: bool,
         capacity: CapacityConfig,
         usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
+        jira_connectors: Option<kontor_jira::JiraConnectors>,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         let fake = Arc::new(if planed {
@@ -268,9 +293,12 @@ impl World {
         } else {
             RuntimeRegistry::new()
         };
-        let config = DaemonConfig::at(directory.path())
+        let mut config = DaemonConfig::at(directory.path())
             .with_port(0)
             .with_capacity(capacity);
+        if let Some(connectors) = jira_connectors {
+            config = config.with_jira_connectors(connectors);
+        }
         let daemon = match usage_reporter {
             Some(reporter) => {
                 let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);

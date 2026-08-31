@@ -85,9 +85,13 @@ impl SeatMcp {
     /// Any filesystem failure, an existing config file that is not JSON (it is
     /// refused rather than clobbered), or a cwd that is not a git worktree.
     pub fn compose(&self, cwd: &Path, serve_profile: &str) -> io::Result<()> {
+        // Resolve the exclude destination before writing either seat file. A
+        // logical-only ECP currently has a non-Git cwd; that is a typed refusal,
+        // not permission to leave half-composed authority files behind.
+        let exclude_path = git_exclude_path(cwd)?;
         write_mcp_json(cwd, &self.command, &self.state_root, serve_profile)?;
         write_claude_settings(cwd)?;
-        exclude_from_git(cwd)
+        exclude_from_git(&exclude_path)
     }
 }
 
@@ -207,7 +211,7 @@ const EXCLUDED: &[&str] = &[".mcp.json", ".claude/"];
 /// dir, and re-deriving git's own path rules here would be a second copy that
 /// drifts. This is a local plumbing query, not a runtime effect, so it does not
 /// travel through the Paseo transport seam.
-fn exclude_from_git(cwd: &Path) -> io::Result<()> {
+fn git_exclude_path(cwd: &Path) -> io::Result<PathBuf> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -227,6 +231,10 @@ fn exclude_from_git(cwd: &Path) -> io::Result<()> {
     } else {
         cwd.join(path)
     };
+    Ok(path)
+}
+
+fn exclude_from_git(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -504,5 +512,10 @@ mod tests {
         seat("/realm/state")
             .compose(directory.path(), "consultation")
             .expect_err("no worktree, no composition");
+        assert!(
+            !directory.path().join(".mcp.json").exists()
+                && !directory.path().join(".claude").exists(),
+            "a refused composition is atomic and leaves no partial seat files"
+        );
     }
 }
