@@ -40,7 +40,9 @@ Schema v73 keeps failed create attempts as immutable incident evidence while
 allowing a later explicit `link` materialization for the same epic/task and
 stable marker. Only create intents retain marker uniqueness, so recovery cannot
 emit a second Jira object; the linked key must still be read back and confirmed
-before an item code exists.
+before an item code exists. Link readback proves the requested key, Jira project,
+issue type and epic parent; it deliberately does not claim ownership of an
+existing issue's summary, description or current workflow status.
 
 Operational topology v4 (`01936f5a-1000-7000-8000-000000000001`, revision `4`)
 uses the typed `ITEM_CODE` projection and renders centered-dot names. Enable it

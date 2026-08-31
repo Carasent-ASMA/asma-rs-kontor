@@ -648,10 +648,16 @@ impl JiraConnector {
                 None,
             )
             .await?;
+        let observed_summary = text_at(&value, &["fields", "summary"])?;
+        let observed_description = value_at(&value, &["fields", "description"])
+            .cloned()
+            .unwrap_or(Value::Null);
+        let explicit_link = plan.requested_key.is_some();
         if text_at(&value, &["fields", "project", "key"])? != self.project_key.as_str()
-            || text_at(&value, &["fields", "summary"])? != plan.summary
-            || value_at(&value, &["fields", "description"]) != Some(&adf(&plan.description))
             || optional_external_at(&value, &["fields", "parent", "key"])? != plan.parent_key
+            || (!explicit_link
+                && (observed_summary != plan.summary
+                    || observed_description != adf(&plan.description)))
         {
             return Err(JiraError::Conflict {
                 operation: "materialize",
@@ -680,18 +686,32 @@ impl JiraConnector {
                 kind: kontor_core::ticket::StatusConflictKind::IncompatibleHumanMove,
             });
         }
-        let readback_hash = CanonicalDocument::from_serializable(&json!({
-            "schema_version": 1,
-            "key": key.as_str(),
-            "project": self.project_key.as_str(),
-            "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
-            "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
-            "summary": plan.summary,
-            "description": plan.description,
-            "marker": plan.marker.as_str(),
-        }))?
-        .hash()
-        .clone();
+        let readback = if explicit_link {
+            json!({
+                "schema_version": 1,
+                "mode": "link",
+                "key": key.as_str(),
+                "project": self.project_key.as_str(),
+                "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
+                "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
+                "summary": observed_summary,
+                "description": observed_description,
+            })
+        } else {
+            json!({
+                "schema_version": 1,
+                "key": key.as_str(),
+                "project": self.project_key.as_str(),
+                "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
+                "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
+                "summary": plan.summary,
+                "description": plan.description,
+                "marker": plan.marker.as_str(),
+            })
+        };
+        let readback_hash = CanonicalDocument::from_serializable(&readback)?
+            .hash()
+            .clone();
         Ok(JiraIssueReadback {
             issue_key: key.clone(),
             readback_hash,
