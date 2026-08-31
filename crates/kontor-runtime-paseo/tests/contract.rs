@@ -1759,6 +1759,114 @@ async fn a_reported_create_failure_keeps_the_claim_and_censuses() {
     );
 }
 
+/// `agent_create_unresolved` takes the same reconcile path as everything else.
+///
+/// The deployed candidate emits this when it created an agent and could not
+/// confirm archiving it, and it names that agent. Kontor does not bind on the
+/// name: it censuses and proves the first turn, exactly as for a reported
+/// failure or an unrecognised status. One path serves patched and unpatched
+/// daemons, so correctness never depends on which build answered.
+#[tokio::test]
+async fn an_unresolved_create_reconciles_and_keeps_the_claim() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, _, _) = opencode_launch(&plane, &workspace).await;
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        serde_json::json!({
+            "status": "agent_create_unresolved",
+            "requestId": "req-1",
+            "agentId": AGENT_ID,
+            "error": "compensation could not be confirmed",
+        }),
+    );
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("a create the daemon could not settle is not settled here either");
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "unresolved, so the claim is kept: {error:?}"
+    );
+    assert!(
+        plane.daemon.count("rpc fetch_agents_request") >= 3,
+        "the census ran rather than the named agent being trusted: {:?}",
+        plane.daemon.calls()
+    );
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "and nothing was created a second time"
+    );
+
+    // The named agent is not adopted on the daemon's say-so, and the seat stays
+    // claimed so no other launch can make a second one for this run.
+    let retry = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_QA),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: at("2026-08-10T09:05:00Z"),
+        })
+        .await;
+    let held = match retry {
+        Err(_) => true,
+        Ok(outcome) => outcome.into_authority().is_err(),
+    };
+    assert!(held, "an unresolved create must not free the seat");
+}
+
+/// An unresolved create whose agent *is* findable and provably prompted is
+/// adopted — through the census, not through the named id.
+#[tokio::test]
+async fn an_unresolved_create_adopts_only_through_the_census_and_the_turn_proof() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+    let agent = opencode_agent(&intent, Some(true), false);
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] = serde_json::json!([{ "agent": agent["agent"] }]);
+
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        serde_json::json!({
+            "status": "agent_create_unresolved",
+            "requestId": "req-1",
+            "agentId": AGENT_ID,
+            "error": "compensation could not be confirmed",
+        }),
+    );
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_timeline_request",
+        first_turn_page(Some(&first_turn_id(agent_run_id, binding_id))),
+    );
+
+    plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("an agent carrying this intent, provably prompted, is this launch's own");
+
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "one create, adopted rather than repeated"
+    );
+    assert!(
+        plane.daemon.count("rpc fetch_agent_timeline_request") >= 1,
+        "and the turn was proved, not assumed from the daemon's named id"
+    );
+}
+
 /// An agent carrying the launch intent whose first turn is *not* on its timeline
 /// is never bound — it was created and never told anything.
 #[tokio::test]

@@ -3630,18 +3630,40 @@ impl PaseoAdapter {
         if let Some(agent) = answer.created() {
             return Ok(agent.clone());
         }
-        // `agent_create_failed` is **not** evidence that nothing was created.
+        // Everything that is not a correlated `agent_created` goes to the census,
+        // and none of it releases the claim. That is one rule for three cases,
+        // on purpose.
         //
-        // Read from the exact v0.6.1 backport: `resolveSessionCreateAgent` sets
-        // `promptFailure: "throw"`, and `createAgentCommand` creates the agent
-        // *before* it sends the initial prompt. A prompt that fails therefore
-        // throws out of the command, `createdAgentId = snapshot.id` is never
-        // reached, and the catch emits `agent_create_failed` while a native agent
-        // exists — one the daemon's own worktree cleanup also skips, because it
-        // was handed a null id.
+        // * `agent_create_unresolved` — the deployed candidate
+        //   (`a07ed03e0`) saying outright that it created an agent and could not
+        //   confirm archiving it. It even names the agent. Ambiguous by the
+        //   daemon's own admission.
+        // * `agent_create_failed` — safe on that candidate, which records the
+        //   native id *before* the initial prompt and only reports plain failure
+        //   once compensation is confirmed. It was **not** safe on stock 0.6.1
+        //   (`a878145`): there the id was captured after the prompt, a throwing
+        //   prompt left it null, and the catch reported failure while the agent
+        //   ran — an agent the daemon's own worktree cleanup also skipped.
+        // * a status this adapter does not recognise — says nothing either way.
         //
-        // So every outcome that is not a correlated `agent_created` goes to the
-        // census, and none of them releases the claim.
+        // Kontor does not branch on which of these arrived. Doing so would make
+        // correctness depend on which build answered, and a daemon can be rolled
+        // back or replaced under a running plane. The census and the first-turn
+        // proof settle all three identically, and cost one directory read on a
+        // path that is already the unhappy one.
+        //
+        // The status and any named agent are recorded, and *only* recorded: an
+        // operator reading this line learns which daemon behaviour they are
+        // seeing, while the code below reaches the same answer either way. There
+        // is deliberately no predicate over these values, because a predicate
+        // exists to be branched on and the whole point here is not to.
+        tracing::warn!(
+            status = %answer.status,
+            named_agent = answer.agent_id.as_deref().unwrap_or("none"),
+            confirmed_compensation = answer.status == crate::wire::PaseoAgentCreated::FAILED,
+            unconfirmed_compensation = answer.status == crate::wire::PaseoAgentCreated::UNRESOLVED,
+            "delivery create did not return a correlated agent; reconciling"
+        );
         self.reconcile_delivery_create(delivery).await
     }
 

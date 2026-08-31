@@ -813,13 +813,39 @@ pub struct PaseoAgentCreated {
     /// The daemon's refusal text, when it refused.
     #[serde(default)]
     pub error: Option<String>,
+    /// The agent a patched daemon names when it could not confirm its own
+    /// compensation.
+    ///
+    /// Carried for the record and for logs. **Not a bind target**: Kontor
+    /// reconciles through the census and the first-turn proof whether or not the
+    /// daemon volunteers this, so one code path serves patched and unpatched
+    /// daemons alike and a wire field cannot become the thing a seat is trusted
+    /// on.
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
 }
 
 impl PaseoAgentCreated {
     /// The wire word for a create that produced an agent.
     pub const CREATED: &'static str = "agent_created";
-    /// The wire word for a create the daemon declined, having made nothing.
+    /// The wire word for a create the daemon declined.
+    ///
+    /// On the deployed candidate this also means compensation was *confirmed* —
+    /// the daemon archived the agent it had made. On stock 0.6.1 it carried no
+    /// such guarantee: the native id was captured after the initial prompt, so a
+    /// throwing prompt left it null and this word was emitted while the agent
+    /// ran.
+    ///
+    /// Kontor does not distinguish the two, and offers no predicate that would
+    /// let a caller start: every outcome that is not a correlated
+    /// `agent_created` takes the same census and first-turn proof.
     pub const FAILED: &'static str = "agent_create_failed";
+    /// The wire word for a create whose compensation the daemon could **not**
+    /// confirm, naming the agent it could not clean up.
+    ///
+    /// Introduced by the deployed candidate. A daemon that emits this is stating
+    /// plainly that a native may still exist.
+    pub const UNRESOLVED: &'static str = "agent_create_unresolved";
 
     /// The created agent, when the daemon says it created one.
     #[must_use]
@@ -827,23 +853,6 @@ impl PaseoAgentCreated {
         (self.status == Self::CREATED)
             .then_some(self.agent.as_ref())
             .flatten()
-    }
-
-    /// Whether the daemon reported this create as failed.
-    ///
-    /// **Not a statement that no agent exists**, and callers must not treat it
-    /// as one. In the exact v0.6.1 backport the session path sets
-    /// `promptFailure: "throw"` and `createAgentCommand` creates the agent
-    /// *before* sending the initial prompt, so a failing prompt throws out of the
-    /// command with `createdAgentId` still null and the catch emits
-    /// `agent_create_failed` — while the agent exists.
-    ///
-    /// So this reports what the daemon said, and nothing about the world. The
-    /// launch path routes it to the same census every other ambiguous outcome
-    /// goes to, and releases the seat claim for none of them.
-    #[must_use]
-    pub fn reported_failure(&self) -> bool {
-        self.status == Self::FAILED
     }
 }
 
