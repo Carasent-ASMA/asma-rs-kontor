@@ -132,6 +132,65 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
 }
 
 #[tokio::test]
+async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_description() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8050"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8050",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                "parent": {"key": "ASMA-8049"},
+                "summary": "Existing operator-owned Jira summary",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Existing Jira description"}]
+                }]},
+                "labels": []
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connector =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    let plan = JiraIssuePlan {
+        kind: JiraIssueKind::Task,
+        requested_key: Some(ExternalId::parse("ASMA-8050").expect("issue key")),
+        marker: ExternalId::parse("kontor-task-link-fixture").expect("marker"),
+        summary: "Kontor-derived summary is not linked-field authority".to_owned(),
+        description: "Kontor-derived description is not linked-field authority".to_owned(),
+        parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent key")),
+    };
+
+    let confirmed = connector
+        .for_project(project_id)
+        .expect("project is configured")
+        .materialize(&plan)
+        .await
+        .expect("the exact existing Jira identity is confirmed");
+    assert_eq!(confirmed.issue_key.as_str(), "ASMA-8050");
+}
+
+#[tokio::test]
 async fn native_observe_reads_issue_transitions_and_principal() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
