@@ -705,6 +705,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read pending runtime permission requests from one exact Committee seat. */
+        get: operations["inspect_consultation_permissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions/{permission_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer one pending runtime permission on an exact Committee seat. */
+        post: operations["respond_consultation_permission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover": {
         parameters: {
             query?: never;
@@ -3987,6 +4021,44 @@ export interface components {
              * @description The pinned revision.
              */
             version: number;
+        };
+        /** @description Durable acknowledgement for one Committee permission answer. */
+        ConsultationPermissionAckDto: {
+            /**
+             * Format: date-time
+             * @description Runtime acceptance instant.
+             */
+            accepted_at: string;
+            /** @description Owning Committee run. */
+            committee_run_id: string;
+            /** @description Applied decision. */
+            decision: string;
+            /** @description Runtime request that was answered. */
+            permission_id: string;
+            /** @description Realm that performed the effect. */
+            realm_id: string;
+            /** @description Stable response identity from `Idempotency-Key`. */
+            response_id: string;
+            /** @description Persistent logical seat. */
+            seat_binding_id: string;
+        };
+        /** @description Fresh pending-permission readback for one exact Committee seat. */
+        ConsultationPermissionInspectionDto: {
+            /** @description Owning Committee run. */
+            committee_run_id: string;
+            /** @description Exact native filler that was inspected. */
+            native_id: string;
+            /**
+             * Format: date-time
+             * @description Runtime observation instant.
+             */
+            observed_at: string;
+            /** @description Runtime permission request ids still awaiting a decision. */
+            pending_permissions: string[];
+            /** @description Realm that performed the readback. */
+            realm_id: string;
+            /** @description Persistent logical seat. */
+            seat_binding_id: string;
         };
         /** @description One declared consultation seat and its exact runtime readback. */
         ConsultationSeatDto: {
@@ -9680,6 +9752,119 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    inspect_consultation_permissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                committee_run_id: string;
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsultationPermissionInspectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    respond_consultation_permission: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                committee_run_id: string;
+                seat_binding_id: string;
+                permission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PermissionRequestBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsultationPermissionAckDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             503: {
                 headers: {
                     [name: string]: unknown;

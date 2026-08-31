@@ -676,6 +676,30 @@ mod tests {
     }
 
     #[test]
+    fn committee_permission_response_addresses_the_exact_seat_and_request() {
+        let request = build(
+            spec("kontor_committee_permission_respond"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "committee_run_id": UUID,
+                "seat_binding_id": UUID,
+                "permission_id": "permission-42",
+                "idempotency_key": UUID,
+                "decision": "allow"
+            }),
+        )
+        .expect("the exact Committee permission response is dispatchable");
+        assert_eq!(
+            request.path,
+            format!(
+                "/v1/projects/{UUID}/committee-runs/{UUID}/seats/{UUID}/permissions/permission-42"
+            )
+        );
+        assert_eq!(request.idempotency_key.as_deref(), Some(UUID));
+        assert_eq!(request.body, Some(serde_json::json!({"decision": "allow"})));
+    }
+
+    #[test]
     fn an_unknown_property_is_refused_rather_than_dropped() {
         let denied = build(
             spec("kontor_realm_get"),

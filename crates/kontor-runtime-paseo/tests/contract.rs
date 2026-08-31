@@ -35,13 +35,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    AgentRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeBindingId,
-    RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
+    AgentRunId, CommitteeRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
 };
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
+    ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatLaunchRequest,
     HostedSeatMessageRequest, HostedSeatNativeState, HostedSeatRetireRequest, LaunchOutcome,
     RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
@@ -188,6 +190,27 @@ fn v(raw: &str) -> serde_json::Value {
     if !preserve_foreign_parent {
         remove_legacy_parent_labels(&mut value);
     }
+    value
+}
+
+fn consultation_agent(
+    raw: &str,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+) -> serde_json::Value {
+    let mut value = v(raw);
+    let labels = value
+        .pointer_mut("/agent/labels")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("the agent fixture has labels");
+    labels.insert(
+        label::CONSULTATION_RUN.to_owned(),
+        serde_json::Value::String(format!("{}/{}", run_id.family().as_str(), run_id.as_text())),
+    );
+    labels.insert(
+        label::SEAT_BINDING.to_owned(),
+        serde_json::Value::String(seat_binding_id.to_string()),
+    );
     value
 }
 
@@ -3493,6 +3516,80 @@ async fn permission_response_is_session_bound_and_idempotent() {
         .await
         .expect_err("an answered request is not answerable again differently");
     assert!(matches!(refused, RuntimeError::PermissionConflict { .. }));
+}
+
+#[tokio::test]
+async fn committee_permission_is_bound_to_the_exact_run_seat_and_native() {
+    let run_id = ConsultationRunId::Committee(
+        CommitteeRunId::parse(MINI_PROJECT).expect("a Committee run id"),
+    );
+    let seat_binding_id = SeatBindingId::parse(RUN_QA).expect("a consultation SeatBinding");
+    let wrong_seat = SeatBindingId::parse(TEAM_RUN).expect("another SeatBinding");
+    let open = consultation_agent(AGENT_PERMISSION_OPEN, run_id, seat_binding_id);
+    let resolved = consultation_agent(AGENT, run_id, seat_binding_id);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .then_answering_rpc("fetch_agent_request", open.clone())
+        .then_answering_rpc("fetch_agent_request", open.clone())
+        .then_answering_rpc("fetch_agent_request", open)
+        .then_answering_rpc("fetch_agent_request", resolved)
+        .answering_rpc("agent_permission_response", v(PERMISSION_RESOLVED));
+    let plane = Plane::fresh(recorded);
+    let identity = NativeRuntimeIdentity {
+        runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("the runtime kind"),
+        host: name(HOST_KEY),
+        generation: 1,
+        native_id: external(AGENT_ID),
+    };
+
+    let refused = plane
+        .adapter
+        .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+            run_id,
+            seat_binding_id: wrong_seat,
+            identity: identity.clone(),
+            requested_at: at("2026-08-10T09:42:00Z"),
+        })
+        .await
+        .expect_err("another logical seat cannot inspect this native");
+    assert!(matches!(refused, RuntimeError::CorrelationFailed));
+    assert_eq!(plane.daemon.count("rpc agent_permission_response"), 0);
+
+    let inspection = plane
+        .adapter
+        .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+            run_id,
+            seat_binding_id,
+            identity: identity.clone(),
+            requested_at: at("2026-08-10T09:43:00Z"),
+        })
+        .await
+        .expect("the exact Committee filler is inspectable");
+    assert_eq!(inspection.pending_permissions, vec![external("perm_1")]);
+
+    let response_id = MessageId::parse(MESSAGE).expect("a stable response id");
+    let response = plane
+        .adapter
+        .respond_consultation_permission(&ConsultationPermissionResponseRequest {
+            run_id,
+            seat_binding_id,
+            identity,
+            permission_id: external("perm_1"),
+            response_id,
+            decision: PermissionDecision::Allow,
+            responded_at: at("2026-08-10T09:44:00Z"),
+        })
+        .await
+        .expect("the exact pending permission is answered");
+    assert_eq!(response.seat_binding_id, seat_binding_id);
+    assert_eq!(response.permission_id, external("perm_1"));
+    assert_eq!(response.response_id, response_id);
+    assert_eq!(response.decision, PermissionDecision::Allow);
+    assert_eq!(
+        plane.daemon.count("rpc agent_permission_response"),
+        1,
+        "one exact response causes one native effect"
+    );
 }
 
 #[tokio::test]

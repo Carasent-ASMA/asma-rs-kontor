@@ -1872,6 +1872,156 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read pending runtime permission requests from one exact Committee seat.",
+        "operationId": "inspect_consultation_permissions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsultationPermissionInspectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions/{permission_id}": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Answer one pending runtime permission on an exact Committee seat.",
+        "operationId": "respond_consultation_permission",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "permission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PermissionRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsultationPermissionAckDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover": {
       "post": {
         "tags": [
@@ -11429,6 +11579,92 @@
             "format": "int32",
             "description": "The pinned revision.",
             "minimum": 0
+          }
+        }
+      },
+      "ConsultationPermissionAckDto": {
+        "type": "object",
+        "description": "Durable acknowledgement for one Committee permission answer.",
+        "required": [
+          "realm_id",
+          "committee_run_id",
+          "seat_binding_id",
+          "permission_id",
+          "response_id",
+          "decision",
+          "accepted_at"
+        ],
+        "properties": {
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Runtime acceptance instant."
+          },
+          "committee_run_id": {
+            "type": "string",
+            "description": "Owning Committee run."
+          },
+          "decision": {
+            "type": "string",
+            "description": "Applied decision."
+          },
+          "permission_id": {
+            "type": "string",
+            "description": "Runtime request that was answered."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that performed the effect."
+          },
+          "response_id": {
+            "type": "string",
+            "description": "Stable response identity from `Idempotency-Key`."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Persistent logical seat."
+          }
+        }
+      },
+      "ConsultationPermissionInspectionDto": {
+        "type": "object",
+        "description": "Fresh pending-permission readback for one exact Committee seat.",
+        "required": [
+          "realm_id",
+          "committee_run_id",
+          "seat_binding_id",
+          "native_id",
+          "pending_permissions",
+          "observed_at"
+        ],
+        "properties": {
+          "committee_run_id": {
+            "type": "string",
+            "description": "Owning Committee run."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact native filler that was inspected."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Runtime observation instant."
+          },
+          "pending_permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Runtime permission request ids still awaiting a decision."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that performed the readback."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Persistent logical seat."
           }
         }
       },

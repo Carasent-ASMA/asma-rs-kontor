@@ -59,23 +59,23 @@ use kontor_api::applications::{
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeReReviewProvenance, CommitteeRunDto,
     CommitteeVerdictDto, CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto,
     CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
-    ConsultationSeatDto, ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto,
-    ConsultationVerdictDto, CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest,
-    CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest,
-    CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
-    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
-    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
-    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
-    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
-    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
-    InvokeConsultationRequest, NeedsHumanDto, ProfileApplyRequest, ProfileCatalogDto,
-    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
-    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
-    RecordFindingsRequest, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
-    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    ConsultationPermissionAckDto, ConsultationPermissionInspectionDto, ConsultationSeatDto,
+    ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
+    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
+    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
+    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
+    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
+    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
+    IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
+    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
+    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
+    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -185,6 +185,7 @@ use kontor_profiles::pack::{
 };
 use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationFallbackDisposition, ConsultationLaunchRequest,
+    ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationRouteSource, ConsultationSeatRetireRequest,
     HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatInspectRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
@@ -198,7 +199,7 @@ use kontor_runtime::container::{
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
-    LaunchParts, LaunchPlacement, MessageId, ReconcileSessionLabelsRequest,
+    LaunchParts, LaunchPlacement, MessageId, PermissionDecision, ReconcileSessionLabelsRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
@@ -218,12 +219,13 @@ use kontor_scheduler::{
 };
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport, EpicApplication,
+    AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport,
+    ConsultationPermissionDecision, ConsultationPermissionResponseStatus, EpicApplication,
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
     JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
-    SettledTurn, SqliteStore, StoredConflict, StoredTeamDraft, StoredTeamsProjection,
-    TeamTemplateSource, TurnDispatch,
+    SettledTurn, SqliteStore, StoredConflict, StoredConsultationPermissionResponse,
+    StoredTeamDraft, StoredTeamsProjection, TeamTemplateSource, TurnDispatch,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -16923,6 +16925,232 @@ impl ApplicationOperations for Services {
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
         self.committee_run_dto(&run, None, AppliedDto::Unchanged)
     }
+
+    async fn inspect_consultation_permissions(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<ConsultationPermissionInspectionDto, ApiError> {
+        let state = self.state()?;
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let seat = state
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.run_id == run.id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee has no such logical consultation seat",
+                )
+            })?;
+        let identity = seat.native_identity.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee permission target has no attested native filler",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime that owns the Committee seat is not configured",
+                )
+            })?;
+        let inspection = adapter
+            .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                run_id: run.id,
+                seat_binding_id,
+                identity: identity.clone(),
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        Ok(ConsultationPermissionInspectionDto {
+            realm_id: state.realm_id(),
+            committee_run_id,
+            seat_binding_id,
+            native_id: identity.native_id,
+            pending_permissions: inspection.pending_permissions,
+            observed_at: inspection.observed_at,
+        })
+    }
+
+    async fn respond_consultation_permission(
+        &self,
+        response_id: MessageId,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        seat_binding_id: SeatBindingId,
+        permission_id: ExternalId,
+        decision: PermissionDecision,
+    ) -> Result<ConsultationPermissionAckDto, ApiError> {
+        let state = self.state()?;
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let seat = state
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|seat| seat.run_id == run.id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the Committee has no such logical consultation seat",
+                )
+            })?;
+        let identity = seat.native_identity.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee permission target has no attested native filler",
+            )
+        })?;
+        let now = kontor_api::now();
+        let durable_response_id = ExternalId::parse(&response_id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let durable_decision = match decision {
+            PermissionDecision::Allow => ConsultationPermissionDecision::Allow,
+            PermissionDecision::Deny => ConsultationPermissionDecision::Deny,
+        };
+        let intended = StoredConsultationPermissionResponse {
+            project_id,
+            committee_run_id,
+            seat_binding_id,
+            occupancy_generation: seat.occupancy_generation,
+            native_id: identity.native_id.clone(),
+            permission_id: permission_id.clone(),
+            response_id: durable_response_id.clone(),
+            decision: durable_decision,
+            status: ConsultationPermissionResponseStatus::Planned,
+            planned_at: now,
+            accepted_at: None,
+        };
+        let existing = state
+            .with_store(|store| store.get_consultation_permission_response(&durable_response_id))
+            .map_err(|error| self.refuse(&error))?;
+        if let Some(existing) = &existing
+            && (existing.project_id != intended.project_id
+                || existing.committee_run_id != intended.committee_run_id
+                || existing.seat_binding_id != intended.seat_binding_id
+                || existing.occupancy_generation != intended.occupancy_generation
+                || existing.native_id != intended.native_id
+                || existing.permission_id != intended.permission_id
+                || existing.response_id != intended.response_id
+                || existing.decision != intended.decision)
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the Committee permission response id already names another exact answer",
+            ));
+        }
+        if existing.as_ref().is_some_and(|response| {
+            response.status == ConsultationPermissionResponseStatus::Confirmed
+        }) {
+            let confirmed = existing
+                .as_ref()
+                .expect("the confirmed response was just matched");
+            return Ok(ConsultationPermissionAckDto {
+                realm_id: state.realm_id(),
+                committee_run_id,
+                seat_binding_id,
+                permission_id,
+                response_id: response_id.to_string(),
+                decision,
+                accepted_at: confirmed.accepted_at.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the confirmed Committee permission response has no acceptance time",
+                    )
+                })?,
+            });
+        }
+        if existing.as_ref().is_some_and(|response| {
+            response.status == ConsultationPermissionResponseStatus::Dispatching
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the Committee permission response is in confirmation-unknown recovery",
+            ));
+        }
+        if matches!(
+            run.state,
+            ConsultationRunState::Settled | ConsultationRunState::NeedsHuman
+        ) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal Committee cannot authorize a new native permission effect",
+            ));
+        }
+        let adapter = state
+            .runtimes()
+            .get(&identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime that owns the Committee seat is not configured",
+                )
+            })?;
+        let inspection = adapter
+            .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                run_id: run.id,
+                seat_binding_id,
+                identity: identity.clone(),
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if !inspection.pending_permissions.contains(&permission_id) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the named permission is not pending on this exact Committee seat",
+            ));
+        }
+        if existing.is_none() {
+            state
+                .with_store(|store| store.plan_consultation_permission_response(&intended))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        state
+            .with_store(|store| store.claim_consultation_permission_response(&durable_response_id))
+            .map_err(|error| self.refuse(&error))?;
+        let acknowledged = adapter
+            .respond_consultation_permission(&ConsultationPermissionResponseRequest {
+                run_id: run.id,
+                seat_binding_id,
+                identity,
+                permission_id: permission_id.clone(),
+                response_id,
+                decision,
+                responded_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let confirmed = state
+            .with_store(|store| {
+                store.confirm_consultation_permission_response(
+                    &durable_response_id,
+                    acknowledged.accepted_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(ConsultationPermissionAckDto {
+            realm_id: state.realm_id(),
+            committee_run_id,
+            seat_binding_id,
+            permission_id,
+            response_id: response_id.to_string(),
+            decision,
+            accepted_at: confirmed.accepted_at.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the confirmed Committee permission response has no acceptance time",
+                )
+            })?,
+        })
+    }
+
     async fn recover_consultation_seat(
         &self,
         key: &IdempotencyKey,

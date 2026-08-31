@@ -30,6 +30,7 @@
 pub mod authority;
 pub mod backup;
 mod commands;
+mod consultation_permissions;
 mod events;
 mod graph;
 mod intake;
@@ -55,6 +56,10 @@ pub use commands::intent::DispatchClaim;
 pub use commands::receipts::{
     CommandRecovery, CommandTransition, LaunchReceiptReconciliation, ReceiptTransition,
     RecordedTransition,
+};
+pub use consultation_permissions::{
+    ConsultationPermissionDecision, ConsultationPermissionResponseStatus,
+    StoredConsultationPermissionResponse,
 };
 pub use events::types::{
     ConsumerPage, ContentDiscontinuity, ContentGapOutcome, ControlGap, ControlObservation,

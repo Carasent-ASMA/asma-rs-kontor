@@ -79,8 +79,8 @@ use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
 use kontor_scheduler::model::CapacityConfig;
 use kontor_store::{
-    IdempotencyBinding, JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch,
-    NewJiraMaterializationItem, RegisteredPack, TeamTemplateSource,
+    ConsultationPermissionResponseStatus, IdempotencyBinding, JiraIntentKind, JiraItemKind,
+    NewJiraMaterializationBatch, NewJiraMaterializationItem, RegisteredPack, TeamTemplateSource,
 };
 use secrecy::SecretString;
 use wiremock::matchers::{method, path};
@@ -26963,6 +26963,104 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         })
         .collect();
     assert_eq!(reviewer_ids.len(), 2, "{}", invoked.body);
+    let permission_seat = SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding");
+    let permission_id = ExternalId::parse("permission-committee-42").expect("a permission id");
+    world
+        .fake
+        .raise_consultation_permission(permission_seat, permission_id.clone())
+        .expect("the launched reviewer raises a permission");
+
+    let pending = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{run}/seats/{permission_seat}/permissions"
+    ))
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(pending.status, 200, "{}", pending.body);
+    assert_eq!(
+        pending.json()["pending_permissions"],
+        serde_json::json!([permission_id.as_str()])
+    );
+
+    let permission_response_id = uuid::Uuid::now_v7().to_string();
+    let calls_before_permission_response = world.fake.calls().len();
+    let allowed = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{run}/seats/{permission_seat}/permissions/{permission_id}"
+        ),
+        &serde_json::json!({"decision": "allow"}),
+    )
+    .signed_as(world, "operator")
+    .with_key(&permission_response_id)
+    .send(world)
+    .await;
+    assert_eq!(allowed.status, 200, "{}", allowed.body);
+    assert_eq!(allowed.json()["decision"], "allow");
+    assert_eq!(allowed.json()["response_id"], permission_response_id);
+    assert_eq!(
+        allowed.json()["seat_binding_id"],
+        permission_seat.to_string()
+    );
+    assert_eq!(allowed.json()["permission_id"], permission_id.as_str());
+    assert_eq!(
+        world.fake.calls()[calls_before_permission_response..]
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RespondConsultationPermission(binding) if *binding == permission_seat))
+            .count(),
+        1,
+        "one durable answer must cause exactly one native effect"
+    );
+
+    let calls_after_permission_response = world.fake.calls().len();
+    let replayed_permission = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{run}/seats/{permission_seat}/permissions/{permission_id}"
+        ),
+        &serde_json::json!({"decision": "allow"}),
+    )
+    .signed_as(world, "operator")
+    .with_key(&permission_response_id)
+    .send(world)
+    .await;
+    assert_eq!(
+        replayed_permission.status, 200,
+        "{}",
+        replayed_permission.body
+    );
+    assert_eq!(replayed_permission.json(), allowed.json());
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_permission_response,
+        "a confirmed replay must not inspect or answer the runtime twice"
+    );
+
+    let no_longer_pending = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{run}/seats/{permission_seat}/permissions"
+    ))
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(no_longer_pending.status, 200, "{}", no_longer_pending.body);
+    assert_eq!(
+        no_longer_pending.json()["pending_permissions"],
+        serde_json::json!([])
+    );
+    let durable_permission = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_permission_response(
+                &ExternalId::parse(&permission_response_id).expect("a response id"),
+            )
+            .expect("the response ledger reads")
+            .expect("the response is durable")
+    });
+    assert_eq!(
+        durable_permission.status,
+        ConsultationPermissionResponseStatus::Confirmed
+    );
+    assert_eq!(durable_permission.seat_binding_id, permission_seat);
+    assert_eq!(durable_permission.permission_id, permission_id);
+    assert!(durable_permission.accepted_at.is_some());
+
     let predecessor_token = world
         .daemon
         .state()
