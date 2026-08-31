@@ -1,5 +1,13 @@
 # OP-20 upstream dependency — an applied OpenCode permission policy
 
+
+> **SUPERSEDED — read `2026-08-31-delivery-re-enabled-on-applied-acknowledgement.md` first.**
+> Every status in this file is historical. OpenCode delivery is **enabled**,
+> gated on the daemon advertising `providerOptionsApplied` and on an explicit
+> per-agent `providerOptionsApplied: true`. Statements below that delivery is
+> refused, fail-closed, or not reachable were true when written and are not now.
+> They are kept verbatim as the record of what was tried and why it failed.
+
 - **Task:** `01a02a7f-8e47-7682-be52-1b9f2a632ac4`, "Deterministic agent
   permission posture at spawn time". Not ASMA-7968.
 - **Status:** OP-20 is **in progress and not delivered.** OpenCode delivery is

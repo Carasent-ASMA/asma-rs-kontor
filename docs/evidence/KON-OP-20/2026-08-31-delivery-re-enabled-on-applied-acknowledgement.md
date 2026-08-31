@@ -14,11 +14,31 @@
 
 ## What ships
 
-One `create_agent_request` is the whole launch. It carries
-`config.providerOptions.permission`, the typed MCP surface in
-`config.mcpServers`, `config.initialPrompt`, a `config.clientMessageId` derived
-from the launch rather than generated, and a launch-intent digest label over the
-whole configuration **and** the prompt and its message id.
+One `create_agent_request` is the whole launch. Inside `config`:
+`providerOptions.permission` and the typed MCP surface in `mcpServers`. As
+**top-level siblings of `config`**: `initialPrompt`, a `clientMessageId` derived
+from the launch rather than generated, and `labels` carrying a launch-intent
+digest over the whole outgoing message **and** the prompt and its message id.
+
+The envelope is read from `paseo-op20-v0.6.1-backport` at commit `a8781451415c065910cc768999a1129222e7204a`:
+
+- `packages/protocol/src/messages.ts`, `CreateAgentRequestMessageSchema` —
+  `initialPrompt`, `clientMessageId` and `labels` are declared as siblings of
+  `config`, not fields within it.
+- `packages/server/src/server/session.ts`, `handleCreateAgentRequest` —
+  destructures `initialPrompt` and `clientMessageId` from the message and passes
+  both to `createAgentCommand`.
+- the same handler answers with a `type: "status"` frame whose payload carries
+  `status: "agent_created"`, the `requestId`, and the agent payload built from
+  `liveSnapshot`; `createAgentCommand` awaits `sendInitialPrompt` before that.
+
+Two further facts from the same source shape the gates:
+`websocket-server.ts` advertises `providerOptionsApplied: true` in the
+`server_info` feature object, and `agent-projections.ts` emits
+`providerOptionsApplied` on the agent **only when it is true** — the field is
+`true`-or-absent, never `false`. Kontor's reader requires an explicit `true`, so
+absence refuses; the `false` case is covered defensively and is a value this
+daemon does not send.
 
 The two-stage shape is not restored. With the daemon reporting application on the
 agent itself, a separate first turn proves nothing the snapshot does not already
@@ -71,7 +91,10 @@ Claude, Codex and Cursor keep the CLI create and readback unchanged.
 - fmt clean; `clippy --workspace --all-targets -D warnings` 0; rustdoc
   broken-intra-doc-link gate for `kontor-runtime-paseo` exit 0.
 - `kontor-runtime-paseo` lib 92, contract 166; `kontor-daemon` lib 57.
-- **Mutation: 20/20 killed** over the caller gates. Three survived their first
+- **Mutation: 30/30 killed** over the caller gates — twenty on the launch
+  wiring, two on the create envelope once it was corrected (a wrong declared
+  response type, and `initialPrompt` moved off the message top level), and eight
+  on the two create-to-bind findings below. Three survived their first
   run, and each survival was the finding:
   - an incomplete census treated as complete stayed green because the test
     asserted only the error *variant*, and "could not enumerate" and "found none"
@@ -101,11 +124,51 @@ delivery create now matches it, and
 together so they cannot drift. Two mutants confirm it — a wrong response type
 and a prompt moved off the top level are both caught.
 
-**Still unverified from here:** the exact placement of `clientMessageId` in the
-upstream backport. It is a sibling of `initialPrompt`, which is the consistent
-reading of the evidenced envelope, but the ASMA-7869 source is not on this
-machine and no test can establish it. This is the one field to check against
-upstream before a live launch.
+**Now closed.** The placement of `clientMessageId` was recorded here as
+unverified, because the ASMA-7869 source was not on this machine at the time. It
+is, at `paseo-op20-v0.6.1-backport` at commit `a8781451415c065910cc768999a1129222e7204a`, and it confirms the shipped
+envelope: `clientMessageId` is a top-level sibling of `initialPrompt`, exactly as
+sent. Nothing about the create is inferred any more.
+
+## Two create-to-bind findings, and what they changed
+
+Both were confirmed against the backport source before any code moved.
+
+**An archive acknowledgement is not the cleanup.** `compensate_invalid_seat`
+awaited the archive with `?` before reading the seat back, so an acknowledgement
+lost *after* the daemon archived the seat returned a plain transport error,
+proved no terminal state, and released the launch claim — licensing a second
+create for a run that already had a native. The archive is now attempted, its
+outcome logged, and the readback runs either way. Only a fresh reading of that
+exact agent as terminal counts; live, unfetchable, or an answer about a different
+agent all keep the claim.
+
+**`agent_create_failed` is not evidence that nothing was created.**
+`resolveSessionCreateAgent` sets `promptFailure: "throw"`, and
+`createAgentCommand` creates the agent *before* it sends the initial prompt. A
+prompt that fails therefore throws out of the command, `createdAgentId =
+snapshot.id` is never reached, and the catch emits `agent_create_failed` while
+the agent is running — an agent the daemon's own
+`cleanupCreatedWorktreeAfterFailedAgentCreate` also skips, having been handed a
+null id. So it releases nothing and goes to the census like every other ambiguous
+outcome.
+
+The same fact reshapes recovery. Because the prompt is sent after the agent
+exists, an agent can carry this launch's exact intent and never have been told
+anything; adopting it on labels alone would seat a run on a session that sits
+idle forever while the launch reports success. An adopted agent must now have the
+launch's `clientMessageId` on its **canonical** timeline — scanned backward from
+the tail, bounded pages, one fixed epoch. Absent id, unfinished scan, renumbering
+mid-scan, or a daemon-reported gap all refuse without binding and without
+creating.
+
+`scan_canonical` is deliberately not reused: it is keyed on a
+`RuntimeBindingSnapshot` for cursor bookkeeping, and there is no binding here yet
+— inventing one would write continuity state for a session that may never be
+adopted.
+
+A direct, correlated `agent_created` is unaffected and still requires
+`providerOptionsApplied: true`.
 
 ## Not claimed
 

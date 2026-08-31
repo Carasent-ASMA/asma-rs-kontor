@@ -1,5 +1,13 @@
 # KON-OP-20 — permission-posture mutation proof
 
+
+> **Read the last sweep first.** OpenCode delivery is **enabled**; the executed
+> total for the re-enabled path is **30 mutants, 30 killed** — twenty on the
+> launch wiring, two on the create envelope, and eight on the two create-to-bind
+> findings that followed. Earlier sweeps in this file
+> describe paths that were deleted, and the dispositions between them are
+> historical. They are kept as the record of what was tried.
+
 Date: 2026-08-30 (revised after inspector review)
 Task: `01a02a7f-8e47-7682-be52-1b9f2a632ac4` (permission posture). **Not ASMA-7968.**
 Branch: `feat/KON-OP-20-permission-posture-at-spawn`, baseline `origin/master` `e814661`.
@@ -333,7 +341,7 @@ See `2026-08-31-delivery-re-enabled-on-applied-acknowledgement.md`. Anything
 above describing an owned configuration root, a seat environment, a written
 block, a separate first-turn proof, or an unconditional refusal is **history**.
 
-## Re-enabled delivery sweep — 2026-08-31 (20/20 killed)
+## Re-enabled delivery sweep — 2026-08-31 (20 of the eventual 22 killed)
 
 Against the committed one-stage path. Each mutant verified to have landed at the
 intended site and reverted after; tree verified clean.
@@ -381,15 +389,61 @@ edit landed on the wrong `if !complete` — there are three in this file. Mutant
 are now anchored on enough surrounding text to be unambiguous, and the harness
 reports `NOT-APPLIED` rather than `SURVIVED` when its anchor is missing.
 
-### Envelope pins — 2026-08-31 (2/2 killed)
+### Envelope pins — 2026-08-31 (2/2 killed) — **the sweep total is 22**
+
+The twenty above were executed before the create envelope was corrected. These
+two were executed after, against the corrected bytes, and are part of the same
+sweep. **22 mutants were executed in total and 22 were killed;** any statement of
+"20/20" for this work is a stale count.
 
 | Mutation | Result |
 | --- | --- |
-| the create declares response type `create_agent_response` | killed |
-| `initialPrompt` moves off the message top level | killed |
+| the create declares response type `create_agent_response` instead of `status` | killed |
+| `initialPrompt` moves off the message top level into `config` | killed |
 
 Both are wire details no fixture can falsify: the recorded transport answers
 with whatever response type the request declared, and nothing else asserts where
-the daemon reads the prompt from. They are pinned against
+the daemon reads the prompt from. They are pinned by
+`the_delivery_create_matches_the_evidenced_create_envelope` against
 `PaseoRpc::hosted_seat_agent_create`, which is evidenced in production, rather
 than against a fixture.
+
+Both are now also confirmed directly against the upstream source, which is on
+this machine at `paseo-op20-v0.6.1-backport`, commit
+`a8781451415c065910cc768999a1129222e7204a`:
+`CreateAgentRequestMessageSchema` declares `initialPrompt`, `clientMessageId`
+and `labels` as siblings of `config`, and `handleCreateAgentRequest` answers with
+a `type: "status"` frame carrying `agent_created`, the `requestId` and the agent
+payload.
+
+
+### Create-to-bind findings — 2026-08-31 (8/8 killed) — **sweep total is 30**
+
+Two blocking findings after the re-enable, both confirmed against the exact
+v0.6.1 backport `a8781451415c065910cc768999a1129222e7204a` before any code moved.
+
+| Mutation | Result |
+| --- | --- |
+| compensation restores the early `?` on the archive send | killed |
+| compensation accepts a readback that is still live | killed |
+| an unfetchable compensating readback returns a plain error | killed |
+| `agent_create_failed` releases the claim | killed |
+| recovery adopts an exact-label agent on labels alone | killed |
+| the first-turn proof accepts any client message id | killed |
+| the timeline scan ignores a renumbering mid-scan | killed |
+| an exhausted page budget concludes the turn is absent | killed |
+
+The first three exist because an archive acknowledgement can be lost *after* the
+daemon archived the seat. Failing there called a finished cleanup undone, and —
+since a plain transport error releases the launch claim — licensed a second
+create for a run that already had a native.
+
+The last five exist because `resolveSessionCreateAgent` sets
+`promptFailure: "throw"` while `createAgentCommand` creates the agent *before*
+sending the initial prompt. A failing prompt throws out of the command with
+`createdAgentId` still null, so the daemon reports `agent_create_failed` about an
+agent that is running — and its own worktree cleanup skips that agent, having
+been handed a null id. Two consequences: the reported failure cannot release the
+claim, and an agent found by label may never have been prompted, so recovery has
+to find the launch's own `clientMessageId` on the canonical timeline before it
+binds anything.

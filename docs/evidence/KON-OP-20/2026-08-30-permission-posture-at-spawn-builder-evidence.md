@@ -1,5 +1,13 @@
 # KON-OP-20 — deterministic agent permission posture at spawn (builder evidence)
 
+
+> **SUPERSEDED — read `2026-08-31-delivery-re-enabled-on-applied-acknowledgement.md` first.**
+> Every status in this file is historical. OpenCode delivery is **enabled**,
+> gated on the daemon advertising `providerOptionsApplied` and on an explicit
+> per-agent `providerOptionsApplied: true`. Statements below that delivery is
+> refused, fail-closed, or not reachable were true when written and are not now.
+> They are kept verbatim as the record of what was tried and why it failed.
+
 - **Task:** `01a02a7f-8e47-7682-be52-1b9f2a632ac4`, `ai_short_name: permission posture`.
 - **Jira:** none — Kontor-native. **This is not ASMA-7968** (see `README.md` in this directory).
 - **Module:** `asma-rs-kontor`, branch `feat/KON-OP-20-permission-posture-at-spawn`, baseline `origin/master` = `e814661`.

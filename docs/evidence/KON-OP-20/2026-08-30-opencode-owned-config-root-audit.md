@@ -1,5 +1,13 @@
 # KON-OP-20 — owned per-seat OpenCode config root (installed-binary audit)
 
+
+> **SUPERSEDED — read `2026-08-31-delivery-re-enabled-on-applied-acknowledgement.md` first.**
+> Every status in this file is historical. OpenCode delivery is **enabled**,
+> gated on the daemon advertising `providerOptionsApplied` and on an explicit
+> per-agent `providerOptionsApplied: true`. Statements below that delivery is
+> refused, fail-closed, or not reachable were true when written and are not now.
+> They are kept verbatim as the record of what was tried and why it failed.
+
 Task `01a02a7f-8e47-7682-be52-1b9f2a632ac4` (permission posture). **Not ASMA-7968.**
 Audited against the installed OpenCode **1.18.15** and Paseo **0.6.1** on
 2026-08-30. User and global configuration were read only and left byte-identical.

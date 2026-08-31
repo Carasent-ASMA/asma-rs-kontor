@@ -144,10 +144,19 @@ both *can* apply that block and *says it did* for the exact agent.
 
 - `config.providerOptions.permission` — the rendered block;
 - `config.mcpServers` — the typed seat MCP surface;
-- `config.initialPrompt` — the first turn;
-- `config.clientMessageId` — derived from the launch, not generated, so a retry
-  asks about the same turn;
-- a launch-intent digest label over the whole configuration *and* the prompt.
+- `initialPrompt` — the first turn, a **top-level sibling of `config`**;
+- `clientMessageId` — likewise top-level, derived from the launch rather than
+  generated, so a retry asks about the same turn;
+- `labels`, also top-level, carrying a launch-intent digest over the whole
+  outgoing message *and* the prompt.
+
+The envelope is not a guess. `CreateAgentRequestMessageSchema`
+(`packages/protocol/src/messages.ts`) declares `initialPrompt`, `clientMessageId`
+and `labels` as siblings of `config`; `handleCreateAgentRequest`
+(`packages/server/src/server/session.ts`) destructures both from the message and
+passes them to `createAgentCommand`; and the answer is a `status` frame carrying
+`agent_created`, the `requestId` and the agent payload built from the live
+snapshot. Read from `paseo-op20-v0.6.1-backport` at commit `a8781451415c065910cc768999a1129222e7204a`.
 
 There is no second stage. An earlier design created the seat empty and sent the
 first turn separately so acceptance could stand as proof; with the daemon now
@@ -177,18 +186,34 @@ Reconciliation is an exact-label paginated census on the launch intent:
 
 | The census finds | What happens |
 | --- | --- |
-| one match, unbound | adopted — it is this launch's own effect |
+| one match, unbound, **and its first turn proved** | adopted — it is this launch's own effect |
+| one match, unbound, first turn not provable | refused; it was created and never told anything |
 | one match, already bound to a run | refused; one session may not have two owners |
 | none, on a complete enumeration | `DeliveryConfirmationUnknown` — **the seat claim is kept** |
 | several, or an enumeration that did not finish | quarantined: no adoption, no create, no release |
 
-Keeping the claim is the point. Releasing it would let the next attempt take the
-slot and create a *second* agent for the same run. Only the daemon's own
-`agent_create_failed` releases it, because only that says nothing was made.
+Labels prove a create happened; they do not prove the turn did. The create sends
+the prompt *after* the agent exists, so an agent can carry this launch's exact
+intent and never have been prompted — adopting it would seat a run on a session
+that sits idle forever while the launch reports success. Recovery therefore
+requires the launch's `clientMessageId` on the agent's **canonical** timeline,
+scanned backward from the tail with bounded pages under one fixed epoch. An
+absent id, an unfinished scan, a renumbering mid-scan, or a daemon-reported gap
+all refuse.
+
+Keeping the claim is the point, and **nothing releases it on an ambiguous
+outcome** — including `agent_create_failed`. That word is not evidence the daemon
+made nothing: upstream sets `promptFailure: "throw"` and creates the agent before
+sending the prompt, so a failing prompt reports a create failure while the agent
+runs. Releasing there would let the next attempt take the slot and create a
+*second* agent for a run that already has one.
 
 A created seat that fails any check is archived over the same socket and read
-back terminal; an archive that cannot be confirmed refuses recoverably rather
-than reporting a cleanup that may not have happened. A durable bind failure
+back terminal. The archive *acknowledgement* is not the cleanup: it can be lost
+after the daemon has already acted, so the readback runs whether or not the send
+was acknowledged, and only a fresh reading of that exact agent as terminal
+counts. Live, unfetchable, or an answer about a different agent all refuse
+recoverably and keep the claim. A durable bind failure
 returns confirmation-unknown too: the intent label is on the agent, so
 reconciliation adopts that very seat instead of stranding or duplicating it.
 
