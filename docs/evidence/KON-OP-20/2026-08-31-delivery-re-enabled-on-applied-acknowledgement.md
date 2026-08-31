@@ -5,9 +5,14 @@
 - **Supersedes:** every fail-closed disposition in this directory, and the
   `2026-08-31-upstream-dependency-applied-permission.md` note, whose dependency
   is now satisfied.
-- **Upstream:** ASMA-7869, exact-v0.6.1 backport
-  `a8781451415c065910cc768999a1129222e7204a` (parent exact tag `20d7efc…`),
-  green and packaged-smoke proven. It applies the exact ordered OpenCode policy
+- **Upstream carrier (deploy pin):** ASMA-7869 on exact v0.6.1 —
+  **`a07ed03e0`**, parent `a8781451415c065910cc768999a1129222e7204a`, itself parented on the
+  `20d7efc…` release tag. The same fix is `661536df9` on main.
+  `a07ed03e0` is the commit a deployment carries; `a8781451415c065910cc768999a1129222e7204a` is
+  cited below only where a *defect in that earlier revision* is the reason for a
+  Kontor behaviour.
+
+  The carrier applies the exact ordered OpenCode policy
   at `session.create` / `session.update`, requires the returned session echo,
   advertises `server_info.features.providerOptionsApplied`, and projects
   `providerOptionsApplied: true` on the exact agent snapshot.
@@ -95,10 +100,11 @@ Claude, Codex and Cursor keep the CLI create and readback unchanged.
 - fmt clean; `clippy --workspace --all-targets -D warnings` 0; rustdoc
   broken-intra-doc-link gate for `kontor-runtime-paseo` exit 0.
 - `kontor-runtime-paseo` lib 92, contract 166; `kontor-daemon` lib 57.
-- **Mutation: 30/30 killed** over the caller gates — twenty on the launch
+- **Mutation: 32/32 killed** over the caller gates — twenty on the launch
   wiring, two on the create envelope once it was corrected (a wrong declared
-  response type, and `initialPrompt` moved off the message top level), and eight
-  on the two create-to-bind findings below. Three survived their first
+  response type, and `initialPrompt` moved off the message top level), eight on
+  the two create-to-bind findings below, and two on the typed
+  `agent_create_unresolved` status. Three survived their first
   run, and each survival was the finding:
   - an incomplete census treated as complete stayed green because the test
     asserted only the error *variant*, and "could not enumerate" and "found none"
@@ -147,15 +153,27 @@ outcome logged, and the readback runs either way. Only a fresh reading of that
 exact agent as terminal counts; live, unfetchable, or an answer about a different
 agent all keep the claim.
 
-**`agent_create_failed` is not evidence that nothing was created.**
-`resolveSessionCreateAgent` sets `promptFailure: "throw"`, and
-`createAgentCommand` creates the agent *before* it sends the initial prompt. A
-prompt that fails therefore throws out of the command, `createdAgentId =
-snapshot.id` is never reached, and the catch emits `agent_create_failed` while
-the agent is running — an agent the daemon's own
-`cleanupCreatedWorktreeAfterFailedAgentCreate` also skips, having been handed a
-null id. So it releases nothing and goes to the census like every other ambiguous
-outcome.
+**A reported create failure is not evidence that nothing was created**, and
+Kontor treats it that way on every daemon. Three revisions matter here, and they
+differ:
+
+| Revision | On a post-create prompt failure |
+| --- | --- |
+| stock 0.6.1 `a8781451415c065910cc768999a1129222e7204a` | `createdAgentId` was captured *after* the prompt, so a throwing prompt left it null. The catch emitted `agent_create_failed` **while the agent ran**, and `cleanupCreatedWorktreeAfterFailedAgentCreate` skipped it too, having been handed a null id. |
+| deployed candidate `a07ed03e0` | `onCreated` fires *before* `sendInitialPrompt`, so the id is recorded first. `compensateCreatedAgentAfterFailedCreate` then attempts an exact-agent archive: on success it emits `agent_create_failed`, now genuinely meaning compensation was **confirmed**; on failure it emits the typed `agent_create_unresolved` carrying `requestId` and `agentId`. |
+| Kontor | **Does not distinguish them.** Failed, unresolved and unrecognised all take the same census and first-turn proof, and none releases the seat claim. |
+
+The reason Kontor stays conservative is not doubt about the candidate — the
+candidate's behaviour is read from the local checkout and is correct. It is that
+branching on the word would make correctness depend on which build answered, and
+a daemon can be rolled back or replaced under a running plane. One path serves
+both, and it costs one directory read on a path that is already the unhappy one.
+
+Kontor also does not adopt the agent the candidate *names* in
+`agent_create_unresolved`. That id is recorded for the operator and never bound
+on; the agent is found through the census and its own timeline or not at all.
+There is deliberately no predicate over the status — a predicate exists to be
+branched on.
 
 The same fact reshapes recovery. Because the prompt is sent after the agent
 exists, an agent can carry this launch's exact intent and never have been told

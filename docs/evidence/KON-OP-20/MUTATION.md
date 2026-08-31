@@ -2,9 +2,10 @@
 
 
 > **Read the last sweep first.** OpenCode delivery is **enabled**; the executed
-> total for the re-enabled path is **30 mutants, 30 killed** — twenty on the
-> launch wiring, two on the create envelope, and eight on the two create-to-bind
-> findings that followed. Earlier sweeps in this file
+> total for the re-enabled path is **32 mutants, 32 killed** — twenty on the
+> launch wiring, two on the create envelope, eight on the two create-to-bind
+> findings, and two on the typed `agent_create_unresolved` status. Deploy carrier
+> pin: `a07ed03e0` on exact v0.6.1, `661536df9` on main. Earlier sweeps in this file
 > describe paths that were deleted, and the dispositions between them are
 > historical. They are kept as the record of what was tried.
 
@@ -447,3 +448,24 @@ been handed a null id. Two consequences: the reported failure cannot release the
 claim, and an agent found by label may never have been prompted, so recovery has
 to find the launch's own `clientMessageId` on the canonical timeline before it
 binds anything.
+
+
+### Unresolved-create handling — 2026-08-31 (2/2 killed) — **sweep total is 32**
+
+The deploy carrier `a07ed03e0` adds a typed `agent_create_unresolved`: it records
+the native id before the initial prompt, attempts an exact-agent archive when the
+create then fails, and reports plain failure only once that compensation is
+confirmed. Kontor types the status and deliberately does not act on it.
+
+| Mutation | Result |
+| --- | --- |
+| `agent_create_unresolved` is treated as a plain failure that releases the claim | killed |
+| an unresolved create binds the agent the daemon named, skipping the turn proof | killed |
+
+A third mutant — removing the `UNRESOLVED` arm from a `reported_failure`
+predicate — **survived, and the survival was correct**: nothing called that
+predicate, because the launch path routes every non-`agent_created` outcome to
+the same census without inspecting the status. Rather than write a test for
+behaviour production ignores, the predicate was deleted. A `pub` predicate with
+no caller exists to be branched on, and the design's whole point is not to
+branch; the status and named agent are now recorded in a log line instead.

@@ -156,7 +156,7 @@ and `labels` as siblings of `config`; `handleCreateAgentRequest`
 (`packages/server/src/server/session.ts`) destructures both from the message and
 passes them to `createAgentCommand`; and the answer is a `status` frame carrying
 `agent_created`, the `requestId` and the agent payload built from the live
-snapshot. Read from `paseo-op20-v0.6.1-backport` at commit `a8781451415c065910cc768999a1129222e7204a`.
+snapshot. Read from `paseo-op20-v0.6.1-backport`, deploy pin `a07ed03e0`.
 
 There is no second stage. An earlier design created the seat empty and sent the
 first turn separately so acceptance could stand as proof; with the daemon now
@@ -202,11 +202,22 @@ absent id, an unfinished scan, a renumbering mid-scan, or a daemon-reported gap
 all refuse.
 
 Keeping the claim is the point, and **nothing releases it on an ambiguous
-outcome** — including `agent_create_failed`. That word is not evidence the daemon
-made nothing: upstream sets `promptFailure: "throw"` and creates the agent before
-sending the prompt, so a failing prompt reports a create failure while the agent
-runs. Releasing there would let the next attempt take the slot and create a
-*second* agent for a run that already has one.
+outcome** — not `agent_create_failed`, not the typed `agent_create_unresolved`,
+not an unrecognised status. Releasing would let the next attempt take the slot
+and create a *second* agent for a run that may already have one.
+
+The deploy carrier (`a07ed03e0` on exact v0.6.1; `661536df9` on main) does
+distinguish those two words: it records the native id before sending the initial
+prompt, attempts an exact-agent archive if the create then fails, and reports
+`agent_create_failed` only once that compensation is **confirmed** —
+`agent_create_unresolved`, naming the agent, when it is not. The revision before
+it (`a878145`) could not: the id was captured after the prompt, so a throwing
+prompt left it null and a create failure was reported while the agent ran.
+
+Kontor does not branch on the difference, and does not adopt the agent the
+carrier names. Branching would make correctness depend on which build answered,
+and a daemon can be rolled back under a running plane. One path — census, then
+first-turn proof — serves both.
 
 A created seat that fails any check is archived over the same socket and read
 back terminal. The archive *acknowledgement* is not the cleanup: it can be lost
