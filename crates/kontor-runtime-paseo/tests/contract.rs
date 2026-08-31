@@ -1631,9 +1631,14 @@ async fn an_incomplete_census_quarantines_rather_than_concluding() {
         .launch(&request)
         .await
         .expect_err("a partial enumeration settles nothing");
+    // The *reason* has to be the incompleteness. "No agent carries this intent"
+    // is the same variant and a different claim — one says the enumeration could
+    // not answer, the other says it answered "none". A test that accepts either
+    // cannot see a census that stopped paginating and called itself complete.
     assert!(
-        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
-        "quarantined rather than concluded: {error:?}"
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("did not enumerate fully")),
+        "quarantined for incompleteness, not concluded: {error:?}"
     );
     assert_eq!(
         plane.daemon.count("rpc create_agent_request"),
@@ -1707,6 +1712,135 @@ async fn an_invalid_created_native_is_archived_and_read_back() {
         plane.daemon.count("rpc archive_agent_request"),
         1,
         "the seat that was created and refused is archived"
+    );
+}
+
+/// Several agents carrying one launch intent is divergence, not a choice.
+///
+/// The intent covers the whole create and the prompt, so two agents can only
+/// carry it if the plane has genuinely diverged. Picking one would bind a run to
+/// a session that may belong to another.
+#[tokio::test]
+async fn several_matching_agents_quarantine_rather_than_adopt() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+    let (request, binding_id, agent_run_id) = opencode_launch(&plane, &workspace).await;
+    let intent = standard_intent(binding_id, agent_run_id);
+
+    let first = opencode_agent(&intent, Some(true), false);
+    let mut second = opencode_agent(&intent, Some(true), false);
+    second["agent"]["id"] = serde_json::json!("agt_implement_twin");
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] =
+        serde_json::json!([{ "agent": first["agent"] }, { "agent": second["agent"] }]);
+
+    plane.daemon.lose_next_rpc("create_agent_request");
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("two agents for one intent is not something to choose between");
+    assert!(
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("diverged")),
+        "quarantined for divergence: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "and nothing was created a second time"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "nor archived: which of the two is ours is exactly what is unknown"
+    );
+}
+
+/// An agent carrying this intent that some run already owns is refused.
+///
+/// Adopting it would give one native session two owners. The seat is left alone
+/// — it is somebody's — and the launch says it could not settle.
+#[tokio::test]
+async fn a_reconciled_match_already_bound_is_refused() {
+    let (plane, workspace) = Plane::prepared(opencode_capable_daemon()).await;
+
+    // One seat, launched and bound, holding native `agt_implement`.
+    let (first, first_binding, first_run) = opencode_launch(&plane, &workspace).await;
+    let first_intent = standard_intent(first_binding, first_run);
+    plane.daemon.set_answer_rpc(
+        "create_agent_request",
+        created_answer(&opencode_agent(&first_intent, Some(true), false)),
+    );
+    plane
+        .adapter
+        .launch(&first)
+        .await
+        .expect("the first seat binds");
+
+    // A second seat in another slot. Its create answer is lost, and the census
+    // hands back an agent carrying *its* intent but the native the first seat
+    // already owns.
+    let (second, second_binding, second_run) = opencode_launch_in_slot(
+        &plane,
+        &workspace,
+        "implement-b",
+        "Implement • KON-19 • B",
+        run(RUN_QA),
+    )
+    .await;
+    let second_intent = expected_intent(
+        second_binding,
+        second_run,
+        SeatAutonomy::Bounded,
+        "implement-b",
+        "Implement • KON-19 • B",
+        "bootstrap the role",
+    );
+    let mut collided = opencode_agent(&second_intent, Some(true), false);
+    {
+        let labels = collided["agent"]["labels"].as_object_mut().expect("labels");
+        labels.insert(
+            "kontor.agent-run".to_owned(),
+            serde_json::json!(format!("kontor-run-{RUN_QA}")),
+        );
+        labels.insert("kontor.role".to_owned(), serde_json::json!("implement-b"));
+        labels.insert(
+            "kontor.role_slot_id".to_owned(),
+            serde_json::json!("implement-b"),
+        );
+    }
+    let mut listed = v(AGENT_LIST_IMPLEMENT);
+    listed["entries"] = serde_json::json!([{ "agent": collided["agent"] }]);
+
+    plane.daemon.lose_next_rpc("create_agent_request");
+    for _ in 0..2 {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    }
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+
+    let error = plane
+        .adapter
+        .launch(&second)
+        .await
+        .expect_err("a session another run owns is never adopted");
+    assert!(
+        matches!(&error, RuntimeError::DeliveryConfirmationUnknown { rule }
+            if rule.contains("already bound")),
+        "refused because the match belongs to a run: {error:?}"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc archive_agent_request"),
+        0,
+        "and the seat that other run owns is left alone"
     );
 }
 
@@ -1824,6 +1958,16 @@ fn the_launch_intent_covers_the_prompt_and_its_message_id() {
         base,
         intent("do the work", "msg-2"),
         "and so is a different turn identity"
+    );
+
+    // The fields cannot run together. Without a delimiter between them, a prompt
+    // ending one character early and a message id starting one character late
+    // hash to the same value — two different launches with one identity, which
+    // is exactly what a census would then confuse.
+    assert_ne!(
+        intent("do the work", "msg-1"),
+        intent("do the wor", "kmsg-1"),
+        "adjacent fields must not be able to borrow each other's characters"
     );
 }
 
