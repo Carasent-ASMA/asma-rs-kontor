@@ -238,7 +238,7 @@ fn exclude_from_git(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let existing = match std::fs::read_to_string(&path) {
+    let existing = match std::fs::read_to_string(path) {
         Ok(existing) => existing,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
@@ -259,7 +259,7 @@ fn exclude_from_git(path: &Path) -> io::Result<()> {
         content.push_str(line);
         content.push('\n');
     }
-    std::fs::write(&path, content)
+    std::fs::write(path, content)
 }
 
 #[cfg(test)]

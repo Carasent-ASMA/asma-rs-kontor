@@ -45,3 +45,23 @@ requested decision was applied and never sends it a second time.
 The Jira recovery retains the original create receipt, batch, items, requested
 keys, ordinals and markers. Replay resolves the same batch and recovery rows;
 it does not create a replacement batch or issue.
+
+## Pre-merge verification
+
+The remediation candidate passed the complete repository gate set on
+2026-08-31:
+
+- `cargo fmt --all -- --check`;
+- `cargo clippy --workspace --all-targets -- -D warnings`;
+- the Rust workspace suites, including 236 daemon loopback cases, all 55
+  migration/schema cases, and the contract/e2e tail;
+- `cargo audit` and `cargo deny check` under the repository's configured
+  advisory, license, ban and source policies;
+- frozen pnpm install, generated OpenAPI/TypeScript parity, workspace
+  typecheck, and 296/296 console tests;
+- `pnpm audit --prod`, with no known production vulnerability; and
+- the two deliberate mutation kills recorded in `MUTATION.md`.
+
+The contract canaries read back 150 mapped operations, 149 advertised MCP
+tools, and 151 documented OpenAPI operations. Both new Committee permission
+routes are explicitly operator-scoped.

@@ -50,6 +50,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "consultation_seat_recoveries",
     "consultation_seat_recovery_attempts",
     "consultation_seat_materialization_reroutes",
+    // Schema v75 (ASMA-8050): immutable, exact-seat Committee permission
+    // responses with durable dispatch and confirmation state.
+    "consultation_permission_responses",
     "committee_findings",
     "committee_remediations",
     "committee_re_review_claims",
@@ -98,6 +101,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "jira_links",
     "jira_materialization_batches",
     "jira_materialization_items",
+    // Schema v74 (ASMA-8050): exact immutable recovery receipts for an
+    // interrupted Jira materialization batch.
+    "jira_materialization_recoveries",
     "jira_task_binding_confirmations",
     "lease_events",
     "memory_approvals",
@@ -476,8 +482,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v69 widens global Committee recovery rounds; v70 reconciles intermediate
     // v69 projections; and v71 adds exact-occupancy durable Completion-wake
     // delivery evidence; v72 adds durable project-scoped epic namespaces; and
-    // v73 permits safe link recovery after an unconfirmed create attempt.
-    assert_eq!(SCHEMA_VERSION, 73);
+    // v73 permits safe link recovery after an unconfirmed create attempt;
+    // v74 adds the exact Jira materialization recovery ledger; and v75 adds
+    // durable, exact-seat Committee permission responses.
+    assert_eq!(SCHEMA_VERSION, 75);
 }
 
 #[test]
