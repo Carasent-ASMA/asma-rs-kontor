@@ -285,3 +285,234 @@ fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery()
     assert_eq!(links.len(), 1, "recovery never creates a duplicate link");
     assert_eq!(links[0].id, recovered_link_id);
 }
+
+#[test]
+fn a_safe_link_batch_can_recover_the_scope_of_an_unconfirmed_create_batch() {
+    let root = tempfile::tempdir().expect("state root");
+    let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let create_batch_id = external(uuid::Uuid::now_v7().to_string());
+    let link_batch_id = external(uuid::Uuid::now_v7().to_string());
+    let epic_marker = external("kontor-epic-retry-fixture");
+    let task_marker = external("kontor-task-retry-fixture");
+
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: create_batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "failed-create-plan".to_owned(),
+                preview_hash: ContentHash::of(b"create-preview"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[
+                NewJiraMaterializationItem {
+                    id: external(uuid::Uuid::now_v7().to_string()),
+                    batch_id: create_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: None,
+                    link_id: None,
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Epic,
+                    intent_kind: JiraIntentKind::Create,
+                    requested_key: None,
+                    marker: epic_marker.clone(),
+                },
+                NewJiraMaterializationItem {
+                    id: external(uuid::Uuid::now_v7().to_string()),
+                    batch_id: create_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(task_id),
+                    link_id: Some(TicketLinkId::generate()),
+                    ordinal: 1,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Create,
+                    requested_key: None,
+                    marker: task_marker.clone(),
+                },
+            ],
+        )
+        .expect("the failed create plan remains durable");
+
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: link_batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "safe-link-recovery".to_owned(),
+                preview_hash: ContentHash::of(b"link-preview"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[
+                NewJiraMaterializationItem {
+                    id: external(uuid::Uuid::now_v7().to_string()),
+                    batch_id: link_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: None,
+                    link_id: None,
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Epic,
+                    intent_kind: JiraIntentKind::Link,
+                    requested_key: Some(external("ASMA-8049")),
+                    marker: epic_marker,
+                },
+                NewJiraMaterializationItem {
+                    id: external(uuid::Uuid::now_v7().to_string()),
+                    batch_id: link_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(task_id),
+                    link_id: Some(TicketLinkId::generate()),
+                    ordinal: 1,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Link,
+                    requested_key: Some(external("ASMA-8050")),
+                    marker: task_marker,
+                },
+            ],
+        )
+        .expect("the non-creating recovery plan is durable");
+
+    let recovery = store
+        .jira_materialization_items(project_id, &link_batch_id)
+        .expect("the recovery items read back");
+    assert_eq!(recovery.len(), 2, "no recovery item may be ignored");
+    assert!(
+        recovery
+            .iter()
+            .all(|item| item.intent_kind == JiraIntentKind::Link),
+        "the recovery remains non-creating"
+    );
+    assert_eq!(
+        store
+            .jira_materialization_items(project_id, &create_batch_id)
+            .expect("the original attempt remains")
+            .len(),
+        2,
+        "recovery preserves the failed attempt as evidence"
+    );
+}
+
+#[test]
+fn v73_migrates_an_empty_confirmed_link_batch_without_losing_incident_evidence() {
+    let connection = rusqlite::Connection::open_in_memory().expect("migration fixture");
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id),
+                 UNIQUE (project_id, id)
+             ) STRICT;
+             CREATE TABLE tasks (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id),
+                 mini_project_id TEXT REFERENCES mini_projects(id)
+             ) STRICT;
+             CREATE TABLE jira_materialization_batches (
+                 id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+                 project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+                 epic_id TEXT NOT NULL REFERENCES mini_projects (id) ON DELETE RESTRICT,
+                 idempotency_key TEXT NOT NULL UNIQUE,
+                 preview_hash TEXT NOT NULL CHECK (length(preview_hash) = 64),
+                 expected_revision INTEGER NOT NULL CHECK (expected_revision >= 1),
+                 status TEXT NOT NULL CHECK (status IN ('planned', 'confirmed', 'conflict')),
+                 created_at TEXT NOT NULL,
+                 confirmed_at TEXT NULL,
+                 UNIQUE (project_id, id),
+                 UNIQUE (project_id, epic_id, preview_hash)
+             ) STRICT;
+             CREATE TABLE jira_materialization_items (
+                 id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+                 batch_id TEXT NOT NULL REFERENCES jira_materialization_batches (id) ON DELETE RESTRICT,
+                 project_id TEXT NOT NULL,
+                 epic_id TEXT NOT NULL,
+                 task_id TEXT NULL REFERENCES tasks (id) ON DELETE RESTRICT,
+                 link_id TEXT NULL,
+                 ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                 item_kind TEXT NOT NULL CHECK (item_kind IN ('epic', 'task')),
+                 intent_kind TEXT NOT NULL CHECK (intent_kind IN ('create', 'link')),
+                 requested_key TEXT NULL,
+                 marker TEXT NOT NULL UNIQUE CHECK (length(marker) BETWEEN 1 AND 255),
+                 status TEXT NOT NULL CHECK (status IN ('planned', 'confirmed', 'conflict')),
+                 confirmed_key TEXT NULL,
+                 readback_hash TEXT NULL CHECK (readback_hash IS NULL OR length(readback_hash) = 64),
+                 confirmed_at TEXT NULL,
+                 UNIQUE (batch_id, ordinal),
+                 UNIQUE (project_id, epic_id, task_id),
+                 CHECK ((item_kind = 'epic' AND task_id IS NULL AND link_id IS NULL)
+                     OR (item_kind = 'task' AND task_id IS NOT NULL AND link_id IS NOT NULL)),
+                 CHECK ((intent_kind = 'create' AND requested_key IS NULL) OR (intent_kind = 'link' AND requested_key IS NOT NULL)),
+                 CHECK ((status = 'confirmed' AND confirmed_key IS NOT NULL AND readback_hash IS NOT NULL AND confirmed_at IS NOT NULL)
+                     OR (status <> 'confirmed' AND confirmed_key IS NULL AND readback_hash IS NULL AND confirmed_at IS NULL)),
+                 FOREIGN KEY (project_id, epic_id) REFERENCES mini_projects (project_id, id) ON DELETE RESTRICT
+             ) STRICT;
+             INSERT INTO projects VALUES ('project');
+             INSERT INTO mini_projects VALUES ('epic', 'project');
+             INSERT INTO tasks VALUES ('task', 'project', 'epic');
+             INSERT INTO jira_materialization_batches VALUES
+                 ('00000000-0000-7000-8000-000000000001', 'project', 'epic',
+                  'failed-create', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  1, 'planned', '2026-08-30T00:00:00Z', NULL),
+                 ('00000000-0000-7000-8000-000000000002', 'project', 'epic',
+                  'safe-link', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                  1, 'confirmed', '2026-08-30T00:01:00Z', '2026-08-30T00:02:00Z');
+             INSERT INTO jira_materialization_items VALUES
+                 ('00000000-0000-7000-8000-000000000011',
+                  '00000000-0000-7000-8000-000000000001', 'project', 'epic',
+                  NULL, NULL, 0, 'epic', 'create', NULL, 'epic-marker', 'planned',
+                  NULL, NULL, NULL),
+                 ('00000000-0000-7000-8000-000000000012',
+                  '00000000-0000-7000-8000-000000000001', 'project', 'epic',
+                  'task', '00000000-0000-7000-8000-000000000099', 1, 'task',
+                  'create', NULL, 'task-marker', 'planned', NULL, NULL, NULL);
+             PRAGMA user_version = 72;",
+        )
+        .expect("the v72 incident shape is seeded");
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0073_retryable_jira_link_reconciliation.sql"
+        ))
+        .expect("v73 migrates the incident shape");
+    connection
+        .execute_batch(
+            "INSERT INTO jira_materialization_items VALUES
+                 ('00000000-0000-7000-8000-000000000021',
+                  '00000000-0000-7000-8000-000000000002', 'project', 'epic',
+                  NULL, NULL, 0, 'epic', 'link', 'ASMA-8049', 'epic-marker',
+                  'planned', NULL, NULL, NULL),
+                 ('00000000-0000-7000-8000-000000000022',
+                  '00000000-0000-7000-8000-000000000002', 'project', 'epic',
+                  'task', '00000000-0000-7000-8000-000000000098', 1, 'task',
+                  'link', 'ASMA-8050', 'task-marker', 'planned', NULL, NULL, NULL);",
+        )
+        .expect("the exact safe link retry can repopulate its empty batch");
+
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("schema version");
+    let incident_rows: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_items",
+            [],
+            |row| row.get(0),
+        )
+        .expect("incident rows");
+    let foreign_key_failures: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .expect("foreign-key check");
+    assert_eq!(version, 73);
+    assert_eq!(incident_rows, 4, "both attempts remain auditable");
+    assert_eq!(foreign_key_failures, 0);
+}

@@ -475,8 +475,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // side effect. v68 adds immutable native-less materialization reroute;
     // v69 widens global Committee recovery rounds; v70 reconciles intermediate
     // v69 projections; and v71 adds exact-occupancy durable Completion-wake
-    // delivery evidence; and v72 adds durable project-scoped epic namespaces.
-    assert_eq!(SCHEMA_VERSION, 72);
+    // delivery evidence; v72 adds durable project-scoped epic namespaces; and
+    // v73 permits safe link recovery after an unconfirmed create attempt.
+    assert_eq!(SCHEMA_VERSION, 73);
 }
 
 #[test]
