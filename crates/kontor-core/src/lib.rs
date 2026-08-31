@@ -91,6 +91,7 @@ macro_rules! closed_enum {
 }
 
 pub mod authority;
+pub mod backlog_identity;
 pub mod calendar;
 pub mod compaction;
 pub mod consultation;

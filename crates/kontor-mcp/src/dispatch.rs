@@ -425,6 +425,7 @@ fn check_value(
         | ArgType::OpenKey
         | ArgType::ExternalName
         | ArgType::ExternalId
+        | ArgType::EpicBacklogCode
         | ArgType::IdempotencyKey
         | ArgType::Timestamp => {
             let text = value.as_str().ok_or_else(|| wrong("a string"))?;
@@ -577,6 +578,9 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::OpenKey => id::validate_open_key("OpenKey", text),
         ArgType::ExternalName => id::ExternalName::parse(text).map(drop),
         ArgType::ExternalId => id::ExternalId::parse(text).map(drop),
+        ArgType::EpicBacklogCode => {
+            kontor_core::backlog_identity::EpicBacklogCode::parse(text).map(drop)
+        }
         ArgType::IdempotencyKey => id::IdempotencyKey::parse(text).map(drop),
         ArgType::Timestamp => id::parse_utc_timestamp(text).map(drop),
         // Every other type is checked by shape, above. Spelled out rather than
@@ -609,6 +613,13 @@ mod tests {
 
     fn spec(name: &str) -> &'static ToolSpec {
         ToolSpec::find(name).expect("a declared tool")
+    }
+
+    #[test]
+    fn an_epic_backlog_code_is_validated_before_dispatch() {
+        assert!(parse_domain(ArgType::EpicBacklogCode, "KOP").is_ok());
+        assert!(parse_domain(ArgType::EpicBacklogCode, "kop").is_err());
+        assert!(parse_domain(ArgType::EpicBacklogCode, "8001").is_err());
     }
 
     #[test]

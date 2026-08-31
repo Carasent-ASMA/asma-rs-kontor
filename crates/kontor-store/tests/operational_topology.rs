@@ -33,6 +33,38 @@ fn default_stamp() -> Shareability {
 }
 
 #[test]
+fn a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes() {
+    let home = TempDir::new().expect("a temporary directory");
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let project_id = ProjectId::generate();
+    let created_at = at("2026-08-31T00:00:00Z");
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Immutable topology project"),
+            root_path: name("/tmp/immutable-topology-project"),
+            created_at,
+        })
+        .expect("the project is created");
+    let topology = bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .topology_specs
+        .first()
+        .expect("a topology")
+        .clone();
+
+    store
+        .publish_topology_spec(project_id, &topology, &default_stamp(), created_at)
+        .expect("the topology is first published");
+    assert!(
+        store
+            .publish_topology_spec(project_id, &topology, &default_stamp(), created_at)
+            .is_err(),
+        "a published revision is append-only; idempotency belongs above the store"
+    );
+}
+
+#[test]
 fn operational_state_survives_restart_and_typed_export() {
     let home = TempDir::new().expect("a temporary directory");
     let database = home.path().join("kontor.db");

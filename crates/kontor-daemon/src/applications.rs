@@ -114,6 +114,7 @@ use kontor_api::applications::{
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::authority::AuthoritySubject;
+use kontor_core::backlog_identity::{EpicBacklogCode, JiraItemCode};
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
@@ -130,7 +131,9 @@ use kontor_core::id::{
     SpecVersion, StatusConflictId, TaskId, TeamRunId, TicketProjectionId, Timestamp,
     TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
-use kontor_core::naming::{NativeNameTemplate, NativeNameValues};
+use kontor_core::naming::{
+    NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
+};
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
@@ -367,6 +370,7 @@ struct PreparedEpic {
     bundle: ResolvedProfileBundle,
     effective_team: Option<TeamTemplateRevision>,
     team_source: TeamTemplateSource,
+    epic_backlog_code: Option<EpicBacklogCode>,
     execution_scope: Option<EpicExecutionScopeDeclaration>,
     tasks: Vec<EpicTask>,
 }
@@ -1212,6 +1216,7 @@ impl Services {
             bundle,
             effective_team,
             team_source,
+            epic_backlog_code: request.epic_backlog_code.clone(),
             execution_scope,
             tasks,
         })
@@ -1279,6 +1284,9 @@ impl Services {
         let epic = self.epic_row(project_id, epic_id)?;
         let execution_scope = state
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        let epic_backlog_code = state
+            .with_store(|store| store.epic_backlog_code(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
         let tasks = state
             .with_store(|store| store.list_epic_tasks(project_id, epic_id))
@@ -1354,6 +1362,7 @@ impl Services {
             realm_id: state.realm_id(),
             project_id,
             epic_id,
+            epic_backlog_code,
             applied: AppliedDto::Unchanged,
             revision: epic.revision,
             execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
@@ -3713,6 +3722,7 @@ impl Services {
         ),
         ApiError,
     > {
+        self.publish_bundled_topology_revisions(project_id)?;
         let state = self.state()?;
         let current = self.epic_pin(project_id, epic_id)?;
         let target_id =
@@ -13366,15 +13376,33 @@ impl ApplicationOperations for Services {
             // asking the runtime to prepare its plane, so a legacy task that
             // lacks an explicit short-code mapping fails with zero native
             // effects and can be repaired through `epics:preview/apply`.
-            if let (Some(epic_id), Some(task_id)) = (scope.epic_id, scope.task_id) {
-                let runtime_kind = self.node_runtime_kind()?;
-                let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the node's configured runtime family is unavailable",
-                    )
-                })?;
-                self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
+            if let Some(epic_id) = scope.epic_id {
+                let requires_item_code = if let Some(kind) = scope.kind.as_ref() {
+                    self.pinned_spec(project_id)?
+                        .node_kinds
+                        .iter()
+                        .find(|declared| &declared.kind == kind)
+                        .is_some_and(|declared| template_uses_item_code(&declared.name_template))
+                } else {
+                    false
+                };
+                if scope.task_id.is_none() && !requires_item_code {
+                    // Legacy epic-scoped templates need no task-placement
+                    // identity preflight.
+                } else {
+                    let runtime_kind = self.node_runtime_kind()?;
+                    let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the node's configured runtime family is unavailable",
+                        )
+                    })?;
+                    let execution_scope =
+                        self.execution_scope(project_id, epic_id, scope.task_id, adapter.as_ref())?;
+                    if requires_item_code {
+                        self.item_code_for_scope(project_id, &execution_scope)?;
+                    }
+                }
             }
             // Materializing is ensuring plus preparing the exact native
             // container and binding the seats the scope hosts. The chain comes
@@ -13994,6 +14022,14 @@ impl ApplicationOperations for Services {
             adapter.retitle_container(&retitle).await
         }
         .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.identity.native_id != retitle.bound_native_id
+            || outcome.observed_title != retitle.desired_title.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "container retitle did not preserve identity and read back the requested name",
+            ));
+        }
         let receipt_id = self.record(
             key,
             project_id,
@@ -18534,6 +18570,7 @@ impl ApplicationOperations for Services {
             .map(|(prepared, request)| EpicApplication {
                 project_id,
                 name: request.name.clone(),
+                epic_backlog_code: prepared.epic_backlog_code.as_ref(),
                 execution_scope: prepared.execution_scope.as_ref(),
                 tasks: &prepared.tasks,
                 profile: &prepared.bundle.profile,
@@ -18666,6 +18703,7 @@ impl ApplicationOperations for Services {
             .map(|(prepared, request)| EpicApplication {
                 project_id,
                 name: request.name.clone(),
+                epic_backlog_code: prepared.epic_backlog_code.as_ref(),
                 execution_scope: prepared.execution_scope.as_ref(),
                 tasks: &prepared.tasks,
                 profile: &prepared.bundle.profile,
@@ -18799,6 +18837,15 @@ impl ApplicationOperations for Services {
                 .expect("an epic intent is an object")
                 .insert("execution_scope".to_owned(), scope_intent);
         }
+        if let Some(backlog_code) = &request.epic_backlog_code {
+            intent_document
+                .as_object_mut()
+                .expect("an epic intent is an object")
+                .insert(
+                    "epic_backlog_code".to_owned(),
+                    serde_json::json!(backlog_code),
+                );
+        }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
             let AggregateRef::MiniProject { mini_project_id } = receipt.target else {
@@ -18819,6 +18866,7 @@ impl ApplicationOperations for Services {
             bundle,
             effective_team,
             team_source,
+            epic_backlog_code,
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
@@ -18834,6 +18882,7 @@ impl ApplicationOperations for Services {
                 let applied = store.apply_epic(&EpicApplication {
                     project_id,
                     name: request.name.clone(),
+                    epic_backlog_code: epic_backlog_code.as_ref(),
                     execution_scope: execution_scope.as_ref(),
                     tasks: &tasks,
                     profile: &bundle.profile,
@@ -18890,6 +18939,7 @@ impl ApplicationOperations for Services {
             realm_id: state.realm_id(),
             project_id,
             epic_id: applied.mini_project_id,
+            epic_backlog_code: Some(applied.epic_backlog_code),
             applied: applied_dto(applied.applied),
             revision: applied.revision,
             execution_scope: applied.execution_scope.map(|scope| EpicExecutionScopeDto {
@@ -18950,6 +19000,7 @@ impl ApplicationOperations for Services {
             bundle,
             effective_team,
             team_source,
+            epic_backlog_code,
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
@@ -18958,6 +19009,7 @@ impl ApplicationOperations for Services {
                 store.preview_epic(&EpicApplication {
                     project_id,
                     name: request.name.clone(),
+                    epic_backlog_code: epic_backlog_code.as_ref(),
                     execution_scope: execution_scope.as_ref(),
                     tasks: &tasks,
                     profile: &bundle.profile,
@@ -18973,6 +19025,7 @@ impl ApplicationOperations for Services {
             realm_id: state.realm_id(),
             project_id,
             epic_id: (preview.applied != Applied::Created).then_some(preview.mini_project_id),
+            epic_backlog_code: preview.epic_backlog_code,
             applied: applied_dto(preview.applied),
             execution_scope: preview.execution_scope.map(|scope| EpicExecutionScopeDto {
                 external_epic_key: scope.external_epic_key,
@@ -19015,6 +19068,9 @@ impl ApplicationOperations for Services {
         let epic = self.epic_row(project_id, epic_id)?;
         let execution_scope = state
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        let epic_backlog_code = state
+            .with_store(|store| store.epic_backlog_code(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
         let tasks = state
             .with_store(|store| store.list_epic_tasks(project_id, epic_id))
@@ -19207,6 +19263,7 @@ impl ApplicationOperations for Services {
             },
             project_id,
             epic_id,
+            epic_backlog_code,
             name: epic.name,
             revision: epic.revision,
             execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
@@ -23917,9 +23974,28 @@ impl Services {
     /// Seeding here rather than at project creation is what gives every project
     /// a topology, including the ones created before there was one to give.
     /// Publication is by `(spec_id, version)` and selection is an upsert, so a
+    fn publish_bundled_topology_revisions(&self, project_id: ProjectId) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let stamp = Shareability::default_for(ShareabilityTier::ProjectKnowledge)
+            .map_err(|error| self.refuse_domain(&error))?;
+        for spec in &self.domain.topology_specs {
+            let published = state
+                .with_store(|store| store.get_topology_spec(project_id, spec.spec_id, spec.version))
+                .map_err(|error| self.refuse(&error))?;
+            if published.is_none() {
+                state
+                    .with_store(|store| store.publish_topology_spec(project_id, spec, &stamp, now))
+                    .map_err(|error| self.refuse(&error))?;
+            }
+        }
+        Ok(())
+    }
+
     /// project that already chose a revision keeps it: this never re-points a
     /// project at the bundled data.
     fn project_topology(&self, project_id: ProjectId) -> Result<TopologySnapshot, ApiError> {
+        self.publish_bundled_topology_revisions(project_id)?;
         let state = self.state()?;
         if let Some(selected) = state
             .with_store(|store| store.get_project_topology_default(project_id))
@@ -24796,6 +24872,44 @@ impl Services {
     }
 
     /// The display name one node's container carries, from its kind's template.
+    fn item_code_for_scope(
+        &self,
+        project_id: ProjectId,
+        scope: &ExecutionScope,
+    ) -> Result<JiraItemCode, ApiError> {
+        let (backlog_code, jira_key) = self
+            .state()?
+            .with_store(|store| {
+                let backlog_code =
+                    store.epic_backlog_code(project_id, scope.epic.mini_project_id)?;
+                let jira_key = if let Some(task) = scope.task.as_ref() {
+                    store.confirmed_jira_task_key(project_id, task.task_id)?
+                } else {
+                    store.confirmed_jira_epic_key(project_id, scope.epic.mini_project_id)?
+                };
+                Ok::<_, RepositoryError>((backlog_code, jira_key))
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let backlog_code = backlog_code.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic has no active immutable backlog code",
+            )
+        })?;
+        let jira_key = jira_key.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the scope has no unambiguous confirmed Jira binding",
+            )
+        })?;
+        JiraItemCode::derive(&backlog_code, &jira_key).map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the confirmed Jira binding cannot produce a canonical item code",
+            )
+        })
+    }
+
     fn container_name(
         &self,
         spec: &kontor_core::spec::ProjectSessionTopologySpec,
@@ -24851,6 +24965,16 @@ impl Services {
                     values = values.with_ai_short_name(ai_short_name);
                 }
             }
+        }
+        if template_uses_item_code(template) {
+            let scope = scope.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the native-name template requires an epic or task scope",
+                )
+            })?;
+            let item_code = self.item_code_for_scope(node.project_id, scope)?;
+            values = values.with_item_code(item_code.as_str());
         }
         template
             .render(&spec.name_separator, &values)
@@ -24971,6 +25095,10 @@ impl Services {
             if let Some(ai_short_name) = durable.ai_short_name.as_ref() {
                 values = values.with_ai_short_name(ai_short_name);
             }
+        }
+        if template_uses_item_code(template) {
+            let item_code = self.item_code_for_scope(project_id, scope)?;
+            values = values.with_item_code(item_code.as_str());
         }
         template
             .render(&spec.name_separator, &values)
@@ -25494,6 +25622,14 @@ impl Services {
 /// Render a pre-v47 immutable template only when it names the old closed scope
 /// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
 /// guessed into a native identity after the typed naming contract exists.
+fn template_uses_item_code(template: &NativeNameTemplate) -> bool {
+    template.segments().is_some_and(|segments| {
+        segments
+            .iter()
+            .any(|segment| matches!(segment, NativeNameSegment::Token(NativeNameToken::ItemCode)))
+    })
+}
+
 fn render_legacy_container_name(
     template: &ExternalName,
     scope: Option<&ExecutionScope>,

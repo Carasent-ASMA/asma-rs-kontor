@@ -237,6 +237,239 @@
           }
         }
       ]
+    },
+    {
+      "schema_version": 1,
+      "spec_id": "01936f5a-1000-7000-8000-000000000001",
+      "version": 4,
+      "name": "Operational project session topology",
+      "name_separator": " · ",
+      "root_kind": "PSW",
+      "node_kinds": [
+        {
+          "kind": "PSW",
+          "allowed_parents": [],
+          "cardinality": {
+            "minimum": 1,
+            "maximum": 1
+          },
+          "projection_capabilities": [
+            "native_root"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Project Session Workspace" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Project Session Workspace",
+            "meaning": "Logical root grouping the Quick and Epic session scopes of one Kontor Project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "QSW",
+          "allowed_parents": [
+            "PSW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Quick Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Quick Session Workspace",
+            "meaning": "Ad-hoc single-role session scope that may later provide an epic promotion handoff.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ESW",
+          "allowed_parents": [
+            "PSW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_root"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Epic Session Workspace",
+            "meaning": "Complete logical boundary for one concrete epic; Paseo projects it as one epic project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ECP",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 1,
+            "maximum": 1
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Epic Control Plane",
+            "meaning": "Specification-defined ESW child grouping persistent epic leadership, coordination and authorized ad-hoc seats in one runtime session host.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "TSW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Ticket Session Workspace",
+            "meaning": "Delivery workspace for one ticket and all persistent seats in that ticket's TeamRun.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ASW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Advisor Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Advisor Session Workspace",
+            "meaning": "Read-only workspace for one Advisor consultation and one Advisor seat.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "CSW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Committee Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Committee Session Workspace",
+            "meaning": "Read-only workspace for one Committee run or topic and its template-declared seats.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        }
+      ],
+      "historical_codes": [
+        {
+          "kind": "TSC",
+          "help": {
+            "full_name": "Ticket Session Committee",
+            "meaning": "Historical name accepted only at read or import boundaries and normalized to CSW.",
+            "category": "session_topology",
+            "lifecycle": "compatibility"
+          }
+        },
+        {
+          "kind": "PASE",
+          "help": {
+            "full_name": "Removed historical topology term",
+            "meaning": "Obsolete term that must not be emitted or seeded by new state.",
+            "category": "session_topology",
+            "lifecycle": "retired"
+          }
+        }
+      ]
     }
   ],
   "role_catalogs": [

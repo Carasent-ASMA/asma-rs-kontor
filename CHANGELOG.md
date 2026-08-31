@@ -7,6 +7,31 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added immutable project-scoped epic backlog codes, deterministic
+  collision-safe allocation, manual overrides and schema-v72 legacy evidence
+  migration.
+- Added the typed `ITEM_CODE` native-name token and Operational topology v2 for
+  `ESW · KOP-8001`, `ECP · KOP-8001` and `TSW · KOP-7869` rendering from
+  confirmed Jira identities.
+
+### Changed
+
+- Extended epic preview/apply/readback and the generated OpenAPI/TypeScript
+  contracts with the Kontor-owned epic backlog namespace while preserving full
+  Jira issue keys as the binding authority.
+
+### Fixed
+
+- Made Jira materialization retries safely adopt an exact existing task binding
+  after a lost connector response without creating a duplicate link, and
+  prevented already-confirmed materialization items from being rebound.
+- Kept pre-schema-v72 epics readable and operable while they await an explicit
+  backlog-code assignment; topology v2 still refuses to materialize without it.
+- Required standalone native-container retitles to preserve the exact native
+  identity and read back the requested title before recording a success receipt.
+
 ## [0.2.1] - 2026-08-30
 
 ### Fixed

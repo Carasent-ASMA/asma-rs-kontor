@@ -82,6 +82,9 @@ The current repository includes:
 - a generic, versioned **session topology** — epic control plane, ticket
   workspaces, consultation workspaces — published per project rather than
   hard-coded;
+- immutable project-scoped **epic backlog codes** with deterministic
+  collision expansion and manual overrides, plus display-only item codes such
+  as `KOP-8001` derived from confirmed Jira numeric identities;
 - a deterministic **standard role catalogue** (56 roles across 9 segments) with
   typed role-code seat selection and optional display labels;
 - **Project Core Teams**, quick ad-hoc sessions and preview/apply promotion of an
@@ -382,7 +385,20 @@ policy, scheduling, reconciliation and evidence above them.
 ### Does Kontor replace AgentsRoom or Jira?
 
 Jira remains the external workflow system; Kontor converges to it through a
-native connector and never edits its store.
+native connector and never edits its store. Jira issue keys remain their native
+full values, such as `ASMA-8001`; Kontor does not attempt to create keys like
+`ASMA-ESW-8001` or reconstruct Jira identity from a display name.
+
+Kontor separately assigns each epic one immutable namespace inside its project,
+for example `KOP`. Omission derives a candidate from title initials and expands
+unused title characters until it is unique; an operator may instead supply a
+manual code. Once Jira readback confirms `ASMA-8001` for the epic and
+`ASMA-7869` for a task, Operational topology v4 may render `ESW · KOP-8001` and
+`TSW · KOP-7869`. Those item codes are projections, not tracker identities. A
+missing, malformed or ambiguous confirmed Jira binding blocks v2 placement
+rather than falling back to a title, UUID or imported short code. Existing v1
+topology pins remain immutable and keep their historical names until an
+explicit preview/apply upgrade.
 
 AgentsRoom is being replaced per project, per subject. Write authority for a
 project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a

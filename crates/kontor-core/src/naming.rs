@@ -24,8 +24,9 @@ impl NameSeparator {
     /// Parse an exact separator without trimming or normalization.
     ///
     /// # Errors
-    /// Refuses empty/whitespace-only text, control characters and U+00B7
-    /// MIDDLE DOT. U+2022 BULLET is permitted and is the default.
+    /// Refuses empty/whitespace-only text and control characters. Both the
+    /// historical U+2022 BULLET and the canonical U+00B7 MIDDLE DOT are valid
+    /// specification-owned separators; old pinned revisions keep their bytes.
     pub fn parse(value: &str) -> DomainResult<Self> {
         if value.is_empty() || !value.chars().any(|character| !character.is_whitespace()) {
             return Err(DomainError::invalid(
@@ -37,12 +38,6 @@ impl NameSeparator {
             return Err(DomainError::invalid(
                 "NameSeparator",
                 "must not contain control characters",
-            ));
-        }
-        if value.contains('\u{00b7}') {
-            return Err(DomainError::invalid(
-                "NameSeparator",
-                "must not contain U+00B7 MIDDLE DOT",
             ));
         }
         Ok(Self(value.to_owned()))
@@ -147,6 +142,8 @@ crate::closed_enum! {
         JiraCode => "JIRA_CODE",
         /// Explicit epic backlog code or task short code.
         KontorBacklogCode => "KONTOR_BACKLOG_CODE",
+        /// Jira-derived item code from the epic namespace and confirmed suffix.
+        ItemCode => "ITEM_CODE",
         /// Immutable intake-time AI label.
         AiShortName => "AI_SHORT_NAME",
     }
@@ -296,6 +293,12 @@ impl NativeNameValues {
         self.with(NativeNameToken::KontorBacklogCode, value)
     }
 
+    /// Add a derived `ITEM_CODE` projection.
+    #[must_use]
+    pub fn with_item_code(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::ItemCode, value)
+    }
+
     /// Add a validated `AI_SHORT_NAME`.
     #[must_use]
     pub fn with_ai_short_name(self, value: &AiShortName) -> Self {
@@ -320,6 +323,9 @@ impl NativeNameValues {
                 }
                 NativeNameToken::KontorBacklogCode => {
                     DomainError::invalid("NativeNameTemplate", "missing KONTOR_BACKLOG_CODE")
+                }
+                NativeNameToken::ItemCode => {
+                    DomainError::invalid("NativeNameTemplate", "missing ITEM_CODE")
                 }
                 NativeNameToken::AiShortName => {
                     DomainError::invalid("NativeNameTemplate", "missing AI_SHORT_NAME")
