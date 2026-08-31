@@ -19,7 +19,7 @@
 
 use jiff::civil;
 use jiff::tz::TimeZone;
-use kontor_core::id::Timestamp;
+use kontor_core::id::{CanonicalDocument, ContentHash, SpecVersion, Timestamp};
 use kontor_core::spec::ProviderQuotaKind;
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,22 @@ pub enum QuotaBasis {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuotaSignal {
+    /// Stable logical identity of this signal, unique within one document.
+    ///
+    /// Identity, not routing. Two logins of one vendor carry the same wording
+    /// under the same provider family and are still two different signals, so a
+    /// provenance record naming only the alias could not say which fingerprint
+    /// actually fired. Held as a `String` for serde and validated through
+    /// [`kontor_core::id::ExternalName::parse`], so the core rules -- including
+    /// sensitive-material rejection -- stay one source of truth rather than
+    /// four re-implemented checks.
+    pub id: String,
+    /// Which revision of that logical signal this is.
+    ///
+    /// A wording or parser change increments it. `SpecVersion` deserializes
+    /// from a bare integer and refuses `0` at the serde boundary, so a
+    /// zero-versioned document never reaches validation.
+    pub version: SpecVersion,
     /// The provider this wording belongs to, spelled as the catalog spells it.
     pub provider: String,
     /// How the provider charges.
@@ -62,6 +78,38 @@ pub struct QuotaSignal {
     /// outage.
     #[serde(default)]
     pub reset_zone: Option<String>,
+}
+
+impl QuotaSignal {
+    /// A canonical digest of this signal's complete definition.
+    ///
+    /// Covers identity *and* content: `id`, `version`, `provider`, `basis`, the
+    /// markers in their configured order, the reset prefix and the zone. So a
+    /// reordered marker, an altered prefix or a changed zone under an unchanged
+    /// `id` and `version` produces a different hash -- which is exactly the
+    /// case a provenance record has to be able to refuse, because immutable
+    /// history expects the definition it was written against.
+    ///
+    /// The hash is taken over the canonical document encoding of the validated
+    /// strings themselves, never a separately normalized spelling, so what is
+    /// digested is what the deployment wrote.
+    ///
+    /// # Errors
+    /// Propagates canonicalization failure, which a validated signal does not
+    /// produce.
+    pub fn definition_hash(&self) -> kontor_core::DomainResult<ContentHash> {
+        let document = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "id": self.id,
+            "version": self.version.get(),
+            "provider": self.provider,
+            "basis": serde_json::to_value(self.basis).unwrap_or(serde_json::Value::Null),
+            "markers": self.markers,
+            "reset_prefix": self.reset_prefix,
+            "reset_zone": self.reset_zone,
+        }))?;
+        Ok(document.hash().clone())
+    }
 }
 
 /// What one refusal text was read as.

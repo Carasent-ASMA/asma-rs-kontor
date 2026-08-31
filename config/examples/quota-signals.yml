@@ -7,6 +7,22 @@
 # honoured.
 #
 # ---------------------------------------------------------------------------
+# `id` is identity; `provider` is routing
+# ---------------------------------------------------------------------------
+#
+# Every signal carries a stable logical `id`, unique within this document, and a
+# positive `version` that increments whenever its wording or parsing changes.
+# The alias is *not* identity: two logins of one vendor carry the same sentence
+# under the same family, so a record naming only `claude-work` could not say
+# which fingerprint actually authorized a retirement. That is why the two Claude
+# entries below have distinct ids even though their wording matches exactly.
+#
+# A signal's complete definition -- id, version, provider, basis, the markers in
+# order, the reset prefix and the zone -- is digested, and that digest is what
+# durable provenance cites. Changing any of it under an unchanged id and version
+# yields a different digest, which immutable history is entitled to refuse.
+#
+# ---------------------------------------------------------------------------
 # `provider` is an exact catalog alias, never a vendor family
 # ---------------------------------------------------------------------------
 #
@@ -62,7 +78,9 @@ signals:
   # Keep the two in agreement: the captured message and this field both say
   # Europe/Chisinau, and 22:40 there in August is EEST, three hours ahead of
   # UTC -- which is the 2026-08-30T19:40:00Z reset the control plane recorded.
-  - provider: claude-work
+  - id: claude-individual-spend-limit-work
+    version: 1
+    provider: claude-work
     basis: plan_allowance
     markers:
       - individual spend limit
@@ -71,7 +89,9 @@ signals:
     reset_prefix: 'your session limit resets '
     reset_zone: Europe/Chisinau
 
-  - provider: claude-personal
+  - id: claude-individual-spend-limit-personal
+    version: 1
+    provider: claude-personal
     basis: plan_allowance
     markers:
       - individual spend limit
@@ -103,7 +123,9 @@ signals:
   # inferred from the daemon's own clock. A deployment whose Codex seats print a
   # different local zone states that zone here, against its own captured
   # message.
-  - provider: codex-work
+  - id: codex-usage-limit-work
+    version: 1
+    provider: codex-work
     basis: plan_allowance
     # The *whole* distinctive fingerprint, not the phrase alone. "usage limit"
     # by itself appears in any assistant message that merely discusses limit
@@ -118,7 +140,9 @@ signals:
     reset_prefix: 'try again at '
     reset_zone: Europe/Oslo
 
-  - provider: codex-personal
+  - id: codex-usage-limit-personal
+    version: 1
+    provider: codex-personal
     basis: plan_allowance
     markers:
       - '[system error]'
@@ -132,7 +156,9 @@ signals:
   #
   # A credit balance is not a plan allowance: no clock lifts it, so it records
   # as drained rather than exhausted and carries no reset instant.
-  - provider: opencode
+  - id: opencode-insufficient-credits
+    version: 1
+    provider: opencode
     basis: credit_balance
     markers:
       - insufficient

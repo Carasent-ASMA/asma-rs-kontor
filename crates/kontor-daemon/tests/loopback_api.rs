@@ -13265,9 +13265,10 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
     // Each field of the evidence is authority. Changing any one of them under
     // the same key is a different command.
     for (field, value) in [
-        ("account_profile_id", serde_json::json!(
-            kontor_core::id::AccountProfileId::generate().to_string()
-        )),
+        (
+            "account_profile_id",
+            serde_json::json!(kontor_core::id::AccountProfileId::generate().to_string()),
+        ),
         ("provider", serde_json::json!("codex-personal")),
         ("native_id", serde_json::json!("another-native-session")),
         (

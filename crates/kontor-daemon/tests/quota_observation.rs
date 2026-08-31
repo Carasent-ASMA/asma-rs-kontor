@@ -17,6 +17,8 @@
 #[allow(dead_code)]
 mod harness;
 
+use kontor_core::id::SpecVersion;
+
 use harness::{Call, World, at};
 use kontor_accounts::{QuotaBasis, QuotaSignal};
 use kontor_core::id::AccountProfileId;
@@ -32,6 +34,8 @@ const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
 
 fn codex_signal_for(alias: &str) -> QuotaSignal {
     QuotaSignal {
+        id: format!("codex-usage-limit-{alias}"),
+        version: SpecVersion::FIRST,
         provider: alias.to_owned(),
         basis: QuotaBasis::PlanAllowance,
         markers: vec!["usage limit".to_owned()],

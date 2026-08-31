@@ -10,7 +10,7 @@
 //! * classifying an ordinary runtime error as a quota refusal.
 
 use kontor_accounts::{QuotaBasis, QuotaSignal, classify};
-use kontor_core::id::{Timestamp, parse_utc_timestamp};
+use kontor_core::id::{SpecVersion, Timestamp, parse_utc_timestamp};
 use kontor_core::spec::ProviderQuotaKind;
 
 /// The text Codex actually produced on 2026-08-21, from the report Igor filed.
@@ -20,6 +20,8 @@ const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
 
 fn codex() -> QuotaSignal {
     QuotaSignal {
+        id: "codex-usage-limit".to_owned(),
+        version: SpecVersion::FIRST,
         provider: "codex".to_owned(),
         basis: QuotaBasis::PlanAllowance,
         markers: vec!["usage limit".to_owned()],
@@ -31,6 +33,8 @@ fn codex() -> QuotaSignal {
 
 fn openrouter() -> QuotaSignal {
     QuotaSignal {
+        id: "openrouter-insufficient-credits".to_owned(),
+        version: SpecVersion::FIRST,
         provider: "openrouter".to_owned(),
         basis: QuotaBasis::CreditBalance,
         markers: vec!["insufficient".to_owned(), "credits".to_owned()],
@@ -145,6 +149,8 @@ fn a_signal_with_no_markers_never_matches() {
     // An empty marker list would otherwise match every text, since `all` over an
     // empty iterator is true -- and would classify the whole fleet as exhausted.
     let empty = QuotaSignal {
+        id: "empty-markers".to_owned(),
+        version: SpecVersion::FIRST,
         markers: Vec::new(),
         ..codex()
     };
@@ -209,6 +215,8 @@ const CLAUDE_LIMIT: &str = "You've hit your individual spend limit · ask your a
 
 fn claude_alias(alias: &str) -> QuotaSignal {
     QuotaSignal {
+        id: format!("claude-spend-limit-{alias}"),
+        version: SpecVersion::FIRST,
         provider: alias.to_owned(),
         basis: QuotaBasis::PlanAllowance,
         markers: vec![

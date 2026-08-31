@@ -17,6 +17,7 @@
 //! it states an intent that cannot be honoured, and silently ignoring it would
 //! leave an operator believing classification is armed when it is not.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -76,7 +77,26 @@ impl QuotaSignalsDocument {
         if self.signals.is_empty() {
             return invalid("a present document must declare at least one signal");
         }
+        // Identity first: a document that cannot say *which* signal fired
+        // cannot support a provenance record that names one.
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
         for signal in &self.signals {
+            // Delegated rather than re-implemented. `ExternalName::parse` also
+            // applies the core sensitive-material rule, and a hand-rolled
+            // non-empty/trimmed/bounded/control check would silently drop it.
+            if kontor_core::id::ExternalName::parse(&signal.id).is_err() {
+                return invalid("every signal id must be a valid external name");
+            }
+            // One active revision per logical signal. Two entries sharing an id
+            // would make `(id, version)` ambiguous, and provenance keyed on it
+            // could not say which definition authorized a retirement.
+            if !seen.insert(signal.id.as_str()) {
+                return invalid("signal ids must be unique within one document");
+            }
+            // A definition that cannot be digested cannot be cited later.
+            if signal.definition_hash().is_err() {
+                return invalid("every signal definition must be canonicalizable");
+            }
             if signal.provider.trim().is_empty() {
                 return invalid("every signal must name a provider");
             }
@@ -336,9 +356,9 @@ mod tests {
 
     #[test]
     fn a_non_ascii_marker_is_refused_because_the_matcher_is_ascii_exact() {
-        let document = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['brukergrense']\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['brukergrense']\n";
         assert!(parse(document).is_ok(), "plain ASCII is fine");
-        let non_ascii = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['kvote overskredet \u{e5}']\n";
+        let non_ascii = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['kvote overskredet \u{e5}']\n";
         assert!(matches!(
             parse(non_ascii),
             Err(QuotaSignalsError::Invalid {
@@ -349,7 +369,7 @@ mod tests {
 
     #[test]
     fn an_unknown_iana_zone_is_refused_rather_than_degrading_every_reset() {
-        let document = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: 'try again at '\n    reset_zone: 'Europe/Nowhere'\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: 'try again at '\n    reset_zone: 'Europe/Nowhere'\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -360,7 +380,7 @@ mod tests {
 
     #[test]
     fn a_credit_balance_declaring_reset_fields_is_refused_as_contradictory() {
-        let document = "schema_version: 1\nsignals:\n  - provider: opencode\n    basis: credit_balance\n    markers: ['insufficient']\n    reset_prefix: 'try again at '\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-opencode\n    version: 1\n    provider: opencode\n    basis: credit_balance\n    markers: ['insufficient']\n    reset_prefix: 'try again at '\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -371,7 +391,7 @@ mod tests {
 
     #[test]
     fn a_zone_without_a_prefix_is_refused_as_intent_that_never_applies() {
-        let document = "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_zone: Europe/Oslo\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_zone: Europe/Oslo\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -429,7 +449,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary state root");
         std::fs::write(
             root.path().join(QUOTA_SIGNALS_FILE),
-            "schema_version: 1\nsignals:\n  - provider: codex-work\n    basis: plan_allowance\n    markers: []\n",
+            "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: []\n",
         )
         .expect("the document is written");
         assert!(
@@ -467,13 +487,13 @@ mod tests {
 
     #[test]
     fn an_unknown_field_is_refused() {
-        let document = "schema_version: 1\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_after: nonsense\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex\n    version: 1\n    provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_after: nonsense\n";
         assert!(matches!(parse(document), Err(QuotaSignalsError::Document)));
     }
 
     #[test]
     fn a_future_schema_version_is_refused() {
-        let document = "schema_version: 2\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n";
+        let document = "schema_version: 2\nsignals:\n  - id: t-codex\n    version: 1\n    provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -484,7 +504,7 @@ mod tests {
 
     #[test]
     fn a_signal_without_markers_is_refused() {
-        let document = "schema_version: 1\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: []\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex\n    version: 1\n    provider: codex\n    basis: plan_allowance\n    markers: []\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -495,13 +515,156 @@ mod tests {
 
     #[test]
     fn a_blank_reset_prefix_is_refused_rather_than_capturing_from_zero() {
-        let document = "schema_version: 1\nsignals:\n  - provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: '   '\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex\n    version: 1\n    provider: codex\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: '   '\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
                 rule: "a stated reset_prefix must not be blank"
             })
         ));
+    }
+
+    fn signal_yaml(id: &str, version: u32, marker: &str) -> String {
+        format!(
+            "schema_version: 1\nsignals:\n  - id: {id}\n    version: {version}\n    \
+             provider: codex-work\n    basis: plan_allowance\n    markers: ['{marker}']\n"
+        )
+    }
+
+    #[test]
+    fn two_signals_may_not_share_one_id() {
+        let document = "schema_version: 1\nsignals:\n  - id: same\n    version: 1\n    provider: codex-work\n    \
+             basis: plan_allowance\n    markers: ['usage limit']\n  - id: same\n    version: 2\n    \
+             provider: codex-personal\n    basis: plan_allowance\n    markers: ['usage limit']\n";
+        assert!(matches!(
+            parse(document),
+            Err(QuotaSignalsError::Invalid {
+                rule: "signal ids must be unique within one document"
+            })
+        ));
+    }
+
+    /// `SpecVersion` refuses zero at the serde boundary, so the document never
+    /// reaches validation at all.
+    #[test]
+    fn a_zero_version_is_refused_while_parsing() {
+        assert!(matches!(
+            parse(&signal_yaml("codex-usage-limit", 0, "usage limit")),
+            Err(QuotaSignalsError::Document)
+        ));
+        assert!(parse(&signal_yaml("codex-usage-limit", 1, "usage limit")).is_ok());
+    }
+
+    #[test]
+    fn an_id_that_is_not_a_valid_external_name_is_refused() {
+        for bad in ["", "  untrimmed", "has\u{7}control"] {
+            let document = format!(
+                "schema_version: 1\nsignals:\n  - id: \"{bad}\"\n    version: 1\n    \
+                 provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n"
+            );
+            assert!(
+                matches!(
+                    parse(&document),
+                    Err(QuotaSignalsError::Invalid {
+                        rule: "every signal id must be a valid external name"
+                    }) | Err(QuotaSignalsError::Document)
+                ),
+                "{bad:?} must be refused",
+            );
+        }
+    }
+
+    /// Identity does not pin content. Changing the definition under an unchanged
+    /// `id` and `version` must be *visible* as a different digest, so immutable
+    /// history can refuse it rather than silently accept a substitution.
+    #[test]
+    fn the_same_id_and_version_with_changed_content_hashes_differently() {
+        let first = parse(&signal_yaml("codex-usage-limit", 1, "usage limit"))
+            .expect("valid")
+            .signals[0]
+            .definition_hash()
+            .expect("a digest");
+        for changed in [
+            signal_yaml("codex-usage-limit", 1, "hit your usage limit"),
+            "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
+             provider: codex-personal\n    basis: plan_allowance\n    markers: ['usage limit']\n"
+                .to_owned(),
+            "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
+             provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    \
+             reset_prefix: 'try again at '\n"
+                .to_owned(),
+        ] {
+            let other = parse(&changed).expect("valid").signals[0]
+                .definition_hash()
+                .expect("a digest");
+            assert_ne!(
+                first, other,
+                "a changed definition must not reuse the digest of another",
+            );
+        }
+        // And the identical definition is stable.
+        let again = parse(&signal_yaml("codex-usage-limit", 1, "usage limit"))
+            .expect("valid")
+            .signals[0]
+            .definition_hash()
+            .expect("a digest");
+        assert_eq!(first, again);
+    }
+
+    /// Marker order is part of the definition: classification returns the first
+    /// match, so reordering can change behaviour and must change the digest.
+    #[test]
+    fn reordering_markers_changes_the_definition_hash() {
+        let ordered = "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
+             provider: codex-work\n    basis: plan_allowance\n    markers: ['a', 'b']\n";
+        let reversed = "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
+             provider: codex-work\n    basis: plan_allowance\n    markers: ['b', 'a']\n";
+        assert_ne!(
+            parse(ordered).expect("valid").signals[0]
+                .definition_hash()
+                .expect("a digest"),
+            parse(reversed).expect("valid").signals[0]
+                .definition_hash()
+                .expect("a digest"),
+        );
+    }
+
+    /// One provider may carry several distinct fingerprints -- a vendor that
+    /// words a spend limit and a rate limit differently -- under distinct ids.
+    #[test]
+    fn one_provider_may_hold_several_fingerprints_under_distinct_ids() {
+        let document = "schema_version: 1\nsignals:\n  - id: claude-spend-limit\n    version: 1\n    \
+             provider: claude-work\n    basis: plan_allowance\n    markers: ['individual spend limit']\n  \
+             - id: claude-rate-limit\n    version: 1\n    provider: claude-work\n    \
+             basis: plan_allowance\n    markers: ['rate limit']\n";
+        let parsed = parse(document).expect("distinct ids on one provider are valid");
+        assert_eq!(parsed.signals.len(), 2);
+        assert_ne!(
+            parsed.signals[0].definition_hash().expect("a digest"),
+            parsed.signals[1].definition_hash().expect("a digest"),
+        );
+    }
+
+    /// The two shipped Claude entries share their wording and must still be
+    /// distinguishable, because they authorize different accounts.
+    #[test]
+    fn the_shipped_claude_logins_are_distinct_signals() {
+        let document = parse(EXAMPLE).expect("the shipped example is valid");
+        let claude: Vec<&QuotaSignal> = document
+            .signals
+            .iter()
+            .filter(|signal| signal.provider.starts_with("claude"))
+            .collect();
+        assert_eq!(claude.len(), 2);
+        assert_ne!(
+            claude[0].id, claude[1].id,
+            "identical wording, distinct ids"
+        );
+        assert_ne!(
+            claude[0].definition_hash().expect("a digest"),
+            claude[1].definition_hash().expect("a digest"),
+            "so provenance can say which login's fingerprint fired",
+        );
     }
 
     #[test]
@@ -516,7 +679,7 @@ mod tests {
 
     #[test]
     fn a_credit_basis_round_trips_through_the_document() {
-        let document = "schema_version: 1\nsignals:\n  - provider: openrouter\n    basis: credit_balance\n    markers: ['insufficient', 'credits']\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-openrouter\n    version: 1\n    provider: openrouter\n    basis: credit_balance\n    markers: ['insufficient', 'credits']\n";
         let parsed = parse(document).expect("valid document");
         assert_eq!(parsed.signals[0].basis, QuotaBasis::CreditBalance);
     }

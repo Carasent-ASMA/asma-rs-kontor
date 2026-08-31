@@ -78,6 +78,17 @@ one — the text preceding the reset instant and the IANA zone a bare wall clock
 is printed in. A vendor that prints local time without naming a zone cannot be
 read correctly without that field, and guessing wrong shifts the reset by hours.
 
+**Every signal carries an identity, and the alias is not it.** Each entry
+declares a stable logical `id`, unique within the document, and a positive
+`version` that increments whenever its wording or parsing changes. Two logins of
+one vendor carry the same sentence under the same family, so a record naming
+only `claude-work` could not say which fingerprint authorized a retirement —
+which is why the shipped Claude entries have distinct ids despite identical
+wording. A signal's complete definition (id, version, provider, basis, ordered
+markers, reset prefix, zone) is digested, and durable provenance cites that
+digest: changing any of it under an unchanged id and version produces a
+different digest, which immutable history is entitled to refuse.
+
 **`provider` is an exact catalog alias, never a vendor family.** A deployment
 addresses one login per alias — `codex-work` and `codex-personal` are two
 accounts of the same vendor — and each account's routing document declares
