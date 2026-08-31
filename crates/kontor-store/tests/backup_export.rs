@@ -761,16 +761,26 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
     assert!(current.records.profile_selection_outcomes.is_empty());
     let mut legacy = serde_json::to_value(&current).expect("the export serializes");
     legacy["schema_version"] = serde_json::json!(2);
-    legacy
-        .pointer_mut("/records")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("records are an object")
-        .remove("profile_selection_outcomes");
-    legacy
-        .pointer_mut("/continuity_summary/record_counts")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("record counts are an object")
-        .remove("profile_selection_outcomes");
+    // Generation two defined none of these, so a faithful legacy document
+    // carries none of their keys either.
+    for absent in [
+        "profile_selection_outcomes",
+        "provider_quota_observation_provenance",
+        "provider_quota_observation_source_ranges",
+        "provider_quota_states",
+        "provider_quota_windows",
+    ] {
+        legacy
+            .pointer_mut("/records")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("records are an object")
+            .remove(absent);
+        legacy
+            .pointer_mut("/continuity_summary/record_counts")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("record counts are an object")
+            .remove(absent);
+    }
     rehash_records(&mut legacy);
     legacy["database_schema_version"] = serde_json::json!(62);
     assert!(
@@ -780,7 +790,10 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         ),
         "a v2 document made after outcomes existed cannot prove that it omitted none"
     );
-    legacy["database_schema_version"] = serde_json::json!(61);
+    // A database old enough that none of the quota chain existed either --
+    // `provider_quota_states` arrives at 0048, so 61 would be refused for
+    // dropping it, and only a genuinely pre-quota generation is readable.
+    legacy["database_schema_version"] = serde_json::json!(47);
     let legacy = KontorExportV1::parse(&serde_json::to_vec(&legacy).expect("legacy bytes"))
         .expect("generation two from before outcome persistence remains readable");
     assert_eq!(legacy.schema_version, 2);
@@ -825,7 +838,7 @@ fn profile_selection_outcomes_round_trip_as_exact_non_executable_lineage() {
     let [first, second] = seed_profile_selection_outcomes(&source);
     let export = export_realm(&source.store, at("2026-08-10T10:00:00Z"))
         .expect("the outcome-bearing export");
-    assert_eq!(export.schema_version, 3);
+    assert_eq!(export.schema_version, EXPORT_SCHEMA_VERSION);
     assert_eq!(export.records.profile_selection_outcomes.len(), 2);
     assert_eq!(
         export
@@ -1673,4 +1686,45 @@ fn a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence()
     // The destination's own realm identity is untouched by the import.
     assert_eq!(second.source_realm_id, destination.realm_id());
     assert_ne!(second.source_realm_id, first.source_realm_id);
+}
+
+/// A document cannot carry outcomes its stated database had nowhere to hold.
+///
+/// The converse of the omission rule, and isolated deliberately: the realm holds
+/// no quota chain, so the quota generation checks have nothing to refuse and
+/// this refusal can only be the profile-selection one.
+#[test]
+fn profile_selection_outcomes_cannot_predate_the_generation_that_stored_them() {
+    let source = seed();
+    let _ = seed_profile_selection_outcomes(&source);
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z"))
+        .expect("the outcome-bearing export");
+    assert_eq!(export.schema_version, EXPORT_SCHEMA_VERSION);
+    assert!(!export.records.profile_selection_outcomes.is_empty());
+    assert!(
+        export.records.provider_quota_states.is_empty()
+            && export
+                .records
+                .provider_quota_observation_provenance
+                .is_empty(),
+        "the isolation this test depends on: no quota row can refuse first",
+    );
+
+    let mut document = serde_json::to_value(&export).expect("the export serializes");
+    document["database_schema_version"] = serde_json::json!(61);
+    rehash_records(&mut document);
+
+    match KontorExportV1::parse(&serde_json::to_vec(&document).expect("the bytes")) {
+        Err(BackupError::Verification { detail }) => assert_eq!(
+            detail,
+            "the export carries profile-selection outcomes its database generation could not hold",
+        ),
+        other => panic!("a pre-62 database cannot hold outcomes, got {other:?}"),
+    }
+
+    // And the generation that could hold them reads clean.
+    document["database_schema_version"] = serde_json::json!(62);
+    rehash_records(&mut document);
+    KontorExportV1::parse(&serde_json::to_vec(&document).expect("the bytes"))
+        .expect("the generation that stored them verifies");
 }

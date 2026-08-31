@@ -179,6 +179,12 @@ async fn a_legacy_unpinned_run_is_left_exactly_as_it_is() {
         kontor_runtime::refusal::RefusalProvenance {
             agent_run_id: run,
             binding_generation: 1,
+            runtime_binding_id: kontor_core::id::RuntimeBindingId::parse(
+                "01a0306f-9398-7a51-a612-8c36463db277",
+            )
+            .expect("a binding id"),
+            native_id: kontor_core::id::ExternalId::parse("65583f43-30cd-4a99-b715-3ae8ea967698")
+                .expect("a native id"),
             position: kontor_runtime::timeline::TimelinePosition {
                 epoch: 1,
                 sequence: 7,

@@ -419,6 +419,33 @@ const UNAVAILABLE_PROVIDER_SEAT: &[FieldSpec] = &[
         "The provider reported by the session and marked unavailable.",
     ),
 ];
+/// Exact identity and quota evidence for succeeding one usage-limited seat.
+///
+/// Distinct from the outage evidence above, and deliberately not a widening of
+/// it: that arm means the provider was down at launch, this one means the seat
+/// ran and then hit the wall.
+const QUOTA_EXHAUSTED_SEAT: &[FieldSpec] = &[
+    field(
+        "runtime_binding_id",
+        ArgType::Text,
+        "Kontor's immutable runtime binding id.",
+    ),
+    field(
+        "native_id",
+        ArgType::ExternalId,
+        "The exact native session id behind that binding.",
+    ),
+    field(
+        "provider",
+        ArgType::Text,
+        "The provider whose allowance was exhausted.",
+    ),
+    field(
+        "account_profile_id",
+        ArgType::Text,
+        "The account whose recorded quota state authorises the succession.",
+    ),
+];
 
 /// The session record a recovery gate verdict is transcribed from.
 ///
@@ -1811,6 +1838,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Object(UNAVAILABLE_PROVIDER_SEAT),
                 "Exact evidence authorizing retirement of a never-dispatched provider-blocked seat.",
+            ),
+            opt(
+                "quota_exhausted",
+                Place::Body,
+                ArgType::Object(QUOTA_EXHAUSTED_SEAT),
+                "Exact evidence authorising succession of a seat that ran and then hit a usage limit.",
             ),
             IDEMPOTENCY,
         ],

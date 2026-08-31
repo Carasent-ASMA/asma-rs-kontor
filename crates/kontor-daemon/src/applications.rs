@@ -40,11 +40,11 @@ use kontor_api::applications::{
     EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction,
     LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
     ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
-    PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
-    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
-    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto,
+    ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
+    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
+    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -10304,6 +10304,7 @@ fn teams_projection_dto(
 /// block that had already lifted.
 fn provider_quota_state_dto(
     entry: &kontor_core::repository::ProviderQuotaState,
+    provenance: Option<&kontor_core::repository::QuotaObservationProvenance>,
     now: Timestamp,
 ) -> ProviderQuotaStateDto {
     ProviderQuotaStateDto {
@@ -10316,6 +10317,36 @@ fn provider_quota_state_dto(
         blocking: entry.blocks_at(now),
         windows: entry.windows().iter().map(quota_window_dto).collect(),
         credit: entry.credit.map(credit_balance_dto),
+        provenance: provenance.map(|stored| {
+            let record = &stored.record;
+            QuotaProvenanceDto {
+                id: record.id.to_string(),
+                signal_id: record.signal_id.clone(),
+                signal_version: record.signal_version.get(),
+                signal_definition_hash: record.signal_definition_hash.as_str().to_owned(),
+                agent_run_id: record.agent_run_id.to_string(),
+                runtime_binding_id: record.runtime_binding_id.to_string(),
+                native_id: record.native_id.as_str().to_owned(),
+                binding_generation: record.binding_generation,
+                item_epoch: record.item_epoch,
+                item_seq_start: record.item_seq_start,
+                item_seq_end: record.item_seq_end,
+                item_kind: record.item_kind.clone(),
+                item_observed_at: record.item_observed_at.to_string(),
+                decision_basis: record.decision_basis.as_str().to_owned(),
+                reset_zone: record.reset_zone.clone(),
+                evidence_digest: record.evidence_digest.as_str().to_owned(),
+                source_sequences: record
+                    .source_sequences
+                    .iter()
+                    .map(|(start, end)| QuotaSourceRangeDto {
+                        seq_start: *start,
+                        seq_end: *end,
+                    })
+                    .collect(),
+                recorded_at: record.recorded_at.to_string(),
+            }
+        }),
         revision: entry.revision,
     }
 }
@@ -12266,10 +12297,21 @@ impl ApplicationOperations for Services {
         let states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
-        Ok(states
-            .iter()
-            .map(|entry| provider_quota_state_dto(entry, now))
-            .collect())
+        // Resolve each row's provenance so the readback answers "why", not just
+        // "what". A row that names none -- a provider report, an operator
+        // assertion, or anything written before this record existed -- simply
+        // carries no provenance rather than a fabricated one.
+        let mut dtos = Vec::with_capacity(states.len());
+        for entry in &states {
+            let provenance = match entry.provenance_id {
+                Some(id) => state
+                    .with_store(|store| store.get_quota_observation_provenance(project_id, id))
+                    .map_err(|error| self.refuse(&error))?,
+                None => None,
+            };
+            dtos.push(provider_quota_state_dto(entry, provenance.as_ref(), now));
+        }
+        Ok(dtos)
     }
 
     async fn record_provider_quota(
@@ -12335,6 +12377,8 @@ impl ApplicationOperations for Services {
             state
                 .with_store(|store| {
                     store.set_provider_quota_state(&NewProviderQuotaState {
+                        // An operator assertion cites no runtime item.
+                        provenance: None,
                         project_id,
                         account_profile_id,
                         provider: request.provider.clone(),
@@ -12376,7 +12420,13 @@ impl ApplicationOperations for Services {
                     "the provider quota state could not be read back after the record",
                 )
             })?;
-        Ok(provider_quota_state_dto(&stored, now))
+        let provenance = match stored.provenance_id {
+            Some(id) => state
+                .with_store(|store| store.get_quota_observation_provenance(project_id, id))
+                .map_err(|error| self.refuse(&error))?,
+            None => None,
+        };
+        Ok(provider_quota_state_dto(&stored, provenance.as_ref(), now))
     }
 
     async fn probe_provider_quota(

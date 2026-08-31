@@ -26437,6 +26437,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
                     observed_at: provider_reported_at,
                     expected_revision: AggregateRevision::parse(2).expect("revision two"),
                     updated_at: provider_reported_at,
+                    provenance: None,
                 }),
                 idempotency_key: None,
                 intent_hash: None,
@@ -26484,6 +26485,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
                 observed_at: mismatched_projection_at,
                 expected_revision: AggregateRevision::parse(3).expect("revision three"),
                 updated_at: mismatched_projection_at,
+                provenance: None,
             })
             .expect("a newer unmatched projection records")
     });

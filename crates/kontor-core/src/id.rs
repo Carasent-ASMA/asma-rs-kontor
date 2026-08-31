@@ -265,6 +265,14 @@ entity_ids! {
     /// usage digest. Its identity is therefore the durable freshness proof; it
     /// is never used as the mutable quota-state identity.
     ProviderUsageObservationId,
+    /// Identifies one immutable record of why a runtime-observed quota decision
+    /// was reached.
+    ///
+    /// Separate from the quota row it explains, because that row is mutable
+    /// current state while this is append-only history: the row points at the
+    /// record that last moved it, and every earlier record stays exactly as it
+    /// was written.
+    QuotaObservationProvenanceId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {

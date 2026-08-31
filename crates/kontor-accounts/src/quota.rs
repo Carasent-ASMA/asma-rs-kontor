@@ -112,11 +112,31 @@ impl QuotaSignal {
     }
 }
 
+/// The identity of the signal a refusal matched.
+///
+/// Identity, not routing: two logins of one vendor carry the same wording, so a
+/// record naming only the alias could not say which fingerprint fired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedSignal {
+    /// The signal's stable logical id.
+    pub id: String,
+    /// Which revision of it matched.
+    pub version: SpecVersion,
+    /// Digest of its complete definition at the moment it matched.
+    pub definition_hash: ContentHash,
+}
+
 /// What one refusal text was read as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedQuota {
     /// The provider the signal named.
     pub provider: String,
+    /// Which signal matched, when a signal did.
+    ///
+    /// `None` for a structured provider report: the poller reads numbers from
+    /// an endpoint and no fingerprint was involved, so claiming one would be
+    /// evidence nobody produced.
+    pub signal: Option<MatchedSignal>,
     /// The state to record.
     pub kind: ProviderQuotaKind,
     /// The instant an allowance returns, when one was stated and parsed.
@@ -153,9 +173,16 @@ pub fn classify(
                 .all(|marker| find_ascii_ci(text, marker).is_some())
     })?;
 
+    let matched = MatchedSignal {
+        id: signal.id.clone(),
+        version: signal.version,
+        definition_hash: signal.definition_hash().ok()?,
+    };
+
     if signal.basis == QuotaBasis::CreditBalance {
         return Some(ObservedQuota {
             provider: signal.provider.clone(),
+            signal: Some(matched.clone()),
             kind: ProviderQuotaKind::Drained,
             resets_at: None,
         });
@@ -181,11 +208,13 @@ pub fn classify(
     Some(match resets_at {
         Some(instant) => ObservedQuota {
             provider: signal.provider.clone(),
+            signal: Some(matched.clone()),
             kind: ProviderQuotaKind::Exhausted,
             resets_at: Some(instant),
         },
         None => ObservedQuota {
             provider: signal.provider.clone(),
+            signal: Some(matched.clone()),
             kind: ProviderQuotaKind::Unknown,
             resets_at: None,
         },

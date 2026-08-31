@@ -15425,6 +15425,17 @@
             "type": "string",
             "description": "When it was concluded."
           },
+          "provenance": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaProvenanceDto",
+                "description": "Why a runtime observation concluded this, when one did.\n\nAbsent for a provider report or an operator assertion: neither cites a\nruntime item, and a shape that implied otherwise would be a claim nobody\nmade."
+              }
+            ]
+          },
           "provider": {
             "type": "string",
             "description": "The provider, spelled as the model catalog spells it."
@@ -15686,6 +15697,170 @@
           "topology_node_id": {
             "type": "string",
             "description": "The topology node hosting it."
+          }
+        }
+      },
+      "QuotaExhaustedSeatRequest": {
+        "type": "object",
+        "description": "Exact identity and quota evidence for succeeding one usage-limited seat.",
+        "required": [
+          "runtime_binding_id",
+          "native_id",
+          "provider",
+          "account_profile_id"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The account whose recorded quota state authorizes the succession.\n\nNamed rather than derived: the caller states which account it believes\nis blocked, and the server refuses if that is not the account the run\nactually claims. Deriving it would let a stale caller succeed against\nwhichever account the run happened to hold."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The exact native session id behind that binding."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider whose allowance was exhausted."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "Kontor's immutable runtime binding id."
+          }
+        },
+        "additionalProperties": false
+      },
+      "QuotaProvenanceDto": {
+        "type": "object",
+        "description": "Which exact item, on which run, under which signal revision authorized a\nruntime-observed quota decision.\n\nModeled scalars only. There is deliberately no refusal text and no open map\nhere — the digest identifies the sentence without the projection ever\ncarrying one.",
+        "required": [
+          "id",
+          "signal_id",
+          "signal_version",
+          "signal_definition_hash",
+          "agent_run_id",
+          "runtime_binding_id",
+          "native_id",
+          "binding_generation",
+          "item_epoch",
+          "item_seq_start",
+          "item_seq_end",
+          "item_kind",
+          "item_observed_at",
+          "decision_basis",
+          "evidence_digest",
+          "source_sequences",
+          "recorded_at"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run whose session carried the item."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The binding generation, so evidence cannot be read across one.",
+            "minimum": 0
+          },
+          "decision_basis": {
+            "type": "string",
+            "description": "What kind of evidence this was."
+          },
+          "evidence_digest": {
+            "type": "string",
+            "description": "The digest the quota row cites. Covers the bounded refusal *and* the\nitem provenance that carried it, so the same sentence from a different\nitem, run or generation digests differently. Never the text itself."
+          },
+          "id": {
+            "type": "string",
+            "description": "The provenance record's id."
+          },
+          "item_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Canonical epoch of the item.",
+            "minimum": 0
+          },
+          "item_kind": {
+            "type": "string",
+            "description": "The runtime's own item type."
+          },
+          "item_observed_at": {
+            "type": "string",
+            "description": "When the item was emitted, never when Kontor read it."
+          },
+          "item_seq_end": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Last native sequence the item covers.",
+            "minimum": 0
+          },
+          "item_seq_start": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First native sequence the item covers.",
+            "minimum": 0
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native session behind the binding."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "When the record was written."
+          },
+          "reset_zone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The zone the signal declared for a bare wall clock, if any."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "That run's immutable binding."
+          },
+          "signal_definition_hash": {
+            "type": "string",
+            "description": "Digest of that signal's complete definition when it matched."
+          },
+          "signal_id": {
+            "type": "string",
+            "description": "Stable logical id of the signal that matched."
+          },
+          "signal_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "That signal's revision.",
+            "minimum": 0
+          },
+          "source_sequences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaSourceRangeDto"
+            },
+            "description": "Exactly which native sequences the item covered, in order. An envelope\nwould claim sequences a collapsed entry never carried."
+          }
+        }
+      },
+      "QuotaSourceRangeDto": {
+        "type": "object",
+        "description": "One inclusive native-sequence range an item covered.",
+        "required": [
+          "seq_start",
+          "seq_end"
+        ],
+        "properties": {
+          "seq_end": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Last native sequence, inclusive.",
+            "minimum": 0
+          },
+          "seq_start": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First native sequence, inclusive.",
+            "minimum": 0
           }
         }
       },
@@ -16276,6 +16451,17 @@
               {
                 "$ref": "#/components/schemas/RuntimeModelRouteRequest",
                 "description": "Admin-authorized temporary provider/model route for this successor.\nAbsent means the first currently eligible rung in the frozen chain."
+              }
+            ]
+          },
+          "quota_exhausted": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaExhaustedSeatRequest",
+                "description": "Exact evidence authorizing succession of a seat that ran and then hit a\nprovider usage limit.\n\nDistinct from `unavailable_provider`, and deliberately not a widening of\nit: that arm means *the provider was down when we tried to start*, and\nits launch-only fence is load-bearing for that meaning. This one means\n*it ran for an hour and then hit the wall*, which is a different fact\nwith different evidence — the predecessor is still reachable, and a\nrecorded quota state is what authorizes retiring it anyway.\n\nMutually exclusive with `unavailable_provider`."
               }
             ]
           },

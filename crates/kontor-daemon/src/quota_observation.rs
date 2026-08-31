@@ -28,7 +28,8 @@ use kontor_accounts::{QuotaSignal, classify};
 use kontor_api::state::ApiState;
 use kontor_core::id::{AccountProfileId, ContentHash, ProjectId, Timestamp};
 use kontor_core::repository::{
-    CapacityRepository, NewProviderQuotaState, ProjectRepository, RepositoryError,
+    CapacityRepository, NewProviderQuotaState, NewQuotaObservationProvenance, ProjectRepository,
+    RepositoryError,
 };
 use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
 use kontor_runtime::refusal::TransientRefusal;
@@ -251,6 +252,42 @@ pub fn decide(
             .unwrap_or_default(),
         credit: existing.as_ref().and_then(|row| row.credit),
         evidence_hash: evidence_hash.clone(),
+        // The record that lets this row be re-judged later: which fingerprint
+        // fired, at which version, from which definition, and the exact item
+        // that carried it. Modelled scalars and a digest only -- the vendor's
+        // sentence is never part of it, which is what lets the record be
+        // carried through readback and export unredacted.
+        provenance: observed.signal.as_ref().map(|matched| {
+            let where_from = refusal.provenance();
+            NewQuotaObservationProvenance {
+                id: kontor_core::id::QuotaObservationProvenanceId::generate(),
+                project_id,
+                account_profile_id,
+                provider: observed.provider.clone(),
+                signal_id: matched.id.clone(),
+                signal_version: matched.version,
+                signal_definition_hash: matched.definition_hash.clone(),
+                agent_run_id: where_from.agent_run_id,
+                runtime_binding_id: where_from.runtime_binding_id,
+                native_id: where_from.native_id.clone(),
+                binding_generation: where_from.binding_generation,
+                item_epoch: where_from.position.epoch,
+                item_seq_start: where_from.position.sequence,
+                item_seq_end: where_from.sequence_end,
+                source_sequences: where_from.source_sequences.clone(),
+                item_kind: where_from.item_type.clone(),
+                item_observed_at: where_from.observed_at,
+                decision_basis: kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal,
+                decided_state: observed.kind,
+                parsed_resets_at: observed.resets_at,
+                reset_zone: eligible
+                    .iter()
+                    .find(|signal| signal.id == matched.id)
+                    .and_then(|signal| signal.reset_zone.clone()),
+                evidence_digest: evidence_hash.clone(),
+                recorded_at: now,
+            }
+        }),
         source: ProviderQuotaSource::RuntimeObservation,
         // The instant the *item* was emitted, not the instant we looked. A
         // probe runs on inspection, so `now` would make a refusal captured

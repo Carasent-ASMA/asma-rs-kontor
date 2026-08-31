@@ -44,6 +44,26 @@ fn codex_signal_for(alias: &str) -> QuotaSignal {
     }
 }
 
+/// The codex fingerprint the realm actually ships, read from
+/// `config/examples/quota-signals.yml` through the production parser.
+///
+/// Deliberately not a copy. `include_str!` binds this test to the real bytes, so
+/// weakening a marker in that file changes this test's input and recompiles it;
+/// a duplicated marker list here would stay green while the shipped signal got
+/// looser, which is the failure this test exists to prevent.
+fn shipped_signal_for(alias: &str) -> QuotaSignal {
+    let document = kontor_accounts::parse_quota_signals(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/examples/quota-signals.yml"
+    )))
+    .expect("the shipped example parses and validates");
+    document
+        .signals
+        .into_iter()
+        .find(|signal| signal.provider == alias)
+        .unwrap_or_else(|| panic!("the shipped example carries a signal for {alias}"))
+}
+
 /// Create an account addressable as `codex-work`.
 async fn account(world: &World, label: &str, alias: &str) -> AccountProfileId {
     let project = world.project;
@@ -94,11 +114,17 @@ fn classify_and_record(
     Ok(Some(decided.classification))
 }
 
-fn where_from() -> RefusalProvenance {
+/// Provenance citing a seat the store actually holds.
+///
+/// The composite binding key refuses a fabricated one, which is the point of
+/// it: a record has to name the exact immutable binding, run, generation and
+/// native session, not a plausible-looking tuple.
+fn where_from(seat: &Seat) -> RefusalProvenance {
     RefusalProvenance {
-        agent_run_id: kontor_core::id::AgentRunId::parse("01a0306f-9398-7a51-a612-8c2b58251d58")
-            .expect("a canonical run id"),
-        binding_generation: 1,
+        agent_run_id: seat.run,
+        binding_generation: seat.binding.identity().generation,
+        runtime_binding_id: seat.binding.binding_id(),
+        native_id: seat.binding.identity().native_id.clone(),
         position: kontor_runtime::timeline::TimelinePosition {
             epoch: 1,
             sequence: 7,
@@ -110,13 +136,25 @@ fn where_from() -> RefusalProvenance {
     }
 }
 
-fn refusal(text: &str) -> TransientRefusal {
-    TransientRefusal::parse(text, where_from()).expect("a non-sensitive refusal")
+/// One launched seat, so provenance can cite something real.
+struct Seat {
+    run: kontor_core::id::AgentRunId,
+    binding: kontor_runtime::capability::RuntimeBindingSnapshot,
+}
+
+async fn seat(world: &World) -> Seat {
+    let (run, binding) = world.launch().await;
+    Seat { run, binding }
+}
+
+fn refusal(seat: &Seat, text: &str) -> TransientRefusal {
+    TransientRefusal::parse(text, where_from(seat)).expect("a non-sensitive refusal")
 }
 
 #[tokio::test]
 async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "codex-work-a", "codex-work").await;
     let state = world.daemon.state();
 
@@ -125,7 +163,7 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the write settles")
@@ -155,6 +193,7 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
 #[tokio::test]
 async fn the_same_limit_observed_three_times_writes_one_row() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "codex-work-b", "codex-work").await;
     let state = world.daemon.state();
 
@@ -165,7 +204,7 @@ async fn the_same_limit_observed_three_times_writes_one_row() {
             world.project,
             profile,
             &[codex_signal_for("codex-work")],
-            &refusal(CODEX_LIMIT),
+            &refusal(&seat, CODEX_LIMIT),
             at(&format!("2026-08-21T10:0{minute}:00Z")),
         )
         .expect("the write settles")
@@ -192,6 +231,7 @@ async fn the_same_limit_observed_three_times_writes_one_row() {
 #[tokio::test]
 async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "codex-work-c", "codex-work").await;
     let state = world.daemon.state();
 
@@ -206,7 +246,7 @@ async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
                 world.project,
                 profile,
                 &[codex_signal_for("codex-work")],
-                &refusal(text),
+                &refusal(&seat, text),
                 at("2026-08-21T10:00:00Z"),
             )
             .expect("no storage failure")
@@ -229,6 +269,7 @@ async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
 #[tokio::test]
 async fn a_realm_with_no_signals_document_stays_inert() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "codex-work-d", "codex-work").await;
     let state = world.daemon.state();
 
@@ -238,7 +279,7 @@ async fn a_realm_with_no_signals_document_stays_inert() {
             world.project,
             profile,
             &[],
-            &refusal(CODEX_LIMIT),
+            &refusal(&seat, CODEX_LIMIT),
             at("2026-08-21T10:00:00Z"),
         )
         .expect("no storage failure")
@@ -258,6 +299,7 @@ async fn a_realm_with_no_signals_document_stays_inert() {
 #[tokio::test]
 async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     // The account is addressable as `codex-personal`; the signal names
     // `codex-work`. One vendor's sentence must not block the other login.
     let profile = account(&world, "codex-personal-a", "codex-personal").await;
@@ -269,7 +311,7 @@ async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
             world.project,
             profile,
             &[codex_signal_for("codex-work")],
-            &refusal(CODEX_LIMIT),
+            &refusal(&seat, CODEX_LIMIT),
             at("2026-08-21T10:00:00Z"),
         )
         .expect("no storage failure")
@@ -289,6 +331,7 @@ async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
 #[tokio::test]
 async fn the_refusal_sentence_never_reaches_the_store() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "codex-work-e", "codex-work").await;
     let state = world.daemon.state();
 
@@ -297,7 +340,7 @@ async fn the_refusal_sentence_never_reaches_the_store() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the write settles")
@@ -306,7 +349,7 @@ async fn the_refusal_sentence_never_reaches_the_store() {
     // Only the digest crosses the boundary.
     assert_eq!(
         classified.evidence_hash,
-        refusal(CODEX_LIMIT).digest(),
+        refusal(&seat, CODEX_LIMIT).digest(),
         "the recorded evidence is the digest of the sentence",
     );
 
@@ -327,12 +370,18 @@ async fn the_refusal_sentence_never_reaches_the_store() {
 
 #[tokio::test]
 async fn a_credential_shaped_refusal_is_refused_before_it_is_ever_classified() {
+    let world = World::open().await;
+    let seat = seat(&world).await;
     // The guard is in construction, so there is no path that classifies one.
     assert!(
-        TransientRefusal::parse("authorization: Bearer sk-livesecretvalue00", where_from())
-            .is_none()
+        TransientRefusal::parse(
+            "authorization: Bearer sk-livesecretvalue00",
+            where_from(&seat)
+        )
+        .is_none()
     );
-    let carried = TransientRefusal::parse(CODEX_LIMIT, where_from()).expect("an ordinary refusal");
+    let carried =
+        TransientRefusal::parse(CODEX_LIMIT, where_from(&seat)).expect("an ordinary refusal");
     assert!(!format!("{carried:?}").contains("usage limit"));
 }
 
@@ -341,6 +390,7 @@ async fn a_credential_shaped_refusal_is_refused_before_it_is_ever_classified() {
 #[tokio::test]
 async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let work = account(&world, "alias-work", "codex-work").await;
     let personal = account(&world, "alias-personal", "codex-personal").await;
     let state = world.daemon.state();
@@ -356,7 +406,7 @@ async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
             world.project,
             profile,
             &configured,
-            &refusal(CODEX_LIMIT),
+            &refusal(&seat, CODEX_LIMIT),
             at("2026-08-21T10:00:00Z"),
         )
         .expect("the write settles")
@@ -383,6 +433,7 @@ async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
 #[tokio::test]
 async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let personal = account(&world, "mask-personal", "codex-personal").await;
     let state = world.daemon.state();
     // `codex-work` is first and matches the same text, but this seat cannot
@@ -397,7 +448,7 @@ async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
         world.project,
         personal,
         &configured,
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the write settles")
@@ -413,6 +464,7 @@ async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
 #[tokio::test]
 async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "family-only", "codex-work").await;
     let state = world.daemon.state();
 
@@ -422,7 +474,7 @@ async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() 
             world.project,
             profile,
             &[codex_signal_for("codex")],
-            &refusal(CODEX_LIMIT),
+            &refusal(&seat, CODEX_LIMIT),
             at("2026-08-21T10:00:00Z"),
         )
         .expect("no storage failure")
@@ -445,6 +497,7 @@ async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() 
 #[tokio::test]
 async fn a_reset_that_is_not_in_the_future_records_a_blocking_unknown_instead() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "past-reset", "codex-work").await;
     let state = world.daemon.state();
 
@@ -454,7 +507,7 @@ async fn a_reset_that_is_not_in_the_future_records_a_blocking_unknown_instead() 
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2027-01-01T00:00:00Z"),
     )
     .expect("the write settles")
@@ -488,6 +541,7 @@ async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
     use kontor_core::repository::CapacityRepository as _;
 
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "cas-foreign", "codex-work").await;
     let state = world.daemon.state();
 
@@ -508,6 +562,7 @@ async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
                 observed_at: at("2026-08-21T08:00:00Z"),
                 expected_revision: kontor_core::id::AggregateRevision::INITIAL,
                 updated_at: at("2026-08-21T08:00:00Z"),
+                provenance: None,
             })
         })
         .expect("the foreign row is stored");
@@ -518,7 +573,7 @@ async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the write settles")
@@ -559,6 +614,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
     use kontor_core::repository::CapacityRepository as _;
 
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "cas-stale", "codex-work").await;
     let state = world.daemon.state();
 
@@ -577,6 +633,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
                 observed_at: at("2026-08-21T12:00:00Z"),
                 expected_revision: kontor_core::id::AggregateRevision::INITIAL,
                 updated_at: at("2026-08-21T12:00:00Z"),
+                provenance: None,
             })
         })
         .expect("the newer report is stored");
@@ -593,7 +650,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T18:00:00Z"),
     )
     .expect("the write settles");
@@ -617,6 +674,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
 #[tokio::test]
 async fn a_vanished_account_is_a_no_op_and_not_an_error() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let state = world.daemon.state();
     let absent = AccountProfileId::generate();
     let outcome = classify_and_record(
@@ -624,7 +682,7 @@ async fn a_vanished_account_is_a_no_op_and_not_an_error() {
         world.project,
         absent,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     );
     assert!(
@@ -640,6 +698,7 @@ async fn a_vanished_account_is_a_no_op_and_not_an_error() {
 #[tokio::test]
 async fn an_exact_row_already_present_succeeds_without_writing_again() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "cas-exact", "codex-work").await;
     let state = world.daemon.state();
     let signals = [codex_signal_for("codex-work")];
@@ -650,7 +709,7 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
         world.project,
         profile,
         &signals,
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the write settles")
@@ -672,7 +731,7 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
         world.project,
         profile,
         &signals,
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:05:00Z"),
     )
     .expect("the write settles")
@@ -700,6 +759,7 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
 #[tokio::test]
 async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "cas-differs", "codex-work").await;
     let state = world.daemon.state();
 
@@ -708,7 +768,7 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the write settles")
@@ -721,7 +781,7 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
         "[System Error] You've hit your usage limit. Visit \
          https://chatgpt.com/codex/settings/usage to purchase more credits or try \
          again at Aug 24th, 2026 9:35 AM.",
-        where_from(),
+        where_from(&seat),
     )
     .expect("a refusal");
     let second = classify_and_record(
@@ -747,6 +807,7 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
 #[tokio::test]
 async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "late-probe", "codex-work").await;
     let state = world.daemon.state();
 
@@ -756,7 +817,7 @@ async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T15:00:00Z"),
     )
     .expect("the decision settles")
@@ -786,6 +847,7 @@ async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
 #[tokio::test]
 async fn a_decision_reports_a_proposal_and_never_a_completed_write() {
     let world = World::open().await;
+    let seat = seat(&world).await;
     let profile = account(&world, "proposal-only", "codex-work").await;
     let state = world.daemon.state();
 
@@ -794,7 +856,7 @@ async fn a_decision_reports_a_proposal_and_never_a_completed_write() {
         world.project,
         profile,
         &[codex_signal_for("codex-work")],
-        &refusal(CODEX_LIMIT),
+        &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
     .expect("the decision settles")
@@ -808,5 +870,261 @@ async fn a_decision_reports_a_proposal_and_never_a_completed_write() {
     assert!(
         stored.iter().all(|row| row.account_profile_id != profile),
         "deciding proposes; it does not write",
+    );
+}
+
+/// The public readback: what an operator asking "why is this blocked?" actually
+/// receives. Store-level coverage does not prove the projection carries it, and
+/// a regenerated OpenAPI document does not prove the served shape does either.
+#[tokio::test]
+async fn the_public_quota_projection_carries_the_exact_provenance() {
+    let world = World::open().await;
+    let seat = seat(&world).await;
+    let profile = account(&world, "public-readback", "codex-work").await;
+    let state = world.daemon.state();
+
+    // The launched seat above is what the record must cite: the composite key
+    // refuses a fabricated binding, which is the point of it.
+    let (run, binding) = (seat.run, &seat.binding);
+
+    // A decision whose item spans two disjoint ranges, so an envelope would be
+    // visibly wrong in the projection.
+    let where_from = RefusalProvenance {
+        agent_run_id: run,
+        binding_generation: binding.identity().generation,
+        runtime_binding_id: binding.binding_id(),
+        native_id: binding.identity().native_id.clone(),
+        position: kontor_runtime::timeline::TimelinePosition {
+            epoch: 1,
+            sequence: 4,
+        },
+        sequence_end: 9,
+        source_sequences: vec![(4, 5), (9, 9)],
+        item_type: "assistant_message".to_owned(),
+        observed_at: at("2026-08-21T09:00:00Z"),
+    };
+    let refusal = TransientRefusal::parse(CODEX_LIMIT, where_from).expect("a refusal");
+    let expected_digest = refusal.digest();
+    let decided = decide(
+        &state,
+        world.project,
+        profile,
+        &[codex_signal_for("codex-work")],
+        &refusal,
+        at("2026-08-21T10:00:00Z"),
+    )
+    .expect("the decision settles")
+    .expect("a quota refusal");
+    let request = decided.request.expect("a proposed write");
+    state
+        .with_store(|store| store.set_provider_quota_state(&request))
+        .expect("the decision is recorded");
+
+    let project = world.project;
+    let listed = Call::get(format!("/v1/projects/{project}/provider-quota-states"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    // The route answers with a bare array of states.
+    let row = listed
+        .json()
+        .as_array()
+        .expect("an array of quota states")
+        .iter()
+        .find(|entry| entry["account_profile_id"] == profile.to_string())
+        .expect("the account's row")
+        .clone();
+    let provenance = row["provenance"].clone();
+    assert!(
+        !provenance.is_null(),
+        "the projection answers why, not only what: {row}",
+    );
+    assert_eq!(provenance["signal_id"], "codex-usage-limit-codex-work");
+    assert_eq!(provenance["signal_version"], 1);
+    assert_eq!(provenance["item_kind"], "assistant_message");
+    assert_eq!(
+        provenance["native_id"],
+        binding.identity().native_id.as_str(),
+    );
+    assert_eq!(
+        provenance["binding_generation"],
+        binding.identity().generation,
+    );
+    assert_eq!(provenance["item_observed_at"], "2026-08-21T09:00:00Z");
+    assert_eq!(
+        provenance["evidence_digest"].as_str(),
+        Some(expected_digest.as_str()),
+        "the served digest is the one the refusal produced, covering text and item alike",
+    );
+    let ranges = provenance["source_sequences"]
+        .as_array()
+        .expect("the exact set");
+    assert_eq!(ranges.len(), 2, "two disjoint ranges, not an envelope");
+    assert_eq!(ranges[0]["seq_start"], 4);
+    assert_eq!(ranges[0]["seq_end"], 5);
+    assert_eq!(ranges[1]["seq_start"], 9);
+    assert_eq!(ranges[1]["seq_end"], 9);
+
+    // And no fragment of the refusal reaches the projection or the database.
+    let served = listed.body.clone();
+    let database = std::fs::read(world.directory.path().join("kontor.db"))
+        .expect("the realm database is readable");
+    let stored = String::from_utf8_lossy(&database);
+    for fragment in [
+        "usage limit",
+        "chatgpt.com/codex/settings/usage",
+        "try again at Aug 23rd",
+        "System Error",
+    ] {
+        assert!(
+            !served.contains(fragment),
+            "the served projection must not contain {fragment:?}",
+        );
+        assert!(
+            !stored.contains(fragment),
+            "the database must not contain {fragment:?}",
+        );
+    }
+}
+
+fn provenance_rows(world: &World) -> i64 {
+    rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the realm database opens")
+        .query_row(
+            "SELECT COUNT(*) FROM provider_quota_observation_provenance",
+            [],
+            |row| row.get(0),
+        )
+        .expect("a count")
+}
+
+fn pointer(
+    state: &kontor_api::state::ApiState,
+    world: &World,
+    profile: AccountProfileId,
+) -> Option<String> {
+    state
+        .with_store(|store| store.list_provider_quota_states(world.project))
+        .expect("quota states")
+        .into_iter()
+        .find(|row| row.account_profile_id == profile)
+        .and_then(|row| row.provenance_id.map(|id| id.to_string()))
+}
+
+/// A true duplicate replay, through the production decision boundary: the same
+/// item observed again yields no write at all, so no record is appended and the
+/// pointer cannot move.
+#[tokio::test]
+async fn a_duplicate_replay_appends_no_provenance_and_moves_no_pointer() {
+    let world = World::open().await;
+    let seat = seat(&world).await;
+    let profile = account(&world, "replay-cardinality", "codex-work").await;
+    let state = world.daemon.state();
+    let signals = [codex_signal_for("codex-work")];
+
+    classify_and_record(
+        &state,
+        world.project,
+        profile,
+        &signals,
+        &refusal(&seat, CODEX_LIMIT),
+        at("2026-08-21T10:00:00Z"),
+    )
+    .expect("the write settles")
+    .expect("a quota refusal");
+    assert_eq!(provenance_rows(&world), 1, "one accepted item, one record");
+    let first = pointer(&state, &world, profile).expect("the pointer moved");
+
+    // The identical item, observed again.
+    let replay = decide(
+        &state,
+        world.project,
+        profile,
+        &signals,
+        &refusal(&seat, CODEX_LIMIT),
+        at("2026-08-21T10:05:00Z"),
+    )
+    .expect("the decision settles")
+    .expect("still recognisably a refusal");
+    assert!(
+        replay.request.is_none(),
+        "a replay proposes no write, so nothing can be appended",
+    );
+    assert!(!replay.classification.proposes_write);
+    assert_eq!(provenance_rows(&world), 1, "a replay appends nothing");
+    assert_eq!(
+        pointer(&state, &world, profile),
+        Some(first),
+        "and cannot move the pointer",
+    );
+}
+
+/// A true no-match: text that is not a refusal at all. The overwhelmingly
+/// common case, and it must touch nothing.
+///
+/// The last case is the one that matters. `codex_signal_for` carries the single
+/// loose marker `usage limit`, which any assistant message discussing limit
+/// handling contains; the shipped fingerprint in `config/examples/quota-signals.yml`
+/// deliberately demands the system-error framing, the settings URL and the retry
+/// wording *together* for exactly this reason. Both are asserted here, so a
+/// future loosening of the shipped signal fails a test rather than archiving a
+/// live seat over an assistant sentence.
+#[tokio::test]
+async fn a_no_match_appends_no_provenance_and_moves_no_pointer() {
+    let world = World::open().await;
+    let seat = seat(&world).await;
+    let profile = account(&world, "no-match-cardinality", "codex-work").await;
+    let state = world.daemon.state();
+    let loose = [codex_signal_for("codex-work")];
+
+    classify_and_record(
+        &state,
+        world.project,
+        profile,
+        &loose,
+        &refusal(&seat, CODEX_LIMIT),
+        at("2026-08-21T10:00:00Z"),
+    )
+    .expect("the write settles")
+    .expect("a quota refusal");
+    let first = pointer(&state, &world, profile).expect("the pointer moved");
+    assert_eq!(provenance_rows(&world), 1);
+
+    for ordinary in ["connection reset by peer", "Done. The tests pass."] {
+        let outcome = decide(
+            &state,
+            world.project,
+            profile,
+            &loose,
+            &refusal(&seat, ordinary),
+            at("2026-08-21T11:00:00Z"),
+        )
+        .expect("the decision settles");
+        assert!(outcome.is_none(), "{ordinary:?} is not a refusal");
+    }
+
+    // An assistant sentence that merely mentions the phrase, held against the
+    // fingerprint the realm actually ships.
+    let mention = "I'll add handling for the provider usage limit case.";
+    assert!(
+        decide(
+            &state,
+            world.project,
+            profile,
+            &[shipped_signal_for("codex-work")],
+            &refusal(&seat, mention),
+            at("2026-08-21T11:00:00Z"),
+        )
+        .expect("the decision settles")
+        .is_none(),
+        "the shipped fingerprint must not fire on a message that discusses limits",
+    );
+
+    assert_eq!(provenance_rows(&world), 1, "no match appends nothing");
+    assert_eq!(
+        pointer(&state, &world, profile),
+        Some(first),
+        "and cannot move the pointer",
     );
 }

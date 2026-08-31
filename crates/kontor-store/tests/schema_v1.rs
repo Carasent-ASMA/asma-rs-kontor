@@ -128,6 +128,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
+    "provider_quota_observation_provenance",
+    "provider_quota_observation_source_ranges",
     "provider_usage_observations",
     "profile_selection_outcomes",
     "quick_session_promotions",
@@ -476,8 +478,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v69 widens global Committee recovery rounds; v70 reconciles intermediate
     // v69 projections; and v71 adds exact-occupancy durable Completion-wake
     // delivery evidence; v72 adds durable project-scoped epic namespaces; and
-    // v73 permits safe link recovery after an unconfirmed create attempt.
-    assert_eq!(SCHEMA_VERSION, 73);
+    // v74 records why a runtime-observed quota decision was reached: which exact
+    // item, on which run, under which signal revision.
+    assert_eq!(SCHEMA_VERSION, 74);
 }
 
 #[test]

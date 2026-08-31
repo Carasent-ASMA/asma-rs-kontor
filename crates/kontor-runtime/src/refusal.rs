@@ -28,7 +28,9 @@
 
 use std::fmt;
 
-use kontor_core::id::{AgentRunId, ContentHash, Timestamp, reject_sensitive_text};
+use kontor_core::id::{
+    AgentRunId, ContentHash, ExternalId, RuntimeBindingId, Timestamp, reject_sensitive_text,
+};
 
 use crate::timeline::TimelinePosition;
 
@@ -63,6 +65,10 @@ pub struct RefusalProvenance {
     pub agent_run_id: AgentRunId,
     /// The immutable binding generation that run was on.
     pub binding_generation: u64,
+    /// The run's immutable runtime binding.
+    pub runtime_binding_id: RuntimeBindingId,
+    /// The native session behind that binding.
+    pub native_id: ExternalId,
     /// Canonical position of the item's first sequence.
     pub position: TimelinePosition,
     /// The item's last native sequence. Equal to `position.sequence` unless the
@@ -93,9 +99,11 @@ impl RefusalProvenance {
             .map(|(start, end)| format!("{start}-{end}"))
             .collect();
         format!(
-            "v3\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "v4\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             self.agent_run_id,
             self.binding_generation,
+            self.runtime_binding_id,
+            self.native_id.as_str(),
             self.position.epoch,
             self.position.sequence,
             self.sequence_end,
@@ -211,6 +219,10 @@ mod tests {
             agent_run_id: AgentRunId::parse("01a0306f-9398-7a51-a612-8c2b58251d58")
                 .expect("a canonical run id"),
             binding_generation: 1,
+            runtime_binding_id: RuntimeBindingId::parse("01a0306f-9398-7a51-a612-8c36463db277")
+                .expect("a canonical binding id"),
+            native_id: ExternalId::parse("65583f43-30cd-4a99-b715-3ae8ea967698")
+                .expect("a native id"),
             position: TimelinePosition {
                 epoch: 1,
                 sequence: 7,

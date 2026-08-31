@@ -342,10 +342,16 @@ fn quota(
         windows: Vec::new(),
         credit: None,
         evidence_hash: ContentHash::of(b"the provider said so"),
-        source: ProviderQuotaSource::RuntimeObservation,
+        // A structured provider answer, which is what these fixtures assert on:
+        // they exercise window and credit storage, and carry no runtime item.
+        // Labelling them `RuntimeObservation` was always a misnomer -- the
+        // evidence string says as much -- and it became visible once a runtime
+        // observation was required to cite the item it rests on.
+        source: ProviderQuotaSource::ProviderReport,
         observed_at: at("2026-08-21T09:35:00Z"),
         expected_revision: AggregateRevision::INITIAL,
         updated_at: at("2026-08-21T09:35:00Z"),
+        provenance: None,
     }
 }
 
@@ -705,6 +711,7 @@ fn an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn(
                 observed_at: first_at,
                 expected_revision: AggregateRevision::INITIAL,
                 updated_at: first_at,
+                provenance: None,
             }),
             idempotency_key: None,
             intent_hash: None,
@@ -779,6 +786,7 @@ fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_
                 observed_at: original.observed_at,
                 expected_revision: AggregateRevision::INITIAL,
                 updated_at: original.observed_at,
+                provenance: None,
             }),
             idempotency_key: Some(key.clone()),
             intent_hash: Some(intent.clone()),

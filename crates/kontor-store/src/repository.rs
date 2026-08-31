@@ -27,11 +27,12 @@ use kontor_core::id::{
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
     ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
     IntakeReceiptId, MiniProjectId, ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey,
-    ProjectId, ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleCode,
-    RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
-    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
-    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    ProjectId, ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
+    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId, TaskId,
+    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
@@ -57,17 +58,18 @@ use kontor_core::repository::{
     NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
     NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
     ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
-    RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError,
-    RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
-    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -7577,7 +7579,7 @@ const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, ava
 
 const PROVIDER_QUOTA_STATE_COLUMNS: &str = "project_id, account_profile_id, provider, state, \
     resets_at, evidence_hash, source, observed_at, revision, updated_at, credit_minor_units, \
-    credit_reserve_minor_units, credit_currency";
+    credit_reserve_minor_units, credit_currency, provenance_id";
 
 /// The window set for one pair, ordered by kind so a stored row and a re-read of
 /// it are byte-identical.
@@ -7585,6 +7587,108 @@ const PROVIDER_QUOTA_WINDOW_COLUMNS: &str = "kind, resets_at, used_percent";
 
 const PROVIDER_USAGE_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, provider, \
     evidence_hash, state, resets_at, windows, observed_at";
+
+/// A `u64` this database can store without loss.
+///
+/// Clamping to `i64::MAX` was worse than a refusal: it wrote a number nobody
+/// observed and made the row look authoritative. Provenance that cannot be
+/// stored exactly is not provenance.
+fn storable_u64(field: &'static str, value: u64) -> RepositoryResult<i64> {
+    i64::try_from(value).map_err(|_| {
+        RepositoryError::from(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            field.to_owned(),
+            "exceeds what this database stores exactly",
+        ))
+    })
+}
+
+/// A stored integer read back as `u64`, refusing a corrupt negative.
+fn stored_u64(field: &'static str, value: i64) -> RepositoryResult<u64> {
+    u64::try_from(value).map_err(|_| {
+        RepositoryError::from(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            field.to_owned(),
+            "is stored negative and cannot be read back",
+        ))
+    })
+}
+
+/// A stored integer read back as `u32`, refusing anything out of range.
+fn stored_u32(field: &'static str, value: i64) -> RepositoryResult<u32> {
+    u32::try_from(value).map_err(|_| {
+        RepositoryError::from(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            field.to_owned(),
+            "is stored outside the range it can be read back in",
+        ))
+    })
+}
+
+fn read_quota_observation_provenance(
+    row: &Row<'_>,
+    source_sequences: Vec<(u64, u64)>,
+) -> RepositoryResult<QuotaObservationProvenance> {
+    let parsed_resets_at: Option<String> = row.get(18).map_err(backend)?;
+    let reset_zone: Option<String> = row.get(19).map_err(backend)?;
+    // What the record declared its set to be, held against what was read. The
+    // schema seals the collection, and this is the reader refusing to present a
+    // set that somehow disagrees with the seal rather than quietly shrinking it.
+    let declared = stored_u64(
+        "source_range_count",
+        row.get::<_, i64>(20).map_err(backend)?,
+    )?;
+    if declared != source_sequences.len() as u64 {
+        return Err(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            "source_range_count".to_owned(),
+            "the stored range set must be exactly the set the record declared",
+        )
+        .into());
+    }
+    Ok(QuotaObservationProvenance {
+        record: kontor_core::repository::NewQuotaObservationProvenance {
+            id: QuotaObservationProvenanceId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+            project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+            account_profile_id: AccountProfileId::parse(
+                &row.get::<_, String>(2).map_err(backend)?,
+            )?,
+            provider: row.get::<_, String>(3).map_err(backend)?,
+            signal_id: row.get::<_, String>(4).map_err(backend)?,
+            signal_version: kontor_core::id::SpecVersion::parse(stored_u32(
+                "signal_version",
+                row.get::<_, i64>(5).map_err(backend)?,
+            )?)?,
+            signal_definition_hash: ContentHash::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+            agent_run_id: AgentRunId::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+            runtime_binding_id: kontor_core::id::RuntimeBindingId::parse(
+                &row.get::<_, String>(8).map_err(backend)?,
+            )?,
+            native_id: ExternalId::parse(&row.get::<_, String>(9).map_err(backend)?)?,
+            binding_generation: stored_u64(
+                "binding_generation",
+                row.get::<_, i64>(10).map_err(backend)?,
+            )?,
+            item_epoch: stored_u64("item_epoch", row.get::<_, i64>(11).map_err(backend)?)?,
+            item_seq_start: stored_u64("item_seq_start", row.get::<_, i64>(12).map_err(backend)?)?,
+            item_seq_end: stored_u64("item_seq_end", row.get::<_, i64>(13).map_err(backend)?)?,
+            source_sequences,
+            item_kind: row.get::<_, String>(14).map_err(backend)?,
+            item_observed_at: read_timestamp(&row.get::<_, String>(15).map_err(backend)?)?,
+            decision_basis: kontor_core::spec::QuotaDecisionBasis::parse(
+                &row.get::<_, String>(16).map_err(backend)?,
+            )?,
+            decided_state: ProviderQuotaKind::parse(&row.get::<_, String>(17).map_err(backend)?)?,
+            parsed_resets_at: parsed_resets_at
+                .as_deref()
+                .map(read_timestamp)
+                .transpose()?,
+            reset_zone,
+            evidence_digest: ContentHash::parse(&row.get::<_, String>(21).map_err(backend)?)?,
+            recorded_at: read_timestamp(&row.get::<_, String>(22).map_err(backend)?)?,
+        },
+    })
+}
 
 /// Read one header row. `windows` is filled by the caller, which holds the
 /// connection the set has to be read through.
@@ -7597,6 +7701,12 @@ fn read_provider_quota_state(row: &Row<'_>) -> RepositoryResult<ProviderQuotaSta
         state: ProviderQuotaKind::parse(&row.get::<_, String>(3).map_err(backend)?)?,
         resets_at: resets_at.as_deref().map(read_timestamp).transpose()?,
         windows: Vec::new(),
+        provenance_id: row
+            .get::<_, Option<String>>(13)
+            .map_err(backend)?
+            .as_deref()
+            .map(QuotaObservationProvenanceId::parse)
+            .transpose()?,
         credit: read_credit_balance(row)?,
         evidence_hash: ContentHash::parse(&row.get::<_, String>(5).map_err(backend)?)?,
         source: ProviderQuotaSource::parse(&row.get::<_, String>(6).map_err(backend)?)?,
@@ -7741,6 +7851,106 @@ fn validate_provider_quota_state(request: &NewProviderQuotaState) -> RepositoryR
     Ok(())
 }
 
+/// Append one immutable provenance record.
+///
+/// Insert-only by construction: the table's own triggers refuse an update or a
+/// delete, so a repeated id is a genuine conflict rather than something to
+/// paper over.
+fn insert_quota_observation_provenance_in(
+    transaction: &Transaction<'_>,
+    record: &kontor_core::repository::NewQuotaObservationProvenance,
+) -> RepositoryResult<()> {
+    // The exact set, in configured order, checked against the envelope before
+    // anything lands. Without this an empty or inconsistent child set could sit
+    // beside authoritative envelope scalars and nobody would notice.
+    let refuse = |rule: &'static str| -> RepositoryError {
+        DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            "source_sequences".to_owned(),
+            rule,
+        )
+        .into()
+    };
+    if record.source_sequences.is_empty() {
+        return Err(refuse("an item covers at least one sequence range"));
+    }
+    let mut previous_end: Option<u64> = None;
+    for (start, end) in &record.source_sequences {
+        if start > end {
+            return Err(refuse("a range ends before it starts"));
+        }
+        if previous_end.is_some_and(|last| *start <= last) {
+            return Err(refuse("ranges must be ordered and disjoint"));
+        }
+        previous_end = Some(*end);
+    }
+    let first = record.source_sequences[0].0;
+    let last = record
+        .source_sequences
+        .last()
+        .map(|(_, end)| *end)
+        .unwrap_or(first);
+    if first != record.item_seq_start || last != record.item_seq_end {
+        return Err(refuse(
+            "the envelope must be exactly the first and last bound",
+        ));
+    }
+    transaction
+        .execute(
+            "INSERT INTO provider_quota_observation_provenance
+                 (id, project_id, account_profile_id, provider, signal_id, signal_version,
+                  signal_definition_hash, agent_run_id, runtime_binding_id, native_id,
+                  binding_generation, item_epoch, item_seq_start, item_seq_end, item_kind,
+                  item_observed_at, decision_basis, decided_state, parsed_resets_at,
+                  reset_zone, source_range_count, evidence_digest, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            params![
+                record.id.to_string(),
+                record.project_id.to_string(),
+                record.account_profile_id.to_string(),
+                record.provider.as_str(),
+                record.signal_id.as_str(),
+                i64::from(record.signal_version.get()),
+                record.signal_definition_hash.as_str(),
+                record.agent_run_id.to_string(),
+                record.runtime_binding_id.to_string(),
+                record.native_id.as_str(),
+                storable_u64("binding_generation", record.binding_generation)?,
+                storable_u64("item_epoch", record.item_epoch)?,
+                storable_u64("item_seq_start", record.item_seq_start)?,
+                storable_u64("item_seq_end", record.item_seq_end)?,
+                record.item_kind.as_str(),
+                text(record.item_observed_at),
+                record.decision_basis.as_str(),
+                record.decided_state.as_str(),
+                record.parsed_resets_at.map(text),
+                record.reset_zone.as_deref(),
+                storable_u64("source_range_count", record.source_sequences.len() as u64)?,
+                record.evidence_digest.as_str(),
+                text(record.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    for (ordinal, (start, end)) in record.source_sequences.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO provider_quota_observation_source_ranges
+                     (provenance_id, project_id, ordinal, seq_start, seq_end)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    record.id.to_string(),
+                    record.project_id.to_string(),
+                    storable_u64("ordinal", ordinal as u64)?,
+                    storable_u64("seq_start", *start)?,
+                    storable_u64("seq_end", *end)?,
+                ],
+            )
+            .map_err(backend)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn set_provider_quota_state_in(
     transaction: &Transaction<'_>,
     request: &NewProviderQuotaState,
@@ -7822,13 +8032,76 @@ pub(crate) fn set_provider_quota_state_in(
     let credit_remaining = credit.as_ref().map(|(remaining, _, _)| *remaining);
     let credit_reserve = credit.as_ref().map(|(_, reserve, _)| *reserve);
     let credit_currency = credit.map(|(_, _, currency)| currency);
+    // Provenance first, in this same transaction. The row's reference is a real
+    // foreign key, so the record has to exist before the row can point at it --
+    // and a failure anywhere below rolls both back together, which is the whole
+    // point: a block whose cited evidence never landed is a block nobody can
+    // explain.
+    // A record that does not describe *this* decision is not provenance for it.
+    // Every field the two share is compared before either lands, so a mismatched
+    // record cannot be attached to a row it never authorized.
+    if let Some(record) = request.provenance.as_ref() {
+        let disagreement = if record.project_id != request.project_id {
+            Some("project_id")
+        } else if record.account_profile_id != request.account_profile_id {
+            Some("account_profile_id")
+        } else if record.provider != request.provider {
+            Some("provider")
+        } else if record.decided_state != request.state {
+            Some("decided_state")
+        } else if record.parsed_resets_at != request.resets_at {
+            Some("parsed_resets_at")
+        } else if record.evidence_digest != request.evidence_hash {
+            Some("evidence_digest")
+        } else {
+            None
+        };
+        if let Some(field) = disagreement {
+            return Err(DomainError::invalid_at(
+                "QuotaObservationProvenance",
+                field.to_owned(),
+                "does not match the quota state it would authorize",
+            )
+            .into());
+        }
+        // Only a runtime observation produces one. A provider report or an
+        // operator assertion citing a runtime item would be a claim neither of
+        // them made.
+        if request.source != kontor_core::spec::ProviderQuotaSource::RuntimeObservation {
+            return Err(DomainError::invalid_at(
+                "NewProviderQuotaState",
+                "provenance".to_owned(),
+                "only a runtime observation may write provenance",
+            )
+            .into());
+        }
+    } else if request.source == kontor_core::spec::ProviderQuotaSource::RuntimeObservation {
+        // The converse, and it holds whether or not a row already exists. An
+        // accepted runtime observation that carried none would clear
+        // `provenance_id` and leave a *new* runtime decision nobody can
+        // explain. A stale one never reaches here: the recency rule above
+        // returns before any write.
+        return Err(DomainError::invalid_at(
+            "NewProviderQuotaState",
+            "provenance".to_owned(),
+            "a runtime observation must carry the provenance it rests on",
+        )
+        .into());
+    }
+    let provenance_id = match request.provenance.as_ref() {
+        Some(record) => {
+            insert_quota_observation_provenance_in(transaction, record)?;
+            Some(record.id.to_string())
+        }
+        None => None,
+    };
     transaction
         .execute(
             "INSERT INTO provider_quota_states
                  (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
                   source, observed_at, revision, updated_at, credit_minor_units,
-                  credit_reserve_minor_units, credit_currency)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                  credit_reserve_minor_units, credit_currency, provenance_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (project_id, account_profile_id, provider) DO UPDATE SET
                  state = excluded.state,
                  resets_at = excluded.resets_at,
@@ -7839,7 +8112,8 @@ pub(crate) fn set_provider_quota_state_in(
                  updated_at = excluded.updated_at,
                  credit_minor_units = excluded.credit_minor_units,
                  credit_reserve_minor_units = excluded.credit_reserve_minor_units,
-                 credit_currency = excluded.credit_currency",
+                 credit_currency = excluded.credit_currency,
+                 provenance_id = excluded.provenance_id",
             params![
                 request.project_id.to_string(),
                 request.account_profile_id.to_string(),
@@ -7854,6 +8128,7 @@ pub(crate) fn set_provider_quota_state_in(
                 credit_remaining,
                 credit_reserve,
                 credit_currency,
+                provenance_id,
             ],
         )
         .map_err(backend)?;
@@ -8137,6 +8412,51 @@ impl CapacityRepository for SqliteStore {
         let stored = set_provider_quota_state_in(&transaction, request)?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
+    }
+
+    fn get_quota_observation_provenance(
+        &self,
+        project_id: ProjectId,
+        id: QuotaObservationProvenanceId,
+    ) -> RepositoryResult<Option<QuotaObservationProvenance>> {
+        // The exact set first: a record read without it would report an envelope
+        // as though it were the sequences the item carried.
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT seq_start, seq_end
+                   FROM provider_quota_observation_source_ranges
+                  WHERE project_id = ?1 AND provenance_id = ?2
+                  ORDER BY ordinal",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), id.to_string()])
+            .map_err(backend)?;
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            ranges.push((
+                stored_u64("seq_start", row.get::<_, i64>(0).map_err(backend)?)?,
+                stored_u64("seq_end", row.get::<_, i64>(1).map_err(backend)?)?,
+            ));
+        }
+        drop(rows);
+        drop(statement);
+        self.connection
+            .query_row(
+                "SELECT id, project_id, account_profile_id, provider, signal_id, signal_version,
+                        signal_definition_hash, agent_run_id, runtime_binding_id, native_id,
+                        binding_generation, item_epoch, item_seq_start, item_seq_end, item_kind,
+                        item_observed_at, decision_basis, decided_state, parsed_resets_at,
+                        reset_zone, source_range_count, evidence_digest, recorded_at
+                   FROM provider_quota_observation_provenance
+                  WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_quota_observation_provenance(row, ranges.clone())),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
     }
 
     fn list_provider_quota_states(

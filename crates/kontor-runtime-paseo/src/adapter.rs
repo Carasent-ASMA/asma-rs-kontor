@@ -895,6 +895,8 @@ fn select_terminal_refusal(
     epoch: u64,
     agent_run_id: AgentRunId,
     binding_generation: u64,
+    runtime_binding_id: RuntimeBindingId,
+    native_id: &ExternalId,
 ) -> Option<TransientRefusal> {
     let terminal = entries.last()?;
     if !provider_originated(&terminal.item.item_type) {
@@ -927,6 +929,8 @@ fn select_terminal_refusal(
         RefusalProvenance {
             agent_run_id,
             binding_generation,
+            runtime_binding_id,
+            native_id: native_id.clone(),
             position: TimelinePosition {
                 epoch,
                 sequence: terminal.seq_start,
@@ -2154,6 +2158,7 @@ impl PaseoAdapter {
         native_id: &str,
         agent_run_id: AgentRunId,
         binding_generation: u64,
+        runtime_binding_id: RuntimeBindingId,
         state: ObservedRunState,
     ) -> Option<TransientRefusal> {
         if !matches!(
@@ -2173,7 +2178,14 @@ impl PaseoAdapter {
             .await
             .ok()?;
         let epoch = self.resolve_epoch(&page.epoch, None).ok()?;
-        select_terminal_refusal(&page.entries, epoch, agent_run_id, binding_generation)
+        select_terminal_refusal(
+            &page.entries,
+            epoch,
+            agent_run_id,
+            binding_generation,
+            runtime_binding_id,
+            &ExternalId::parse(native_id).ok()?,
+        )
     }
 
     fn observation(
@@ -5788,6 +5800,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 &native_id,
                 binding.agent_run_id(),
                 binding.identity().generation,
+                binding.binding_id(),
                 state,
             )
             .await;
@@ -7306,6 +7319,14 @@ mod refusal_probe_tests {
     use super::*;
     use crate::wire::{PaseoSeqRange, PaseoTimelineItem};
 
+    fn a_binding() -> RuntimeBindingId {
+        RuntimeBindingId::parse("01a0306f-9398-7a51-a612-8c36463db277").expect("a binding id")
+    }
+
+    fn a_native() -> ExternalId {
+        ExternalId::parse("65583f43-30cd-4a99-b715-3ae8ea967698").expect("a native id")
+    }
+
     const CODEX_REFUSAL: &str = "[System Error] You've hit your usage limit. Visit \
          https://chatgpt.com/codex/settings/usage to purchase more credits or try \
          again at Aug 23rd, 2026 9:35 AM.";
@@ -7328,7 +7349,14 @@ mod refusal_probe_tests {
     }
 
     fn select(entries: &[PaseoTimelineEntry]) -> Option<TransientRefusal> {
-        select_terminal_refusal(entries, 1, AgentRunId::generate(), 1)
+        select_terminal_refusal(
+            entries,
+            1,
+            AgentRunId::generate(),
+            1,
+            a_binding(),
+            &a_native(),
+        )
     }
 
     #[test]
@@ -7475,6 +7503,48 @@ mod refusal_probe_tests {
         );
     }
 
+    /// Every identity in the provenance binds the digest, not just the run and
+    /// generation. A binding or native id left out would let the same sentence
+    /// on a different session digest identically.
+    #[test]
+    fn provenance_binds_the_digest_to_the_exact_binding_and_native_session() {
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        let run = AgentRunId::generate();
+        let mine = select_terminal_refusal(&entries, 1, run, 1, a_binding(), &a_native())
+            .expect("a refusal");
+        let other_binding = select_terminal_refusal(
+            &entries,
+            1,
+            run,
+            1,
+            RuntimeBindingId::generate(),
+            &a_native(),
+        )
+        .expect("a refusal");
+        let other_native = select_terminal_refusal(
+            &entries,
+            1,
+            run,
+            1,
+            a_binding(),
+            &ExternalId::parse("a-different-native-session").expect("a native id"),
+        )
+        .expect("a refusal");
+        assert_ne!(
+            mine.digest(),
+            other_binding.digest(),
+            "evidence cannot be read across bindings",
+        );
+        assert_ne!(
+            mine.digest(),
+            other_native.digest(),
+            "nor across native sessions",
+        );
+    }
+
     #[test]
     fn provenance_binds_the_digest_to_one_run_and_generation() {
         let entries = [
@@ -7482,10 +7552,20 @@ mod refusal_probe_tests {
             entry(2, "assistant_message", Some(CODEX_REFUSAL)),
         ];
         let run = AgentRunId::generate();
-        let mine = select_terminal_refusal(&entries, 1, run, 1).expect("a refusal");
-        let other_generation = select_terminal_refusal(&entries, 1, run, 2).expect("a refusal");
-        let other_run =
-            select_terminal_refusal(&entries, 1, AgentRunId::generate(), 1).expect("a refusal");
+        let mine = select_terminal_refusal(&entries, 1, run, 1, a_binding(), &a_native())
+            .expect("a refusal");
+        let other_generation =
+            select_terminal_refusal(&entries, 1, run, 2, a_binding(), &a_native())
+                .expect("a refusal");
+        let other_run = select_terminal_refusal(
+            &entries,
+            1,
+            AgentRunId::generate(),
+            1,
+            a_binding(),
+            &a_native(),
+        )
+        .expect("a refusal");
         assert_ne!(
             mine.digest(),
             other_generation.digest(),

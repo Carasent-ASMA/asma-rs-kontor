@@ -680,6 +680,8 @@ pub fn record_exact(
         windows,
         credit: existing.as_ref().and_then(|row| row.credit),
         evidence_hash: evidence.clone(),
+        // A structured provider report has no runtime item behind it.
+        provenance: None,
         source: ProviderQuotaSource::ProviderReport,
         observed_at: now,
         expected_revision,
@@ -1003,6 +1005,7 @@ mod tests {
                     observed_at: created_at,
                     expected_revision: kontor_core::id::AggregateRevision::INITIAL,
                     updated_at: created_at,
+                    provenance: None,
                 })
                 .expect("the operator row is recorded");
             profile
@@ -1128,6 +1131,7 @@ mod tests {
                     observed_at: created_at,
                     expected_revision: kontor_core::id::AggregateRevision::INITIAL,
                     updated_at: created_at,
+                    provenance: None,
                 })
                 .expect("the operator row is recorded");
             profile

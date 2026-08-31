@@ -3146,6 +3146,13 @@ pub struct ProviderQuotaStateDto {
     pub windows: Vec<QuotaWindowDto>,
     /// The depleting balance and its floor, where this provider has one.
     pub credit: Option<CreditBalanceDto>,
+    /// Why a runtime observation concluded this, when one did.
+    ///
+    /// Absent for a provider report or an operator assertion: neither cites a
+    /// runtime item, and a shape that implied otherwise would be a claim nobody
+    /// made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<QuotaProvenanceDto>,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -4739,6 +4746,65 @@ pub struct UnavailableProviderSeatRequest {
     pub native_id: String,
     /// Provider the native session reports and runtime configuration marks down.
     pub provider: String,
+}
+
+/// One inclusive native-sequence range an item covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuotaSourceRangeDto {
+    /// First native sequence, inclusive.
+    pub seq_start: u64,
+    /// Last native sequence, inclusive.
+    pub seq_end: u64,
+}
+
+/// Which exact item, on which run, under which signal revision authorized a
+/// runtime-observed quota decision.
+///
+/// Modeled scalars only. There is deliberately no refusal text and no open map
+/// here — the digest identifies the sentence without the projection ever
+/// carrying one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuotaProvenanceDto {
+    /// The provenance record's id.
+    pub id: String,
+    /// Stable logical id of the signal that matched.
+    pub signal_id: String,
+    /// That signal's revision.
+    pub signal_version: u32,
+    /// Digest of that signal's complete definition when it matched.
+    pub signal_definition_hash: String,
+    /// The run whose session carried the item.
+    pub agent_run_id: String,
+    /// That run's immutable binding.
+    pub runtime_binding_id: String,
+    /// The native session behind the binding.
+    pub native_id: String,
+    /// The binding generation, so evidence cannot be read across one.
+    pub binding_generation: u64,
+    /// Canonical epoch of the item.
+    pub item_epoch: u64,
+    /// First native sequence the item covers.
+    pub item_seq_start: u64,
+    /// Last native sequence the item covers.
+    pub item_seq_end: u64,
+    /// The runtime's own item type.
+    pub item_kind: String,
+    /// When the item was emitted, never when Kontor read it.
+    pub item_observed_at: String,
+    /// What kind of evidence this was.
+    pub decision_basis: String,
+    /// The zone the signal declared for a bare wall clock, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_zone: Option<String>,
+    /// The digest the quota row cites. Covers the bounded refusal *and* the
+    /// item provenance that carried it, so the same sentence from a different
+    /// item, run or generation digests differently. Never the text itself.
+    pub evidence_digest: String,
+    /// Exactly which native sequences the item covered, in order. An envelope
+    /// would claim sequences a collapsed entry never carried.
+    pub source_sequences: Vec<QuotaSourceRangeDto>,
+    /// When the record was written.
+    pub recorded_at: String,
 }
 
 /// One explicit runtime route used by an authorized recovery operation.

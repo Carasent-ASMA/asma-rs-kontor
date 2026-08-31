@@ -1971,6 +1971,7 @@ fn only_an_exhausted_allowance_recovers_on_a_clock() {
         observed_at: at(1_000),
         revision: AggregateRevision::INITIAL,
         updated_at: at(1_000),
+        provenance_id: None,
     };
 
     assert!(!state(ProviderQuotaKind::Available, None).blocks_at(at(1_000)));

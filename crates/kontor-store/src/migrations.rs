@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 73;
+pub const SCHEMA_VERSION: i64 = 74;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -289,6 +289,11 @@ const MIGRATIONS: &[&str] = &[
     // Schema v73. Safe Jira link reconciliation may supersede an unconfirmed
     // create plan without losing the create marker's duplicate guard.
     include_str!("../migrations/0073_retryable_jira_link_reconciliation.sql"),
+    // Provenance for a runtime-observed quota decision: which exact item, on
+    // which run, under which signal revision. Staging number -- integration
+    // renames this to 0077 after OP-22's renumbered 0074/0075/0076, which end at
+    // schema max 76.
+    include_str!("../migrations/0074_quota_observation_provenance.sql"),
 ];
 
 const _: () = assert!(
