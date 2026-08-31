@@ -123,7 +123,7 @@ later checks cannot drift apart.
 | --- | --- | --- | --- |
 | `claude` | `bypassPermissions` | `auto` | `plan` |
 | `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
-| `opencode` | *refused* | *refused* | *refused* |
+| `opencode` | `build` + applied block | `build` + applied block | `plan` + applied block |
 | `cursor` | `agent` | *refused* | *refused* |
 
 Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
@@ -133,20 +133,68 @@ consultation. A mode label is not a permission boundary, and a posture Kontor
 cannot enforce is refused before launch rather than reported as held. `agent`
 means what `autonomous` means, so that one stays.
 
-OpenCode is refused at every posture. It carries its posture in a permission
-block rather than in a mode — `build` says nothing about what a seat may do, and
-`plan` is behavioural guidance whose canary showed shell writes proceeding — and
-**Paseo 0.6.1 offers no way to deliver that block to the spawned process.** A
-posture Kontor cannot enforce is refused before launch rather than reported as
-held, exactly as for Cursor above.
+OpenCode carries its posture in a permission block rather than in a mode —
+`build` says nothing about what a seat may do, and `plan` is behavioural guidance
+whose canary showed shell writes proceeding. It launches only when the daemon
+both *can* apply that block and *says it did* for the exact agent.
 
-### Why no OpenCode delivery seat launches
+### How an OpenCode seat is launched
 
-The refusal lands before any transport call, native effect or worktree write.
-Three carriers were tried; each fails for its own reason.
+**One `create_agent_request`, carrying everything:**
 
-**Files and environment variables are outranked.** OpenCode merges configuration
-rather than replacing it, and the layers resolve as
+- `config.providerOptions.permission` — the rendered block;
+- `config.mcpServers` — the typed seat MCP surface;
+- `config.initialPrompt` — the first turn;
+- `config.clientMessageId` — derived from the launch, not generated, so a retry
+  asks about the same turn;
+- a launch-intent digest label over the whole configuration *and* the prompt.
+
+There is no second stage. An earlier design created the seat empty and sent the
+first turn separately so acceptance could stand as proof; with the daemon now
+reporting application on the agent itself, that turn proves nothing the snapshot
+does not already say, and two effects to reconcile instead of one is pure hazard.
+
+**Two gates, and the difference between them matters.** Before any native call,
+the daemon must advertise `providerOptionsApplied`. After the create, the
+returned agent must report `providerOptionsApplied: true`. The feature says the
+daemon *can*; the per-agent flag says it *did*. A launch binds on the second.
+Missing and `false` are both refusals.
+
+The gate is deliberately **not** a version. Kontor shipped a version-gated path
+once whose permission the daemon validated, persisted, and dropped before it
+reached the provider: the v2 SDK's `promptAsync` allow-lists its body keys, and
+OpenCode's own prompt route reads only `t.tools`. The version was right and the
+policy never applied.
+
+**The seat is judged from the create's own snapshot** — placement, route, and the
+acknowledgement — with no follow-up fetch, because a later read answers a
+question about a later moment.
+
+### When the answer is ambiguous
+
+A create whose answer is lost may still have landed, so it is never sent again.
+Reconciliation is an exact-label paginated census on the launch intent:
+
+| The census finds | What happens |
+| --- | --- |
+| one match, unbound | adopted — it is this launch's own effect |
+| one match, already bound to a run | refused; one session may not have two owners |
+| none, on a complete enumeration | `DeliveryConfirmationUnknown` — **the seat claim is kept** |
+| several, or an enumeration that did not finish | quarantined: no adoption, no create, no release |
+
+Keeping the claim is the point. Releasing it would let the next attempt take the
+slot and create a *second* agent for the same run. Only the daemon's own
+`agent_create_failed` releases it, because only that says nothing was made.
+
+A created seat that fails any check is archived over the same socket and read
+back terminal; an archive that cannot be confirmed refuses recoverably rather
+than reporting a cleanup that may not have happened. A durable bind failure
+returns confirmation-unknown too: the intent label is on the agent, so
+reconciliation adopts that very seat instead of stranding or duplicating it.
+
+### Why the policy is not a file or an environment variable
+
+OpenCode merges configuration rather than replacing it, and the layers resolve as
 
 ```text
 global -> OPENCODE_CONFIG -> project -> OPENCODE_CONFIG_DIR
@@ -157,37 +205,14 @@ global -> OPENCODE_CONFIG -> project -> OPENCODE_CONFIG_DIR
 so nothing Kontor writes is the last word. Merging is per key and per nested key,
 and a rule the block does not name — from an auth-backed active-org config or a
 system managed profile, both of which sort late — survives and, because
-permissions resolve by last match, beats the destructive floor.
+permissions resolve by last match, beats the destructive floor. The create
+sidesteps all of it, and the per-agent acknowledgement is what makes that
+claimable rather than assumed.
 
-**`providerOptions` on the create is inert.** It looks like it sidesteps all of
-that: the daemon validates the object against OpenCode's own schema and persists
-it on the agent record. But it never reaches a seat. Read from the installed
-bundles: Paseo imports `@opencode-ai/sdk/v2/client`, whose `promptAsync`
-allow-lists the body keys `messageID, model, agent, noReply, tools, format,
-system, variant, parts` and whose `buildClientParams` silently discards the rest;
-and OpenCode 1.18.15's `SessionPrompt.prompt` builds its session rules from
-`Object.entries(t.tools)` alone. A create the daemon accepts proves the daemon
-parsed it, and nothing more.
-
-A seat launched that way would run under whatever OpenCode's own layers resolved
-— on a clean host, the evaluator's `ask` default for every unmatched tool. That
-is the 2026-08-22 wedging this posture work exists to prevent, so the launch is
-refused instead.
-
-**What would lift the refusal.** Paseo attaching the typed permission through
-OpenCode's `session.create` or `session.update` — both of which do allow-list it,
-and where `SessionHttpApi.update` installs it via `setPermission` — and returning
-a correlated applied-policy acknowledgement or effective-permission readback that
-a launch can bind on. That is an upstream dependency; see
-`docs/evidence/KON-OP-20/2026-08-31-upstream-dependency-applied-permission.md`.
-
-The renderer, the destructive-deny floor and the exact-membership allowance rule
-are all still here and still tested. They specify the posture; they are simply
-not deliverable yet.
-
-> **Operational note.** The 2026-08-22 machine-global config stopgap that some
-> operator hosts carry is, for now, the only thing governing an OpenCode seat's
-> permissions. Kontor neither writes nor relies on it.
+> **Operational note.** A machine-global config — such as the 2026-08-22 stopgap
+> some operator hosts still carry — cannot reach a Kontor-launched OpenCode seat:
+> the policy is applied to the session by the daemon, not resolved from files. It
+> still governs any OpenCode process started outside Kontor.
 
 > **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
 > Kontor derives the intended value alongside the mode, but nothing sets it:

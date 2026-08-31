@@ -313,3 +313,70 @@ generalisation of the census-fixture defect applies to at least three
 (`a_lost_create_acknowledgement_is_never_answered_by_a_second_create` invoked
 `launch` once and asserted a create count of one, which one invocation cannot
 falsify). They are left in this file as a record of what was tried.
+
+---
+
+# CURRENT DISPOSITION — 2026-08-31 (third revision; supersedes everything above)
+
+**OpenCode delivery is re-enabled**, gated on the daemon advertising
+`providerOptionsApplied` and on an explicit per-agent `providerOptionsApplied:
+true` on the correlated `agent_created` snapshot. Upstream ASMA-7869 now applies
+the ordered policy at OpenCode `session.create`/`session.update`.
+
+Both earlier dispositions in this file are superseded: the two-stage
+`providerOptions`-on-the-create path (which never applied) and the fail-closed
+refusal that replaced it. What ships is one create carrying the permission, the
+MCP surface, the prompt and a derived client message id, bound only on the
+per-agent acknowledgement.
+
+See `2026-08-31-delivery-re-enabled-on-applied-acknowledgement.md`. Anything
+above describing an owned configuration root, a seat environment, a written
+block, a separate first-turn proof, or an unconditional refusal is **history**.
+
+## Re-enabled delivery sweep — 2026-08-31 (20/20 killed)
+
+Against the committed one-stage path. Each mutant verified to have landed at the
+intended site and reverted after; tree verified clean.
+
+| Mutation | Result |
+| --- | --- |
+| the capability gate accepts any daemon | killed |
+| the gate falls back to a version floor | killed |
+| binding without the per-agent acknowledgement | killed |
+| a `false` acknowledgement is treated as applied | killed |
+| a missing acknowledgement is treated as applied | killed |
+| the create is resent after a lost answer | killed |
+| census-zero is a plain failure, so the claim is released | killed |
+| the unresolved-create guard is removed from the release rule | killed |
+| an incomplete census is treated as complete | killed |
+| the census stops paginating and calls itself complete | killed |
+| an invalid created native is not compensated | killed |
+| compensation reports archived without reading it back | killed |
+| a durable bind failure is reported plainly, stranding the seat | killed |
+| the create drops `providerOptions` | killed |
+| the create drops `initialPrompt` | killed |
+| the client message id is not derived from the launch | killed |
+| the launch intent's fields run together without delimiters | killed |
+| a post-ack fetch replaces the create snapshot | killed |
+| an already-bound match is adopted anyway | killed |
+| several matches are adopted rather than quarantined | killed |
+
+Three survived their first run. Each survival was the finding, not the mutant:
+
+1. **Incomplete census.** The test asserted only
+   `RuntimeError::DeliveryConfirmationUnknown`, and both "the enumeration could
+   not finish" and "the enumeration found none" are that variant. A census that
+   stopped paginating and called itself complete was therefore invisible. The
+   assertion now names the rule text.
+2. **Two quarantine branches with no test.** Adopting a match another run already
+   owns, and adopting one of several matches, were both unexercised — the
+   mutants could not fail a test that did not exist.
+3. **Digest delimiters.** Removing `prompt=` and `client_message_id=` still made
+   the digest change when the prompt changed, so every existing assertion stayed
+   green while a concatenation collision became possible. A case that moves one
+   character across the boundary catches it.
+
+An earlier sweep also recorded a mutant that appeared to survive because the
+edit landed on the wrong `if !complete` — there are three in this file. Mutants
+are now anchored on enough surrounding text to be unambiguous, and the harness
+reports `NOT-APPLIED` rather than `SURVIVED` when its anchor is missing.

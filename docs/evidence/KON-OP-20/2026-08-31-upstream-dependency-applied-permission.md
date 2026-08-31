@@ -85,3 +85,22 @@ rediscovered:
 No live authenticating OpenCode seat has been launched through any of this. The
 findings above are read from installed bundles and from the code, not from a
 running seat.
+
+---
+
+# CURRENT DISPOSITION — 2026-08-31 (third revision; supersedes everything above)
+
+**OpenCode delivery is re-enabled**, gated on the daemon advertising
+`providerOptionsApplied` and on an explicit per-agent `providerOptionsApplied:
+true` on the correlated `agent_created` snapshot. Upstream ASMA-7869 now applies
+the ordered policy at OpenCode `session.create`/`session.update`.
+
+Both earlier dispositions in this file are superseded: the two-stage
+`providerOptions`-on-the-create path (which never applied) and the fail-closed
+refusal that replaced it. What ships is one create carrying the permission, the
+MCP surface, the prompt and a derived client message id, bound only on the
+per-agent acknowledgement.
+
+See `2026-08-31-delivery-re-enabled-on-applied-acknowledgement.md`. Anything
+above describing an owned configuration root, a seat environment, a written
+block, a separate first-turn proof, or an unconditional refusal is **history**.
