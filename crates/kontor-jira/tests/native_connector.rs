@@ -42,6 +42,31 @@ impl Respond for MarkerSearch {
     }
 }
 
+struct ExistingLinkedTask(Arc<AtomicUsize>);
+
+impl Respond for ExistingLinkedTask {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let parent = if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            "ASMA-8049"
+        } else {
+            "ASMA-9999"
+        };
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8050",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                "parent": {"key": parent},
+                "summary": "Existing operator-owned Jira summary",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Existing Jira description"}]
+                }]},
+                "labels": []
+            }
+        }))
+    }
+}
+
 #[tokio::test]
 async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() {
     let server = MockServer::start().await;
@@ -134,22 +159,11 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
 #[tokio::test]
 async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_description() {
     let server = MockServer::start().await;
+    let readbacks = Arc::new(AtomicUsize::new(0));
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-8050"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "key": "ASMA-8050",
-            "fields": {
-                "project": {"key": "ASMA"},
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "parent": {"key": "ASMA-8049"},
-                "summary": "Existing operator-owned Jira summary",
-                "description": {"type":"doc","version":1,"content":[{
-                    "type":"paragraph","content":[{"type":"text","text":"Existing Jira description"}]
-                }]},
-                "labels": []
-            }
-        })))
-        .expect(1)
+        .respond_with(ExistingLinkedTask(Arc::clone(&readbacks)))
+        .expect(2)
         .mount(&server)
         .await;
 
@@ -188,6 +202,15 @@ async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_de
         .await
         .expect("the exact existing Jira identity is confirmed");
     assert_eq!(confirmed.issue_key.as_str(), "ASMA-8050");
+    assert!(
+        connector
+            .for_project(project_id)
+            .expect("project remains configured")
+            .materialize(&plan)
+            .await
+            .is_err(),
+        "an explicit link still refuses a task attached to another epic"
+    );
 }
 
 #[tokio::test]
