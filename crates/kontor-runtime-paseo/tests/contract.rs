@@ -317,6 +317,83 @@ fn managed_worktree(
     (runtime_config, root, path)
 }
 
+fn managed_catalog_module_worktree(
+    repository: &tempfile::TempDir,
+    branch: &str,
+) -> (PaseoConfig, WorkspaceRoot, std::path::PathBuf) {
+    let module_source = tempfile::tempdir().expect("a temporary module source");
+    for arguments in [
+        vec!["init", "--initial-branch=master"],
+        vec!["config", "user.email", "kontor@example.test"],
+        vec!["config", "user.name", "Kontor Contract"],
+        vec!["commit", "--allow-empty", "-m", "module initial"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(module_source.path())
+            .output()
+            .expect("git is available to the contract test");
+        assert!(
+            output.status.success(),
+            "temporary module setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let module = repository.path().join("_tools/asma-rs-kontor");
+    let added = std::process::Command::new("git")
+        .args(["-c", "protocol.file.allow=always", "submodule", "add"])
+        .arg(module_source.path())
+        .arg("_tools/asma-rs-kontor")
+        .current_dir(repository.path())
+        .output()
+        .expect("git can add the local fixture submodule");
+    assert!(
+        added.status.success(),
+        "temporary submodule setup failed: {}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-am", "add fixture module"])
+        .current_dir(repository.path())
+        .output()
+        .expect("git can commit the fixture submodule");
+    assert!(
+        committed.status.success(),
+        "temporary submodule commit failed: {}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+
+    let path = repository
+        .path()
+        .join(".worktrees/asma-8062/asma-rs-kontor");
+    std::fs::create_dir_all(path.parent().expect("the worktree has a parent"))
+        .expect("the fixture worktree parent is created");
+    let worktree = std::process::Command::new("git")
+        .args(["worktree", "add", "-b", branch])
+        .arg(&path)
+        .current_dir(&module)
+        .output()
+        .expect("git can create the fixture module worktree");
+    assert!(
+        worktree.status.success(),
+        "temporary module worktree setup failed: {}",
+        String::from_utf8_lossy(&worktree.stderr)
+    );
+
+    let mut runtime_config = config();
+    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+        repository
+            .path()
+            .to_str()
+            .expect("the temporary path is UTF-8"),
+    )
+    .expect("an absolute project root");
+    let root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
+        .expect("an absolute task worktree");
+    runtime_config.scope.canonical_worktree_cwd = root.clone();
+    (runtime_config, root, path)
+}
+
 fn workspace_readback_at(fixture: &str, root: &WorkspaceRoot, branch: &str) -> serde_json::Value {
     let mut readback = v(fixture);
     readback["entries"][0]["projectRootPath"] = serde_json::json!(root.as_str());
@@ -1126,6 +1203,197 @@ async fn preparation_creates_an_absent_declared_git_worktree_before_registering_
         "a new task never inherits the control plane's in-flight branch"
     );
     assert_eq!(recorded.count("workspace create"), 1);
+}
+
+#[tokio::test]
+async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-8062-native-naming";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
+
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-catalog-module", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(
+                epic_scope(),
+                TaskScope {
+                    task_id: task(),
+                    external_issue_key: external("ASMA-8062"),
+                    short_code: external("KBI-8062"),
+                    worktree: worktree_root.clone(),
+                },
+            ),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • KBI-8062"),
+            root: worktree_root,
+            requested_at: at("2026-09-01T17:00:00Z"),
+        })
+        .await
+        .expect("the catalog module checkout is safely attested");
+
+    assert!(worktree.join(".git").is_file());
+    assert_eq!(recorded.count("workspace create"), 1);
+}
+
+#[tokio::test]
+async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-9999-unrelated";
+    let (runtime_config, worktree_root, _) = managed_catalog_module_worktree(&repository, branch);
+
+    let recorded = Arc::new(daemon());
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-catalog-module-branch-drift", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    let error = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(
+                epic_scope(),
+                TaskScope {
+                    task_id: task(),
+                    external_issue_key: external("ASMA-8062"),
+                    short_code: external("KBI-8062"),
+                    worktree: worktree_root.clone(),
+                },
+            ),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • KBI-8062"),
+            root: worktree_root,
+            requested_at: at("2026-09-01T17:00:00Z"),
+        })
+        .await
+        .expect_err("an unrelated module branch is refused");
+
+    assert_eq!(
+        error,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree branch does not match its ASMA slug"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_a_foreign_repository_inside_the_catalog_worktree_directory() {
+    let repository = temporary_repository();
+    let foreign = tempfile::tempdir().expect("a temporary foreign repository");
+    for arguments in [
+        vec!["init", "--initial-branch=master"],
+        vec!["config", "user.email", "kontor@example.test"],
+        vec!["config", "user.name", "Kontor Contract"],
+        vec!["commit", "--allow-empty", "-m", "foreign initial"],
+        vec!["switch", "-c", "feat/ASMA-8062-foreign"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(foreign.path())
+            .output()
+            .expect("git is available to the contract test");
+        assert!(
+            output.status.success(),
+            "foreign repository setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let path = repository
+        .path()
+        .join(".worktrees/asma-8062/asma-rs-kontor");
+    std::fs::create_dir_all(path.parent().expect("the worktree has a parent"))
+        .expect("the managed parent is created");
+    let cloned = std::process::Command::new("git")
+        .arg("clone")
+        .arg(foreign.path())
+        .arg(&path)
+        .output()
+        .expect("git can clone the foreign fixture");
+    assert!(
+        cloned.status.success(),
+        "foreign clone setup failed: {}",
+        String::from_utf8_lossy(&cloned.stderr)
+    );
+    let mut runtime_config = config();
+    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+        repository
+            .path()
+            .to_str()
+            .expect("the temporary path is UTF-8"),
+    )
+    .expect("an absolute project root");
+    let worktree_root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
+        .expect("an absolute task worktree");
+    runtime_config.scope.canonical_worktree_cwd = worktree_root.clone();
+
+    let recorded = Arc::new(daemon());
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-foreign-catalog-module", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    let error = adapter
+        .prepare_workspace(&WorkspacePrepareRequest {
+            scope: ExecutionScope::for_task(
+                epic_scope(),
+                TaskScope {
+                    task_id: task(),
+                    external_issue_key: external("ASMA-8062"),
+                    short_code: external("KBI-8062"),
+                    worktree: worktree_root.clone(),
+                },
+            ),
+            team_run_id: team_run(),
+            task_id: task(),
+            workspace_binding_id: WorkspaceBindingId::generate(),
+            display_name: name("TSW • KBI-8062"),
+            root: worktree_root,
+            requested_at: at("2026-09-01T17:00:00Z"),
+        })
+        .await
+        .expect_err("a foreign repository is refused");
+
+    assert_eq!(
+        error,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the declared worktree belongs to another Git repository"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
 }
 
 #[tokio::test]
