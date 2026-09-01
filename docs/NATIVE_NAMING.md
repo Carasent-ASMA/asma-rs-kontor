@@ -60,14 +60,22 @@ The literal separator is space + U+2022 BULLET + space: ` • `.
 | Paseo epic project / ESW | `ESW • <EPIC_ITEM_CODE>` | `ESW • KOP-8001` |
 | ECP | `ECP • <EPIC_ITEM_CODE>` | `ECP • KOP-8001` |
 | TSW | `TSW • <TASK_ITEM_CODE>` | `TSW • KOP-7869` |
+| ASW | `ASW • <SCOPE_ITEM_CODE> • <TOPIC>` | `ASW • KOP-8001 • Jira recovery` |
 | task CSW | `CSW • <TASK_ITEM_CODE> • <TOPIC>` | `CSW • KOP-7869 • Naming contract` |
 | epic CSW | `CSW • <EPIC_ITEM_CODE> • <TOPIC>` | `CSW • KOP-8001 • Release readiness` |
-| Advice | `ADVICE • <SCOPE_ITEM_CODE> • <TOPIC>` | `ADVICE • KOP-8001 • Jira recovery` |
 
-CSW and Advice scope follows the debated/advised subject, not the caller. A
+ASW and CSW scopes follow the advised/debated subject, not the caller. A
 task-specific subject uses the task item code; an epic-wide subject uses the
 epic item code. An epic-global CSW remains a Committee workspace and is not an
 Advisor workspace.
+
+One ESW may contain zero or more ASWs. Each ASW represents one advised
+subject/topic and contains one or more independently reporting advisor seats.
+Follow-up rounds for the same consultation reuse that ASW and its seats; a
+materially different subject or topic creates another ASW. An ASW has no Judge,
+quorum, voting or aggregate verdict. Formal deliberation and aggregation belong
+in a CSW. Do not create one global epic ASW and move the subject or topic into
+its seat names; a UI may group an epic's ASWs without changing native identity.
 
 The container carries scope and topic. Seats use only their configured local
 role code or local slot label:
@@ -76,10 +84,13 @@ role code or local slot label:
 | --- | --- |
 | ECP | `LSA`, `TPM` |
 | TSW | exact registered delivery role code, for example `AUD` |
-| Advice | `ADVISOR` |
+| ASW | exact configured registered professional role or advisor-profile code, for example `SA` or `AUD` |
 | Independent Review CSW | `SEAT A`, `SEAT B`, `JUDGE` |
 
 Do not append an item code, Jira key, container prefix or topic to a seat name.
+`ADVISOR` is not a universal native seat name. If the same advisor role occurs
+more than once, the pinned Team Definition supplies exact distinct slot labels;
+Kontor never invents suffixes.
 Committee cardinality remains template-defined; these three labels are the
 recommended Independent Review setup, not a universal kernel law.
 
@@ -97,13 +108,13 @@ audit must decide how the current persisted schemas evolve to carry it.
       "esw": { "parent": null, "prefix": "ESW", "template": "{prefix}{separator}{epic.itemCode}" },
       "ecp": { "parent": "esw", "prefix": "ECP", "template": "{prefix}{separator}{epic.itemCode}" },
       "tsw": { "parent": "esw", "prefix": "TSW", "template": "{prefix}{separator}{task.itemCode}" },
-      "csw": { "parent": "esw", "prefix": "CSW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" },
-      "advice": { "parent": "esw", "prefix": "ADVICE", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" }
+      "asw": { "parent": "esw", "prefix": "ASW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" },
+      "csw": { "parent": "esw", "prefix": "CSW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" }
     },
     "seatTemplates": {
       "leadership": "{role.code}",
       "delivery": "{role.code}",
-      "advisor": "{slot.displayName}",
+      "advisor": "{role.code}",
       "committee": "{slot.displayName}"
     }
   }
@@ -122,3 +133,5 @@ audit must decide how the current persisted schemas evolve to carry it.
 - Existing runs keep their pin until an explicit preview/apply upgrade succeeds.
 - Old receipts and evidence preserve their literal names and never become
   current templates.
+- Historical `ADVICE`, fixed `ADVISOR`, `ASW · ...`, `Advisor · ...` and
+  one-ASW/one-seat literals remain readable evidence only.
