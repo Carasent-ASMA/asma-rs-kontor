@@ -136,7 +136,8 @@ session content through the daemon so runtime credentials never reach clients.
 
 ### Persistent seats and workspaces
 
-A team template declares stable role-slot IDs. One non-terminal native session
+A pinned Team Definition JSON revision declares stable role-slot IDs,
+capabilities, hierarchy and native naming. One non-terminal native session
 may occupy a `(team_run_id, role_slot_id)` at a time. Admission is claimed
 atomically before the first native effect; replay and concurrent launch are
 refused. A replacement must cite and close the prior binding.
@@ -144,9 +145,8 @@ refused. A replacement must cite and close the prior binding.
 For Paseo, one Jira epic maps to one project. Inside it: one **ECP** (Epic
 Control Plane) workspace holding the epic's persistent `LSA` and `TPM` seats;
 one **TSW** (Ticket Session Workspace) per ticket holding that ticket's
-persistent role seats; and sibling read-only workspaces for consultations —
-`Advice · …` for one Advisor, **CSW** (Committee Session Workspace) for a
-Committee. The Git worktree is separate checkout/isolation evidence, not the
+registered role seats; and sibling read-only workspaces for Advice and **CSW**
+(Committee Session Workspace) consultations. The Git worktree is separate checkout/isolation evidence, not the
 workspace identity. `PASE` and `TSC` are historical spellings of TSW and CSW and
 survive only as read/import aliases.
 
@@ -162,13 +162,22 @@ Pre-v72 epics with no legacy code remain readable and operable; assignment is an
 explicit write, and any topology needing the projection stays blocked until it
 has happened.
 
-Operational topology revision 1 remains byte-immutable. Revision 4 opts into the
-typed `ITEM_CODE` token and centered-dot separator, yielding names such as
+Operational topology revision 1 remains byte-immutable. Revision 4's shipped
+implementation opts into the typed `ITEM_CODE` token and centered-dot separator,
+yielding historical names such as
 `ESW · KOP-8001`, `ECP · KOP-8001` and `TSW · KOP-7869`. Projects and epics move
 to it only through their existing preview/apply selection and upgrade seams. A
 template asking for `ITEM_CODE` fails `placement_blocked` before any runtime
 mutation unless the epic namespace is active and the relevant Jira binding has
 exactly one confirmed readback.
+
+Those v4 literals are implementation evidence, not the current naming
+convention. The approved contract makes one pinned Team Definition JSON the
+sole hierarchy/naming authority and recommends `ESW • KOP-8001`,
+`ECP • KOP-8001`, `TSW • KOP-7869` with local seats such as `LSA`, `TPM`,
+`AUD`, `ADVISOR`, `SEAT A`, `SEAT B`, `JUDGE`. See
+[`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md). Implementation conformance is
+intentionally pending the next audit.
 
 Jira materialization recovery preserves the failed create batch as the sole
 intent. Schema v74 adds an append-only recovery ledger keyed to its exact item,
