@@ -50,6 +50,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "consultation_seat_recoveries",
     "consultation_seat_recovery_attempts",
     "consultation_seat_materialization_reroutes",
+    "consultation_topic_migration_provenance",
     // Schema v75 (ASMA-8050): immutable, exact-seat Committee permission
     // responses with durable dispatch and confirmation state.
     "consultation_permission_responses",
@@ -122,6 +123,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_revisions",
     "memory_tombstones",
     "mini_projects",
+    "mini_project_team_definition_snapshots",
     "mini_project_topology_snapshots",
     "open_questions",
     "open_question_dispositions",
@@ -131,6 +133,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "policy_evaluations",
     "projects",
     "project_subject_authority",
+    "project_team_definition_defaults",
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
@@ -177,6 +180,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_worktrees",
     "tasks",
     "team_command_replays",
+    "team_definitions",
+    "team_definition_migration_intents",
+    "team_definition_migration_targets",
     "team_drafts",
     "team_revisions",
     "team_runs",
@@ -484,9 +490,14 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // delivery evidence; v72 adds durable project-scoped epic namespaces; and
     // v73 permits safe link recovery after an unconfirmed create attempt;
     // v74 adds the exact Jira materialization recovery ledger; v75 adds
-    // durable, exact-seat Committee permission responses; and v76 permits the
-    // exact mixed link/create batch interrupted by a Jira connector outage.
-    assert_eq!(SCHEMA_VERSION, 76);
+    // durable, exact-seat Committee permission responses; v76 permits the
+    // exact mixed link/create batch interrupted by a Jira connector outage;
+    // v77 adds the immutable Team Definition that owns native hierarchy and
+    // naming, its project selection and epic pin, and the durable resumable
+    // intent an identity-preserving retitle applies under; and v78 keys Advisor
+    // advice by the seat that gave it, so one ASW can hold several
+    // independently reporting advisor seats.
+    assert_eq!(SCHEMA_VERSION, 78);
 }
 
 #[test]

@@ -825,7 +825,9 @@ fn profile_selection_outcomes_round_trip_as_exact_non_executable_lineage() {
     let [first, second] = seed_profile_selection_outcomes(&source);
     let export = export_realm(&source.store, at("2026-08-10T10:00:00Z"))
         .expect("the outcome-bearing export");
-    assert_eq!(export.schema_version, 3);
+    // Generation 4 adds the Team Definition surfaces; generation 3 was the
+    // profile-selection-outcome generation this test is otherwise about.
+    assert_eq!(export.schema_version, 4);
     assert_eq!(export.records.profile_selection_outcomes.len(), 2);
     assert_eq!(
         export

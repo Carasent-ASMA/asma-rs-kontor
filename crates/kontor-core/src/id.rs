@@ -156,6 +156,9 @@ entity_ids! {
     /// Identifies one immutable Team Definition lineage: native hierarchy,
     /// naming and local seat-display policy.
     TeamDefinitionId,
+    /// Identifies one durable, resumable Team Definition migration: the intent
+    /// an identity-preserving retitle is applied and replayed under.
+    TeamDefinitionMigrationId,
     /// Identifies one run of a team.
     TeamRunId,
     /// Identifies one run of a single agent.

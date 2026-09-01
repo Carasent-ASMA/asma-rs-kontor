@@ -30,7 +30,8 @@ use crate::id::{
     MiniProjectId, ModuleKey, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
     ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
+    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
+    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId,
     Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
     WorkProfileKey,
 };
@@ -46,7 +47,8 @@ use crate::spec::{
     CanonicalSourceEvent, CatalogRoleRef, ExecutionCapability, IntakeReceipt,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
     ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, SourceIdentity,
-    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
+    TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
+    TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use crate::state::{
     AdaptiveAdmissionState, DesiredRunState, GateState, GateVerdict, NativeContainerBinding,
@@ -273,6 +275,17 @@ pub struct StoredConsultationRun {
     pub profile_version: SpecVersion,
     /// Digest of the pinned definition.
     pub definition_hash: ContentHash,
+    /// The bounded topic this consultation is about, when one is authoritative.
+    ///
+    /// This is what the ASW/CSW name templates render, and it is deliberately
+    /// not derived from [`Self::question`]: the naming contract forbids
+    /// inferring a topic from prose, a profile, a title, a UUID or an AI label.
+    /// `None` is the honest state of every consultation recorded before the
+    /// topic existed — those rows stay readable and keep their historical
+    /// names, and a migration that would have to render one of them fails
+    /// closed until an operator supplies the mapping. New invocations carry a
+    /// topic from the start.
+    pub topic: Option<ExternalName>,
     /// Bounded question asked at invocation.
     pub question: BoundedText,
     /// Digest of the question bytes.
@@ -3088,6 +3101,586 @@ pub trait TopologyRepository {
         &self,
         project_id: ProjectId,
     ) -> RepositoryResult<Vec<AdaptiveAdmissionState>>;
+}
+
+
+// ---------------------------------------------------------------------------
+// Team Definition
+// ---------------------------------------------------------------------------
+
+/// The selected Team Definition revision for future project scopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTeamDefinitionDefault {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The selection this apply was previewed against.
+    ///
+    /// `None` asserts the project had no default when the preview was taken.
+    /// The apply binds this expectation in the same transaction that writes, so
+    /// a bootstrap that observed "no default" cannot overwrite an explicit
+    /// selection made in between.
+    pub expected: Option<TeamDefinitionSnapshot>,
+    /// Exact published revision and hash.
+    pub definition: TeamDefinitionSnapshot,
+    /// Selection instant.
+    pub selected_at: Timestamp,
+}
+
+/// One immutable Team Definition revision frozen by a MiniProject/epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MiniProjectTeamDefinitionSnapshot {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Target MiniProject.
+    pub mini_project_id: MiniProjectId,
+    /// Exact published revision and hash.
+    pub definition: TeamDefinitionSnapshot,
+    /// Pinning instant.
+    pub pinned_at: Timestamp,
+}
+
+crate::closed_enum! {
+    /// How far one durable Team Definition migration has got.
+    ///
+    /// The epic keeps its old pin through `Recorded` and `Applying`; only
+    /// `Confirmed` has moved it, and only after every target read back.
+    TeamDefinitionMigrationState, "TeamDefinitionMigrationState" {
+        /// Persisted before any runtime effect, with its complete target set.
+        Recorded => "recorded",
+        /// At least one retitle has been attempted.
+        Applying => "applying",
+        /// Every target read back its exact desired title under an unchanged
+        /// native id, and the governed pins have moved.
+        Confirmed => "confirmed",
+        /// Abandoned. The epic keeps the definition its natives still render.
+        Failed => "failed",
+    }
+}
+
+impl TeamDefinitionMigrationState {
+    /// Whether the migration may still be advanced.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Confirmed | Self::Failed)
+    }
+
+    /// Whether this state fences new materialization for the affected epic.
+    #[must_use]
+    pub const fn is_in_flight(self) -> bool {
+        matches!(self, Self::Recorded | Self::Applying)
+    }
+}
+
+crate::closed_enum! {
+    /// What was actually observed for one native object in a migration.
+    ///
+    /// `RenamePending` exists so a target that was asked and not confirmed is
+    /// recorded as exactly that, rather than as a success it never had.
+    TeamDefinitionMigrationTargetState, "TeamDefinitionMigrationTargetState" {
+        /// Enumerated by the preview; no effect attempted yet.
+        Pending => "pending",
+        /// Already carried the desired title; nothing was asked of the runtime.
+        Unchanged => "unchanged",
+        /// Retitled and read back exactly, under an unchanged native id.
+        Renamed => "renamed",
+        /// A rename was asked for and the desired title has not read back.
+        RenamePending => "rename_pending",
+        /// The runtime refused, or the readback contradicted the request.
+        Failed => "failed",
+    }
+}
+
+/// Which native object of a topology node one migration target is about.
+///
+/// A node is not one native object. An ECP node carries its own container and
+/// the LSA and TPM seats inside it; a CSW node carries its container plus
+/// `SEAT A`, `SEAT B` and `JUDGE`. Naming the subject is what keeps every one
+/// of them a target of its own instead of collapsing them into the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TeamDefinitionMigrationSubject {
+    /// The container the node projects.
+    Container {
+        /// The node whose container is retitled.
+        topology_node_id: TopologyNodeId,
+    },
+    /// One seat inside that container.
+    Seat {
+        /// The node hosting the seat.
+        topology_node_id: TopologyNodeId,
+        /// The exact seat being retitled.
+        seat_binding_id: SeatBindingId,
+    },
+}
+
+impl TeamDefinitionMigrationSubject {
+    /// The node this subject belongs to, whichever kind it is.
+    #[must_use]
+    pub const fn topology_node_id(self) -> TopologyNodeId {
+        match self {
+            Self::Container { topology_node_id }
+            | Self::Seat {
+                topology_node_id, ..
+            } => topology_node_id,
+        }
+    }
+
+    /// The seat, when this subject is one.
+    #[must_use]
+    pub const fn seat_binding_id(self) -> Option<SeatBindingId> {
+        match self {
+            Self::Container { .. } => None,
+            Self::Seat {
+                seat_binding_id, ..
+            } => Some(seat_binding_id),
+        }
+    }
+
+    /// The stable storage key, derived from durable identity.
+    ///
+    /// Never a title and never an ordinal: a resumed apply has to address the
+    /// same target it enumerated, and a display name is not identity.
+    #[must_use]
+    pub fn target_key(self) -> String {
+        match self {
+            Self::Container { topology_node_id } => format!("container:{topology_node_id}"),
+            Self::Seat {
+                seat_binding_id, ..
+            } => format!("seat:{seat_binding_id}"),
+        }
+    }
+}
+
+crate::closed_enum! {
+    /// What kind of native object one migration target is.
+    ///
+    /// Deliberately not [`ObservedContainerKind`], which knows only about
+    /// containers. A migration retitles seats as well, and calling a seat a
+    /// "workspace" so that it fits a container vocabulary would put a false
+    /// statement into the evidence a retitle is supposed to prove.
+    MigrationObjectKind, "MigrationObjectKind" {
+        /// A native root/project container.
+        ProjectContainer => "project_container",
+        /// A container below a native root.
+        WorkspaceContainer => "workspace_container",
+        /// One seat inside a container.
+        Seat => "seat",
+    }
+}
+
+impl MigrationObjectKind {
+    /// Whether this kind is a container rather than a seat.
+    #[must_use]
+    pub const fn is_container(self) -> bool {
+        matches!(self, Self::ProjectContainer | Self::WorkspaceContainer)
+    }
+}
+
+/// Where one native object sits and what it is called.
+///
+/// A title on its own cannot prove a retitle happened to the object we meant:
+/// a replaced container can carry the desired title while being a different
+/// object in a different place. Recording the placement at preview and proving
+/// it again at readback is what makes the migration identity-preserving.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativePlacement {
+    /// Exact rendered title.
+    pub title: ExternalName,
+    /// Native id of the container this object sits in.
+    ///
+    /// Absent only for a native root. A seat always has one: proving a seat was
+    /// retitled means proving it is still the same session in the same
+    /// container on the same host, not merely that something somewhere now
+    /// carries the title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_native_id: Option<ExternalId>,
+    /// What the runtime says this object is.
+    pub kind: MigrationObjectKind,
+    /// Canonical working directory, where the object has one.
+    ///
+    /// Containers below a root have one; seats need not, so this stays optional
+    /// rather than forcing a seat to invent a directory it does not own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_cwd: Option<ExternalName>,
+}
+
+impl NativePlacement {
+    /// Check the placement is internally coherent for its kind.
+    ///
+    /// # Errors
+    /// Refuses a root that claims a parent, and a workspace or seat that has
+    /// none: in both cases the recorded placement could not be re-proved
+    /// against the runtime it claims to describe.
+    pub fn validate(&self) -> DomainResult<()> {
+        match self.kind {
+            MigrationObjectKind::ProjectContainer if self.parent_native_id.is_some() => {
+                Err(DomainError::invalid(
+                    "NativePlacement",
+                    "a native root has no parent container",
+                ))
+            }
+            MigrationObjectKind::WorkspaceContainer | MigrationObjectKind::Seat
+                if self.parent_native_id.is_none() =>
+            {
+                Err(DomainError::invalid(
+                    "NativePlacement",
+                    "a workspace or seat must name the container it sits in",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether this placement describes the subject it is recorded against.
+    #[must_use]
+    pub const fn matches_subject(&self, subject: TeamDefinitionMigrationSubject) -> bool {
+        matches!(
+            (subject, self.kind),
+            (
+                TeamDefinitionMigrationSubject::Seat { .. },
+                MigrationObjectKind::Seat
+            ) | (
+                TeamDefinitionMigrationSubject::Container { .. },
+                MigrationObjectKind::ProjectContainer | MigrationObjectKind::WorkspaceContainer
+            )
+        )
+    }
+}
+
+/// One native object a migration must retitle, as it is recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamDefinitionMigrationTarget {
+    /// Owning intent.
+    pub intent_id: TeamDefinitionMigrationId,
+    /// Exactly which native object this target is.
+    pub subject: TeamDefinitionMigrationSubject,
+    /// The four-part native identity recorded before the effect and re-proved
+    /// after it. A bare native id is not an identity: it names that object only
+    /// inside one generation, on one host, of one runtime family.
+    pub identity: NativeRuntimeIdentity,
+    /// The placement the pinned definition requires for this object.
+    pub desired: NativePlacement,
+    /// The placement actually read back, when one has been.
+    pub observed: Option<NativePlacement>,
+    /// What was observed.
+    pub state: TeamDefinitionMigrationTargetState,
+    /// Last observation instant.
+    pub updated_at: Timestamp,
+}
+
+/// A new durable migration intent, recorded before the first runtime effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTeamDefinitionMigration {
+    /// Intent identity.
+    pub id: TeamDefinitionMigrationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic whose pin will move once every target reads back.
+    pub mini_project_id: MiniProjectId,
+    /// The key this migration replays under. Same key, same migration.
+    pub idempotency_key: IdempotencyKey,
+    /// The pin the epic holds now; absent when it is being pinned first.
+    pub from: Option<TeamDefinitionSnapshot>,
+    /// The pin the epic moves to on confirmation.
+    pub to: TeamDefinitionSnapshot,
+    /// The complete target set the preview produced.
+    pub targets: Vec<NewTeamDefinitionMigrationTarget>,
+    /// Recording instant.
+    pub recorded_at: Timestamp,
+}
+
+/// One enumerated target of a new migration intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTeamDefinitionMigrationTarget {
+    /// Exactly which native object this target is.
+    pub subject: TeamDefinitionMigrationSubject,
+    /// The four-part native identity observed at preview time.
+    pub identity: NativeRuntimeIdentity,
+    /// The placement the target definition requires.
+    pub desired: NativePlacement,
+}
+
+impl NewTeamDefinitionMigration {
+    /// Digest of every semantic part of this request.
+    ///
+    /// Two requests share a fingerprint exactly when they ask for the same
+    /// migration: the same epic, moving from the same pin to the same pin, over
+    /// the same set of native objects, each to the same placement. The intent
+    /// id and the recording instant are excluded because they are retry
+    /// bookkeeping rather than what was asked for; the idempotency key is
+    /// excluded because it is the question being asked, not the answer.
+    ///
+    /// Targets are folded in sorted order so a caller that enumerates them in a
+    /// different sequence still replays rather than conflicts.
+    #[must_use]
+    pub fn fingerprint(&self) -> ContentHash {
+        fn snapshot_text(snapshot: Option<&TeamDefinitionSnapshot>) -> String {
+            snapshot.map_or_else(
+                || "none".to_owned(),
+                |snapshot| {
+                    format!(
+                        "{}:{}:{}",
+                        snapshot.definition_id,
+                        snapshot.version.get(),
+                        snapshot.canonical_hash.as_str()
+                    )
+                },
+            )
+        }
+        fn optional(value: Option<&str>) -> &str {
+            value.unwrap_or("\x00none")
+        }
+
+        let mut parts = vec![
+            format!("epic:{}", self.mini_project_id),
+            format!("from:{}", snapshot_text(self.from.as_ref())),
+            format!("to:{}", snapshot_text(Some(&self.to))),
+        ];
+        let mut targets: Vec<String> = self
+            .targets
+            .iter()
+            .map(|target| {
+                format!(
+                    "target:{}\x1e{}\x1e{}\x1e{}\x1e{}\x1e{}\x1e{}\x1e{}\x1e{}",
+                    target.subject.target_key(),
+                    target.identity.runtime_kind.as_str(),
+                    target.identity.host.as_str(),
+                    target.identity.generation,
+                    target.identity.native_id.as_str(),
+                    target.desired.title.as_str(),
+                    optional(
+                        target
+                            .desired
+                            .parent_native_id
+                            .as_ref()
+                            .map(ExternalId::as_str)
+                    ),
+                    target.desired.kind.as_str(),
+                    optional(
+                        target
+                            .desired
+                            .canonical_cwd
+                            .as_ref()
+                            .map(ExternalName::as_str)
+                    ),
+                )
+            })
+            .collect();
+        targets.sort();
+        parts.extend(targets);
+        ContentHash::of(parts.join("\x1d").as_bytes())
+    }
+}
+
+/// One durable migration intent as it is stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTeamDefinitionMigration {
+    /// Intent identity.
+    pub id: TeamDefinitionMigrationId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The epic whose pin moves on confirmation.
+    pub mini_project_id: MiniProjectId,
+    /// The key this migration replays under.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of everything that makes this request the request it is.
+    pub fingerprint: ContentHash,
+    /// The pin held when the intent was recorded.
+    pub from: Option<TeamDefinitionSnapshot>,
+    /// The pin the epic moves to on confirmation.
+    pub to: TeamDefinitionSnapshot,
+    /// How far it has got.
+    pub state: TeamDefinitionMigrationState,
+    /// Its complete target set, in deterministic node order.
+    pub targets: Vec<TeamDefinitionMigrationTarget>,
+    /// Recording instant.
+    pub recorded_at: Timestamp,
+    /// Last transition instant.
+    pub updated_at: Timestamp,
+}
+
+/// One observation an apply records about a single native object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamDefinitionMigrationObservation {
+    /// The target being reported.
+    pub subject: TeamDefinitionMigrationSubject,
+    /// The four-part native identity that came back. Any difference is a
+    /// refusal: it did not observe the object the migration enumerated.
+    pub identity: NativeRuntimeIdentity,
+    /// The placement that came back, when the object answered at all.
+    pub observed: Option<NativePlacement>,
+    /// What was observed.
+    pub state: TeamDefinitionMigrationTargetState,
+    /// Observation instant.
+    pub observed_at: Timestamp,
+}
+
+/// The immutable Team Definition, its selection, its epic pins and the durable
+/// intent an identity-preserving retitle applies under.
+///
+/// Deliberately separate from [`TopologyRepository`]. The topology remains a
+/// legality validator, and giving naming its own repository is what keeps a
+/// topology publication from ever becoming a second current naming authority.
+pub trait TeamDefinitionRepository {
+    /// Publish one immutable Team Definition revision.
+    ///
+    /// # Errors
+    /// Refuses an invalid document, a dangling project, a topology revision
+    /// this project has not published, and a duplicate revision.
+    fn publish_team_definition(
+        &self,
+        project_id: ProjectId,
+        definition: &TeamDefinitionSpec,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash>;
+
+    /// Read one Team Definition revision and re-prove its digest.
+    ///
+    /// # Errors
+    /// Backend/domain failures only; a missing revision is `Ok(None)`.
+    fn get_team_definition(
+        &self,
+        project_id: ProjectId,
+        definition_id: TeamDefinitionId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<TeamDefinitionSpec>>;
+
+    /// Every Team Definition revision published in one project.
+    ///
+    /// Ordered by identity and version so a search over it is deterministic.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_team_definitions(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<TeamDefinitionSpec>>;
+
+    /// Select an already-published revision for future project scopes.
+    ///
+    /// Existing epic pins are immutable under this call; moving one is the
+    /// separate migration authority below.
+    ///
+    /// # Errors
+    /// Refuses a missing or hash-mismatched revision.
+    fn set_project_team_definition_default(
+        &self,
+        selection: &ProjectTeamDefinitionDefault,
+    ) -> RepositoryResult<()>;
+
+    /// Read the selected project default.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_project_team_definition_default(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<ProjectTeamDefinitionDefault>>;
+
+    /// Freeze one immutable revision to a MiniProject for the first time.
+    ///
+    /// # Errors
+    /// Refuses a cross-project/missing MiniProject, a missing revision, a
+    /// changed hash or a second pin.
+    fn pin_mini_project_team_definition(
+        &self,
+        snapshot: &MiniProjectTeamDefinitionSnapshot,
+    ) -> RepositoryResult<()>;
+
+    /// Read one MiniProject's frozen revision.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_mini_project_team_definition(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>>;
+
+    /// Record one migration intent and its complete target set before any
+    /// runtime effect.
+    ///
+    /// Replaying the same idempotency key returns the migration already
+    /// recorded rather than recording a second one, so a resumed apply
+    /// continues the original intent instead of creating a rival to it.
+    ///
+    /// # Errors
+    /// Refuses an empty target set, a target set with a duplicate subject or
+    /// native id, a
+    /// migration for an epic that already has one in flight, a `from` that is
+    /// not the epic's current pin, and a `to` this project has not published.
+    fn record_team_definition_migration(
+        &self,
+        migration: &NewTeamDefinitionMigration,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration>;
+
+    /// Read one migration by identity.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+    ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>>;
+
+    /// Read the migration currently fencing one epic, if any.
+    ///
+    /// This is the question materialization asks: an epic with an in-flight
+    /// migration does not place new containers under a pin that is about to
+    /// move.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_in_flight_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>>;
+
+    /// Record what one apply actually observed for a set of targets.
+    ///
+    /// Moves the intent to `applying`. Recording an observation whose native id
+    /// is not the one enumerated is refused: a retitle that moved identity did
+    /// not retitle the target it was asked about.
+    ///
+    /// # Errors
+    /// Refuses a terminal migration, an unknown target and a native-id
+    /// contradiction.
+    fn observe_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        observations: &[TeamDefinitionMigrationObservation],
+        observed_at: Timestamp,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration>;
+
+    /// Move the epic's pin, once, after every target has read back exactly.
+    ///
+    /// This is the only call that makes the new definition current, and it
+    /// refuses while any target is `pending`, `rename_pending` or `failed`. The
+    /// pin and the intent's confirmation commit together.
+    ///
+    /// # Errors
+    /// Refuses a terminal migration, an unconfirmed target set, and an epic
+    /// whose pin is no longer the `from` the intent recorded.
+    fn confirm_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        confirmed_at: Timestamp,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration>;
+
+    /// Abandon one migration, leaving the epic on the pin its natives render.
+    ///
+    /// # Errors
+    /// Refuses a migration that has already reached a terminal state.
+    fn fail_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        failed_at: Timestamp,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration>;
 }
 
 /// Immutable specification revisions.

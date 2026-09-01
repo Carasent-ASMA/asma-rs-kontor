@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 76;
+pub const SCHEMA_VERSION: i64 = 78;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -299,6 +299,14 @@ const MIGRATIONS: &[&str] = &[
     // batch that a connector outage interrupted, while retaining marker and
     // requested-key equality for every original link item.
     include_str!("../migrations/0076_mixed_jira_materialization_recovery.sql"),
+    // Schema v77. The Team Definition: one immutable revision owning native
+    // hierarchy and naming, its project selection and epic pin, and the durable
+    // resumable intent an identity-preserving retitle applies under.
+    include_str!("../migrations/0077_team_definition_naming.sql"),
+    // Schema v78. Advisor advice is keyed by the seat that gave it, so one ASW
+    // can hold several independently reporting advisor seats; every existing
+    // artifact carries across unchanged and stays immutable.
+    include_str!("../migrations/0078_advisor_advice_per_seat.sql"),
 ];
 
 const _: () = assert!(
