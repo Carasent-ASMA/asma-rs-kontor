@@ -169,16 +169,16 @@ Wave 3 — release
 
 | Mutant | Killing test | Status |
 | --- | --- | --- |
-| Read current project default instead of the epic's frozen definition. | Existing-epic pin survives later selection test. | Pending |
-| Normalize ` • ` to ` · ` or trim separator bytes. | Exact UTF-8 renderer test. | Pending |
-| Let topology `name_template` override the Team Definition. | Conflicting legacy topology-name test. | Pending |
-| Repeat item code/topic in a seat title. | Container-scoped seat matrix test. | Pending |
-| Drop Committee `task_id`. | Ticket-scoped CSW item-code test. | Pending |
-| Launch only the first Advisor seat. | Two-advisor materialization test. | Pending |
-| Render Committee seats from role code. | Exact `SEAT A`/`SEAT B`/`JUDGE` test. | Pending |
-| Reuse an ASW/CSW across different topics or subjects. | Consultation identity/reuse test. | Pending |
-| Retitle a different native ID or accept absent readback. | Identity-preserving apply refusal test. | Pending |
-| Treat `jira` and `connector.jira` as different active connectors. | Connector canonicalization test. | Pending |
+| Read current project default instead of the epic's frozen definition. | Existing-epic pin survives later selection test. | Killed |
+| Normalize ` • ` to ` · ` or trim separator bytes. | Exact UTF-8 renderer test. | Killed manually; exact byte assertion failed on U+00B7 substitution |
+| Let topology `name_template` override the Team Definition. | Conflicting legacy topology-name test. | Killed |
+| Repeat item code/topic in a seat title. | Container-scoped seat matrix test. | Killed |
+| Drop Committee `task_id`. | Ticket-scoped CSW item-code test. | Killed |
+| Launch only the first Advisor seat. | Two-advisor materialization test. | Killed manually; second-seat attestation failed |
+| Render Committee seats from role code. | Exact `SEAT A`/`SEAT B`/`JUDGE` test. | Killed manually; definition validation failed |
+| Reuse an ASW/CSW across different topics or subjects. | Consultation identity/reuse test. | Killed |
+| Retitle a different native ID or accept absent readback. | Identity-preserving apply refusal test. | Killed |
+| Treat `jira` and `connector.jira` as different active connectors. | Connector canonicalization test. | Killed |
 
 The already-shipped TSW bootstrap checkpoint also has a killed branch-attestation mutant and passed 154 Paseo runtime contracts plus the complete archive gate.
 
