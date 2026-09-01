@@ -15024,7 +15024,7 @@ impl ApplicationOperations for Services {
         request: &TeamDefinitionUpgradeApplyRequest,
     ) -> Result<AppliedTeamDefinitionUpgradeDto, ApiError> {
         let state = self.state()?;
-        let project = self.project_at(project_id, request.migration.expected_revision)?;
+        let project = self.project_at(project_id, request.upgrade.expected_revision)?;
         let aggregate = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
@@ -15034,10 +15034,10 @@ impl ApplicationOperations for Services {
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
             "target": {
-                "id": request.migration.target_definition.id.to_string(),
-                "version": request.migration.target_definition.version.get(),
+                "id": request.upgrade.target_definition.id.to_string(),
+                "version": request.upgrade.target_definition.version.get(),
             },
-            "legacy_topics": request.migration.legacy_topics,
+            "legacy_topics": request.upgrade.legacy_topics,
             "preview": request.preview_hash.as_str(),
         }))?;
         let replayed = self.replayed(key, &intent, Some(&aggregate))?.is_some();
@@ -15053,7 +15053,7 @@ impl ApplicationOperations for Services {
                 })?
                 .definition;
             let readback = self
-                .prepare_native_names(project_id, epic_id, request.migration.expected_revision)
+                .prepare_native_names(project_id, epic_id, request.upgrade.expected_revision)
                 .await?
                 .preview;
             let receipt_id = self.record(
@@ -15101,7 +15101,7 @@ impl ApplicationOperations for Services {
         }
 
         let (current, target, definition, topics, prepared) = self
-            .prepare_team_definition_upgrade_plan(project_id, epic_id, &request.migration)
+            .prepare_team_definition_upgrade_plan(project_id, epic_id, &request.upgrade)
             .await?;
         if !recovering && prepared.preview.preview_hash != request.preview_hash {
             return Err(self.deny(
@@ -15343,7 +15343,7 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
         let readback = self
-            .prepare_native_names(project_id, epic_id, request.migration.expected_revision)
+            .prepare_native_names(project_id, epic_id, request.upgrade.expected_revision)
             .await?
             .preview;
         Ok(AppliedTeamDefinitionUpgradeDto {

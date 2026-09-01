@@ -3068,7 +3068,7 @@ pub struct TeamDefinitionUpgradePreviewDto {
 #[serde(deny_unknown_fields)]
 pub struct TeamDefinitionUpgradeApplyRequest {
     /// Same semantic request used by preview.
-    pub migration: TeamDefinitionUpgradePreviewRequest,
+    pub upgrade: TeamDefinitionUpgradePreviewRequest,
     /// Exact preview hash.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,

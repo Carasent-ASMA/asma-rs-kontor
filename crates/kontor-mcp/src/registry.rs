@@ -3660,10 +3660,10 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             IDEMPOTENCY,
             req(
-                "migration",
+                "upgrade",
                 Place::Body,
                 ArgType::Json,
-                "The same semantic migration request used by preview.",
+                "The same semantic upgrade request used by preview.",
             ),
             req(
                 "preview_hash",

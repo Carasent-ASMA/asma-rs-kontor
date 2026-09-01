@@ -22062,7 +22062,7 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     );
 
     let migration_apply = serde_json::json!({
-        "migration": migration,
+        "upgrade": migration,
         "preview_hash": migration_preview.json()["preview_hash"]
     });
     let first_target_node = TopologyNodeId::parse(

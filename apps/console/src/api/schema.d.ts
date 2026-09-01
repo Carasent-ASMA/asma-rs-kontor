@@ -7684,10 +7684,10 @@ export interface components {
         };
         /** @description Apply one exact resumable Team Definition migration. */
         TeamDefinitionUpgradeApplyRequest: {
-            /** @description Same semantic request used by preview. */
-            migration: components["schemas"]["TeamDefinitionUpgradePreviewRequest"];
             /** @description Exact preview hash. */
             preview_hash: string;
+            /** @description Same semantic request used by preview. */
+            upgrade: components["schemas"]["TeamDefinitionUpgradePreviewRequest"];
         };
         /** @description Exact identity-bound migration preview. */
         TeamDefinitionUpgradePreviewDto: {

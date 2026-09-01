@@ -19394,17 +19394,17 @@
         "type": "object",
         "description": "Apply one exact resumable Team Definition migration.",
         "required": [
-          "migration",
+          "upgrade",
           "preview_hash"
         ],
         "properties": {
-          "migration": {
-            "$ref": "#/components/schemas/TeamDefinitionUpgradePreviewRequest",
-            "description": "Same semantic request used by preview."
-          },
           "preview_hash": {
             "type": "string",
             "description": "Exact preview hash."
+          },
+          "upgrade": {
+            "$ref": "#/components/schemas/TeamDefinitionUpgradePreviewRequest",
+            "description": "Same semantic request used by preview."
           }
         },
         "additionalProperties": false
