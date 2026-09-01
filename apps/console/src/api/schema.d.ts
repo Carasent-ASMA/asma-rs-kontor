@@ -1406,6 +1406,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume/apply the exact identity-preserving Team Definition migration. */
+        post: operations["apply_team_definition_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview one explicit complete legacy-to-Team-Definition epic migration. */
+        post: operations["preview_team_definition_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply": {
         parameters: {
             query?: never;
@@ -2157,6 +2191,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/team-definition-selection:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one exact previewed project Team Definition selection. */
+        post: operations["apply_project_team_definition_selection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-definition-selection:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview selecting the exact Team Definition future epics inherit. */
+        post: operations["preview_project_team_definition_selection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-definitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List every immutable Team Definition revision published in one project. */
+        get: operations["team_definitions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-definitions/{definition_id}/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one exact immutable Team Definition JSON document. */
+        get: operations["team_definition"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-definitions:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one exact revalidated Team Definition revision. */
+        post: operations["publish_team_definition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-definitions:validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one complete Team Definition against its exact published topology. */
+        post: operations["validate_team_definition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers": {
         parameters: {
             query?: never;
@@ -2839,8 +2975,8 @@ export interface components {
         AdviceDispositionDto: "accepted" | "partially_accepted" | "rejected" | "superseded";
         /** @description One Advisor consultation. */
         AdvisorRunDto: {
-            /** @description Immutable output submitted by the Advisor seat, before disposition. */
-            advice?: unknown;
+            /** @description Independent immutable outputs submitted by every configured Advisor seat. */
+            advice?: unknown[];
             /** @description The consultation. */
             advisor_run_id: string;
             /** @description The epic it advises. */
@@ -2853,14 +2989,14 @@ export interface components {
             /** @description Immutable output and caller disposition once settled. */
             result?: unknown;
             /**
-             * @description Advisor seats materialized for this consultation.
-             *
-             *     The pre-conformance implementation currently returns one seat. The
-             *     approved Team Definition contract permits one or more configured seats.
+             * @description Every Advisor seat declared by the pinned Team Definition, in its
+             *     deterministic slot order.
              */
             seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            /** @description Exact topic frozen at invocation and rendered in the ASW name. */
+            topic?: string | null;
             /** @description Dedicated ASW node. */
             topology_node_id: string;
         };
@@ -3038,6 +3174,13 @@ export interface components {
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
         };
+        /** @description Newly selected default plus its durable receipt. */
+        AppliedProjectTeamDefinitionSelectionDto: {
+            /** @description Durable apply/replay receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Exact selected default. */
+            selected_definition: components["schemas"]["PinnedTeamDefinitionDto"];
+        };
         /** @description The newly selected project topology revision and its durable receipt. */
         AppliedProjectTopologySelectionDto: {
             /** @description The receipt for the selection or replay. */
@@ -3102,6 +3245,20 @@ export interface components {
             workflow_id: string;
             /** @description Where its work happens, once declared. */
             worktree?: string | null;
+        };
+        /** @description Confirmed identity-preserving migration result. */
+        AppliedTeamDefinitionUpgradeDto: {
+            /**
+             * Format: int64
+             * @description Number of native titles changed by this invocation.
+             */
+            changed: number;
+            /** @description Newly pinned immutable definition. */
+            pinned_definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Fresh exact-id readback after the pin switch. */
+            readback: components["schemas"]["TeamDefinitionUpgradePreviewDto"];
+            /** @description Durable apply/replay receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
         };
         /** @description One applied upgrade: the new immutable pin and what the topology now is. */
         AppliedTopologyUpgradeDto: {
@@ -3711,6 +3868,8 @@ export interface components {
             state: string;
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
+            /** @description Exact topic frozen at invocation and rendered in the CSW name. */
+            topic?: string | null;
             /** @description Dedicated CSW node. */
             topology_node_id: string;
         };
@@ -5133,6 +5292,11 @@ export interface components {
              *     means the epic as a whole.
              */
             task_id?: string | null;
+            /**
+             * @description Short, explicit subject label used by the pinned Team Definition to
+             *     render the ASW name. It is never derived from the question.
+             */
+            topic?: string | null;
         };
         /**
          * @description Invoke one Committee consultation against an epic.
@@ -5166,6 +5330,11 @@ export interface components {
              *     means the epic as a whole.
              */
             task_id?: string | null;
+            /**
+             * @description Short, explicit debated subject used by the pinned Team Definition to
+             *     render the CSW name. It is never derived from the question.
+             */
+            topic?: string | null;
         };
         /** @description A confirmed Jira materialization and ASMA activation receipt. */
         JiraMaterializationAppliedDto: {
@@ -5399,12 +5568,23 @@ export interface components {
         NativeNameTargetDto: {
             /** @description AgentRun for a delivery-seat target. */
             agent_run_id?: string | null;
+            /** @description Canonical native working directory when this object owns one. */
+            canonical_cwd?: string | null;
             /** @description Typed capability result (`ready`, `unchanged`, or `rename_pending`). */
             capability: string;
             /** @description Exact title rendered by the daemon. */
             desired_title: string;
+            /**
+             * Format: int64
+             * @description Runtime generation in which the native id is valid.
+             */
+            generation: number;
+            /** @description Exact runtime host/generation namespace. */
+            host: string;
             /** @description Exact runtime-native identity. */
             native_id: string;
+            /** @description Closed observed object kind (`project_container`, `workspace_container`, `seat`). */
+            native_kind: string;
             /**
              * @description Runtime title observed during preflight.
              *
@@ -5413,8 +5593,12 @@ export interface components {
              *     `rename_pending`, but an apply performs no native action for it.
              */
             observed_title?: string | null;
+            /** @description Exact native parent/container id; absent only for a native root. */
+            parent_native_id?: string | null;
             /** @description Provider-native session identity, when reported. */
             provider_session_id?: string | null;
+            /** @description Runtime family that owns the native id. */
+            runtime_kind: string;
             /** @description Persistent SeatBinding for a seat target. */
             seat_binding_id?: string | null;
             /** @description Whether this is a container or a persistent seat. */
@@ -5548,6 +5732,18 @@ export interface components {
             /**
              * Format: int32
              * @description The published revision.
+             */
+            version: number;
+        };
+        /** @description One immutable Team Definition revision plus its exact canonical hash. */
+        PinnedTeamDefinitionDto: {
+            /** @description Hash of the exact canonical JSON bytes. */
+            canonical_hash: string;
+            /** @description Stable definition lineage. */
+            id: string;
+            /**
+             * Format: int32
+             * @description Exact immutable revision.
              */
             version: number;
         };
@@ -5848,6 +6044,38 @@ export interface components {
             /** @description Its canonical root path. */
             root_path: string;
         };
+        /** @description Apply one exact project-default Team Definition preview under CAS. */
+        ProjectTeamDefinitionSelectionApplyRequest: {
+            /**
+             * Format: int64
+             * @description Project revision observed by the caller.
+             */
+            expected_revision: number;
+            /** @description Hash returned by preview. */
+            preview_hash: string;
+        };
+        /** @description Exact comparison used to select the default for future epics. */
+        ProjectTeamDefinitionSelectionPreviewDto: {
+            current_definition?: null | components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Apply-bound comparison hash. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that computed the comparison. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description Consistent read position.
+             */
+            snapshot_cursor: number;
+            /** @description Exact published target. */
+            target_definition: components["schemas"]["PinnedTeamDefinitionDto"];
+        };
+        /** @description What moving a project's default Team Definition is previewed against. */
+        ProjectTeamDefinitionSelectionPreviewRequest: {
+            /** @description Published revision future epics must inherit. */
+            target_definition: components["schemas"]["TeamDefinitionRefDto"];
+        };
         /** @description What selecting a project topology preview is asked for. */
         ProjectTopologySelectionApplyRequest: {
             /**
@@ -6006,6 +6234,18 @@ export interface components {
             /** @description Concurrent windows derived from the successful response. */
             windows: components["schemas"]["QuotaWindowDto"][];
         };
+        /** @description Publish one exact revalidated Team Definition revision. */
+        PublishTeamDefinitionRequest: {
+            /** @description Complete candidate document. */
+            candidate: Record<string, never>;
+            /**
+             * Format: int64
+             * @description Project revision observed by the caller.
+             */
+            expected_revision: number;
+            /** @description Hash returned by validation. */
+            validation_hash: string;
+        };
         /**
          * @description What `topology-specs:publish` is asked for.
          *
@@ -6038,6 +6278,13 @@ export interface components {
         PublishTriggerRequest: {
             /** @description The complete trigger specification, as the domain spells it. */
             spec: unknown;
+        };
+        /** @description One immutable Team Definition publication receipt. */
+        PublishedTeamDefinitionDto: {
+            /** @description Published definition identity and bytes hash. */
+            definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Durable publication receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
         };
         /** @description One immutable published team-template revision. */
         PublishedTeamRevisionDto: {
@@ -7390,6 +7637,103 @@ export interface components {
              */
             updated_at: string;
         };
+        /** @description Every immutable Team Definition revision published in one project. */
+        TeamDefinitionCatalogDto: {
+            /** @description Stable definition-id/version order. */
+            definitions: components["schemas"]["TeamDefinitionSummaryDto"][];
+            /** @description Owning Realm. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description Consistent read position.
+             */
+            snapshot_cursor: number;
+        };
+        /** @description One exact published Team Definition JSON document. */
+        TeamDefinitionDocumentDto: {
+            /** @description Published identity and exact hash. */
+            definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Canonical document as accepted. */
+            document: Record<string, never>;
+            /** @description Owning Realm. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description Consistent read position.
+             */
+            snapshot_cursor: number;
+        };
+        /** @description One immutable Team Definition revision selected or pinned by identity. */
+        TeamDefinitionRefDto: {
+            /** @description Stable definition lineage. */
+            id: string;
+            /**
+             * Format: int32
+             * @description Exact immutable revision.
+             */
+            version: number;
+        };
+        /** @description One published Team Definition in the project catalog. */
+        TeamDefinitionSummaryDto: {
+            /** @description Published identity and exact hash. */
+            definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Human name from the immutable document. */
+            name: string;
+            /** @description Exact topology revision used only to validate this definition. */
+            topology: components["schemas"]["PinnedSpecDto"];
+        };
+        /** @description Apply one exact resumable Team Definition migration. */
+        TeamDefinitionUpgradeApplyRequest: {
+            /** @description Same semantic request used by preview. */
+            migration: components["schemas"]["TeamDefinitionUpgradePreviewRequest"];
+            /** @description Exact preview hash. */
+            preview_hash: string;
+        };
+        /** @description Exact identity-bound migration preview. */
+        TeamDefinitionUpgradePreviewDto: {
+            current_definition?: null | components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Epic whose exact native objects were enumerated. */
+            epic_id: string;
+            /** @description Hash binding definition, topics, identities, readbacks and desired names. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that computed the plan. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description Consistent read position.
+             */
+            snapshot_cursor: number;
+            /** @description Definition pinned only after every target is confirmed. */
+            target_definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Complete stable container-and-seat census. */
+            targets: components["schemas"]["NativeNameTargetDto"][];
+        };
+        /** @description Preview an explicit legacy-to-Team-Definition epic migration. */
+        TeamDefinitionUpgradePreviewRequest: {
+            /**
+             * Format: int64
+             * @description Project revision observed before enumerating every native target.
+             */
+            expected_revision: number;
+            /**
+             * @description Explicit topics for legacy ASW/CSW nodes, keyed by topology-node id.
+             *     Every legacy consultation is required; unknown or extra keys are refused.
+             */
+            legacy_topics?: Record<string, never>;
+            /** @description Published definition revision to pin after every native readback succeeds. */
+            target_definition: components["schemas"]["TeamDefinitionRefDto"];
+        };
+        /** @description Deterministic validation verdict for one exact candidate. */
+        TeamDefinitionValidationDto: {
+            /** @description Realm that performed validation. */
+            realm_id: string;
+            /** @description Hash of the exact canonical candidate. */
+            validation_hash: string;
+            /** @description Stable ordered violations; empty is the only publishable verdict. */
+            violations: string[];
+        };
         /** @description One server-held draft. */
         TeamDraftDto: {
             /** @description Stable logical template id. */
@@ -7977,6 +8321,11 @@ export interface components {
          * @enum {string}
          */
         UnmaterializedConsultationSeatRerouteReasonDto: "permission_mode_unsupported";
+        /** @description Candidate validation request for one complete Team Definition JSON document. */
+        ValidateTeamDefinitionRequest: {
+            /** @description Complete schema-versioned candidate document. */
+            candidate: Record<string, never>;
+        };
         /** @description What `topology-specs:validate` is asked for. */
         ValidateTopologySpecRequest: {
             /** @description One complete candidate document. */
@@ -12091,6 +12440,137 @@ export interface operations {
             };
         };
     };
+    apply_team_definition_upgrade: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic to migrate */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeamDefinitionUpgradeApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedTeamDefinitionUpgradeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_team_definition_upgrade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic to migrate */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeamDefinitionUpgradePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamDefinitionUpgradePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_topology_upgrade: {
         parameters: {
             query?: never;
@@ -14056,6 +14536,290 @@ export interface operations {
             };
             /** @description The conflict is already resolved, or the key was reused */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_project_team_definition_selection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectTeamDefinitionSelectionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProjectTeamDefinitionSelectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_project_team_definition_selection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectTeamDefinitionSelectionPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectTeamDefinitionSelectionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    team_definitions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamDefinitionCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    team_definition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description Stable definition lineage */
+                definition_id: string;
+                /** @description Immutable revision */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamDefinitionDocumentDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_team_definition: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishTeamDefinitionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishedTeamDefinitionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    validate_team_definition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidateTeamDefinitionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamDefinitionValidationDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

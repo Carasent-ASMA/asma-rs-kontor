@@ -275,7 +275,18 @@ impl NativeNameTemplate {
             .iter()
             .map(|segment| match segment {
                 NativeNameSegment::Literal(value) => Ok(value.as_str()),
-                NativeNameSegment::Token(token) => values.require(*token),
+                NativeNameSegment::Token(token) => {
+                    let value = values.require(*token)?;
+                    if value.contains(separator.as_str())
+                        || value.contains(['\u{2022}', '\u{00b7}'])
+                    {
+                        return Err(DomainError::invalid(
+                            "NativeNameValues",
+                            "a rendered token must not contain a separator glyph",
+                        ));
+                    }
+                    Ok(value)
+                }
             })
             .collect::<DomainResult<Vec<_>>>()?
             .join(separator.as_str());

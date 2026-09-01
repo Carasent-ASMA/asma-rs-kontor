@@ -517,14 +517,14 @@
           },
           "slots": [
             {
-              "slot_id": "software-architect",
-              "role_code": "SA",
-              "capability_profile": "independent-advisor"
+              "slot_id": "lead-software-architect",
+              "role_code": "LSA",
+              "capability_profile": "epic-leadership"
             },
             {
-              "slot_id": "auditor",
-              "role_code": "AUD",
-              "capability_profile": "independent-advisor"
+              "slot_id": "technical-program-manager",
+              "role_code": "TPM",
+              "capability_profile": "epic-coordination"
             }
           ]
         },
@@ -563,7 +563,19 @@
             "segments": [
               { "kind": "token", "value": "ROLE_CODE" }
             ]
-          }
+          },
+          "slots": [
+            {
+              "slot_id": "software-architect",
+              "role_code": "SA",
+              "capability_profile": "independent-advisor"
+            },
+            {
+              "slot_id": "auditor",
+              "role_code": "AUD",
+              "capability_profile": "independent-advisor"
+            }
+          ]
         },
         {
           "kind": "CSW",

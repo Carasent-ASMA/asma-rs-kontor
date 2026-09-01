@@ -406,10 +406,11 @@ centered-dot rendering is historical implementation behavior; the approved
 current contract puts all hierarchy and naming in pinned Team Definition JSON
 and recommends `ESW • KOP-8001` and `TSW • KOP-7869`. See
 [`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md). A
-missing, malformed or ambiguous confirmed Jira binding blocks v4 placement
-rather than falling back to a title, UUID or imported short code. Existing v1
-topology pins remain immutable and keep their historical names until an
-explicit preview/apply upgrade.
+missing, malformed or ambiguous confirmed Jira binding blocks placement rather
+than falling back to a title, UUID or imported short code. Existing native
+objects keep their historical names and Team Definition pin until an explicit,
+identity-preserving `team-definition:upgrade-preview` / `:upgrade-apply`
+completes exact readback.
 
 AgentsRoom is being replaced per project, per subject. Write authority for a
 project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a

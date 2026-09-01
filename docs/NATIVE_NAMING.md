@@ -1,6 +1,6 @@
 # Native naming
 
-> Status: approved naming contract; implementation conformance audit pending.
+> Status: approved contract; local implementation verified, live epic migration pending.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -14,12 +14,16 @@ defines the meaning of a role code. It does not render a second seat name.
 Models, clients and runtime adapters request semantic kinds/slots and never
 construct a complete native name.
 
-This document records the agreed target contract. It does **not** assert that
-the current schema, seed packs, migrations, APIs, tests or live native objects
-already conform. Those surfaces require the separately planned implementation
-conformance audit. Existing topology-v4 centered-dot names remain historical
-implementation and runtime evidence until an explicit versioned migration is
-implemented and applied.
+The v1 schema, recommended ASMA fixture, publication/selection API and resumable
+epic migration implement this contract. Existing topology-v4 centered-dot names
+remain historical evidence until their owning epic completes an explicit Team
+Definition upgrade.
+
+An epic may freeze its Team Definition at logical creation before Jira
+materialization completes. That pin does not authorize a native effect: ESW,
+ECP, TSW, ASW, CSW and seat materialization fail closed until the epic has an
+active immutable backlog code and the addressed epic/task has one exact
+confirmed Jira readback.
 
 ## Identity inputs
 
@@ -96,30 +100,75 @@ recommended Independent Review setup, not a universal kernel law.
 
 ## Recommended definition shape
 
-Field names below express the approved semantic contract. The implementation
-audit must decide how the current persisted schemas evolve to carry it.
+This is the implemented snake-case v1 wire shape. Templates are typed segment
+vectors; the configured separator is inserted between rendered segments.
 
 ```json
 {
-  "schemaVersion": 1,
-  "naming": {
-    "separator": " • ",
-    "containers": {
-      "esw": { "parent": null, "prefix": "ESW", "template": "{prefix}{separator}{epic.itemCode}" },
-      "ecp": { "parent": "esw", "prefix": "ECP", "template": "{prefix}{separator}{epic.itemCode}" },
-      "tsw": { "parent": "esw", "prefix": "TSW", "template": "{prefix}{separator}{task.itemCode}" },
-      "asw": { "parent": "esw", "prefix": "ASW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" },
-      "csw": { "parent": "esw", "prefix": "CSW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" }
+  "schema_version": 1,
+  "definition_id": "01936f5a-2000-7000-8000-000000000001",
+  "version": 1,
+  "name": "ASMA Operational Team Definition",
+  "topology": { "spec_id": "...", "version": 4, "canonical_hash": "..." },
+  "separator": " • ",
+  "containers": [
+    {
+      "kind": "ESW",
+      "parent": null,
+      "prefix": "ESW",
+      "projection_capabilities": ["native_root"],
+      "read_only": false,
+      "name_template": { "segments": [
+        { "kind": "token", "value": "PREFIX" },
+        { "kind": "token", "value": "EPIC_ITEM_CODE" }
+      ] }
     },
-    "seatTemplates": {
-      "leadership": "{role.code}",
-      "delivery": "{role.code}",
-      "advisor": "{role.code}",
-      "committee": "{slot.displayName}"
+    {
+      "kind": "ASW",
+      "parent": "ESW",
+      "prefix": "ASW",
+      "projection_capabilities": ["native_child", "session_host"],
+      "read_only": true,
+      "name_template": { "segments": [
+        { "kind": "token", "value": "PREFIX" },
+        { "kind": "token", "value": "SCOPE_ITEM_CODE" },
+        { "kind": "token", "value": "TOPIC" }
+      ] },
+      "seat_name_template": { "segments": [
+        { "kind": "token", "value": "ROLE_CODE" }
+      ] },
+      "slots": [
+        { "slot_id": "software-architect", "role_code": "SA", "capability_profile": "independent-advisor" },
+        { "slot_id": "auditor", "role_code": "AUD", "capability_profile": "independent-advisor" }
+      ]
     }
-  }
+  ]
 }
 ```
+
+The shipped document also declares ECP (`LSA`, `TPM`), TSW (role-coded,
+team-template supplied delivery slots) and CSW (`SEAT A`, `SEAT B`, `JUDGE`)
+rows. The complete canonical fixture is
+`crates/kontor-profiles/fixtures/operational-domain.json`.
+
+## Publication and migration
+
+- Validate and publish immutable revisions with
+  `team-definitions:validate` and `team-definitions:publish`.
+- Change what future epics inherit with the project
+  `team-definition-selection:preview` / `:apply` compare-and-swap.
+- Move an existing epic only through
+  `team-definition:upgrade-preview` / `:upgrade-apply`.
+- A migration preview binds every container and seat to its full native runtime
+  identity, parent, kind, cwd, observed title and desired title.
+- Legacy ASW/CSW topics are explicit operator input keyed by topology-node id;
+  unknown, missing or extra mappings are refused.
+- Apply records its intent before the first external retitle. Partial effects
+  leave the old pin in force and the epic fenced. The same idempotency key
+  resumes from exact readback; a different key cannot interleave.
+- The pin switches only after every target reads back the desired title under
+  the unchanged native identity. Backup/export includes definitions, defaults,
+  pins, migration intents, targets, topic provenance and per-seat advice.
 
 ## Validation and revision rules
 

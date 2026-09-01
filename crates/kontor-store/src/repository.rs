@@ -30,9 +30,9 @@ use kontor_core::id::{
     ProjectId, ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleCode,
     RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
     SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
-    TeamDefinitionMigrationId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
-    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
@@ -72,9 +72,9 @@ use kontor_core::repository::{
 };
 use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, NativePlacement,
-    NewTeamDefinitionMigration, ProjectTeamDefinitionDefault,
-    StoredTeamDefinitionMigration, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
+    NewTeamDefinitionMigration, ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
 };
 use kontor_core::spec::{
@@ -2528,11 +2528,11 @@ impl SqliteStore {
             // of a migration step, not a second decision.
             Some(current) if current == topic.as_str() => {
                 transaction.commit().map_err(backend)?;
-                return self
-                    .get_consultation_run(project_id, run_id)?
-                    .ok_or(RepositoryError::NotFound {
+                return self.get_consultation_run(project_id, run_id)?.ok_or(
+                    RepositoryError::NotFound {
                         subject: "consultation run",
-                    });
+                    },
+                );
             }
             Some(_) => {
                 return Err(conflict(
@@ -14860,9 +14860,15 @@ fn team_definition_migration_targets_in(
         let desired_cwd: Option<String> = row.get(10).map_err(backend)?;
         let desired = NativePlacement {
             title: ExternalName::parse(&row.get::<_, String>(7).map_err(backend)?)?,
-            parent_native_id: desired_parent.as_deref().map(ExternalId::parse).transpose()?,
+            parent_native_id: desired_parent
+                .as_deref()
+                .map(ExternalId::parse)
+                .transpose()?,
             kind: MigrationObjectKind::parse(&row.get::<_, String>(9).map_err(backend)?)?,
-            canonical_cwd: desired_cwd.as_deref().map(ExternalName::parse).transpose()?,
+            canonical_cwd: desired_cwd
+                .as_deref()
+                .map(ExternalName::parse)
+                .transpose()?,
         };
         let observed_title: Option<String> = row.get(11).map_err(backend)?;
         let observed_parent: Option<String> = row.get(12).map_err(backend)?;
@@ -14871,9 +14877,15 @@ fn team_definition_migration_targets_in(
         let observed = match (observed_title, observed_kind) {
             (Some(title), Some(kind)) => Some(NativePlacement {
                 title: ExternalName::parse(&title)?,
-                parent_native_id: observed_parent.as_deref().map(ExternalId::parse).transpose()?,
+                parent_native_id: observed_parent
+                    .as_deref()
+                    .map(ExternalId::parse)
+                    .transpose()?,
                 kind: MigrationObjectKind::parse(&kind)?,
-                canonical_cwd: observed_cwd.as_deref().map(ExternalName::parse).transpose()?,
+                canonical_cwd: observed_cwd
+                    .as_deref()
+                    .map(ExternalName::parse)
+                    .transpose()?,
             }),
             _ => None,
         };
@@ -15175,18 +15187,14 @@ impl TeamDefinitionRepository for SqliteStore {
         // Two subjects claiming one native object would make the identity
         // proof ambiguous: the readback could satisfy either of them.
         let mut natives = BTreeSet::new();
-        if !migration
-            .targets
-            .iter()
-            .all(|target| {
-                natives.insert((
-                    target.identity.runtime_kind.clone(),
-                    target.identity.host.clone(),
-                    target.identity.generation,
-                    target.identity.native_id.clone(),
-                ))
-            })
-        {
+        if !migration.targets.iter().all(|target| {
+            natives.insert((
+                target.identity.runtime_kind.clone(),
+                target.identity.host.clone(),
+                target.identity.generation,
+                target.identity.native_id.clone(),
+            ))
+        }) {
             return Err(conflict(
                 "team definition migration",
                 "a migration must not enumerate one native id twice",
@@ -15241,10 +15249,8 @@ impl TeamDefinitionRepository for SqliteStore {
         // The `from` the caller recorded has to be the pin the epic actually
         // holds. A migration that starts from a position the epic left is a
         // migration of something else.
-        let current = self.get_mini_project_team_definition(
-            migration.project_id,
-            migration.mini_project_id,
-        )?;
+        let current =
+            self.get_mini_project_team_definition(migration.project_id, migration.mini_project_id)?;
         if current.as_ref().map(|pin| &pin.definition) != migration.from.as_ref() {
             return Err(conflict(
                 "team definition migration",
@@ -15294,7 +15300,10 @@ impl TeamDefinitionRepository for SqliteStore {
                         .from
                         .as_ref()
                         .map(|from| from.definition_id.to_string()),
-                    migration.from.as_ref().map(|from| version_column(from.version)),
+                    migration
+                        .from
+                        .as_ref()
+                        .map(|from| version_column(from.version)),
                     migration
                         .from
                         .as_ref()
@@ -15352,10 +15361,12 @@ impl TeamDefinitionRepository for SqliteStore {
                 )
                 .map_err(backend)?;
         }
-        let stored = team_definition_migration_in(&transaction, migration.project_id, migration.id)?
-            .ok_or(RepositoryError::NotFound {
-                subject: "team definition migration",
-            })?;
+        let stored =
+            team_definition_migration_in(&transaction, migration.project_id, migration.id)?.ok_or(
+                RepositoryError::NotFound {
+                    subject: "team definition migration",
+                },
+            )?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
     }

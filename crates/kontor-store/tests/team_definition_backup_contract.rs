@@ -9,19 +9,17 @@ use kontor_core::id::{
     ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RuntimeKindKey,
     TeamDefinitionMigrationId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
-use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
-    NativePlacement,
-    NewMiniProject, NewProject, NewSessionTopologyNode,
-    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget,
-    TeamDefinitionMigrationSubject, ProjectRepository,
-    ProjectTeamDefinitionDefault, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TopologyRepository,
+    NativePlacement, NewMiniProject, NewProject, NewSessionTopologyNode,
+    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
+    ProjectTeamDefinitionDefault, TeamDefinitionMigrationSubject,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
 };
 use kontor_core::spec::{
     Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
 };
+use kontor_core::state::NativeRuntimeIdentity;
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use kontor_store::backup::{create_snapshot, export_realm, restore_snapshot};
@@ -183,9 +181,7 @@ fn fixture() -> Fixture {
                 identity: native.clone(),
                 desired: NativePlacement {
                     title: name("ESW • KBI-8049"),
-                    parent_native_id: Some(
-                        ExternalId::parse("wks_root").expect("a native id"),
-                    ),
+                    parent_native_id: Some(ExternalId::parse("wks_root").expect("a native id")),
                     kind: MigrationObjectKind::WorkspaceContainer,
                     canonical_cwd: None,
                 },

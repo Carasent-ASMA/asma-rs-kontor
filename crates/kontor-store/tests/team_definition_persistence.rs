@@ -9,13 +9,11 @@ use kontor_core::id::{
     TeamDefinitionMigrationId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::naming::NativeNameValues;
-use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
-    NativePlacement, NewMiniProject, NewProject, NewSeatBinding,
-    NewSessionTopologyNode, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget,
-    ProjectRepository, ProjectTeamDefinitionDefault, StoredConsultationProfileRevision,
-    StoredConsultationRun,
+    NativePlacement, NewMiniProject, NewProject, NewSeatBinding, NewSessionTopologyNode,
+    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
+    ProjectTeamDefinitionDefault, StoredConsultationProfileRevision, StoredConsultationRun,
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TopologyRepository,
@@ -24,6 +22,7 @@ use kontor_core::spec::{
     CatalogRoleRef, Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
     TopologySnapshot,
 };
+use kontor_core::state::NativeRuntimeIdentity;
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use tempfile::TempDir;
@@ -528,7 +527,10 @@ fn the_fence_reports_the_in_flight_migration_and_clears_when_it_is_abandoned() {
     assert_eq!(
         m.fixture
             .store
-            .get_in_flight_team_definition_migration(m.fixture.project_id, m.fixture.mini_project_id)
+            .get_in_flight_team_definition_migration(
+                m.fixture.project_id,
+                m.fixture.mini_project_id
+            )
             .expect("the read succeeds")
             .expect("a migration fences the epic")
             .id,
@@ -548,7 +550,10 @@ fn the_fence_reports_the_in_flight_migration_and_clears_when_it_is_abandoned() {
     assert!(
         m.fixture
             .store
-            .get_in_flight_team_definition_migration(m.fixture.project_id, m.fixture.mini_project_id)
+            .get_in_flight_team_definition_migration(
+                m.fixture.project_id,
+                m.fixture.mini_project_id
+            )
             .expect("the read succeeds")
             .is_none(),
         "an abandoned migration stops fencing the epic"
@@ -692,7 +697,10 @@ fn the_pin_moves_only_after_every_target_reads_back_its_desired_title() {
     assert!(
         m.fixture
             .store
-            .get_in_flight_team_definition_migration(m.fixture.project_id, m.fixture.mini_project_id)
+            .get_in_flight_team_definition_migration(
+                m.fixture.project_id,
+                m.fixture.mini_project_id
+            )
             .expect("the read succeeds")
             .is_none(),
         "a confirmed migration stops fencing the epic"
@@ -950,11 +958,13 @@ fn several_seats_on_one_node_are_distinct_targets_that_survive_preview_and_confi
                 .iter()
                 .zip(identities.iter())
                 .zip(desired.iter())
-                .map(|((subject, identity), placement)| NewTeamDefinitionMigrationTarget {
-                    subject: *subject,
-                    identity: identity.clone(),
-                    desired: placement.clone(),
-                })
+                .map(
+                    |((subject, identity), placement)| NewTeamDefinitionMigrationTarget {
+                        subject: *subject,
+                        identity: identity.clone(),
+                        desired: placement.clone(),
+                    },
+                )
                 .collect(),
             recorded_at: at("2026-09-01T14:00:00Z"),
         })
@@ -1115,11 +1125,13 @@ fn all_three_target_kinds_persist_and_confirm_under_their_own_identities() {
                 .iter()
                 .zip(identities.iter())
                 .zip(desired.iter())
-                .map(|((subject, identity), placement)| NewTeamDefinitionMigrationTarget {
-                    subject: *subject,
-                    identity: identity.clone(),
-                    desired: placement.clone(),
-                })
+                .map(
+                    |((subject, identity), placement)| NewTeamDefinitionMigrationTarget {
+                        subject: *subject,
+                        identity: identity.clone(),
+                        desired: placement.clone(),
+                    },
+                )
                 .collect(),
             recorded_at: at("2026-09-01T14:00:00Z"),
         })
@@ -1443,7 +1455,10 @@ fn a_success_state_cannot_be_claimed_without_the_exact_desired_placement() {
 
     for (observed, why) in [
         (None, "a success state with no readback at all"),
-        (Some(wrong_title), "a success state carrying a different title"),
+        (
+            Some(wrong_title),
+            "a success state carrying a different title",
+        ),
     ] {
         assert!(
             m.fixture

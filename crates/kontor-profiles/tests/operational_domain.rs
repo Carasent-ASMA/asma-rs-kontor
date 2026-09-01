@@ -133,6 +133,36 @@ fn the_recommended_team_definition_owns_exact_native_names_and_local_seat_labels
             .as_str(),
         "LSA"
     );
+    assert_eq!(
+        definition
+            .container(&kind("ECP"))
+            .expect("ECP")
+            .slots
+            .iter()
+            .map(|slot| {
+                slot.role_code
+                    .as_ref()
+                    .expect("ECP slots are role-named")
+                    .as_str()
+            })
+            .collect::<Vec<_>>(),
+        ["LSA", "TPM"]
+    );
+    assert_eq!(
+        definition
+            .container(&kind("ASW"))
+            .expect("ASW")
+            .slots
+            .iter()
+            .map(|slot| {
+                slot.role_code
+                    .as_ref()
+                    .expect("ASW slots are role-named")
+                    .as_str()
+            })
+            .collect::<Vec<_>>(),
+        ["SA", "AUD"]
+    );
     let committee = definition.container(&kind("CSW")).expect("CSW");
     assert_eq!(
         committee

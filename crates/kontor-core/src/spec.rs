@@ -861,6 +861,7 @@ impl TeamDefinitionSpec {
             ));
         }
         let mut kinds = BTreeMap::new();
+        let mut prefixes = BTreeSet::new();
         for container in &self.containers {
             if kinds.insert(&container.kind, container).is_some() {
                 return Err(DomainError::invalid(
@@ -881,11 +882,33 @@ impl TeamDefinitionSpec {
                     "container projection capabilities must be non-empty and unique",
                 ));
             }
+            if !prefixes.insert(&container.prefix) {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "container prefixes must be unique within one definition",
+                ));
+            }
             container.name_template.validate()?;
             validate_team_definition_template(&container.name_template)?;
             if let Some(template) = &container.seat_name_template {
                 template.validate()?;
                 validate_team_definition_template(template)?;
+                let segments = template
+                    .segments()
+                    .expect("validated Team Definition templates are typed");
+                if segments.len() != 1
+                    || !matches!(
+                        segments.first(),
+                        Some(crate::naming::NativeNameSegment::Token(
+                            NativeNameToken::RoleCode | NativeNameToken::SlotDisplayName
+                        ))
+                    )
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "seat templates must contain exactly ROLE_CODE or SLOT_DISPLAY_NAME and no container scope",
+                    ));
+                }
             }
             let mut slots = BTreeSet::new();
             let mut labels = BTreeSet::new();

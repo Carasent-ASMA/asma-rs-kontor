@@ -31,9 +31,8 @@ use crate::id::{
     ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
     SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
-    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId,
-    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
-    WorkProfileKey,
+    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
 };
 use crate::open_question::{
     AmbiguityRound, Disposition, OpenQuestion, OpenQuestionSummary, TriggerFiring,
@@ -3103,7 +3102,6 @@ pub trait TopologyRepository {
     ) -> RepositoryResult<Vec<AdaptiveAdmissionState>>;
 }
 
-
 // ---------------------------------------------------------------------------
 // Team Definition
 // ---------------------------------------------------------------------------
@@ -3313,12 +3311,9 @@ impl NativePlacement {
     /// against the runtime it claims to describe.
     pub fn validate(&self) -> DomainResult<()> {
         match self.kind {
-            MigrationObjectKind::ProjectContainer if self.parent_native_id.is_some() => {
-                Err(DomainError::invalid(
-                    "NativePlacement",
-                    "a native root has no parent container",
-                ))
-            }
+            MigrationObjectKind::ProjectContainer if self.parent_native_id.is_some() => Err(
+                DomainError::invalid("NativePlacement", "a native root has no parent container"),
+            ),
             MigrationObjectKind::WorkspaceContainer | MigrationObjectKind::Seat
                 if self.parent_native_id.is_none() =>
             {

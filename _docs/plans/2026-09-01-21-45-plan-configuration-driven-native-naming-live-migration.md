@@ -2,15 +2,15 @@
 goal: Make one immutable pinned Team Definition JSON revision the sole authority for native hierarchy and naming, then migrate the live KBI epic without changing native identities
 version: 0.1
 date_created: 2026-09-01
-last_updated: 2026-09-01
+last_updated: 2026-09-02
 owner: Kontor Lead Software Architect
-status: In progress
+status: Verification and release
 tags: [kontor, naming, team-definition, topology, migration, ASMA-8062]
 ---
 
 # Configuration-Driven Native Naming and Live Migration Plan
 
-![Status: In progress](https://img.shields.io/badge/status-In%20progress-yellow)
+![Status: Verification and release](https://img.shields.io/badge/status-Verification%20and%20release-yellow)
 
 > **Jira:** `ASMA-8062`
 > **Kontor task:** `01a05d9b-8014-7182-9b96-921fc9386900` (`KBI-8062`)
@@ -45,19 +45,19 @@ ESW • KBI-8049
 
 The exact separator is space + U+2022 BULLET + space (` • `). Container names carry scope and consultation topic. Seat names carry only the configured local role code or exact slot display label.
 
-## 2. Current gap
+## 2. Implementation gap closed locally
 
-The current implementation is deliberately explicit but assigns naming to the wrong specification:
+The implementation now resolves the audited baseline gap:
 
-- `ProjectSessionTopologySpec` owns `name_separator`, container templates and seat templates.
-- operational topology revision 4 renders `AREA_CODE · ITEM_CODE`, including redundant scope on ECP and TSW seats.
-- ASW/CSW containers use generic literals and have no persisted topic token.
-- Committee ticket scope is dropped when its topology node is frozen.
-- Advisor materialization launches only the first frozen seat.
-- Committee seat rendering uses role code instead of configured `SEAT A`, `SEAT B`, `JUDGE` labels.
-- native-name preview/apply can preserve IDs, but it derives desired names from the topology pin.
-- observed topology projections do not currently expose the latest read-back native name.
-- a connector alias accepted during ASMA-8062 bootstrap created duplicate noncanonical `jira` link evidence beside canonical `connector.jira`; alias handling must be canonicalized without deleting historical evidence.
+- `TeamDefinitionSpec` owns hierarchy, separator, prefixes, container templates and seat templates; topology name fields remain historical compatibility bytes only.
+- recommended ASMA rendering uses exact ` • ` bytes and role-only/configured-label seat names.
+- ASW/CSW persist explicit topics, retain epic/task subject scope and render the matching item code.
+- every frozen Advisor seat materializes; Committee seats use configured `SEAT A`, `SEAT B`, `JUDGE` labels.
+- migration preview/apply derives desired placement from the epic's immutable Team Definition pin, preserves native IDs and reads back parent, kind, cwd and title.
+- API, MCP, OpenAPI, generated console types, backups and local documentation carry the same definition/default/pin/migration contract.
+- placement fails closed until the immutable epic backlog code and exact confirmed Jira epic/task bindings exist; planning metadata and connector aliases are not treated as readback.
+
+The remaining gap is operational release only: merge the verified artifacts, deploy exact master, and apply/read back the live KBI migration.
 
 ## 3. Accepted implementation contract
 

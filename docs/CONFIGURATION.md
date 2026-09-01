@@ -16,7 +16,7 @@ system behaviour instead of instructions somebody has to remember.
 
 | Location | Holds |
 | --- | --- |
-| `<state-root>/kontor.db` | Every versioned specification published through `/v1`: topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs |
+| `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence |
 | `<state-root>/runtimes.json` | Runtime family, plane endpoint and per-account provider aliases. Schema generation `4`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
 | `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
@@ -48,30 +48,39 @@ claiming ownership of an existing issue's summary, description or workflow
 status; it cannot silently replace the original create batch.
 
 Operational topology v4 (`01936f5a-1000-7000-8000-000000000001`, revision `4`)
-uses the typed `ITEM_CODE` projection and renders centered-dot names in the
-currently shipped implementation. This is historical implementation behavior,
-not current naming authority. The approved target contract moves hierarchy and
-all native rendering to one pinned Team Definition JSON and uses the
-recommended ` • ` templates in [`NATIVE_NAMING.md`](NATIVE_NAMING.md).
-Implementation conformance is pending the next audit. To reproduce or migrate
-the existing v4 behavior, use this order:
+still validates legal hierarchy and native projection capabilities. Its
+centered-dot templates are historical compatibility bytes, not current naming
+authority. ASMA Operational Team Definition v1
+(`01936f5a-2000-7000-8000-000000000001`, revision `1`) owns the recommended
+` • ` rendering in [`NATIVE_NAMING.md`](NATIVE_NAMING.md). Migrate in this
+order:
 
 1. Preview/apply the epic graph and read back its active epic backlog code.
 2. Preview/apply Jira materialization and confirm the epic and task issue
    readbacks. A requested or imported key alone is insufficient.
-3. Preview/apply the project topology selection to revision 4, which controls
-   what new epics inherit.
-4. Preview/apply each existing epic's topology upgrade to revision 4.
-5. Preview/apply native-name reconciliation for containers or seats that were
-   already materialized under revision 1.
+3. Validate/publish the Team Definition revision and preview/apply the project
+   default selection under compare-and-swap. This affects future epics only.
+4. Inventory explicit topics for every legacy ASW/CSW; never derive one from a
+   question, title or transcript.
+5. Preview the existing epic's Team Definition upgrade. Confirm the complete
+   identity-bound container-and-seat census before apply.
+6. Apply with one stable idempotency key. A partial result keeps the old pin and
+   fences materialization; replay the same key until every exact native object
+   reads back and the pin switches.
+
+Logical epic creation may freeze the selected Team Definition before step 2.
+This is safe because a pin is not placement authority: every native
+materialization path independently requires the active immutable epic code and
+the exact confirmed Jira binding for its scope.
 
 The corresponding `/v1` operations are `epics:preview` / `epics:apply`,
-`jira:preview` / `jira:apply`, `topology-selection:preview` /
-`topology-selection:apply`, `topology:upgrade-preview` /
-`topology:upgrade-apply`, and `native-names:preview` / `native-names:apply`.
-Revision 1 is never rewritten. Revision 4 refuses placement before a runtime
-mutation when the active epic namespace or one unambiguous confirmed Jira
-binding is missing.
+`jira:preview` / `jira:apply`, `team-definitions:validate` /
+`team-definitions:publish`, `team-definition-selection:preview` /
+`team-definition-selection:apply`, and `team-definition:upgrade-preview` /
+`team-definition:upgrade-apply`. Historical definitions and topology revisions
+are never rewritten. Placement and migration refuse before runtime mutation
+when the active epic namespace, confirmed Jira binding, topic, definition pin
+or exact identity readback is missing or ambiguous.
 
 ## Seat supervision
 
@@ -130,9 +139,11 @@ second time.
 - Profile packs define phases, gates, artifacts, budgets and runtime routing.
   The bundled manifest declares 17 work-profile categories; four ship today
   (`code`, `ux-ui-layout`, `research`, `docs`).
-- Team Definition JSON revisions define hierarchy, native naming, role slots,
-  exact labels, capabilities, skills, contexts and handoffs. Role slots carry
-  stable ids, so two peers in the same role are explicit rather than duplicate.
+- Team Definition JSON revisions define native hierarchy, naming, role slots,
+  exact labels and slot capability-profile references. Team templates and
+  consultation profiles separately own execution behavior, skills, context and
+  handoffs. Role slots carry stable ids, so two peers in the same role are
+  explicit rather than duplicate.
 - The standard role catalog defines 56 role codes across 9 segments. Seat
   selection is by `role_code`; a free-form role string is not accepted anywhere.
 - Account profiles contain non-secret provider-routing metadata and a credential

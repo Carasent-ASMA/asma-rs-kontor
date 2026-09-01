@@ -213,7 +213,10 @@ impl KontorExportV1 {
         if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
             && !(self.records.team_definitions.is_empty()
                 && self.records.project_team_definition_defaults.is_empty()
-                && self.records.mini_project_team_definition_snapshots.is_empty()
+                && self
+                    .records
+                    .mini_project_team_definition_snapshots
+                    .is_empty()
                 && self.records.team_definition_migration_intents.is_empty()
                 && self.records.team_definition_migration_targets.is_empty())
         {

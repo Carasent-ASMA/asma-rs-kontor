@@ -48,8 +48,8 @@ use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
     ProjectId, ProviderUsageObservationId, QuickSessionId, RoleCatalogId, RoleCode, RoleSlotId,
-    RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamRunId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId,
+    RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamDefinitionId, TeamRunId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
 use kontor_core::spec::{
@@ -474,6 +474,119 @@ pub struct TopologySpecDocumentDto {
     /// How it was classified.
     pub shareability: ShareabilityDto,
     /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One immutable Team Definition revision selected or pinned by identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionRefDto {
+    /// Stable definition lineage.
+    #[schema(value_type = String)]
+    pub id: TeamDefinitionId,
+    /// Exact immutable revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+}
+
+/// One immutable Team Definition revision plus its exact canonical hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PinnedTeamDefinitionDto {
+    /// Stable definition lineage.
+    #[schema(value_type = String)]
+    pub id: TeamDefinitionId,
+    /// Exact immutable revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// Hash of the exact canonical JSON bytes.
+    #[schema(value_type = String)]
+    pub canonical_hash: ContentHash,
+}
+
+/// Candidate validation request for one complete Team Definition JSON document.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateTeamDefinitionRequest {
+    /// Complete schema-versioned candidate document.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+}
+
+/// Deterministic validation verdict for one exact candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamDefinitionValidationDto {
+    /// Realm that performed validation.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Stable ordered violations; empty is the only publishable verdict.
+    pub violations: Vec<String>,
+    /// Hash of the exact canonical candidate.
+    #[schema(value_type = String)]
+    pub validation_hash: ContentHash,
+}
+
+/// Publish one exact revalidated Team Definition revision.
+#[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublishTeamDefinitionRequest {
+    /// Complete candidate document.
+    #[schema(value_type = Object)]
+    pub candidate: serde_json::Value,
+    /// Hash returned by validation.
+    #[schema(value_type = String)]
+    pub validation_hash: ContentHash,
+    /// Project revision observed by the caller.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// One immutable Team Definition publication receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PublishedTeamDefinitionDto {
+    /// Published definition identity and bytes hash.
+    pub definition: PinnedTeamDefinitionDto,
+    /// Durable publication receipt.
+    pub receipt: MutationReceiptDto,
+}
+
+/// One exact published Team Definition JSON document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamDefinitionDocumentDto {
+    /// Owning Realm.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Published identity and exact hash.
+    pub definition: PinnedTeamDefinitionDto,
+    /// Canonical document as accepted.
+    #[schema(value_type = Object)]
+    pub document: serde_json::Value,
+    /// Consistent read position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// One published Team Definition in the project catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamDefinitionSummaryDto {
+    /// Published identity and exact hash.
+    pub definition: PinnedTeamDefinitionDto,
+    /// Human name from the immutable document.
+    #[schema(value_type = String)]
+    pub name: ExternalName,
+    /// Exact topology revision used only to validate this definition.
+    pub topology: PinnedSpecDto,
+}
+
+/// Every immutable Team Definition revision published in one project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamDefinitionCatalogDto {
+    /// Owning Realm.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Stable definition-id/version order.
+    pub definitions: Vec<TeamDefinitionSummaryDto>,
+    /// Consistent read position.
     #[schema(value_type = i64)]
     pub snapshot_cursor: kontor_core::id::EventCursor,
 }
@@ -1370,16 +1483,14 @@ pub struct AdvisorRunDto {
     /// Dedicated ASW node.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
-    /// Advisor seats materialized for this consultation.
-    ///
-    /// The pre-conformance implementation currently returns one seat. The
-    /// approved Team Definition contract permits one or more configured seats.
+    /// Every Advisor seat declared by the pinned Team Definition, in its
+    /// deterministic slot order.
     pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
-    /// Immutable output submitted by the Advisor seat, before disposition.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub advice: Option<serde_json::Value>,
+    /// Independent immutable outputs submitted by every configured Advisor seat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advice: Vec<serde_json::Value>,
     /// Immutable output and caller disposition once settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
@@ -2534,6 +2645,56 @@ pub struct AppliedProjectTopologySelectionDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// What moving a project's default Team Definition is previewed against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTeamDefinitionSelectionPreviewRequest {
+    /// Published revision future epics must inherit.
+    pub target_definition: TeamDefinitionRefDto,
+}
+
+/// Apply one exact project-default Team Definition preview under CAS.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTeamDefinitionSelectionApplyRequest {
+    /// Hash returned by preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Project revision observed by the caller.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Exact comparison used to select the default for future epics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProjectTeamDefinitionSelectionPreviewDto {
+    /// Realm that computed the comparison.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Current selection, absent only before first explicit selection.
+    pub current_definition: Option<PinnedTeamDefinitionDto>,
+    /// Exact published target.
+    pub target_definition: PinnedTeamDefinitionDto,
+    /// Apply-bound comparison hash.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Consistent read position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Newly selected default plus its durable receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedProjectTeamDefinitionSelectionDto {
+    /// Exact selected default.
+    pub selected_definition: PinnedTeamDefinitionDto,
+    /// Durable apply/replay receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// Whether one Jira object is created or an existing key is verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -2793,6 +2954,22 @@ pub struct NativeNameTargetDto {
     /// Exact runtime-native identity.
     #[schema(value_type = String)]
     pub native_id: ExternalId,
+    /// Runtime family that owns the native id.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// Exact runtime host/generation namespace.
+    #[schema(value_type = String)]
+    pub host: ExternalName,
+    /// Runtime generation in which the native id is valid.
+    pub generation: u64,
+    /// Exact native parent/container id; absent only for a native root.
+    #[schema(value_type = Option<String>)]
+    pub parent_native_id: Option<ExternalId>,
+    /// Closed observed object kind (`project_container`, `workspace_container`, `seat`).
+    pub native_kind: String,
+    /// Canonical native working directory when this object owns one.
+    #[schema(value_type = Option<String>)]
+    pub canonical_cwd: Option<ExternalName>,
     /// Provider-native session identity, when reported.
     #[schema(value_type = Option<String>)]
     pub provider_session_id: Option<ExternalId>,
@@ -2841,6 +3018,72 @@ pub struct AppliedNativeNamesDto {
     /// Count of targets changed by this invocation.
     pub changed: u64,
     /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Preview an explicit legacy-to-Team-Definition epic migration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionUpgradePreviewRequest {
+    /// Published definition revision to pin after every native readback succeeds.
+    pub target_definition: TeamDefinitionRefDto,
+    /// Explicit topics for legacy ASW/CSW nodes, keyed by topology-node id.
+    /// Every legacy consultation is required; unknown or extra keys are refused.
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub legacy_topics: BTreeMap<String, ExternalName>,
+    /// Project revision observed before enumerating every native target.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Exact identity-bound migration preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamDefinitionUpgradePreviewDto {
+    /// Realm that computed the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Epic whose exact native objects were enumerated.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Existing pin, absent for an unmigrated legacy epic.
+    pub current_definition: Option<PinnedTeamDefinitionDto>,
+    /// Definition pinned only after every target is confirmed.
+    pub target_definition: PinnedTeamDefinitionDto,
+    /// Complete stable container-and-seat census.
+    pub targets: Vec<NativeNameTargetDto>,
+    /// Hash binding definition, topics, identities, readbacks and desired names.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Consistent read position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Apply one exact resumable Team Definition migration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionUpgradeApplyRequest {
+    /// Same semantic request used by preview.
+    pub migration: TeamDefinitionUpgradePreviewRequest,
+    /// Exact preview hash.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Confirmed identity-preserving migration result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedTeamDefinitionUpgradeDto {
+    /// Newly pinned immutable definition.
+    pub pinned_definition: PinnedTeamDefinitionDto,
+    /// Fresh exact-id readback after the pin switch.
+    pub readback: TeamDefinitionUpgradePreviewDto,
+    /// Number of native titles changed by this invocation.
+    pub changed: u64,
+    /// Durable apply/replay receipt.
     pub receipt: MutationReceiptDto,
 }
 
@@ -5416,6 +5659,33 @@ pub trait ApplicationOperations: Send + Sync {
         version: SpecVersion,
     ) -> Result<TopologySpecDocumentDto, ApiError>;
 
+    /// Judge one complete Team Definition against its exact topology bytes.
+    fn validate_team_definition(
+        &self,
+        project_id: ProjectId,
+        request: &ValidateTeamDefinitionRequest,
+    ) -> Result<TeamDefinitionValidationDto, ApiError>;
+
+    /// Publish one revalidated immutable Team Definition revision.
+    async fn publish_team_definition(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublishTeamDefinitionRequest,
+    ) -> Result<PublishedTeamDefinitionDto, ApiError>;
+
+    /// Read one exact immutable Team Definition JSON document.
+    fn team_definition(
+        &self,
+        project_id: ProjectId,
+        definition_id: TeamDefinitionId,
+        version: SpecVersion,
+    ) -> Result<TeamDefinitionDocumentDto, ApiError>;
+
+    /// Every published Team Definition revision in stable identity order.
+    fn team_definitions(&self, project_id: ProjectId)
+    -> Result<TeamDefinitionCatalogDto, ApiError>;
+
     /// One whole role-catalog revision, in its declared order.
     fn role_catalog(
         &self,
@@ -5510,6 +5780,21 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ProjectTopologySelectionApplyRequest,
     ) -> Result<AppliedProjectTopologySelectionDto, ApiError>;
 
+    /// Preview selecting the exact Team Definition future epics inherit.
+    fn preview_project_team_definition_selection(
+        &self,
+        project_id: ProjectId,
+        request: &ProjectTeamDefinitionSelectionPreviewRequest,
+    ) -> Result<ProjectTeamDefinitionSelectionPreviewDto, ApiError>;
+
+    /// Select the exact previewed project Team Definition under CAS.
+    async fn apply_project_team_definition_selection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProjectTeamDefinitionSelectionApplyRequest,
+    ) -> Result<AppliedProjectTeamDefinitionSelectionDto, ApiError>;
+
     /// Derive one complete epic-first Jira materialization without writing.
     fn preview_jira_materialization(
         &self,
@@ -5560,6 +5845,23 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &NativeNamesApplyRequest,
     ) -> Result<AppliedNativeNamesDto, ApiError>;
+
+    /// Preview an explicit complete legacy-to-Team-Definition epic migration.
+    async fn preview_team_definition_upgrade(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TeamDefinitionUpgradePreviewRequest,
+    ) -> Result<TeamDefinitionUpgradePreviewDto, ApiError>;
+
+    /// Resume/apply the exact identity-preserving migration and switch its pin.
+    async fn apply_team_definition_upgrade(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &TeamDefinitionUpgradeApplyRequest,
+    ) -> Result<AppliedTeamDefinitionUpgradeDto, ApiError>;
 
     /// Repair one bound delivery seat's labels without changing its identity.
     async fn reconcile_session_labels(
@@ -6685,6 +6987,98 @@ pub async fn topology_spec(
     ))
 }
 
+/// Validate one complete Team Definition against its exact published topology.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/team-definitions:validate", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ValidateTeamDefinitionRequest,
+    responses((status = 200, body = TeamDefinitionValidationDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn validate_team_definition(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ValidateTeamDefinitionRequest>,
+) -> Result<Json<TeamDefinitionValidationDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .validate_team_definition(project_id, &request)?,
+    ))
+}
+
+/// Publish one exact revalidated Team Definition revision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/team-definitions:publish", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublishTeamDefinitionRequest,
+    responses((status = 200, body = PublishedTeamDefinitionDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn publish_team_definition(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublishTeamDefinitionRequest>,
+) -> Result<Json<PublishedTeamDefinitionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_team_definition(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// Read one exact immutable Team Definition JSON document.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/team-definitions/{definition_id}/{version}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("definition_id" = String, Path, description = "Stable definition lineage"),
+        ("version" = u32, Path, description = "Immutable revision")
+    ),
+    responses((status = 200, body = TeamDefinitionDocumentDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn team_definition(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, definition_id, version)): Path<(String, String, u32)>,
+) -> Result<Json<TeamDefinitionDocumentDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let definition_id = parse_id(&state, TeamDefinitionId::parse(&definition_id))?;
+    let version = parse_id(&state, SpecVersion::parse(version))?;
+    Ok(Json(state.applications().team_definition(
+        project_id,
+        definition_id,
+        version,
+    )?))
+}
+
+/// List every immutable Team Definition revision published in one project.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/team-definitions", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = TeamDefinitionCatalogDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn team_definitions(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<TeamDefinitionCatalogDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().team_definitions(project_id)?))
+}
+
 /// One whole role-catalog revision.
 #[utoipa::path(
     get, path = "/v1/catalog/role-catalogs/{catalog_id}/{version}", tag = "applications",
@@ -7004,6 +7398,56 @@ pub async fn apply_project_topology_selection(
     ))
 }
 
+/// Preview selecting the exact Team Definition future epics inherit.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/team-definition-selection:preview", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = ProjectTeamDefinitionSelectionPreviewRequest,
+    responses((status = 200, body = ProjectTeamDefinitionSelectionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn preview_project_team_definition_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<ProjectTeamDefinitionSelectionPreviewRequest>,
+) -> Result<Json<ProjectTeamDefinitionSelectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_project_team_definition_selection(project_id, &request)?,
+    ))
+}
+
+/// Apply one exact previewed project Team Definition selection.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/team-definition-selection:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ProjectTeamDefinitionSelectionApplyRequest,
+    responses((status = 200, body = AppliedProjectTeamDefinitionSelectionDto), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_project_team_definition_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ProjectTeamDefinitionSelectionApplyRequest>,
+) -> Result<Json<AppliedProjectTeamDefinitionSelectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_project_team_definition_selection(&key, project_id, &request)
+            .await?,
+    ))
+}
+
 /// Preview the complete Jira graph for one epic without writing Jira or SQLite.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/epics/{epic_id}/jira:preview", tag = "applications",
@@ -7145,6 +7589,63 @@ pub async fn apply_native_names(
         state
             .applications()
             .apply_native_names(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview one explicit complete legacy-to-Team-Definition epic migration.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic to migrate")
+    ),
+    request_body = TeamDefinitionUpgradePreviewRequest,
+    responses((status = 200, body = TeamDefinitionUpgradePreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 503))
+)]
+pub async fn preview_team_definition_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<TeamDefinitionUpgradePreviewRequest>,
+) -> Result<Json<TeamDefinitionUpgradePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_team_definition_upgrade(project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Resume/apply the exact identity-preserving Team Definition migration.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic to migrate"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TeamDefinitionUpgradeApplyRequest,
+    responses((status = 200, body = AppliedTeamDefinitionUpgradeDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 503))
+)]
+pub async fn apply_team_definition_upgrade(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TeamDefinitionUpgradeApplyRequest>,
+) -> Result<Json<AppliedTeamDefinitionUpgradeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_team_definition_upgrade(&key, project_id, epic_id, &request)
             .await?,
     ))
 }
