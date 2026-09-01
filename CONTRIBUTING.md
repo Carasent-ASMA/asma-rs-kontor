@@ -65,8 +65,12 @@ license and advisory gates.
 
 ## Tests and evidence
 
-Run the gates relevant to your change, then the complete set before requesting
-merge:
+Kontor does not use GitHub Actions CI. Run the gates relevant to your change,
+then the complete set locally against the exact candidate commit before
+requesting merge. Record the commands and results in the pull request or owning
+delivery evidence; a GitHub check is not a substitute and its absence is not a
+waiver. The governing, explicitly reversible decision is the
+[local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md).
 
 ```sh
 cargo fmt --all -- --check
@@ -75,6 +79,7 @@ cargo test --workspace
 cargo audit
 cargo deny check
 pnpm install --frozen-lockfile
+pnpm --filter kontor-console verify:api
 pnpm -r typecheck
 pnpm -r test
 pnpm audit --prod

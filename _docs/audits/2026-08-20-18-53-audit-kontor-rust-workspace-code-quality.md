@@ -379,7 +379,11 @@ Not every `expect` is a problem. A desktop top-level startup failure, a compile-
 
 The initial in-sandbox test run failed only because a CLI parity test binds a loopback socket. Running the same suite with the required OS permission passed.
 
-The repository's [CI workflow](../../.github/workflows/ci.yml) enforces formatting, standard Clippy, workspace tests, audit, and deny. That is a solid correctness baseline.
+At the audited commit, a GitHub Actions workflow enforced formatting, standard
+Clippy, workspace tests, audit, and deny. That historical workflow was a solid
+correctness baseline. It was later removed by the approved
+[local verification policy](../architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md),
+which retains the gates but executes and records them locally.
 
 ### 9.2 Missing evidence
 
@@ -391,7 +395,11 @@ The repository's [CI workflow](../../.github/workflows/ci.yml) enforces formatti
 
 High test LOC and a green suite do not by themselves prove that assertions are strong. Coverage shows what ran; mutation testing samples whether failures are observed. Both should be added selectively, not used as vanity percentages.
 
-**Finding CQ-06 — Medium:** CI validates ordinary correctness but not maintainability or test sensitivity. Add trend-based gates and publish evidence artifacts; avoid a one-time hard threshold that encourages gaming.
+**Finding CQ-06 — Medium (historical wording):** The automated CI present at
+the audited commit validated ordinary correctness but not maintainability or
+test sensitivity. Any future trend-based gates belong in the local verification
+set while the approved local-only policy remains in force; avoid a one-time
+hard threshold that encourages gaming.
 
 ---
 
@@ -400,7 +408,7 @@ High test LOC and a green suite do not by themselves prove that assertions are s
 Strengths:
 
 - direct workspace dependencies are exactly pinned;
-- GitHub Actions use immutable SHAs;
+- the GitHub Actions workflow present at the audited commit used immutable SHAs;
 - wildcard dependencies, OpenSSL, yanked crates, disallowed licenses, and unapproved sources are policy-controlled;
 - current `cargo audit` reports zero vulnerability advisories;
 - the previously relevant `h2` issue is fixed by the current lockfile;
