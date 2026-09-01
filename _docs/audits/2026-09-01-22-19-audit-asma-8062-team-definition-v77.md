@@ -22,7 +22,7 @@ a terminal state that no same-key replay can resume.
 **P0:** 0. No migration command is exposed by the audited tree, so the critical
 repository flaws below are not presently reachable as a live command path.
 
-**P1:** 8 release blockers. **P2:** 3 documentation/verification blockers.
+**P1:** 9 release blockers. **P2:** 3 documentation/verification blockers.
 
 ## P1 findings
 
@@ -146,6 +146,22 @@ forbids.
 
 **Gate:** retain legacy tokens for historical topology reads, but reject them in
 new Team Definition publication; add one refusal test per legacy token.
+
+### P1-09 — Supported export/import omits the new authoritative state
+
+The backup exporter is intentionally a typed allowlist, not a dynamic table
+dump (`crates/kontor-store/src/backup/export.rs:1`). Its `ExportedRecords`
+declaration includes topology specs/defaults/pins but none of
+`team_definitions`, `project_team_definition_defaults`,
+`mini_project_team_definition_snapshots`, migration intents, or migration
+targets (`crates/kontor-store/src/backup/export.rs:573`). Import likewise has no
+materialization path for them. The omission is not declared in
+`redaction_summary`, so an export can appear complete while losing the new
+naming authority and recovery state.
+
+**Gate:** version the export schema, export/import the immutable definitions,
+selections, pins, and resumable migration evidence in dependency order, and
+prove byte/hash exactness plus a mid-migration round trip.
 
 ## P2 findings
 
