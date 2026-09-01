@@ -138,7 +138,12 @@ fn the_recommended_team_definition_owns_exact_native_names_and_local_seat_labels
         committee
             .slots
             .iter()
-            .map(|slot| slot.display_name.as_str())
+            .map(|slot| {
+                slot.display_name
+                    .as_ref()
+                    .expect("Committee slots are label-named")
+                    .as_str()
+            })
             .collect::<Vec<_>>(),
         ["SEAT A", "SEAT B", "JUDGE"]
     );

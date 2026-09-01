@@ -514,7 +514,19 @@
             "segments": [
               { "kind": "token", "value": "ROLE_CODE" }
             ]
-          }
+          },
+          "slots": [
+            {
+              "slot_id": "software-architect",
+              "role_code": "SA",
+              "capability_profile": "independent-advisor"
+            },
+            {
+              "slot_id": "auditor",
+              "role_code": "AUD",
+              "capability_profile": "independent-advisor"
+            }
+          ]
         },
         {
           "kind": "TSW",

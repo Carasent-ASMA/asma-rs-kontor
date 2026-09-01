@@ -139,19 +139,20 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CredentialReference, CredentialReferenceKind, IntakeOutcome,
-    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAccountProfile,
-    NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride, NewCapacityObservation,
-    NewCommandIntent, NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
-    NewGateEvaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
-    NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamRun,
-    OpenQuestionRepository, ProjectRepository, ProjectTopologyDefault, ProviderUsageObservation,
+    IntakeRepository, MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
+    NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTeamRun, OpenQuestionRepository, ProjectRepository,
+    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
     RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
     SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
     StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
     StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
     StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow, TicketLink, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow, TeamDefinitionRepository,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -159,7 +160,8 @@ use kontor_core::spec::{
     IntakeResult, ModelChainPolicy, ModelRef, ModelRung, NodeProjectionCapability,
     ProjectSessionTopologySpec, ProviderRef, RequestedContextPolicy, RoleCatalogRevision,
     SeatAutonomy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
-    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec,
+    TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
+    TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
     DerivedRunState, GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact,
@@ -4843,7 +4845,13 @@ impl Services {
             })?;
         let cwd = self.runtime_root(project_id, Some(epic_id))?;
         let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
-        let display_name = self.seat_name(project_id, &node, &scope, &binding.role.role_code)?;
+        let display_name = self.seat_name(
+            project_id,
+            &node,
+            &scope,
+            &binding.role.role_code,
+            Some(&binding.role_slot_id),
+        )?;
         let runtime_request = HostedSeatClaimRequest {
             seat_binding_id: binding.id,
             role_slot_id: binding.role_slot_id.clone(),
@@ -5552,10 +5560,14 @@ impl Services {
             );
         };
 
-        self.pin_epic_topology(project_id, epic_id, &topology)?;
         let scoped = state
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?;
+        self.pin_epic_topology(project_id, epic_id, &topology)?;
+        if scoped.is_empty() {
+            let (definition, _) = self.project_team_definition(project_id)?;
+            self.pin_epic_team_definition(project_id, epic_id, &definition)?;
+        }
         let epic = self.ensure_node(
             scoped
                 .iter()
@@ -5641,6 +5653,41 @@ impl Services {
                         project_id,
                         mini_project_id: epic_id,
                         topology: topology.clone(),
+                        pinned_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error)),
+        }
+    }
+
+    /// Freeze the selected Team Definition for a newly governed epic.
+    ///
+    /// Existing legacy epics are deliberately not pinned by this helper's
+    /// callers once they already own topology nodes. They require the explicit
+    /// identity-preserving migration surface; silently pinning one would make a
+    /// configuration change look applied before its native names read back.
+    fn pin_epic_team_definition(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        definition: &TeamDefinitionSnapshot,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        match state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(pinned) if &pinned.definition != definition => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic is pinned to another Team Definition revision",
+            )),
+            Some(_) => Ok(()),
+            None => state
+                .with_store(|store| {
+                    store.pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+                        project_id,
+                        mini_project_id: epic_id,
+                        definition: definition.clone(),
                         pinned_at: kontor_api::now(),
                     })
                 })
@@ -5992,8 +6039,13 @@ impl Services {
                     })?;
                 let scope =
                     self.execution_scope(project_id, epic_id, node.task_id, adapter.as_ref())?;
-                let desired_title =
-                    self.seat_name(project_id, &node, &scope, &seat.role.role_code)?;
+                let desired_title = self.seat_name(
+                    project_id,
+                    &node,
+                    &scope,
+                    &seat.role.role_code,
+                    Some(&seat.role_slot_id),
+                )?;
                 let mut request = RetitleSeatRequest {
                     identity,
                     // The durable native agent and its exact host are the stable
@@ -7576,6 +7628,12 @@ impl Services {
         let now = kontor_api::now();
         let run_id = AdvisorRunId::generate();
         let node_id = TopologyNodeId::generate();
+        let topic = request.topic.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a new Advisor consultation requires an explicit topic",
+            )
+        })?;
         let question_hash = ContentHash::of(request.question.as_str().as_bytes());
         let context = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -7587,6 +7645,7 @@ impl Services {
             "profile_id": revision.profile_id,
             "profile_version": revision.version.get(),
             "profile_hash": revision.definition_hash.as_str(),
+            "topic": topic.as_str(),
             "question_hash": question_hash.as_str(),
         }))?;
         let run = StoredConsultationRun {
@@ -7596,6 +7655,7 @@ impl Services {
             profile_id: revision.profile_id.clone(),
             profile_version: revision.version,
             definition_hash: revision.definition_hash.clone(),
+            topic: Some(topic.clone()),
             question: request.question.clone(),
             question_hash,
             context: serde_json::from_str(context.json()).map_err(|_| {
@@ -7628,20 +7688,29 @@ impl Services {
             task_id: request.task_id,
             created_at: now,
         };
-        let logical_role = RoleKey::parse("advisor").map_err(|error| self.refuse_domain(&error))?;
-        let role_slot_id =
-            RoleSlotId::parse("advisor").map_err(|error| self.refuse_domain(&error))?;
-        let role_code = self
-            .domain
-            .delivery
-            .role_code(&logical_role)
+        let definition = self
+            .pinned_team_definition(project_id, epic_id)?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
-                    "the delivery binding has no Advisor role",
+                    "the epic has no pinned Team Definition for Advisor placement",
                 )
             })?;
-        let seat_binding_id = SeatBindingId::generate();
+        let configured = definition
+            .container(&self.domain.delivery.advisor_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned Team Definition has no Advisor container",
+                )
+            })?;
+        if configured.slots.is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the pinned Team Definition declares no Advisor seats",
+            ));
+        }
+        let logical_role = RoleKey::parse("advisor").map_err(|error| self.refuse_domain(&error))?;
         let deadline = now
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
             .unwrap_or(now);
@@ -7658,32 +7727,44 @@ impl Services {
                 .validate_consultation_model_rung(&model_rung, &route_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         }
-        let seat = StoredConsultationSeat {
-            run_id: run.id,
-            role_slot_id: role_slot_id.clone(),
-            committee_role: None,
-            logical_role,
-            seat_binding_id,
-            model_rung,
-            occupancy_generation: 1,
-            native_identity: None,
-            provider_session_id: None,
-            observed_at: None,
-        };
-        let binding = NewSeatBinding {
-            id: seat_binding_id,
-            project_id,
-            topology_node_id: node_id,
-            role_slot_id,
-            role: self.catalog_role_for_code(role_code)?,
-            task_id: request.task_id,
-            team_run_id: None,
-            attach_deadline: deadline,
-            parent_seat_binding_id: Some(caller.id),
-            created_at: now,
-        };
+        let mut seats = Vec::with_capacity(configured.slots.len());
+        let mut bindings = Vec::with_capacity(configured.slots.len());
+        for slot in &configured.slots {
+            let role_code = slot.role_code.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "an Advisor slot must declare a registered role code",
+                )
+            })?;
+            let seat_binding_id = SeatBindingId::generate();
+            seats.push(StoredConsultationSeat {
+                run_id: run.id,
+                role_slot_id: slot.slot_id.clone(),
+                committee_role: None,
+                logical_role: logical_role.clone(),
+                seat_binding_id,
+                model_rung: model_rung.clone(),
+                occupancy_generation: 1,
+                native_identity: None,
+                provider_session_id: None,
+                observed_at: None,
+            });
+            bindings.push(NewSeatBinding {
+                id: seat_binding_id,
+                project_id,
+                topology_node_id: node_id,
+                role_slot_id: slot.slot_id.clone(),
+                role: self.catalog_role_for_code(role_code)?,
+                task_id: request.task_id,
+                team_run_id: None,
+                attach_deadline: deadline,
+                parent_seat_binding_id: Some(caller.id),
+                created_at: now,
+            });
+        }
+        let pairs: Vec<_> = seats.iter().zip(bindings.iter()).collect();
         state
-            .with_store(|store| store.create_consultation_run(&run, &node, &[(&seat, &binding)]))
+            .with_store(|store| store.create_consultation_run(&run, &node, &pairs))
             .map_err(|error| self.refuse(&error))?;
         Ok(run)
     }
@@ -7736,83 +7817,91 @@ impl Services {
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
-        let seat = seats.first_mut().ok_or_else(|| {
-            self.deny(
+        if seats.is_empty() {
+            return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "the Advisor run has no frozen seat",
-            )
-        })?;
-        if seat.native_identity.is_some() {
-            return Ok(());
+                "the Advisor run has no frozen seats",
+            ));
         }
-        let route_provenance = ConsultationRouteProvenance::template(run.definition_hash.clone());
-        adapter
-            .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let seat_credential = state
-            .credentials()
-            .consultation_seat_credential_for_generation(
-                seat.seat_binding_id,
-                seat.occupancy_generation,
-            );
-        let prompt = BoundedText::parse(&format!(
-            "Read-only Advisor seat. You may inspect evidence but must not mutate code, Jira, topology, scheduling, or runtime state. Expertise: {} Behavior: {} Question: {} Output requirements: {} Submit only this seat's immutable output using the KONTOR_AUTH environment value. It is valid only for SeatBinding {} and must not be disclosed.",
-            profile.expertise.as_str(),
-            profile.behavior.as_str(),
-            run.question.as_str(),
-            profile.output_requirements.as_str(),
-            seat.seat_binding_id,
-        ))
-        .map_err(|error| self.refuse_domain(&error))?;
-        let topology_seat = state
-            .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the Advisor native seat has no persistent topology binding",
-                )
-            })?;
-        let display_name =
-            self.seat_name(run.project_id, &node, &scope, &topology_seat.role.role_code)?;
-        let outcome = adapter
-            .launch_consultation(&ConsultationLaunchRequest {
-                scope,
-                run_id: run.id,
-                seat_binding_id: seat.seat_binding_id,
-                role_slot_id: seat.role_slot_id.clone(),
-                display_name,
-                container,
-                cwd,
-                prompt,
-                credential: ConsultationCredential::new(seat_credential),
-                model_rung: seat.model_rung.clone(),
-                route_provenance,
-                context_policy,
-                requested_at: kontor_api::now(),
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        seat.native_identity = Some(outcome.identity);
-        seat.provider_session_id = outcome.provider_session_id;
-        seat.observed_at = Some(outcome.observed_at);
-        state
-            .with_store(|store| store.bind_consultation_seat(run.project_id, seat))
-            .map_err(|error| self.refuse(&error))?;
-        state
-            .with_store(|store| {
-                store.observe_seat_binding(
-                    run.project_id,
+        for seat in &mut seats {
+            if seat.native_identity.is_some() {
+                continue;
+            }
+            let route_provenance =
+                ConsultationRouteProvenance::template(run.definition_hash.clone());
+            adapter
+                .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let seat_credential = state
+                .credentials()
+                .consultation_seat_credential_for_generation(
                     seat.seat_binding_id,
-                    &SeatLivenessObservation {
-                        attached_at: Some(outcome.observed_at),
-                        runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
-                        ..SeatLivenessObservation::default()
-                    },
-                    outcome.observed_at,
-                )
-            })
-            .map_err(|error| self.refuse(&error))?;
+                    seat.occupancy_generation,
+                );
+            let prompt = BoundedText::parse(&format!(
+                "Read-only Advisor seat. You may inspect evidence but must not mutate code, Jira, topology, scheduling, or runtime state. Expertise: {} Behavior: {} Question: {} Output requirements: {} Report only this seat's independent finding; do not aggregate other Advisors. Submit using the KONTOR_AUTH environment value. It is valid only for SeatBinding {} and must not be disclosed.",
+                profile.expertise.as_str(),
+                profile.behavior.as_str(),
+                run.question.as_str(),
+                profile.output_requirements.as_str(),
+                seat.seat_binding_id,
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            let topology_seat = state
+                .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the Advisor native seat has no persistent topology binding",
+                    )
+                })?;
+            let display_name = self.seat_name(
+                run.project_id,
+                &node,
+                &scope,
+                &topology_seat.role.role_code,
+                Some(&topology_seat.role_slot_id),
+            )?;
+            let outcome = adapter
+                .launch_consultation(&ConsultationLaunchRequest {
+                    scope: scope.clone(),
+                    run_id: run.id,
+                    seat_binding_id: seat.seat_binding_id,
+                    role_slot_id: seat.role_slot_id.clone(),
+                    display_name,
+                    container: container.clone(),
+                    cwd: cwd.clone(),
+                    prompt,
+                    credential: ConsultationCredential::new(seat_credential),
+                    model_rung: seat.model_rung.clone(),
+                    route_provenance,
+                    context_policy: context_policy.clone(),
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            seat.native_identity = Some(outcome.identity);
+            seat.provider_session_id = outcome.provider_session_id;
+            seat.observed_at = Some(outcome.observed_at);
+            state
+                .with_store(|store| store.bind_consultation_seat(run.project_id, seat))
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        run.project_id,
+                        seat.seat_binding_id,
+                        &SeatLivenessObservation {
+                            attached_at: Some(outcome.observed_at),
+                            runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                            ..SeatLivenessObservation::default()
+                        },
+                        outcome.observed_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         Ok(())
     }
 
@@ -7856,6 +7945,7 @@ impl Services {
             advisor_run_id,
             epic_id: run.mini_project_id,
             profile: consultation_revision_dto(&revision),
+            topic: run.topic.clone(),
             topology_node_id: run.topology_node_id,
             seats: seats
                 .into_iter()
@@ -7914,6 +8004,12 @@ impl Services {
         let now = kontor_api::now();
         let run_id = CommitteeRunId::generate();
         let node_id = TopologyNodeId::generate();
+        let topic = request.topic.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a new Committee consultation requires an explicit topic",
+            )
+        })?;
         let question_hash = ContentHash::of(request.question.as_str().as_bytes());
         let frozen_model_rungs = self.freeze_committee_model_rungs(
             project_id,
@@ -7950,6 +8046,7 @@ impl Services {
             "template_id": template_revision.profile_id,
             "template_version": template_revision.version.get(),
             "template_hash": template_revision.definition_hash.as_str(),
+            "topic": topic.as_str(),
             "question_hash": question_hash.as_str(),
             "round": round,
             "re_review": re_review,
@@ -7967,6 +8064,7 @@ impl Services {
             profile_id: template_revision.profile_id.clone(),
             profile_version: template_revision.version,
             definition_hash: template_revision.definition_hash.clone(),
+            topic: Some(topic.clone()),
             question: request.question.clone(),
             question_hash,
             context: serde_json::from_str(context.json()).map_err(|_| {
@@ -7996,7 +8094,7 @@ impl Services {
             topology,
             kind: self.domain.delivery.committee_kind.clone(),
             parent_id: Some(epic_node.id),
-            task_id: None,
+            task_id: request.task_id,
             created_at: now,
         };
         let deadline = now
@@ -8034,7 +8132,7 @@ impl Services {
                 topology_node_id: node_id,
                 role_slot_id: slot.id.clone(),
                 role: self.catalog_role_for_code(code)?,
-                task_id: None,
+                task_id: request.task_id,
                 team_run_id: None,
                 attach_deadline: deadline,
                 parent_seat_binding_id: Some(caller.id),
@@ -8291,8 +8389,13 @@ impl Services {
                         "the Committee native seat has no persistent topology binding",
                     )
                 })?;
-            let display_name =
-                self.seat_name(run.project_id, &node, &scope, &topology_seat.role.role_code)?;
+            let display_name = self.seat_name(
+                run.project_id,
+                &node,
+                &scope,
+                &topology_seat.role.role_code,
+                Some(&topology_seat.role_slot_id),
+            )?;
             let outcome = adapter
                 .launch_consultation(&ConsultationLaunchRequest {
                     scope: scope.clone(),
@@ -8452,8 +8555,13 @@ impl Services {
                     "the Committee recovery target has no persistent topology binding",
                 )
             })?;
-        let display_name =
-            self.seat_name(run.project_id, &node, &scope, &topology_seat.role.role_code)?;
+        let display_name = self.seat_name(
+            run.project_id,
+            &node,
+            &scope,
+            &topology_seat.role.role_code,
+            Some(&topology_seat.role_slot_id),
+        )?;
         let requested_at = kontor_api::now();
         let outcome = adapter
             .launch_consultation(&ConsultationLaunchRequest {
@@ -8584,6 +8692,7 @@ impl Services {
             committee_run_id,
             epic_id: run.mini_project_id,
             template: consultation_revision_dto(&revision),
+            topic: run.topic.clone(),
             topology_node_id: run.topology_node_id,
             seats: seats
                 .into_iter()
@@ -15174,8 +15283,13 @@ impl ApplicationOperations for Services {
                         },
                     ));
                 }
-                let display_name =
-                    self.seat_name(project_id, &control, &scope, &seat.role.role_code)?;
+                let display_name = self.seat_name(
+                    project_id,
+                    &control,
+                    &scope,
+                    &seat.role.role_code,
+                    Some(&seat.role_slot_id),
+                )?;
                 let prompt = BoundedText::parse(&format!(
                     "Persistent {} seat for epic {}. Continue only work authorized through Kontor. Await or act on the bounded handoff supplied with this launch, then remain reusable under SeatBinding {}. Use the generation-fenced KONTOR_AUTH value only for this seat's supported identity-bound routes and never disclose it.",
                     seat.role.role_code.as_str(),
@@ -15363,8 +15477,13 @@ impl ApplicationOperations for Services {
                 kontor_api::now(),
             )
             .map_err(|error| self.refuse_domain(&error))?;
-            let display_name =
-                self.seat_name(project_id, &control, &scope, &plan.binding.role.role_code)?;
+            let display_name = self.seat_name(
+                project_id,
+                &control,
+                &scope,
+                &plan.binding.role.role_code,
+                Some(&plan.binding.role_slot_id),
+            )?;
             let prompt = BoundedText::parse(&format!(
                 "Persistent {} seat for epic {}. This native session replaces archived predecessor {} under the same Kontor SeatBinding {}. Continue only bounded work authorized through Kontor. Use the generation-fenced KONTOR_AUTH value only for this seat's supported identity-bound routes and never disclose it.",
                 plan.binding.role.role_code.as_str(),
@@ -16324,7 +16443,7 @@ impl ApplicationOperations for Services {
         request: &InvokeAdvisorRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
         let request = InvokeConsultationRequest::from(request);
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_value = serde_json::json!({
             "schema_version": 1,
             "operation": "invoke_advisor_run",
             "project": project_id.to_string(),
@@ -16333,7 +16452,14 @@ impl ApplicationOperations for Services {
             "question": request.question.as_str(),
             "caller_seat_binding_id": request.caller_seat_binding_id.to_string(),
             "task_id": request.task_id.map(|id| id.to_string()),
-        }))?;
+        });
+        if let Some(topic) = request.topic.as_ref() {
+            intent_value
+                .as_object_mut()
+                .expect("an Advisor invocation intent is an object")
+                .insert("topic".to_owned(), serde_json::json!(topic.as_str()));
+        }
+        let intent = self.intent(&intent_value)?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
@@ -16747,6 +16873,12 @@ impl ApplicationOperations for Services {
             "task_id": request.task_id.map(|id| id.to_string()),
             "re_review": request.re_review.as_ref(),
         });
+        if let Some(topic) = request.topic.as_ref() {
+            intent_value
+                .as_object_mut()
+                .expect("a Committee invocation intent is an object")
+                .insert("topic".to_owned(), serde_json::json!(topic.as_str()));
+        }
         if !request.initial_recovery_profiles.is_empty() {
             let object = intent_value.as_object_mut().ok_or_else(|| {
                 self.deny(
@@ -24195,6 +24327,145 @@ impl Services {
         Ok(())
     }
 
+    /// Publish the immutable Team Definition revisions shipped by this build.
+    fn publish_bundled_team_definitions(&self, project_id: ProjectId) -> Result<(), ApiError> {
+        self.publish_bundled_topology_revisions(project_id)?;
+        let state = self.state()?;
+        let now = kontor_api::now();
+        for definition in &self.domain.team_definitions {
+            let published = state
+                .with_store(|store| {
+                    store.get_team_definition(
+                        project_id,
+                        definition.definition_id,
+                        definition.version,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if published.is_none() {
+                state
+                    .with_store(|store| store.publish_team_definition(project_id, definition, now))
+                    .map_err(|error| self.refuse(&error))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The Team Definition selected for future epic scopes, plus its exact
+    /// published bytes.
+    fn project_team_definition(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<(TeamDefinitionSnapshot, TeamDefinitionSpec), ApiError> {
+        self.publish_bundled_team_definitions(project_id)?;
+        let state = self.state()?;
+        if let Some(selected) = state
+            .with_store(|store| store.get_project_team_definition_default(project_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            let definition = state
+                .with_store(|store| {
+                    store.get_team_definition(
+                        project_id,
+                        selected.definition.definition_id,
+                        selected.definition.version,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the selected Team Definition revision is unavailable",
+                    )
+                })?;
+            let observed = TeamDefinitionSnapshot::from_revision(&definition)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if observed != selected.definition {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the selected Team Definition hash does not match its published bytes",
+                ));
+            }
+            return Ok((selected.definition, definition));
+        }
+
+        let definition = self
+            .domain
+            .team_definitions
+            .first()
+            .cloned()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this build ships no Team Definition",
+                )
+            })?;
+        let snapshot = TeamDefinitionSnapshot::from_revision(&definition)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let now = kontor_api::now();
+        state
+            .with_store(|store| {
+                store.set_project_team_definition_default(&ProjectTeamDefinitionDefault {
+                    project_id,
+                    definition: snapshot.clone(),
+                    selected_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok((snapshot, definition))
+    }
+
+    /// The exact definition one epic has frozen, or `None` for an unmigrated
+    /// legacy epic. An in-flight migration fences materialization until every
+    /// existing native target has read back under an unchanged identity.
+    fn pinned_team_definition(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<Option<TeamDefinitionSpec>, ApiError> {
+        let state = self.state()?;
+        if state
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic has a Team Definition migration in flight",
+            ));
+        }
+        let Some(pinned) = state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let definition = state
+            .with_store(|store| {
+                store.get_team_definition(
+                    project_id,
+                    pinned.definition.definition_id,
+                    pinned.definition.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the epic's pinned Team Definition revision is unavailable",
+                )
+            })?;
+        let observed = TeamDefinitionSnapshot::from_revision(&definition)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if observed != pinned.definition {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic's Team Definition hash does not match its published bytes",
+            ));
+        }
+        Ok(Some(definition))
+    }
+
     /// project that already chose a revision keeps it: this never re-points a
     /// project at the bundled data.
     fn project_topology(&self, project_id: ProjectId) -> Result<TopologySnapshot, ApiError> {
@@ -24208,10 +24479,18 @@ impl Services {
         }
 
         let now = kontor_api::now();
-        let spec =
-            self.domain.topology_specs.first().ok_or_else(|| {
-                self.deny(ApiErrorCode::Unavailable, "this build ships no topology")
-            })?;
+        let spec = self
+            .domain
+            .team_definitions
+            .first()
+            .and_then(|definition| {
+                self.domain.topology_specs.iter().find(|topology| {
+                    topology.spec_id == definition.topology.spec_id
+                        && topology.version == definition.topology.version
+                })
+            })
+            .or_else(|| self.domain.topology_specs.first())
+            .ok_or_else(|| self.deny(ApiErrorCode::Unavailable, "this build ships no topology"))?;
         let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
@@ -24879,6 +25158,7 @@ impl Services {
                     "the node's pinned topology revision is not published in this project",
                 )
             })?;
+        let team_definition = self.pinned_team_definition(project_id, epic_id)?;
 
         // Walk to the root first, then build downwards. Reading the ancestry
         // from stored rows rather than from the request is what stops a child
@@ -24907,6 +25187,30 @@ impl Services {
             lineage.push(parent.clone());
         }
         lineage.reverse();
+        if let Some(definition) = team_definition.as_ref() {
+            lineage.retain(|level| definition.container(&level.kind).is_some());
+            if lineage.last().is_none_or(|level| level.id != node.id) {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned Team Definition does not configure the requested container",
+                ));
+            }
+            for (index, level) in lineage.iter().enumerate() {
+                let configured = definition
+                    .container(&level.kind)
+                    .expect("the lineage was filtered to configured containers");
+                let observed_parent = index
+                    .checked_sub(1)
+                    .and_then(|parent| lineage.get(parent))
+                    .map(|parent| &parent.kind);
+                if configured.parent.as_ref() != observed_parent {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the stored native lineage does not match the pinned Team Definition",
+                    ));
+                }
+            }
+        }
 
         let mut parent: Option<ContainerBinding> = None;
         let mut prepared = None;
@@ -24917,18 +25221,25 @@ impl Services {
                 }
                 None => epic_scope.clone(),
             };
-            let capabilities = spec
-                .node_kinds
-                .iter()
-                .find(|declared| declared.kind == level.kind)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "a node's kind is not declared by its pinned topology revision",
-                    )
-                })?
-                .projection_capabilities
-                .clone();
+            let capabilities = if let Some(definition) = team_definition.as_ref() {
+                definition
+                    .container(&level.kind)
+                    .expect("the configured lineage contains this level")
+                    .projection_capabilities
+                    .clone()
+            } else {
+                spec.node_kinds
+                    .iter()
+                    .find(|declared| declared.kind == level.kind)
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "a node's kind is not declared by its pinned topology revision",
+                        )
+                    })?
+                    .projection_capabilities
+                    .clone()
+            };
             let bound = state
                 .with_store(|store| store.get_topology_node_container(project_id, level.id))
                 .map_err(|error| self.refuse(&error))?;
@@ -25080,15 +25391,28 @@ impl Services {
         project_id: ProjectId,
         scope: &ExecutionScope,
     ) -> Result<JiraItemCode, ApiError> {
+        self.item_code_for_subject(
+            project_id,
+            scope.epic.mini_project_id,
+            scope.task.as_ref().map(|task| task.task_id),
+        )
+    }
+
+    /// Derive the one display item code for an explicit epic or task subject.
+    fn item_code_for_subject(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+    ) -> Result<JiraItemCode, ApiError> {
         let (backlog_code, jira_key) = self
             .state()?
             .with_store(|store| {
-                let backlog_code =
-                    store.epic_backlog_code(project_id, scope.epic.mini_project_id)?;
-                let jira_key = if let Some(task) = scope.task.as_ref() {
-                    store.confirmed_jira_task_key(project_id, task.task_id)?
+                let backlog_code = store.epic_backlog_code(project_id, epic_id)?;
+                let jira_key = if let Some(task_id) = task_id {
+                    store.confirmed_jira_task_key(project_id, task_id)?
                 } else {
-                    store.confirmed_jira_epic_key(project_id, scope.epic.mini_project_id)?
+                    store.confirmed_jira_epic_key(project_id, epic_id)?
                 };
                 Ok::<_, RepositoryError>((backlog_code, jira_key))
             })
@@ -25119,6 +25443,61 @@ impl Services {
         node: &SessionTopologyNode,
         scope: Option<&ExecutionScope>,
     ) -> Result<ExternalName, ApiError> {
+        if let Some(epic_id) = node.mini_project_id
+            && let Some(definition) = self.pinned_team_definition(node.project_id, epic_id)?
+        {
+            let container = definition.container(&node.kind).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned Team Definition does not configure this container kind",
+                )
+            })?;
+            let mut values = NativeNameValues::new().with_prefix(container.prefix.as_str());
+            let epic_item_code = self.item_code_for_subject(node.project_id, epic_id, None)?;
+            values = values
+                .with_epic_item_code(epic_item_code.as_str())
+                .with_scope_item_code(epic_item_code.as_str());
+            let task_id = node
+                .task_id
+                .or_else(|| scope.and_then(|scope| scope.task.as_ref().map(|task| task.task_id)));
+            if let Some(task_id) = task_id {
+                let task_item_code =
+                    self.item_code_for_subject(node.project_id, epic_id, Some(task_id))?;
+                values = values
+                    .with_task_item_code(task_item_code.as_str())
+                    .with_scope_item_code(task_item_code.as_str());
+            }
+            if template_uses_token(&container.name_template, NativeNameToken::Topic) {
+                let run = self
+                    .state()?
+                    .with_store(|store| {
+                        store.get_consultation_run_by_topology_node(node.project_id, node.id)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the consultation container has no durable run topic",
+                        )
+                    })?;
+                let topic = run.topic.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the legacy consultation requires an explicit migration topic",
+                    )
+                })?;
+                values = values.with_topic(topic.as_str());
+            }
+            return container
+                .name_template
+                .render(&definition.separator, &values)
+                .map_err(|error| self.refuse_domain(&error));
+        }
+
+        // Unpinned legacy epics retain their immutable topology rendering until
+        // an explicit Team Definition migration confirms every native target.
+        // Project-level PSW/QSW objects also remain outside the epic Team
+        // Definition and use their pinned topology vocabulary.
         let template = spec
             .node_kinds
             .iter()
@@ -25219,7 +25598,7 @@ impl Services {
                 || logical_role.role.role.as_str(),
                 kontor_core::id::RoleCode::as_str,
             );
-        self.seat_name_with_area_code(project_id, &node, scope, area_code)
+        self.seat_name_with_area_code(project_id, &node, scope, area_code, Some(slot))
     }
 
     /// Render any persistent seat from its host kind's pinned seat template.
@@ -25229,8 +25608,9 @@ impl Services {
         node: &SessionTopologyNode,
         scope: &ExecutionScope,
         role_code: &kontor_core::id::RoleCode,
+        role_slot_id: Option<&RoleSlotId>,
     ) -> Result<ExternalName, ApiError> {
-        self.seat_name_with_area_code(project_id, node, scope, role_code.as_str())
+        self.seat_name_with_area_code(project_id, node, scope, role_code.as_str(), role_slot_id)
     }
 
     /// Render a persistent seat from an explicit code frozen by its owning
@@ -25244,8 +25624,55 @@ impl Services {
         node: &SessionTopologyNode,
         scope: &ExecutionScope,
         area_code: &str,
+        role_slot_id: Option<&RoleSlotId>,
     ) -> Result<ExternalName, ApiError> {
         let state = self.state()?;
+        if let Some(epic_id) = node.mini_project_id
+            && let Some(definition) = self.pinned_team_definition(project_id, epic_id)?
+        {
+            let container = definition.container(&node.kind).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned Team Definition does not configure this seat's container",
+                )
+            })?;
+            let template = container.seat_name_template.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned Team Definition has no seat template for this container",
+                )
+            })?;
+            let mut values = NativeNameValues::new().with_role_code(area_code);
+            if template_uses_token(template, NativeNameToken::SlotDisplayName) {
+                let role_slot_id = role_slot_id.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the configured seat name requires an exact slot identity",
+                    )
+                })?;
+                let slot = container
+                    .slots
+                    .iter()
+                    .find(|slot| &slot.slot_id == role_slot_id)
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the Team Definition does not declare this local seat slot",
+                        )
+                    })?;
+                let display_name = slot.display_name.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the configured local seat slot has no display name",
+                    )
+                })?;
+                values = values.with_slot_display_name(display_name.as_str());
+            }
+            return template
+                .render(&definition.separator, &values)
+                .map_err(|error| self.refuse_domain(&error));
+        }
+
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
@@ -25818,10 +26245,14 @@ impl Services {
 /// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
 /// guessed into a native identity after the typed naming contract exists.
 fn template_uses_item_code(template: &NativeNameTemplate) -> bool {
+    template_uses_token(template, NativeNameToken::ItemCode)
+}
+
+fn template_uses_token(template: &NativeNameTemplate, token: NativeNameToken) -> bool {
     template.segments().is_some_and(|segments| {
         segments
             .iter()
-            .any(|segment| matches!(segment, NativeNameSegment::Token(NativeNameToken::ItemCode)))
+            .any(|segment| matches!(segment, NativeNameSegment::Token(found) if *found == token))
     })
 }
 

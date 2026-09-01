@@ -1159,6 +1159,11 @@ pub struct RosterUpgradePreviewDto {
 pub struct InvokeAdvisorRequest {
     /// The profile revision to run under.
     pub profile: RevisionRefDto,
+    /// Short, explicit subject label used by the pinned Team Definition to
+    /// render the ASW name. It is never derived from the question.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<ExternalName>,
     /// What is being asked.
     #[schema(value_type = String)]
     pub question: BoundedText,
@@ -1185,6 +1190,11 @@ pub struct InvokeAdvisorRequest {
 pub struct InvokeConsultationRequest {
     /// The profile or template revision to run under.
     pub profile: RevisionRefDto,
+    /// Short, explicit debated subject used by the pinned Team Definition to
+    /// render the CSW name. It is never derived from the question.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<ExternalName>,
     /// What is being asked.
     #[schema(value_type = String)]
     pub question: BoundedText,
@@ -1216,6 +1226,7 @@ impl From<&InvokeAdvisorRequest> for InvokeConsultationRequest {
     fn from(request: &InvokeAdvisorRequest) -> Self {
         Self {
             profile: request.profile.clone(),
+            topic: request.topic.clone(),
             question: request.question.clone(),
             caller_seat_binding_id: request.caller_seat_binding_id,
             task_id: request.task_id,
@@ -1352,6 +1363,10 @@ pub struct AdvisorRunDto {
     pub epic_id: MiniProjectId,
     /// The pinned profile it runs under.
     pub profile: ProfileRevisionDto,
+    /// Exact topic frozen at invocation and rendered in the ASW name.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<ExternalName>,
     /// Dedicated ASW node.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
@@ -1409,6 +1424,10 @@ pub struct CommitteeRunDto {
     pub epic_id: MiniProjectId,
     /// The pinned template it runs under.
     pub template: ProfileRevisionDto,
+    /// Exact topic frozen at invocation and rendered in the CSW name.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<ExternalName>,
     /// Dedicated CSW node.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,

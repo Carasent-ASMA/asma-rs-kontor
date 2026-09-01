@@ -165,7 +165,12 @@ crate::closed_enum! {
 
 /// One ordered part of a native display-name template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum NativeNameSegment {
     /// A value resolved from durable typed state.
     Token(NativeNameToken),
@@ -179,7 +184,7 @@ pub enum NativeNameSegment {
 /// exportable. [`Self::validate`] always refuses it, so it can never be newly
 /// published, materialized or used for repair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum NativeNameTemplate {
     /// Current typed template.
     Typed {

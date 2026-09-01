@@ -1,8 +1,8 @@
 //! Team Definition ownership and exact native-name rendering contracts.
 
 use kontor_core::id::{
-    ExternalName, RoleSlotId, SCHEMA_VERSION, SpecVersion, TeamDefinitionId, TopologyKindKey,
-    TopologySpecId,
+    ExternalName, RoleCode, RoleSlotId, SCHEMA_VERSION, SpecVersion, TeamDefinitionId,
+    TopologyKindKey, TopologySpecId,
 };
 use kontor_core::naming::{
     NameSeparator, NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
@@ -99,7 +99,20 @@ fn definition() -> TeamDefinitionSpec {
                 ],
                 Some(vec![NativeNameToken::RoleCode]),
                 true,
-                vec![],
+                vec![
+                    TeamDefinitionSeatSlot {
+                        slot_id: RoleSlotId::parse("software-architect").expect("a slot"),
+                        role_code: Some(RoleCode::parse("SA").expect("a role code")),
+                        display_name: None,
+                        capability_profile: name("independent-advisor"),
+                    },
+                    TeamDefinitionSeatSlot {
+                        slot_id: RoleSlotId::parse("auditor").expect("a slot"),
+                        role_code: Some(RoleCode::parse("AUD").expect("a role code")),
+                        display_name: None,
+                        capability_profile: name("independent-advisor"),
+                    },
+                ],
             ),
             container(
                 "CSW",
@@ -114,17 +127,20 @@ fn definition() -> TeamDefinitionSpec {
                 vec![
                     TeamDefinitionSeatSlot {
                         slot_id: RoleSlotId::parse("reviewer-a").expect("a slot"),
-                        display_name: name("SEAT A"),
+                        role_code: None,
+                        display_name: Some(name("SEAT A")),
                         capability_profile: name("independent-reviewer"),
                     },
                     TeamDefinitionSeatSlot {
                         slot_id: RoleSlotId::parse("reviewer-b").expect("a slot"),
-                        display_name: name("SEAT B"),
+                        role_code: None,
+                        display_name: Some(name("SEAT B")),
                         capability_profile: name("independent-reviewer"),
                     },
                     TeamDefinitionSeatSlot {
                         slot_id: RoleSlotId::parse("judge").expect("a slot"),
-                        display_name: name("JUDGE"),
+                        role_code: None,
+                        display_name: Some(name("JUDGE")),
                         capability_profile: name("committee-judge"),
                     },
                 ],
@@ -257,4 +273,48 @@ fn the_snapshot_binds_the_exact_definition_bytes() {
             .hash()
             .clone()
     );
+}
+
+#[test]
+fn team_definitions_reject_every_legacy_naming_source() {
+    for forbidden in [
+        NativeNameToken::AreaCode,
+        NativeNameToken::JiraCode,
+        NativeNameToken::KontorBacklogCode,
+        NativeNameToken::ItemCode,
+        NativeNameToken::AiShortName,
+    ] {
+        let mut definition = definition();
+        definition.containers[0].name_template = template(vec![forbidden]);
+        let error = definition
+            .validate()
+            .expect_err("legacy topology tokens must remain read-only compatibility data");
+        assert!(
+            error.to_string().contains("may use only PREFIX"),
+            "unexpected refusal for {forbidden:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn unknown_fields_fail_closed_at_every_nested_definition_level() {
+    let document = serde_json::to_value(definition()).expect("serializable definition");
+    for path in ["topology", "template", "segment"] {
+        let mut changed = document.clone();
+        match path {
+            "topology" => {
+                changed["topology"]["unknown"] = serde_json::json!(true);
+            }
+            "template" => {
+                changed["containers"][0]["name_template"]["unknown"] = serde_json::json!(true);
+            }
+            "segment" => {
+                changed["containers"][0]["name_template"]["segments"][0]["unknown"] =
+                    serde_json::json!(true);
+            }
+            _ => unreachable!(),
+        }
+        serde_json::from_value::<TeamDefinitionSpec>(changed)
+            .expect_err("unknown nested fields must never be discarded before hashing");
+    }
 }

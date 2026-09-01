@@ -742,6 +742,7 @@ pub struct TopologyNodeDeclaration {
 
 /// The immutable specification reference pinned by one epic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TopologySnapshot {
     /// Specification identity.
     pub spec_id: TopologySpecId,
@@ -760,8 +761,12 @@ pub struct TopologySnapshot {
 pub struct TeamDefinitionSeatSlot {
     /// Stable slot identity shared with the owning team/consultation template.
     pub slot_id: crate::id::RoleSlotId,
-    /// Exact local native title.
-    pub display_name: crate::id::ExternalName,
+    /// Exact registered professional role code when the seat is role-named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_code: Option<crate::id::RoleCode>,
+    /// Exact local native title when the seat is label-named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<crate::id::ExternalName>,
     /// Configured capability profile associated with the slot.
     pub capability_profile: crate::id::ExternalName,
 }
@@ -877,16 +882,37 @@ impl TeamDefinitionSpec {
                 ));
             }
             container.name_template.validate()?;
+            validate_team_definition_template(&container.name_template)?;
             if let Some(template) = &container.seat_name_template {
                 template.validate()?;
+                validate_team_definition_template(template)?;
             }
             let mut slots = BTreeSet::new();
             let mut labels = BTreeSet::new();
+            let mut role_codes = BTreeSet::new();
             for slot in &container.slots {
-                if !slots.insert(&slot.slot_id) || !labels.insert(&slot.display_name) {
+                if !matches!(
+                    (&slot.role_code, &slot.display_name),
+                    (Some(_), None) | (None, Some(_))
+                ) {
                     return Err(DomainError::invalid(
                         "TeamDefinitionSpec",
-                        "declares a duplicate local slot id or display name",
+                        "each local slot must declare exactly one role code or display name",
+                    ));
+                }
+                if !slots.insert(&slot.slot_id)
+                    || slot
+                        .display_name
+                        .as_ref()
+                        .is_some_and(|label| !labels.insert(label))
+                    || slot
+                        .role_code
+                        .as_ref()
+                        .is_some_and(|role_code| !role_codes.insert(role_code))
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "declares a duplicate local slot id, role code or display name",
                     ));
                 }
             }
@@ -904,10 +930,48 @@ impl TeamDefinitionSpec {
                         )
                     })
                 });
-            if uses_slot_label != !container.slots.is_empty() {
+            let uses_role_code = container
+                .seat_name_template
+                .as_ref()
+                .and_then(NativeNameTemplate::segments)
+                .is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        matches!(
+                            segment,
+                            crate::naming::NativeNameSegment::Token(NativeNameToken::RoleCode)
+                        )
+                    })
+                });
+            if uses_slot_label
+                && (container.slots.is_empty()
+                    || container
+                        .slots
+                        .iter()
+                        .any(|slot| slot.display_name.is_none()))
+            {
                 return Err(DomainError::invalid(
                     "TeamDefinitionSpec",
-                    "slot labels and SLOT_DISPLAY_NAME must be declared together",
+                    "SLOT_DISPLAY_NAME requires display-named local slots",
+                ));
+            }
+            if !uses_slot_label
+                && container
+                    .slots
+                    .iter()
+                    .any(|slot| slot.display_name.is_some())
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "display-named slots require SLOT_DISPLAY_NAME",
+                ));
+            }
+            if !container.slots.is_empty()
+                && uses_role_code
+                && container.slots.iter().any(|slot| slot.role_code.is_none())
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "ROLE_CODE containers with declared slots require role-named slots",
                 ));
             }
         }
@@ -1008,6 +1072,33 @@ impl TeamDefinitionSpec {
             .iter()
             .find(|container| &container.kind == kind)
     }
+}
+
+fn validate_team_definition_template(template: &NativeNameTemplate) -> DomainResult<()> {
+    let Some(segments) = template.segments() else {
+        return Err(DomainError::invalid(
+            "TeamDefinitionSpec",
+            "legacy string templates are not valid Team Definition templates",
+        ));
+    };
+    if segments.iter().any(|segment| {
+        matches!(
+            segment,
+            crate::naming::NativeNameSegment::Token(
+                NativeNameToken::AreaCode
+                    | NativeNameToken::JiraCode
+                    | NativeNameToken::KontorBacklogCode
+                    | NativeNameToken::ItemCode
+                    | NativeNameToken::AiShortName
+            )
+        )
+    }) {
+        return Err(DomainError::invalid(
+            "TeamDefinitionSpec",
+            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, TOPIC, ROLE_CODE and SLOT_DISPLAY_NAME",
+        ));
+    }
+    Ok(())
 }
 
 impl ProjectSessionTopologySpec {
