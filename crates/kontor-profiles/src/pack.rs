@@ -30,7 +30,7 @@ use kontor_core::id::{
 use kontor_core::spec::{
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
     ResolvedWorkProfileSnapshot, RoleCatalogRevision, RoleContextSeed, TeamContextPolicySeed,
-    TeamTemplateRevision, WorkProfileSpec,
+    TeamDefinitionSpec, TeamTemplateRevision, WorkProfileSpec,
 };
 use kontor_core::state::{GateState, TaskClosureCertificate};
 use kontor_core::{DomainError, DomainResult};
@@ -292,6 +292,8 @@ pub struct OperationalDomainPack {
     pub schema_version: SchemaVersion,
     /// Generic topology specification revisions.
     pub topology_specs: Vec<ProjectSessionTopologySpec>,
+    /// Immutable Team Definition revisions that own hierarchy and native naming.
+    pub team_definitions: Vec<TeamDefinitionSpec>,
     /// Server-owned standard-role catalog revisions.
     pub role_catalogs: Vec<RoleCatalogRevision>,
     /// How delivery work is placed in the topology this data declares.
@@ -314,6 +316,29 @@ impl OperationalDomainPack {
                 ));
             }
         }
+        let mut definitions = BTreeSet::new();
+        for definition in &self.team_definitions {
+            if !definitions.insert((definition.definition_id, definition.version)) {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "declares a duplicate Team Definition revision",
+                ));
+            }
+            let topology = self
+                .topology_specs
+                .iter()
+                .find(|topology| {
+                    topology.spec_id == definition.topology.spec_id
+                        && topology.version == definition.topology.version
+                })
+                .ok_or_else(|| {
+                    DomainError::invalid(
+                        "OperationalDomainPack",
+                        "Team Definition references an absent topology revision",
+                    )
+                })?;
+            definition.validate_against(topology)?;
+        }
         let mut catalogs = BTreeSet::new();
         for catalog in &self.role_catalogs {
             catalog.validate()?;
@@ -324,10 +349,13 @@ impl OperationalDomainPack {
                 ));
             }
         }
-        if self.topology_specs.is_empty() || self.role_catalogs.is_empty() {
+        if self.topology_specs.is_empty()
+            || self.team_definitions.is_empty()
+            || self.role_catalogs.is_empty()
+        {
             return Err(DomainError::invalid(
                 "OperationalDomainPack",
-                "must carry topology and role-catalog data",
+                "must carry topology, Team Definition and role-catalog data",
             ));
         }
         // The delivery binding is only usable if every code and kind it names is

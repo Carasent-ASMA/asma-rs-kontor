@@ -11,7 +11,7 @@
 //! * letting `SA` stand in for the mandatory `LSA` slot.
 
 use kontor_core::id::{RoleCode, SpecVersion, TopologyKindKey};
-use kontor_core::naming::{NativeNameSegment, NativeNameToken};
+use kontor_core::naming::{NativeNameSegment, NativeNameToken, NativeNameValues};
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, NodeCardinality, NodeProjectionCapability,
     ProjectSessionTopologySpec, TopologyNodeKindSpec,
@@ -46,6 +46,102 @@ fn declared(spec: &ProjectSessionTopologySpec, text: &str) -> TopologyNodeKindSp
         .find(|entry| entry.kind == kind(text))
         .unwrap_or_else(|| panic!("{text} is declared"))
         .clone()
+}
+
+#[test]
+fn the_recommended_team_definition_owns_exact_native_names_and_local_seat_labels() {
+    let domain = bundled_operational_domain().expect("the bundled domain validates");
+    let definition = domain
+        .team_definitions
+        .first()
+        .expect("a bundled Team Definition");
+    assert_eq!(
+        definition.definition_id.to_string(),
+        "01936f5a-2000-7000-8000-000000000001"
+    );
+    assert_eq!(definition.separator.as_str().as_bytes(), " • ".as_bytes());
+
+    let render = |kind_text: &str, values: NativeNameValues| {
+        definition
+            .container(&kind(kind_text))
+            .expect("the container is configured")
+            .name_template
+            .render(&definition.separator, &values)
+            .expect("the exact configured values render")
+    };
+    assert_eq!(
+        render(
+            "ESW",
+            NativeNameValues::new()
+                .with_prefix("ESW")
+                .with_epic_item_code("KBI-8049")
+        )
+        .as_str(),
+        "ESW • KBI-8049"
+    );
+    assert_eq!(
+        render(
+            "ECP",
+            NativeNameValues::new()
+                .with_prefix("ECP")
+                .with_epic_item_code("KBI-8049")
+        )
+        .as_str(),
+        "ECP • KBI-8049"
+    );
+    assert_eq!(
+        render(
+            "TSW",
+            NativeNameValues::new()
+                .with_prefix("TSW")
+                .with_task_item_code("KBI-8062")
+        )
+        .as_str(),
+        "TSW • KBI-8062"
+    );
+    assert_eq!(
+        render(
+            "ASW",
+            NativeNameValues::new()
+                .with_prefix("ASW")
+                .with_scope_item_code("KBI-8049")
+                .with_topic("Jira recovery")
+        )
+        .as_str(),
+        "ASW • KBI-8049 • Jira recovery"
+    );
+    assert_eq!(
+        render(
+            "CSW",
+            NativeNameValues::new()
+                .with_prefix("CSW")
+                .with_scope_item_code("KBI-8062")
+                .with_topic("Naming contract")
+        )
+        .as_str(),
+        "CSW • KBI-8062 • Naming contract"
+    );
+
+    let role_values = NativeNameValues::new().with_role_code("LSA");
+    assert_eq!(
+        definition
+            .container(&kind("ECP"))
+            .and_then(|container| container.seat_name_template.as_ref())
+            .expect("ECP seat template")
+            .render(&definition.separator, &role_values)
+            .expect("role code renders")
+            .as_str(),
+        "LSA"
+    );
+    let committee = definition.container(&kind("CSW")).expect("CSW");
+    assert_eq!(
+        committee
+            .slots
+            .iter()
+            .map(|slot| slot.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["SEAT A", "SEAT B", "JUDGE"]
+    );
 }
 
 fn token(value: NativeNameToken) -> NativeNameSegment {

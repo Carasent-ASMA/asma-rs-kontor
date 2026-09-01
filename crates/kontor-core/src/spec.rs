@@ -14,7 +14,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::naming::{NameSeparator, NativeNameTemplate};
+use crate::naming::{NameSeparator, NativeNameTemplate, NativeNameToken};
 
 /// Raw reasoning-effort ids exposed by supported runtimes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -749,6 +749,265 @@ pub struct TopologySnapshot {
     pub version: SpecVersion,
     /// Canonical hash of the exact published document.
     pub canonical_hash: ContentHash,
+}
+
+/// One exact local seat label and the capability profile its slot requires.
+///
+/// Role-code seats need no entry here. A slot is declared only when its native
+/// title is intentionally not its role code, such as `SEAT A` or `JUDGE`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionSeatSlot {
+    /// Stable slot identity shared with the owning team/consultation template.
+    pub slot_id: crate::id::RoleSlotId,
+    /// Exact local native title.
+    pub display_name: crate::id::ExternalName,
+    /// Configured capability profile associated with the slot.
+    pub capability_profile: crate::id::ExternalName,
+}
+
+/// One native container kind as a Team Definition renders and places it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamContainerDefinition {
+    /// Stable semantic topology kind.
+    pub kind: TopologyKindKey,
+    /// Exact parent kind; absent only for the definition root.
+    pub parent: Option<TopologyKindKey>,
+    /// Configured local prefix supplied to the `PREFIX` token.
+    pub prefix: crate::id::ExternalName,
+    /// Native projection the topology validator must permit.
+    pub projection_capabilities: Vec<NodeProjectionCapability>,
+    /// Whether every seat in this container is necessarily read-only.
+    pub read_only: bool,
+    /// Complete native container-name template.
+    pub name_template: NativeNameTemplate,
+    /// Complete native seat-name template, when this kind hosts seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_name_template: Option<NativeNameTemplate>,
+    /// Exact non-role-code slot labels configured for this kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<TeamDefinitionSeatSlot>,
+}
+
+/// One immutable Team Definition revision.
+///
+/// This is the sole current authority for native hierarchy and names. The
+/// referenced topology revision remains a legality validator: it may reject a
+/// hierarchy or capability the definition asks for, but it never renders a
+/// competing name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionSpec {
+    /// Schema generation of this document.
+    pub schema_version: SchemaVersion,
+    /// Identity shared by every immutable revision.
+    pub definition_id: crate::id::TeamDefinitionId,
+    /// This immutable revision.
+    pub version: SpecVersion,
+    /// Human name.
+    pub name: crate::id::ExternalName,
+    /// Exact topology revision that validates this definition.
+    pub topology: TopologySnapshot,
+    /// Exact bytes joining adjacent rendered segments.
+    pub separator: NameSeparator,
+    /// Configured native hierarchy, in deterministic declaration order.
+    pub containers: Vec<TeamContainerDefinition>,
+}
+
+/// Immutable reference pinned by a project default or epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionSnapshot {
+    /// Definition lineage.
+    pub definition_id: crate::id::TeamDefinitionId,
+    /// Published revision.
+    pub version: SpecVersion,
+    /// Hash of the exact canonical definition.
+    pub canonical_hash: ContentHash,
+}
+
+impl TeamDefinitionSnapshot {
+    /// Freeze one validated revision.
+    ///
+    /// # Errors
+    /// As [`TeamDefinitionSpec::canonicalize`].
+    pub fn from_revision(revision: &TeamDefinitionSpec) -> DomainResult<Self> {
+        Ok(Self {
+            definition_id: revision.definition_id,
+            version: revision.version,
+            canonical_hash: revision.canonicalize()?.hash().clone(),
+        })
+    }
+}
+
+impl TeamDefinitionSpec {
+    /// Validate the configured hierarchy, templates and local slot labels.
+    ///
+    /// Cross-checking the requested hierarchy and capabilities against the
+    /// referenced topology revision is performed when the two published
+    /// documents are composed. This local validation proves the definition is
+    /// complete and internally deterministic first.
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.containers.is_empty() || self.containers.len() > 64 {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "must declare between one and 64 container kinds",
+            ));
+        }
+        let mut kinds = BTreeMap::new();
+        for container in &self.containers {
+            if kinds.insert(&container.kind, container).is_some() {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a duplicate container kind",
+                ));
+            }
+            if container.projection_capabilities.is_empty()
+                || container
+                    .projection_capabilities
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != container.projection_capabilities.len()
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "container projection capabilities must be non-empty and unique",
+                ));
+            }
+            container.name_template.validate()?;
+            if let Some(template) = &container.seat_name_template {
+                template.validate()?;
+            }
+            let mut slots = BTreeSet::new();
+            let mut labels = BTreeSet::new();
+            for slot in &container.slots {
+                if !slots.insert(&slot.slot_id) || !labels.insert(&slot.display_name) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "declares a duplicate local slot id or display name",
+                    ));
+                }
+            }
+            let uses_slot_label = container
+                .seat_name_template
+                .as_ref()
+                .and_then(NativeNameTemplate::segments)
+                .is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        matches!(
+                            segment,
+                            crate::naming::NativeNameSegment::Token(
+                                NativeNameToken::SlotDisplayName
+                            )
+                        )
+                    })
+                });
+            if uses_slot_label != !container.slots.is_empty() {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "slot labels and SLOT_DISPLAY_NAME must be declared together",
+                ));
+            }
+        }
+
+        let roots: Vec<_> = self
+            .containers
+            .iter()
+            .filter(|container| container.parent.is_none())
+            .collect();
+        if roots.len() != 1 {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "must declare exactly one root container",
+            ));
+        }
+        for container in &self.containers {
+            if let Some(parent) = &container.parent
+                && (parent == &container.kind || !kinds.contains_key(parent))
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a container parent is self or undeclared",
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            let mut current = Some(&container.kind);
+            while let Some(kind) = current {
+                if !seen.insert(kind) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "the configured container hierarchy is cyclic",
+                    ));
+                }
+                current = kinds.get(kind).and_then(|entry| entry.parent.as_ref());
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate this definition against its exact pinned topology document.
+    ///
+    /// # Errors
+    /// Refuses a hash/identity mismatch or any kind, parent, capability or
+    /// read-only policy that the topology validator does not permit.
+    pub fn validate_against(&self, topology: &ProjectSessionTopologySpec) -> DomainResult<()> {
+        self.validate()?;
+        topology.validate()?;
+        let topology_hash = topology.canonicalize()?.hash().clone();
+        if topology.spec_id != self.topology.spec_id
+            || topology.version != self.topology.version
+            || topology_hash != self.topology.canonical_hash
+        {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "does not reference these exact topology bytes",
+            ));
+        }
+        for container in &self.containers {
+            let legal = topology.node_kind(&container.kind).ok_or_else(|| {
+                DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a kind absent from its topology validator",
+                )
+            })?;
+            if container.read_only != legal.read_only
+                || container
+                    .projection_capabilities
+                    .iter()
+                    .any(|capability| !legal.projection_capabilities.contains(capability))
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares capability policy its topology validator does not permit",
+                ));
+            }
+            if let Some(parent) = &container.parent
+                && !legal.allowed_parents.contains(parent)
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a parent its topology validator does not permit",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate and canonicalize this immutable revision.
+    pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        self.validate()?;
+        CanonicalDocument::from_serializable(self)
+    }
+
+    /// Find one configured container kind.
+    #[must_use]
+    pub fn container(&self, kind: &TopologyKindKey) -> Option<&TeamContainerDefinition> {
+        self.containers
+            .iter()
+            .find(|container| &container.kind == kind)
+    }
 }
 
 impl ProjectSessionTopologySpec {

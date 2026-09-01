@@ -153,6 +153,9 @@ entity_ids! {
     TaskWorkflowId,
     /// Identifies a team template (its revisions share this id).
     TeamTemplateId,
+    /// Identifies one immutable Team Definition lineage: native hierarchy,
+    /// naming and local seat-display policy.
+    TeamDefinitionId,
     /// Identifies one run of a team.
     TeamRunId,
     /// Identifies one run of a single agent.
