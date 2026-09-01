@@ -7378,7 +7378,7 @@ async fn jira_materialization_preview_is_server_derived_and_epic_first() {
 }
 
 #[tokio::test]
-async fn jira_link_apply_recovers_the_original_pending_create_batch_in_place() {
+async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
     let server = MockServer::start().await;
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
@@ -7499,8 +7499,8 @@ async fn jira_link_apply_recovers_the_original_pending_create_batch_in_place() {
                         link_id: None,
                         ordinal: 0,
                         item_kind: JiraItemKind::Epic,
-                        intent_kind: JiraIntentKind::Create,
-                        requested_key: None,
+                        intent_kind: JiraIntentKind::Link,
+                        requested_key: Some(ExternalId::parse("ASMA-8049").expect("epic Jira key")),
                         marker: ExternalId::parse(&format!("kontor-epic-{epic_id}"))
                             .expect("epic marker"),
                     },
