@@ -145,7 +145,9 @@ refused. A replacement must cite and close the prior binding.
 For Paseo, one Jira epic maps to one project. Inside it: one **ECP** (Epic
 Control Plane) workspace holding the epic's persistent `LSA` and `TPM` seats;
 one **TSW** (Ticket Session Workspace) per ticket holding that ticket's
-registered role seats; and sibling read-only workspaces for Advice and **CSW**
+registered role seats; zero or more subject/topic-scoped **ASW** (Advisor
+Session Workspace) siblings with one or more independent configured advisor-role
+seats; and sibling read-only **CSW**
 (Committee Session Workspace) consultations. The Git worktree is separate checkout/isolation evidence, not the
 workspace identity. `PASE` and `TSC` are historical spellings of TSW and CSW and
 survive only as read/import aliases.
@@ -175,7 +177,9 @@ Those v4 literals are implementation evidence, not the current naming
 convention. The approved contract makes one pinned Team Definition JSON the
 sole hierarchy/naming authority and recommends `ESW • KOP-8001`,
 `ECP • KOP-8001`, `TSW • KOP-7869` with local seats such as `LSA`, `TPM`,
-`AUD`, `ADVISOR`, `SEAT A`, `SEAT B`, `JUDGE`. See
+`AUD`, `SA`, `SEAT A`, `SEAT B`, `JUDGE`. `ADVISOR` is not a universal native
+seat title; ASW seats use the exact configured registered professional role or
+advisor-profile code, and ASW never performs Committee aggregation. See
 [`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md). Implementation conformance is
 intentionally pending the next audit.
 
