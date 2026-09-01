@@ -1687,6 +1687,9 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("publish_topology_spec", "project", "witness", None),
     ("select_project_topology", "project", "witness", None),
     ("upgrade_topology", "mini_project", "witness", None),
+    ("publish_team_definition", "project", "witness", None),
+    ("select_project_team_definition", "project", "witness", None),
+    ("upgrade_team_definition", "mini_project", "witness", None),
     ("reconcile_native_names", "mini_project", "witness", None),
     // A native container is not an aggregate a command may name, and the node it
     // belongs to is not one either. The project is what the authority is over.
