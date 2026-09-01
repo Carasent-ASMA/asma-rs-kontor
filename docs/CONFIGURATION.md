@@ -2,8 +2,10 @@
 
 Kontor separates invariants from deployment behavior. Rust enforces safety
 properties such as one non-terminal session per role slot and uncertainty not
-being completion. Names, durations, prompts, skills, profiles, teams, roles,
-topology, committees, completion, budgets and runtime routing are versioned data.
+being completion. Durations, prompts, skills, profiles, committees, completion,
+budgets and runtime routing are versioned data. One pinned Team Definition JSON
+revision owns hierarchy, native prefixes/templates, exact seat labels, roles,
+slot capabilities and ordering. See [`NATIVE_NAMING.md`](NATIVE_NAMING.md).
 
 That split is the point, not an implementation detail: the workflow being data is
 what lets Kontor run research, architecture, UX, QA and operations work without a
@@ -46,8 +48,13 @@ claiming ownership of an existing issue's summary, description or workflow
 status; it cannot silently replace the original create batch.
 
 Operational topology v4 (`01936f5a-1000-7000-8000-000000000001`, revision `4`)
-uses the typed `ITEM_CODE` projection and renders centered-dot names. Enable it
-in this order:
+uses the typed `ITEM_CODE` projection and renders centered-dot names in the
+currently shipped implementation. This is historical implementation behavior,
+not current naming authority. The approved target contract moves hierarchy and
+all native rendering to one pinned Team Definition JSON and uses the
+recommended ` • ` templates in [`NATIVE_NAMING.md`](NATIVE_NAMING.md).
+Implementation conformance is pending the next audit. To reproduce or migrate
+the existing v4 behavior, use this order:
 
 1. Preview/apply the epic graph and read back its active epic backlog code.
 2. Preview/apply Jira materialization and confirm the epic and task issue
@@ -123,7 +130,8 @@ second time.
 - Profile packs define phases, gates, artifacts, budgets and runtime routing.
   The bundled manifest declares 17 work-profile categories; four ship today
   (`code`, `ux-ui-layout`, `research`, `docs`).
-- Team packs define role slots, skills, contexts and handoffs. Role slots carry
+- Team Definition JSON revisions define hierarchy, native naming, role slots,
+  exact labels, capabilities, skills, contexts and handoffs. Role slots carry
   stable ids, so two peers in the same role are explicit rather than duplicate.
 - The standard role catalog defines 56 role codes across 9 segments. Seat
   selection is by `role_code`; a free-form role string is not accepted anywhere.
@@ -133,7 +141,8 @@ second time.
 - Completion profiles name the integration team, the verdict committee, the
   number of remediation rounds and an optional polling fallback. The seeded
   `operational_default` allows one remediation round.
-- Native container and seat naming is a deterministic configurable template.
+- Native container and seat naming is rendered only from the pinned Team
+  Definition revision; callers and adapters do not improvise it.
 
 Changing a prompt, duration, template or specification changes configuration.
 Changing a safety invariant requires an architectural decision and code review.
