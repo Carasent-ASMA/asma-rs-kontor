@@ -13775,18 +13775,20 @@ impl ApplicationOperations for Services {
                 JiraIssueKind::Epic => JiraItemKind::Epic,
                 JiraIssueKind::Task => JiraItemKind::Task,
             };
-            let expected_intent = if recovered_in_place {
-                JiraIntentKind::Create
+            let (expected_intent, expected_stored_key) = if recovered_in_place {
+                match item.intent_kind {
+                    JiraIntentKind::Create => (JiraIntentKind::Create, None),
+                    JiraIntentKind::Link => {
+                        (JiraIntentKind::Link, requested.requested_key.as_ref())
+                    }
+                }
             } else {
                 match requested.mode {
-                    JiraMaterializationModeDto::Create => JiraIntentKind::Create,
-                    JiraMaterializationModeDto::Link => JiraIntentKind::Link,
+                    JiraMaterializationModeDto::Create => (JiraIntentKind::Create, None),
+                    JiraMaterializationModeDto::Link => {
+                        (JiraIntentKind::Link, requested.requested_key.as_ref())
+                    }
                 }
-            };
-            let expected_stored_key = if recovered_in_place {
-                None
-            } else {
-                requested.requested_key.as_ref()
             };
             if item.project_id != project_id
                 || item.epic_id != epic_id

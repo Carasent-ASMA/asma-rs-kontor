@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 75;
+pub const SCHEMA_VERSION: i64 = 76;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -295,6 +295,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v75. Committee permission decisions are claimed and confirmed as
     // durable control-plane effects bound to exact native seat occupancy.
     include_str!("../migrations/0075_consultation_permission_responses.sql"),
+    // Schema v76. In-place Jira recovery accepts the exact mixed link/create
+    // batch that a connector outage interrupted, while retaining marker and
+    // requested-key equality for every original link item.
+    include_str!("../migrations/0076_mixed_jira_materialization_recovery.sql"),
 ];
 
 const _: () = assert!(

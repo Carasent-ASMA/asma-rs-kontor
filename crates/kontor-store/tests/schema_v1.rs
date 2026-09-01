@@ -483,9 +483,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v69 projections; and v71 adds exact-occupancy durable Completion-wake
     // delivery evidence; v72 adds durable project-scoped epic namespaces; and
     // v73 permits safe link recovery after an unconfirmed create attempt;
-    // v74 adds the exact Jira materialization recovery ledger; and v75 adds
-    // durable, exact-seat Committee permission responses.
-    assert_eq!(SCHEMA_VERSION, 75);
+    // v74 adds the exact Jira materialization recovery ledger; v75 adds
+    // durable, exact-seat Committee permission responses; and v76 permits the
+    // exact mixed link/create batch interrupted by a Jira connector outage.
+    assert_eq!(SCHEMA_VERSION, 76);
 }
 
 #[test]

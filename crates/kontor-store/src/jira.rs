@@ -474,7 +474,8 @@ impl SqliteStore {
         for batch_id in &batch_ids {
             let mut statement = transaction
                 .prepare(
-                    "SELECT ordinal, item_kind, task_id, intent_kind, marker, confirmed_key
+                    "SELECT ordinal, item_kind, task_id, intent_kind, requested_key,
+                            marker, confirmed_key
                      FROM jira_materialization_items
                      WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
                 )
@@ -486,8 +487,9 @@ impl SqliteStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })
                 .map_err(backend)?
@@ -496,12 +498,31 @@ impl SqliteStore {
             drop(statement);
             let exact = stored.len() == recovery.len()
                 && stored.iter().zip(recovery).all(
-                    |((ordinal, kind, task_id, intent, marker, confirmed_key), requested)| {
+                    |(
+                        (
+                            ordinal,
+                            kind,
+                            task_id,
+                            intent,
+                            stored_requested_key,
+                            marker,
+                            confirmed_key,
+                        ),
+                        requested,
+                    )| {
+                        let intent_matches = match JiraIntentKind::parse(intent).ok() {
+                            Some(JiraIntentKind::Create) => stored_requested_key.is_none(),
+                            Some(JiraIntentKind::Link) => {
+                                stored_requested_key.as_deref()
+                                    == Some(requested.requested_key.as_str())
+                            }
+                            None => false,
+                        };
                         u32::try_from(*ordinal).ok() == Some(requested.ordinal)
                             && JiraItemKind::parse(kind).ok() == Some(requested.item_kind)
                             && task_id.as_deref().map(TaskId::parse).transpose().ok()
                                 == Some(requested.task_id)
-                            && intent == "create"
+                            && intent_matches
                             && marker == requested.marker.as_str()
                             && confirmed_key
                                 .as_deref()
