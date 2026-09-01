@@ -246,11 +246,7 @@ fn world() -> World {
         .create_consultation_run(
             &run,
             &node(asw, "ASW", Some(esw), Some(mini_project_id)),
-            &seats
-                .iter()
-                .zip(seat_bindings.iter())
-                .map(|(seat, binding)| (seat, binding))
-                .collect::<Vec<_>>(),
+            &seats.iter().zip(seat_bindings.iter()).collect::<Vec<_>>(),
         )
         .expect("the consultation and both seats are frozen");
 

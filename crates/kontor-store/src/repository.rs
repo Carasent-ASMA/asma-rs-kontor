@@ -14721,25 +14721,27 @@ fn team_definition_validator_in(
 }
 
 /// Read one migration intent and its complete target set inside a transaction.
+type TeamDefinitionMigrationRow = (
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
 fn team_definition_migration_in(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     id: TeamDefinitionMigrationId,
 ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>> {
-    let row: Option<(
-        String,
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-        String,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        String,
-    )> = transaction
+    let row: Option<TeamDefinitionMigrationRow> = transaction
         .query_row(
             "SELECT mini_project_id, idempotency_key, from_definition_id, from_version,
                     from_canonical_hash, to_definition_id, to_version, to_canonical_hash,
