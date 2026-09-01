@@ -2852,7 +2852,12 @@ export interface components {
             receipt?: null | components["schemas"]["MutationReceiptDto"];
             /** @description Immutable output and caller disposition once settled. */
             result?: unknown;
-            /** @description The one Advisor seat. */
+            /**
+             * @description Advisor seats materialized for this consultation.
+             *
+             *     The pre-conformance implementation currently returns one seat. The
+             *     approved Team Definition contract permits one or more configured seats.
+             */
             seats: components["schemas"]["ConsultationSeatDto"][];
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;

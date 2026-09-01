@@ -1355,7 +1355,10 @@ pub struct AdvisorRunDto {
     /// Dedicated ASW node.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
-    /// The one Advisor seat.
+    /// Advisor seats materialized for this consultation.
+    ///
+    /// The pre-conformance implementation currently returns one seat. The
+    /// approved Team Definition contract permits one or more configured seats.
     pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,

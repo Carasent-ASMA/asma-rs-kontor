@@ -1,6 +1,6 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-08-30.
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-01.
 
 ## Overview
 
@@ -9,6 +9,12 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 **Start here for *why*:** [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. The repository-local restatement, readable without the parent checkout, is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Documents by Category
+
+### Architecture (`architecture/`)
+
+| Document | Summary | Status | When to Load |
+|----------|---------|--------|-------------|
+| [`2026-09-01-13-25-architecture-kontor-local-verification-policy.md`](architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md) | Explicitly disables GitHub Actions CI for Kontor and makes recorded, exact-commit local gates the merge-verification policy; reversal requires a new explicit decision. | 🟢 Approved | Configuring Kontor CI, deciding merge evidence, or considering GitHub Actions for this repository |
 
 ### Audits (`audits/`)
 
@@ -38,6 +44,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 
 | Folder | Contents |
 |--------|----------|
+| `architecture/` | Living repository-local design and engineering-policy decisions |
 | `audits/` | Point-in-time code-quality, completeness, security, and compliance audits of the Kontor implementation |
 
 ## Related authoritative documentation

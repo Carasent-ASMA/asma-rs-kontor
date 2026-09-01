@@ -1,6 +1,5 @@
 # ASMA Kontor
 
-[![CI](https://github.com/Carasent-ASMA/asma-rs-kontor/actions/workflows/ci.yml/badge.svg)](https://github.com/Carasent-ASMA/asma-rs-kontor/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-intent)
 
 Kontor is a local-first control plane for durable, policy-governed work across
@@ -267,7 +266,14 @@ read [Architecture](ARCHITECTURE.md); security findings follow
 [Security](SECURITY.md), and participation follows the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
-The standard local gates are:
+Kontor deliberately does not run CI in GitHub Actions. Verification runs
+locally against the exact candidate commit before merge and its results are
+recorded in the pull request or owning delivery evidence. This is an explicit,
+reversible repository policy; re-enabling GitHub-hosted CI requires an explicit
+decision and documentation change. See the
+[local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md).
+
+The required local gates are:
 
 ```sh
 cargo fmt --all -- --check
@@ -276,6 +282,7 @@ cargo test --workspace
 cargo audit
 cargo deny check
 pnpm install --frozen-lockfile
+pnpm --filter kontor-console verify:api
 pnpm -r typecheck
 pnpm -r test
 pnpm audit --prod
