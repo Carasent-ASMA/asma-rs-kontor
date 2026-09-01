@@ -10,8 +10,10 @@
 //! This drives the real router — the real ingress check, the real bearer
 //! comparison, the real `caller.require`, the real application services and the
 //! real store — using nothing but the admin Lead seat's own tools. Every argument
-//! below is a tool argument. Nothing seeds SQLite, creates a native session, or
-//! calls Paseo, Jira or AgentsRoom.
+//! below is a tool argument. No Kontor aggregate is seeded, and nothing creates a
+//! native session or calls Paseo, Jira or AgentsRoom. The fixture records only the
+//! exact Jira readback evidence that the real Jira boundary would have confirmed;
+//! native naming deliberately refuses to infer that external fact from a link.
 //!
 //! # Why it is not a socket
 //!
@@ -38,10 +40,15 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
 use harness::{World, at, secret};
-use kontor_core::id::AgentRunId;
+use kontor_core::id::{
+    AgentRunId, AggregateRevision, ContentHash, ExternalId, MiniProjectId, ProjectId, TicketLinkId,
+};
 use kontor_core::repository::RealmRepository as _;
 use kontor_mcp::{CallerTier, Dispatcher, FrameBudget, Method, Reply, Transport, TransportFailure};
 use kontor_runtime::RuntimeAdapter as _;
+use kontor_store::{
+    JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,
+};
 use tower::ServiceExt as _;
 
 /// A session with history and a live tail, so a launched seat has something to be.
@@ -279,6 +286,94 @@ async fn finish_natively(world: &World, run: &str) {
         .expect("the runtime observes its own termination");
 }
 
+/// Record the exact successful Jira readbacks that this socket-free journey
+/// cannot obtain from a real connector. A ticket link is desired state, not a
+/// confirmed identity, so the fixture crosses the same durable confirmation
+/// boundary as the connector before native names may be rendered.
+fn confirm_jira_identity(world: &World, project: &str, epic: &str) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-08-10T09:20:00Z");
+        let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("a batch id");
+        let mut items = vec![NewJiraMaterializationItem {
+            id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
+            batch_id: batch_id.clone(),
+            project_id,
+            epic_id,
+            task_id: None,
+            link_id: None,
+            ordinal: 0,
+            item_kind: JiraItemKind::Epic,
+            intent_kind: JiraIntentKind::Link,
+            requested_key: Some(ExternalId::parse("ASMA-8000").expect("an epic Jira key")),
+            marker: ExternalId::parse(&format!("kontor-test-epic-{epic}")).expect("an epic marker"),
+        }];
+        for (index, task) in store
+            .list_epic_tasks(project_id, epic_id)
+            .expect("the journey tasks read")
+            .into_iter()
+            .enumerate()
+        {
+            let links = store
+                .list_task_ticket_links(project_id, task.id)
+                .expect("the journey task links read");
+            let jira = links
+                .iter()
+                .find(|link| link.connector.as_str() == "jira")
+                .expect("the journey task has one Jira link");
+            items.push(NewJiraMaterializationItem {
+                id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: Some(task.id),
+                link_id: Some(TicketLinkId::generate()),
+                ordinal: u32::try_from(index + 1).expect("a fixture ordinal"),
+                item_kind: JiraItemKind::Task,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(jira.external_issue_key.clone()),
+                marker: ExternalId::parse(&format!("kontor-test-task-{}", task.id))
+                    .expect("a task marker"),
+            });
+        }
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: format!("journey-confirm-jira-{epic}"),
+                    preview_hash: ContentHash::of(epic.as_bytes()),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &items,
+            )
+            .expect("the journey Jira plan is durable");
+        for item in store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("the journey Jira items read")
+        {
+            let key = item
+                .requested_key
+                .clone()
+                .expect("a link intent names its exact Jira key");
+            store
+                .confirm_jira_materialization_item(
+                    &item,
+                    &key,
+                    &ContentHash::of(format!("{key}-readback").as_bytes()),
+                    now,
+                )
+                .expect("the journey Jira readback confirms");
+        }
+        store
+            .confirm_jira_materialization_batch(project_id, &batch_id, now)
+            .expect("the journey Jira batch confirms");
+    });
+}
+
 /// The whole journey: an installed, never-used `kontord` reaches a closed epic
 /// without a single call that is not one of the Lead seat's own MCP tools.
 ///
@@ -383,7 +478,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "expected_revision": revision,
             "name": "Bootstrap epic",
             "execution_scope": {
-                "external_epic_key": "ASMA-JOURNEY",
+                "external_epic_key": "ASMA-8000",
                 "short_title": "Bootstrap epic",
                 "kontor_backlog_code": "JOURNEY",
                 "ai_short_name": "Bootstrap Epic",
@@ -416,6 +511,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         2,
         "one tool call applied the whole graph"
     );
+    confirm_jira_identity(&world, &project, &epic);
 
     // 5. The projection reads the graph back, including the workflow revision a
     //    gate recording has to present.
