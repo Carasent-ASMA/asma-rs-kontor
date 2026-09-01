@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "150 forever": this is what makes a later contract change fail here, so a
+    // Not "158 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        150,
+        158,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        149,
+        157,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -560,7 +560,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        151,
+        159,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -696,6 +696,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_topology_spec_validate", CallerTier::Admin),
         ("kontor_topology_spec_publish", CallerTier::Admin),
         ("kontor_topology_spec_get", CallerTier::Admin),
+        ("kontor_team_definition_validate", CallerTier::Admin),
+        ("kontor_team_definition_publish", CallerTier::Admin),
+        ("kontor_team_definition_get", CallerTier::Admin),
+        ("kontor_team_definitions_list", CallerTier::Admin),
         ("kontor_role_catalog_get", CallerTier::Observer),
         ("kontor_role_get", CallerTier::Observer),
         ("kontor_code_help_get", CallerTier::Observer),
@@ -714,10 +718,20 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
             CallerTier::Admin,
         ),
         ("kontor_project_topology_selection_apply", CallerTier::Admin),
+        (
+            "kontor_project_team_definition_selection_preview",
+            CallerTier::Admin,
+        ),
+        (
+            "kontor_project_team_definition_selection_apply",
+            CallerTier::Admin,
+        ),
         ("kontor_jira_materialization_preview", CallerTier::Admin),
         ("kontor_jira_materialization_apply", CallerTier::Admin),
         ("kontor_topology_upgrade_preview", CallerTier::Admin),
         ("kontor_topology_upgrade_apply", CallerTier::Admin),
+        ("kontor_team_definition_upgrade_preview", CallerTier::Admin),
+        ("kontor_team_definition_upgrade_apply", CallerTier::Admin),
         ("kontor_native_names_preview", CallerTier::Admin),
         ("kontor_native_names_apply", CallerTier::Admin),
         // KON-OP-03: the ceilings a realm admits work under are configuration,

@@ -3624,11 +3624,11 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Json,
                 "The published `{id, version}` Team Definition revision to pin after exact readback.",
             ),
-            req(
+            opt(
                 "legacy_topics",
                 Place::Body,
                 ArgType::Json,
-                "Explicit legacy ASW/CSW topics keyed by topology-node id; send an empty object when none exist.",
+                "Explicit legacy ASW/CSW topics keyed by topology-node id; omit when none exist.",
             ),
             req(
                 "expected_revision",
@@ -4681,6 +4681,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Json,
                 "An `{id, version}` profile revision.",
             ),
+            opt(
+                "topic",
+                Place::Body,
+                ArgType::Text,
+                "The explicit ASW subject label; omit only for a legacy consultation.",
+            ),
             req(
                 "question",
                 Place::Body,
@@ -4892,6 +4898,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Json,
                 "An `{id, version}` template revision.",
+            ),
+            opt(
+                "topic",
+                Place::Body,
+                ArgType::Text,
+                "The explicit CSW debated-subject label; omit only for a legacy consultation.",
             ),
             req(
                 "question",
