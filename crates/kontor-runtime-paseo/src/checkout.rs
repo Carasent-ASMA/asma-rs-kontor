@@ -53,7 +53,7 @@ fn prepare_managed_worktree_blocking(
     let branch = branch_from(relative)?;
 
     if task.exists() {
-        return verify_checkout(project, task, &branch);
+        return verify_checkout(project, task, relative, &branch);
     }
 
     let parent = task
@@ -90,7 +90,7 @@ fn prepare_managed_worktree_blocking(
     if !output.status.success() {
         // Git serializes worktree administration. A concurrent exact attempt
         // may have won while this one waited, so read back before refusing.
-        if verify_checkout(project, task, &branch).is_ok() {
+        if verify_checkout(project, task, relative, &branch).is_ok() {
             return Ok(());
         }
         return Err(RuntimeError::WorkspacePreparationFailed {
@@ -98,7 +98,7 @@ fn prepare_managed_worktree_blocking(
         });
     }
 
-    verify_checkout(project, task, &branch)
+    verify_checkout(project, task, relative, &branch)
 }
 
 fn branch_from(relative: &Path) -> RuntimeResult<String> {
@@ -123,7 +123,12 @@ fn branch_from(relative: &Path) -> RuntimeResult<String> {
     Ok(branch)
 }
 
-fn verify_checkout(project: &Path, task: &Path, branch: &str) -> RuntimeResult<()> {
+fn verify_checkout(
+    project: &Path,
+    task: &Path,
+    relative: &Path,
+    branch: &str,
+) -> RuntimeResult<()> {
     let project_common = git_text(
         project,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -135,14 +140,75 @@ fn verify_checkout(project: &Path, task: &Path, branch: &str) -> RuntimeResult<(
     let project_common = canonical(&project_common)?;
     let task_common = canonical(&task_common)?;
     if project_common != task_common {
-        return Err(RuntimeError::WorkspacePreparationFailed {
-            rule: "the declared worktree belongs to another Git repository",
-        });
+        return verify_catalog_module_checkout(&project_common, &task_common, task, relative);
     }
     let observed = git_text(task, &["branch", "--show-current"])?;
     if observed != branch {
         return Err(RuntimeError::WorkspacePreparationFailed {
             rule: "the declared worktree is checked out on a different branch",
+        });
+    }
+    Ok(())
+}
+
+/// Attest the child-module checkout created by `asma worktree add --mod`.
+///
+/// Its Git common directory is deliberately not the catalog root's: it belongs
+/// to one registered submodule under `<catalog .git>/modules`. The checkout is
+/// nevertheless safe only when every identity agrees — managed two-segment
+/// path, submodule name, Git top-level and ASMA worktree slug in the branch.
+fn verify_catalog_module_checkout(
+    project_common: &Path,
+    task_common: &Path,
+    task: &Path,
+    relative: &Path,
+) -> RuntimeResult<()> {
+    let modules = project_common.join("modules");
+    if !task_common.starts_with(&modules) {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the declared worktree belongs to another Git repository",
+        });
+    }
+
+    let components = relative.iter().collect::<Vec<_>>();
+    let Some([slug, declared_module]) = components.as_slice().first_chunk::<2>() else {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree must name one slug and one module",
+        });
+    };
+    if components.len() != 2
+        || task.file_name() != Some(*declared_module)
+        || task_common.file_name() != Some(*declared_module)
+    {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree does not match its registered module",
+        });
+    }
+
+    let observed_root = canonical(&git_text(task, &["rev-parse", "--show-toplevel"])?)?;
+    let declared_root =
+        fs::canonicalize(task).map_err(|_| RuntimeError::WorkspacePreparationFailed {
+            rule: "the declared task worktree has no canonical Git identity",
+        })?;
+    if observed_root != declared_root {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree is not the module checkout root",
+        });
+    }
+
+    let slug = slug.to_str().filter(|slug| !slug.is_empty()).ok_or(
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree slug is not valid UTF-8",
+        },
+    )?;
+    let observed_branch = git_text(task, &["branch", "--show-current"])?;
+    if observed_branch.is_empty()
+        || !observed_branch
+            .to_ascii_lowercase()
+            .contains(&slug.to_ascii_lowercase())
+    {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree branch does not match its ASMA slug",
         });
     }
     Ok(())
