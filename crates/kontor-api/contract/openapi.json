@@ -9064,7 +9064,7 @@
             "items": {
               "$ref": "#/components/schemas/ConsultationSeatDto"
             },
-            "description": "The one Advisor seat."
+            "description": "Advisor seats materialized for this consultation.\n\nThe pre-conformance implementation currently returns one seat. The\napproved Team Definition contract permits one or more configured seats."
           },
           "state": {
             "type": "string",
