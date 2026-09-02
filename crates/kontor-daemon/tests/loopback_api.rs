@@ -22651,6 +22651,191 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     assert_eq!(title_for("ECP"), "ECP • KOP-8001");
 }
 
+/// Historical topology remains immutable evidence. A Team Definition upgrade
+/// migrates only active native containers, so a runtime-archived TSW cannot
+/// block the live census or be retitled to make old history look current.
+#[tokio::test]
+async fn a_team_definition_upgrade_leaves_archived_native_history_untouched() {
+    let composed = compose_realm("/tmp/kontor-archived-team-definition-history").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+
+    for (key, target) in [
+        (
+            "archived-history-control",
+            serde_json::json!({"scope": "epic_control", "epic_id": composed.epic}),
+        ),
+        (
+            "archived-history-ticket",
+            serde_json::json!({"scope": "ticket", "task_id": task}),
+        ),
+    ] {
+        let materialized = Call::post(
+            format!("/v1/projects/{}/topology:materialize", composed.project),
+            &serde_json::json!({
+                "target": target,
+                "expected_revision": composed.project_revision,
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+        .send(world)
+        .await;
+        assert_eq!(materialized.status, 200, "{}", materialized.body);
+    }
+
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&composed.epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let archived_node = world.daemon.state().with_store(|store| {
+        store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the ticket node reads")
+            .expect("the ticket node exists")
+    });
+    let historical_title = world
+        .fake
+        .container_title(archived_node.id)
+        .expect("the historical TSW title");
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{}/retire",
+            composed.project, archived_node.id
+        ),
+        &serde_json::json!({
+            "expected_revision": archived_node.revision.get(),
+            "reason": "the ticket workspace is historical",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("archived-history-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let retired_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node(project_id, archived_node.id)
+            .expect("the retired node reads")
+            .expect("the retired node exists")
+            .revision
+    });
+    let archived = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{}/archive",
+            composed.project, archived_node.id
+        ),
+        &serde_json::json!({
+            "expected_revision": retired_revision.get(),
+            "reason": "the runtime already archived this historical workspace",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("archived-history-archive")
+    .send(world)
+    .await;
+    assert_eq!(archived.status, 200, "{}", archived.body);
+
+    // Reproduce a legacy epic created before Team Definition pins existed.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    connection
+        .execute(
+            "DROP TRIGGER mini_project_team_definition_snapshots_are_permanent",
+            [],
+        )
+        .expect("the legacy fixture can remove its Team Definition pin");
+    connection
+        .execute(
+            "DELETE FROM mini_project_team_definition_snapshots
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![composed.project, composed.epic],
+        )
+        .expect("the legacy Team Definition pin is removed");
+    drop(connection);
+
+    let definition = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .team_definitions
+        .into_iter()
+        .next()
+        .expect("the recommended Team Definition");
+    let migration = serde_json::json!({
+        "target_definition": {
+            "id": definition.definition_id.to_string(),
+            "version": definition.version.get(),
+        },
+        "legacy_topics": {},
+        "expected_revision": composed.project_revision,
+    });
+    world.fake.take_calls();
+    let preview = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-preview",
+            composed.project, composed.epic
+        ),
+        &migration,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let target_nodes = preview.json()["targets"]
+        .as_array()
+        .expect("the live migration census")
+        .iter()
+        .filter_map(|target| target["topology_node_id"].as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !target_nodes.contains(&archived_node.id.to_string()),
+        "an archived native container entered the live migration census: {}",
+        preview.body
+    );
+    assert!(world.fake.take_calls().iter().all(|call| {
+        !matches!(call, AdapterCall::PreviewRetitleContainer(node) if *node == archived_node.id)
+    }));
+
+    let applied = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({
+            "upgrade": migration,
+            "preview_hash": preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("archived-history-team-definition-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        world.fake.container_title(archived_node.id).as_deref(),
+        Some(historical_title.as_str()),
+        "migration rewrote an archived native title"
+    );
+    let pinned = world.daemon.state().with_store(|store| {
+        store
+            .get_mini_project_team_definition(project_id, epic_id)
+            .expect("the migrated Team Definition pin reads")
+            .expect("the active epic is pinned")
+    });
+    assert_eq!(pinned.definition.definition_id, definition.definition_id);
+    assert_eq!(pinned.definition.version, definition.version);
+}
+
 #[tokio::test]
 async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
     let composed = compose_realm("/tmp/kontor-cp2-upgrade").await;

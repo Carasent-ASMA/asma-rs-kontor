@@ -30,6 +30,9 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Limited Team Definition migration previews and exact persistence censuses to
+  active topology nodes and seats, leaving retired or archived native history
+  untouched instead of requiring an unavailable historical workspace retitle.
 - Made Jira materialization retries safely adopt an exact existing task binding
   after a lost connector response without creating a duplicate link, and
   prevented already-confirmed materialization items from being rebound.

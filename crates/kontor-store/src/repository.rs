@@ -15311,9 +15311,10 @@ impl TeamDefinitionRepository for SqliteStore {
                 "SELECT 'container' AS subject_kind, node.id, NULL AS seat_binding_id, node.kind,
                         container.runtime_kind, container.host, container.generation,
                         container.native_id
-                   FROM topology_node_containers AS container
+                  FROM topology_node_containers AS container
                    JOIN topology_nodes AS node ON node.id = container.topology_node_id
                   WHERE container.project_id = ?1 AND node.mini_project_id = ?2
+                    AND node.lifecycle = 'active'
                  UNION ALL
                  SELECT 'seat', node.id, seat.id, node.kind,
                         hosted.runtime_kind, hosted.host, hosted.generation, hosted.native_id
@@ -15321,6 +15322,7 @@ impl TeamDefinitionRepository for SqliteStore {
                    JOIN seat_bindings AS seat ON seat.id = hosted.seat_binding_id
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
                   WHERE hosted.project_id = ?1 AND node.mini_project_id = ?2
+                    AND node.lifecycle = 'active' AND seat.lifecycle = 'active'
                  UNION ALL
                  SELECT 'seat', node.id, seat.id, node.kind,
                         consultation.runtime_kind, consultation.host,
@@ -15330,6 +15332,7 @@ impl TeamDefinitionRepository for SqliteStore {
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
                   WHERE consultation.project_id = ?1 AND node.mini_project_id = ?2
                     AND consultation.native_id IS NOT NULL
+                    AND node.lifecycle = 'active' AND seat.lifecycle = 'active'
                  UNION ALL
                  -- Delivery seats. Their native session is held by the agent
                  -- run's runtime binding rather than by any seat table, so a
@@ -15355,6 +15358,7 @@ impl TeamDefinitionRepository for SqliteStore {
                     AND seat.lifecycle = 'active'
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
                   WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
+                    AND node.lifecycle = 'active'
                     AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
                  ORDER BY 1, 8",
             )

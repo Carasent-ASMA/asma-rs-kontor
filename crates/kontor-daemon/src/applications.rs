@@ -6108,6 +6108,9 @@ impl Services {
             let mut required_topics = BTreeSet::new();
             let mut permitted_topics = BTreeSet::new();
             for node in &nodes {
+                if node.lifecycle != TopologyLifecycle::Active {
+                    continue;
+                }
                 let Some(container) = definition.container(&node.kind) else {
                     continue;
                 };
@@ -6154,6 +6157,15 @@ impl Services {
         let mut actions = Vec::new();
 
         for node in nodes {
+            // A retired or archived node is immutable historical evidence, not
+            // a live native naming subject. Its runtime container may already
+            // be archived and therefore unable to accept an identity-preserving
+            // retitle. Omitting it keeps the migration census aligned with the
+            // repository's live-census contract and prevents rewriting history
+            // merely to make old objects resemble the new definition.
+            if node.lifecycle != TopologyLifecycle::Active {
+                continue;
+            }
             if target_definition
                 .is_some_and(|definition| definition.container(&node.kind).is_none())
             {

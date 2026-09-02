@@ -192,8 +192,15 @@ The complete canonical fixture is
   `team-definition-selection:preview` / `:apply` compare-and-swap.
 - Move an existing epic only through
   `team-definition:upgrade-preview` / `:upgrade-apply`.
-- A migration preview binds every container and seat to its full native runtime
-  identity, parent, kind, cwd, observed title and desired title.
+- A migration preview binds every **active** container and seat to its full
+  native runtime identity, parent, kind, cwd, observed title and desired title.
+  Retired or archived nodes and inactive seats are immutable historical
+  evidence: they are excluded from both the preview and persistence census,
+  and their native titles are never rewritten to resemble the new definition.
+- Reconcile lifecycle before preview through the supported settle, seat-retire,
+  node-retire and node-archive surfaces. A runtime-archived historical workspace
+  must be non-active in Kontor; never retire active work merely to bypass a
+  migration refusal.
 - Legacy ASW/CSW topics are explicit operator input keyed by topology-node id;
   unknown, missing or extra mappings are refused.
 - Before upgrading a legacy epic, replay each ticket's existing
@@ -207,8 +214,8 @@ The complete canonical fixture is
   every live TeamRun against the target Team Definition, including duplicate
   rendered-name checks for the slots that actually coexist in that run.
 - The recorded and confirming censuses are bidirectional over both subject and
-  immutable native identity: every live pair must be enumerated exactly, and an
-  extra, stale or identity-mismatched target refuses the migration.
+  immutable native identity: every active live pair must be enumerated exactly,
+  and an extra, stale or identity-mismatched target refuses the migration.
 - Apply records its intent before the first external retitle. Partial effects
   leave the old pin in force and the epic fenced. The same idempotency key
   resumes from fresh exact readback of every target; an earlier success that
