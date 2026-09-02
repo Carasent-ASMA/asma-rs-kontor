@@ -451,6 +451,117 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     assert_eq!(replayed["revision"], created["revision"]);
     assert_eq!(replayed["created_at"], created["created_at"]);
 
+    // The catalog's production definition intentionally registers only the
+    // calibrated delivery slots. This journey launches the five-slot MVP
+    // template, so it must publish and select that explicit test vocabulary
+    // before the epic freezes its pin. Do it through MCP as well: silently
+    // widening the production fixture or writing the store directly would make
+    // the journey pass while bypassing the configuration contract it claims to
+    // prove.
+    // A fresh project deliberately has no published Team Definition yet, so
+    // the first candidate is authored input, not something a list operation
+    // could return. Start from the shipped recommendation and make only this
+    // journey's explicit slot additions; every acceptance and mutation still
+    // crosses the MCP validate/publish/preview/apply boundary below.
+    let domain = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled operational definition loads");
+    let recommended = domain
+        .team_definitions
+        .first()
+        .cloned()
+        .expect("the build ships a recommended Team Definition");
+    let topology = domain
+        .topology_specs
+        .iter()
+        .find(|topology| {
+            topology.spec_id == recommended.topology.spec_id
+                && topology.version == recommended.topology.version
+        })
+        .cloned()
+        .expect("the definition's validator ships beside it");
+    let topology_candidate = serde_json::to_value(topology).expect("the topology serializes");
+    let topology_validation = ok(
+        &lead,
+        "kontor_topology_spec_validate",
+        serde_json::json!({
+            "project_id": project,
+            "candidate": topology_candidate.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(topology_validation["violations"], serde_json::json!([]));
+    ok(
+        &lead,
+        "kontor_topology_spec_publish",
+        serde_json::json!({
+            "project_id": project,
+            "idempotency_key": "journey-topology-publish-1",
+            "candidate": topology_candidate,
+            "validation_hash": topology_validation["validation_hash"],
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+    let mut candidate = serde_json::to_value(recommended).expect("the definition serializes");
+    let tsw = candidate["containers"]
+        .as_array_mut()
+        .expect("the definition has containers")
+        .iter_mut()
+        .find(|container| container["kind"] == "TSW")
+        .expect("the definition configures TSW");
+    tsw["team_slots"]
+        .as_array_mut()
+        .expect("TSW has an explicit delivery-slot catalog")
+        .extend([
+            serde_json::json!({"slot_id": "architect", "role_code": "SA", "capability_profile": "delivery-standard"}),
+            serde_json::json!({"slot_id": "builder", "role_code": "SWE", "capability_profile": "delivery-standard"}),
+            serde_json::json!({"slot_id": "tester", "role_code": "QA", "capability_profile": "delivery-standard"}),
+            serde_json::json!({"slot_id": "inspector", "role_code": "AUD", "capability_profile": "delivery-high"}),
+            serde_json::json!({"slot_id": "verifier", "role_code": "UAT", "capability_profile": "delivery-high"}),
+        ]);
+    let validation = ok(
+        &lead,
+        "kontor_team_definition_validate",
+        serde_json::json!({"project_id": project, "candidate": candidate.clone()}),
+    )
+    .await;
+    assert_eq!(validation["violations"], serde_json::json!([]));
+    let published = ok(
+        &lead,
+        "kontor_team_definition_publish",
+        serde_json::json!({
+            "project_id": project,
+            "idempotency_key": "journey-team-definition-publish-1",
+            "candidate": candidate,
+            "validation_hash": validation["validation_hash"],
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+    let selection = ok(
+        &lead,
+        "kontor_project_team_definition_selection_preview",
+        serde_json::json!({
+            "project_id": project,
+            "target_definition": {
+                "id": published["definition"]["id"],
+                "version": published["definition"]["version"],
+            },
+        }),
+    )
+    .await;
+    ok(
+        &lead,
+        "kontor_project_team_definition_selection_apply",
+        serde_json::json!({
+            "project_id": project,
+            "idempotency_key": "journey-team-definition-select-1",
+            "preview_hash": selection["preview_hash"],
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+
     // 3. An account profile a run could be pinned to.
     let account = ok(
         &lead,
@@ -580,8 +691,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     );
     assert_eq!(
         transport.calls(),
-        11,
-        "eleven tool invocations made eleven requests: {routes:#?}"
+        17,
+        "seventeen tool invocations made seventeen requests: {routes:#?}"
     );
 
     // ---- 7. From the planning point to a closed epic, through the same seat ----
