@@ -22992,9 +22992,10 @@ async fn a_team_definition_upgrade_leaves_archived_native_history_untouched() {
     assert_eq!(pinned.definition.version, definition.version);
 }
 
-/// An open TeamRun can remain as evidence after its exact seat bindings and
-/// TSW are retired. Upgrade preflight must not validate that historical run
-/// against the new definition: only active topology is carried across the pin.
+/// An open, bound TeamRun can remain as pre-seat legacy evidence after its TSW
+/// is archived. Upgrade preflight must not validate that historical run against
+/// the new definition: only active topology is carried across the pin. The
+/// active-TSW seat completeness fence is covered separately and remains strict.
 #[tokio::test]
 async fn a_team_definition_upgrade_ignores_open_runs_on_archived_task_topology() {
     let world = World::open_empty_with_a_plane().await;
@@ -23126,6 +23127,36 @@ async fn a_team_definition_upgrade_ignores_open_runs_on_archived_task_topology()
                 historical_title,
             )
         });
+
+    // Reproduce the production pre-seat shape precisely. These bound runs
+    // predate SeatBinding materialization; once their exact TSW is archived,
+    // the absence of seat rows is historical rather than an active migration
+    // omission. Keeping this as raw legacy setup also proves apply re-runs the
+    // same lifecycle-aware fence as preview.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    let removed = connection
+        .execute(
+            "DELETE FROM seat_bindings
+             WHERE project_id = ?1 AND topology_node_id = ?2",
+            rusqlite::params![project, task_node.id.to_string()],
+        )
+        .expect("the legacy pre-seat gap is seeded");
+    assert!(
+        removed > 0,
+        "the fixture originally materialized delivery seats"
+    );
+    drop(connection);
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .list_seat_bindings(project_id, task_node.id)
+                .expect("the archived legacy seat gap reads"))
+            .is_empty(),
+        "the archived fixture has no SeatBinding rows"
+    );
 
     let upgrade = serde_json::json!({
         "target_definition": {"id": target.definition_id, "version": target.version},
