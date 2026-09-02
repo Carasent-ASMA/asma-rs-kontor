@@ -211,8 +211,10 @@ The complete canonical fixture is
   one active SeatBinding at the same `RoleSlotId`. A missing, duplicate or
   cross-slot binding refuses the complete census instead of omitting a seat.
 - Before its first runtime read, upgrade preview resolves every exact slot of
-  every live TeamRun against the target Team Definition, including duplicate
-  rendered-name checks for the slots that actually coexist in that run.
+  every open TeamRun hosted by an **active** topology node against the target
+  Team Definition, including duplicate rendered-name checks for the slots that
+  actually coexist in that run. An open run whose exact seats and node are
+  inactive remains historical evidence and is not carried across the pin.
 - The recorded and confirming censuses are bidirectional over both subject and
   immutable native identity: every active live pair must be enumerated exactly,
   and an extra, stale or identity-mismatched target refuses the migration.
@@ -221,9 +223,13 @@ The complete canonical fixture is
   resumes from fresh exact readback of every target; an earlier success that
   drifted is repaired again or remains pending. A different key cannot
   interleave.
-- While that fence exists, delivery admission, topology materialization and
-  replacement refuse before writing a command, retiring a predecessor,
-  creating a successor or contacting a runtime.
+- While that fence exists, delivery admission, topology materialization,
+  replacement, seat release and every topology-node lifecycle transition
+  refuse before writing a command, retiring a predecessor, changing logical
+  lifecycle, creating a successor or contacting a runtime. The persistence
+  fence shares the same immediate transaction as a seat release or node
+  transition, so a migration census and a transition cannot race: whichever
+  commits first determines whether the native is live or immutable history.
 - The pin switches only after every target reads back the desired title under
   the unchanged native identity. Backup/export includes definitions, defaults,
   pins, migration intents, targets, topic provenance and per-seat advice.

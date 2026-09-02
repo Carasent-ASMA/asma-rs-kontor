@@ -33,6 +33,10 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Limited Team Definition migration previews and exact persistence censuses to
   active topology nodes and seats, leaving retired or archived native history
   untouched instead of requiring an unavailable historical workspace retitle.
+- Fenced seat release and every topology lifecycle transition atomically with
+  an in-flight Team Definition migration, and limited TeamRun slot preflight
+  and parent resolution to exact active topology so historical predecessors
+  cannot block or race a live migration.
 - Made Jira materialization retries safely adopt an exact existing task binding
   after a lost connector response without creating a duplicate link, and
   prevented already-confirmed materialization items from being rebound.

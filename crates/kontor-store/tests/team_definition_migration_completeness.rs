@@ -22,15 +22,18 @@ use kontor_core::repository::{
     MiniProjectTopologySnapshot, NativePlacement, NewAgentRun, NewCommandIntent, NewMiniProject,
     NewNativeContainerBinding, NewProject, NewSeatBinding, NewSessionTopologyNode, NewTask,
     NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun, ProjectRepository,
-    RunRepository, RuntimeBinding, SpecRepository, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
+    RunRepository, RuntimeBinding, SeatLivenessObservation, SpecRepository,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TopologyRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
     TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot,
 };
-use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, TaskState, TopologyLifecycle,
+};
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use tempfile::TempDir;
@@ -728,6 +731,139 @@ fn a_live_delivery_session_with_no_seat_at_its_slot_fails_closed() {
             ))
             .is_err(),
         "and no migration can be recorded while a live session cannot be named"
+    );
+}
+
+#[test]
+fn an_inactive_delivery_seat_is_history_and_does_not_block_apply() {
+    let w = world();
+    w.store
+        .observe_seat_binding(
+            w.project_id,
+            w.delivery_seat,
+            &SeatLivenessObservation {
+                released_at: Some(at("2026-09-02T10:42:00Z")),
+                ..SeatLivenessObservation::default()
+            },
+            at("2026-09-02T10:42:00Z"),
+        )
+        .expect("the exact delivery seat is retired as historical evidence");
+
+    let targets: Vec<_> = complete_targets(&w)
+        .into_iter()
+        .filter(|target| !matches!(target.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+        .collect();
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("a nonterminal run with an inactive exact seat is historical, not seatless");
+    assert!(census.iter().all(|subject| {
+        subject.subject
+            != (TeamDefinitionMigrationSubject::Seat {
+                topology_node_id: w.tsw,
+                seat_binding_id: w.delivery_seat,
+            })
+    }));
+
+    let recorded = w
+        .store
+        .record_team_definition_migration(&migration(
+            &w,
+            "inactive-delivery-seat-is-history",
+            targets.clone(),
+        ))
+        .expect("the migration records without the historical seat");
+    for target in targets {
+        w.store
+            .observe_team_definition_migration(
+                w.project_id,
+                recorded.id,
+                &[TeamDefinitionMigrationObservation {
+                    subject: target.subject,
+                    identity: target.identity.clone(),
+                    observed: Some(target.desired.clone()),
+                    state: TeamDefinitionMigrationTargetState::Renamed,
+                    observed_at: at("2026-09-02T11:00:00Z"),
+                }],
+                at("2026-09-02T11:00:00Z"),
+            )
+            .expect("each active native reads back");
+    }
+    let confirmed = w
+        .store
+        .confirm_team_definition_migration(w.project_id, recorded.id, at("2026-09-02T11:05:00Z"))
+        .expect("the pin advances over active subjects only");
+    assert_eq!(confirmed.state, TeamDefinitionMigrationState::Confirmed);
+    assert_eq!(
+        w.store
+            .get_seat_binding(w.project_id, w.delivery_seat)
+            .expect("the historical seat reads")
+            .expect("the historical seat remains")
+            .lifecycle,
+        TopologyLifecycle::Retired,
+        "apply never reactivates or rewrites historical seat evidence"
+    );
+}
+
+#[test]
+fn an_in_flight_migration_atomically_fences_node_and_seat_lifecycle() {
+    let w = world();
+    let recorded = w
+        .store
+        .record_team_definition_migration(&migration(
+            &w,
+            "lifecycle-fence-after-census",
+            complete_targets(&w),
+        ))
+        .expect("the live native census is frozen");
+    assert_eq!(recorded.state, TeamDefinitionMigrationState::Recorded);
+
+    assert!(
+        w.store
+            .observe_seat_binding(
+                w.project_id,
+                w.delivery_seat,
+                &SeatLivenessObservation {
+                    released_at: Some(at("2026-09-02T10:43:00Z")),
+                    ..SeatLivenessObservation::default()
+                },
+                at("2026-09-02T10:43:00Z"),
+            )
+            .is_err(),
+        "a seat cannot become historical after its migration census is recorded"
+    );
+    let ecp = w
+        .store
+        .get_topology_node(w.project_id, w.ecp)
+        .expect("the ECP reads")
+        .expect("the ECP exists");
+    assert!(
+        w.store
+            .transition_topology_node(
+                w.project_id,
+                w.ecp,
+                TopologyLifecycle::Retired,
+                ecp.revision,
+                at("2026-09-02T10:44:00Z"),
+            )
+            .is_err(),
+        "a node cannot become historical after its migration census is recorded"
+    );
+    assert_eq!(
+        w.store
+            .get_seat_binding(w.project_id, w.delivery_seat)
+            .expect("the seat reads")
+            .expect("the seat remains")
+            .lifecycle,
+        TopologyLifecycle::Active
+    );
+    assert_eq!(
+        w.store
+            .get_topology_node(w.project_id, w.ecp)
+            .expect("the ECP reads")
+            .expect("the ECP remains")
+            .lifecycle,
+        TopologyLifecycle::Active
     );
 }
 

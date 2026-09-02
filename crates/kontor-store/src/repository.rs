@@ -7075,6 +7075,8 @@ impl TopologyRepository for SqliteStore {
             .revision
             .expect("topology node", expected_revision)?;
 
+        ensure_no_live_native_migration_for_node(&transaction, project_id, id)?;
+
         let advances = matches!(
             (current.lifecycle, lifecycle),
             (TopologyLifecycle::Active, TopologyLifecycle::Retired)
@@ -7313,6 +7315,25 @@ impl TopologyRepository for SqliteStore {
             ));
         }
         let transaction = self.begin()?;
+        if observation.released_at.is_some() {
+            let topology_node_id: Option<String> = transaction
+                .query_row(
+                    "SELECT topology_node_id FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            let topology_node_id = topology_node_id.ok_or(RepositoryError::NotFound {
+                subject: "seat binding",
+            })?;
+            ensure_no_live_native_migration_for_node(
+                &transaction,
+                project_id,
+                TopologyNodeId::parse(&topology_node_id)?,
+            )?;
+        }
         // COALESCE, never assignment: an observation carries what was seen and
         // nothing else, so recording an attachment must not erase an activity
         // instant recorded a moment earlier by a different observer. The one
@@ -14752,6 +14773,42 @@ fn team_definition_validator_in(
 }
 
 /// Read one migration intent and its complete target set inside a transaction.
+/// Refuse a topology or seat lifecycle write while its epic's exact native
+/// census is frozen by an unsettled Team Definition migration.
+///
+/// This runs inside the same `IMMEDIATE` transaction as the lifecycle write.
+/// The migration recorder uses that same serialization boundary, so either the
+/// lifecycle change commits first and the later census observes history, or the
+/// migration commits first and this write is refused. There is no check/write
+/// race in which a newly historical native can still be retitled.
+fn ensure_no_live_native_migration_for_node(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    topology_node_id: TopologyNodeId,
+) -> RepositoryResult<()> {
+    let fenced: Option<i64> = transaction
+        .query_row(
+            "SELECT 1
+               FROM topology_nodes AS node
+               JOIN team_definition_migration_intents AS migration
+                 ON migration.project_id = node.project_id
+                AND migration.mini_project_id = node.mini_project_id
+                AND migration.state IN ('recorded', 'applying')
+              WHERE node.project_id = ?1 AND node.id = ?2",
+            params![project_id.to_string(), topology_node_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if fenced.is_some() {
+        return Err(conflict(
+            "team definition migration",
+            "topology and seat lifecycle are fenced while native names migrate",
+        ));
+    }
+    Ok(())
+}
+
 type TeamDefinitionMigrationRow = (
     String,
     String,
@@ -15359,7 +15416,6 @@ impl TeamDefinitionRepository for SqliteStore {
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
                   WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
                     AND node.lifecycle = 'active'
-                    AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
                  ORDER BY 1, 8",
             )
             .map_err(backend)?;
@@ -15399,15 +15455,9 @@ impl TeamDefinitionRepository for SqliteStore {
                 },
             });
         }
-        // Nothing durably links one delivery seat to one agent run: a seat
-        // binding names its team run, and so does the run. Where a team run has
-        // more than one active seat, this join cannot say which seat holds
-        // which native session, and guessing would either retitle the wrong
-        // session or silently drop one. Refuse instead, so the ambiguity is
-        // resolved by a human before any native is touched.
         // The slot join is exact, so an ordinary multi-seat TeamRun censuses
-        // cleanly. These two checks remain for state the join cannot make sense
-        // of, and both fail closed rather than skipping a live native.
+        // cleanly. These checks remain for state the join cannot make sense of,
+        // and both fail closed rather than skipping a live native.
         let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
             BTreeMap::new();
         for live in &subjects {
@@ -15444,21 +15494,41 @@ impl TeamDefinitionRepository for SqliteStore {
             .connection
             .query_row(
                 "SELECT count(*)
-                   FROM runtime_bindings AS binding
-                   JOIN agent_runs AS run
-                     ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
-                   JOIN team_runs AS team ON team.id = run.team_run_id
-                   JOIN tasks AS task ON task.id = team.task_id
-                  WHERE binding.project_id = ?1
-                    AND task.mini_project_id = ?2
-                    AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
-                    AND (
-                        SELECT count(*) FROM seat_bindings AS seat
-                         WHERE seat.team_run_id = run.team_run_id
-                           AND seat.role_slot_id = run.role_key
-                           AND seat.project_id = binding.project_id
-                           AND seat.lifecycle = 'active'
-                    ) <> 1",
+                   FROM (
+                     SELECT run.id,
+                            sum(CASE
+                                WHEN seat.id IS NOT NULL
+                                 AND seat.lifecycle = 'active'
+                                 AND node.lifecycle = 'active'
+                                THEN 1 ELSE 0 END) AS active_seats,
+                            sum(CASE
+                                WHEN seat.id IS NOT NULL
+                                 AND (seat.lifecycle <> 'active'
+                                      OR node.lifecycle <> 'active')
+                                THEN 1 ELSE 0 END) AS historical_seats
+                       FROM runtime_bindings AS binding
+                       JOIN agent_runs AS run
+                         ON run.id = binding.agent_run_id
+                        AND run.project_id = binding.project_id
+                       JOIN team_runs AS team ON team.id = run.team_run_id
+                       JOIN tasks AS task ON task.id = team.task_id
+                       LEFT JOIN seat_bindings AS seat
+                         ON seat.team_run_id = run.team_run_id
+                        AND seat.role_slot_id = run.role_key
+                        AND seat.project_id = binding.project_id
+                       LEFT JOIN topology_nodes AS node
+                         ON node.id = seat.topology_node_id
+                        AND node.project_id = seat.project_id
+                      WHERE binding.project_id = ?1
+                        AND task.mini_project_id = ?2
+                        AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
+                      GROUP BY run.id
+                   ) AS candidate
+                  WHERE candidate.active_seats <> 1
+                    AND NOT (
+                        candidate.active_seats = 0
+                        AND candidate.historical_seats > 0
+                    )",
                 params![project_id.to_string(), mini_project_id.to_string()],
                 |row| row.get(0),
             )
