@@ -62,19 +62,26 @@ order:
    default selection under compare-and-swap. This affects future epics only.
 4. Inventory explicit topics for every legacy ASW/CSW; never derive one from a
    question, title or transcript.
-5. Reconcile every legacy ticket TSW through `topology:materialize` using its
+5. Align Kontor lifecycle with runtime-archived history through the supported
+   settle, seat-retire, node-retire and node-archive operations. Only retired or
+   archived nodes and inactive seats are excluded from migration; their native
+   names remain historical. Never retire active work to evade a preview refusal.
+6. Reconcile every legacy ticket TSW through `topology:materialize` using its
    stable historical key where available. The selected/pinned definition maps
    each open TeamRun's exact slot to one logical SeatBinding without creating or
    replacing a native session. Replay it again to prove the same binding ids.
-6. Preview the existing epic's Team Definition upgrade. Confirm the complete
+7. Preview the existing epic's Team Definition upgrade. Confirm the complete
    identity-bound container-and-seat census before apply. Preview first
    preflights every exact slot of every live TeamRun against the target
    definition and performs no runtime read when a mapping is missing or two
    co-resident slots would render the same name.
-7. Apply with one stable idempotency key. A partial result keeps the old pin and
+8. Apply with one stable idempotency key. A partial result keeps the old pin and
    fences materialization; replay the same key until every exact native object
-   reads back and the pin switches. The fence blocks admission and replacement
-   before any command write, predecessor retirement or runtime contact.
+   reads back and the pin switches. The fence blocks admission, replacement,
+   seat release and topology lifecycle transitions before any command write,
+   logical retirement or runtime contact. The final persistence check is in the
+   same immediate transaction as each seat/node lifecycle write, so lifecycle
+   cannot race a frozen migration census.
 
 Logical epic creation may freeze the selected Team Definition before step 2.
 This is safe because a pin is not placement authority: every native
@@ -105,6 +112,9 @@ role code or display label is authoritative; persisted roles and caller values
 are never fallback names. Migration record and confirmation each compare the
 complete live census bidirectionally by subject and immutable native identity,
 so neither an omitted live object nor a stale extra target can move the pin.
+TeamRun slot preflight is likewise limited to active topology: a nonterminal
+run whose exact seats and node were already retired remains history and cannot
+block the current pin upgrade.
 
 Schema v77 introduced Team Definitions and migration state; v78-v80 complete
 per-seat advice, receipt recovery and exact command-intent recovery. During a

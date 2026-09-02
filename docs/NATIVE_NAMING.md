@@ -192,8 +192,15 @@ The complete canonical fixture is
   `team-definition-selection:preview` / `:apply` compare-and-swap.
 - Move an existing epic only through
   `team-definition:upgrade-preview` / `:upgrade-apply`.
-- A migration preview binds every container and seat to its full native runtime
-  identity, parent, kind, cwd, observed title and desired title.
+- A migration preview binds every **active** container and seat to its full
+  native runtime identity, parent, kind, cwd, observed title and desired title.
+  Retired or archived nodes and inactive seats are immutable historical
+  evidence: they are excluded from both the preview and persistence census,
+  and their native titles are never rewritten to resemble the new definition.
+- Reconcile lifecycle before preview through the supported settle, seat-retire,
+  node-retire and node-archive surfaces. A runtime-archived historical workspace
+  must be non-active in Kontor; never retire active work merely to bypass a
+  migration refusal.
 - Legacy ASW/CSW topics are explicit operator input keyed by topology-node id;
   unknown, missing or extra mappings are refused.
 - Before upgrading a legacy epic, replay each ticket's existing
@@ -204,19 +211,25 @@ The complete canonical fixture is
   one active SeatBinding at the same `RoleSlotId`. A missing, duplicate or
   cross-slot binding refuses the complete census instead of omitting a seat.
 - Before its first runtime read, upgrade preview resolves every exact slot of
-  every live TeamRun against the target Team Definition, including duplicate
-  rendered-name checks for the slots that actually coexist in that run.
+  every open TeamRun hosted by an **active** topology node against the target
+  Team Definition, including duplicate rendered-name checks for the slots that
+  actually coexist in that run. An open run whose exact seats and node are
+  inactive remains historical evidence and is not carried across the pin.
 - The recorded and confirming censuses are bidirectional over both subject and
-  immutable native identity: every live pair must be enumerated exactly, and an
-  extra, stale or identity-mismatched target refuses the migration.
+  immutable native identity: every active live pair must be enumerated exactly,
+  and an extra, stale or identity-mismatched target refuses the migration.
 - Apply records its intent before the first external retitle. Partial effects
   leave the old pin in force and the epic fenced. The same idempotency key
   resumes from fresh exact readback of every target; an earlier success that
   drifted is repaired again or remains pending. A different key cannot
   interleave.
-- While that fence exists, delivery admission, topology materialization and
-  replacement refuse before writing a command, retiring a predecessor,
-  creating a successor or contacting a runtime.
+- While that fence exists, delivery admission, topology materialization,
+  replacement, seat release and every topology-node lifecycle transition
+  refuse before writing a command, retiring a predecessor, changing logical
+  lifecycle, creating a successor or contacting a runtime. The persistence
+  fence shares the same immediate transaction as a seat release or node
+  transition, so a migration census and a transition cannot race: whichever
+  commits first determines whether the native is live or immutable history.
 - The pin switches only after every target reads back the desired title under
   the unchanged native identity. Backup/export includes definitions, defaults,
   pins, migration intents, targets, topic provenance and per-seat advice.

@@ -60,11 +60,11 @@ use kontor_core::repository::{
     CapacityRepository, CommandRepository, ConnectorSpecSelector, NewAgentRun,
     NewConsultationMaterializationReroute, NewLocalCommand, NewMiniProject, NewObservation,
     NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent,
-    NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
-    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, RuntimeBinding,
-    SourceDisposition, SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    NewSeatBinding, NewSessionTopologyNode, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    ProjectRepository, ProviderUsageObservation, RealmRepository, RunClosure, RunRepository,
+    RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
+    StoredQuickSession, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
     TopologyRepository, WorkflowRepository,
 };
@@ -74,7 +74,7 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome,
+    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
 use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
@@ -13551,6 +13551,30 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
     let project_id = ProjectId::parse(&project).expect("a project id");
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
     let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let seat_binding_id = world.daemon.state().with_store(|store| {
+        let run = store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the agent run reads")
+            .expect("the agent run exists");
+        let team = store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team run reads")
+            .expect("the team run exists");
+        let node = store
+            .get_task_topology_node(project_id, team.task_id)
+            .expect("the task topology reads")
+            .expect("the task topology exists");
+        store
+            .list_seat_bindings(project_id, node.id)
+            .expect("the persistent seats read")
+            .into_iter()
+            .find(|binding| {
+                binding.team_run_id == Some(run.team_run_id)
+                    && binding.role_slot_id.as_str() == role_slot
+            })
+            .expect("the run's exact persistent seat exists")
+            .id
+    });
     let (project_revision, target) = world.daemon.state().with_store(|store| {
         let revision = store
             .get_project(project_id)
@@ -13678,6 +13702,84 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
         after, before,
         "the predecessor is byte-identical after refusal"
     );
+    let (seat_before, node_before) = world.daemon.state().with_store(|store| {
+        let seat = store
+            .get_seat_binding(project_id, seat_binding_id)
+            .expect("the seat binding reads")
+            .expect("the seat binding exists");
+        let node = store
+            .get_topology_node(project_id, seat.topology_node_id)
+            .expect("the hosting topology node reads")
+            .expect("the hosting topology node exists");
+        (seat, node)
+    });
+    world.fake.take_calls();
+    let blocked_seat_retirement = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{seat_binding_id}/retire"),
+        &serde_json::json!({
+            "expected_revision": seat_before.revision,
+            "reason": "try to retire a frozen migration subject",
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("migration-fences-seat-retirement")
+    .send(&world)
+    .await;
+    assert_eq!(
+        blocked_seat_retirement.status, 409,
+        "{}",
+        blocked_seat_retirement.body
+    );
+    assert_eq!(
+        blocked_seat_retirement.code(),
+        "placement_blocked",
+        "{}",
+        blocked_seat_retirement.body
+    );
+
+    let blocked_node_retirement = Call::post(
+        format!(
+            "/v1/projects/{project}/topology/nodes/{}/retire",
+            node_before.id
+        ),
+        &serde_json::json!({
+            "expected_revision": node_before.revision,
+            "reason": "try to retire a frozen migration container",
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("migration-fences-node-retirement")
+    .send(&world)
+    .await;
+    assert_eq!(
+        blocked_node_retirement.status, 409,
+        "{}",
+        blocked_node_retirement.body
+    );
+    assert_eq!(
+        blocked_node_retirement.code(),
+        "placement_blocked",
+        "{}",
+        blocked_node_retirement.body
+    );
+    assert!(
+        world.fake.take_calls().is_empty(),
+        "lifecycle fences are checked before any runtime call"
+    );
+    let (seat_after, node_after) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_seat_binding(project_id, seat_binding_id)
+                .expect("the seat binding reads after refusal")
+                .expect("the seat binding remains"),
+            store
+                .get_topology_node(project_id, node_before.id)
+                .expect("the topology node reads after refusal")
+                .expect("the topology node remains"),
+        )
+    });
+    assert_eq!(seat_after, seat_before, "the refused seat write is atomic");
+    assert_eq!(node_after, node_before, "the refused node write is atomic");
     assert!(
         world
             .daemon
@@ -22649,6 +22751,426 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     assert_eq!(title_for("TSW"), "TSW • KOP-7869");
     assert_eq!(title_for("ESW"), "ESW • KOP-8001");
     assert_eq!(title_for("ECP"), "ECP • KOP-8001");
+}
+
+/// Historical topology remains immutable evidence. A Team Definition upgrade
+/// migrates only active native containers, so a runtime-archived TSW cannot
+/// block the live census or be retitled to make old history look current.
+#[tokio::test]
+async fn a_team_definition_upgrade_leaves_archived_native_history_untouched() {
+    let composed = compose_realm("/tmp/kontor-archived-team-definition-history").await;
+    let world = &composed.world;
+    let epic = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        composed.project, composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    let task = epic.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the composed task id")
+        .to_owned();
+
+    for (key, target) in [
+        (
+            "archived-history-control",
+            serde_json::json!({"scope": "epic_control", "epic_id": composed.epic}),
+        ),
+        (
+            "archived-history-ticket",
+            serde_json::json!({"scope": "ticket", "task_id": task}),
+        ),
+    ] {
+        let materialized = Call::post(
+            format!("/v1/projects/{}/topology:materialize", composed.project),
+            &serde_json::json!({
+                "target": target,
+                "expected_revision": composed.project_revision,
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+        .send(world)
+        .await;
+        assert_eq!(materialized.status, 200, "{}", materialized.body);
+    }
+
+    let project_id = ProjectId::parse(&composed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&composed.epic).expect("an epic id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let archived_node = world.daemon.state().with_store(|store| {
+        store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the ticket node reads")
+            .expect("the ticket node exists")
+    });
+    let historical_title = world
+        .fake
+        .container_title(archived_node.id)
+        .expect("the historical TSW title");
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{}/retire",
+            composed.project, archived_node.id
+        ),
+        &serde_json::json!({
+            "expected_revision": archived_node.revision.get(),
+            "reason": "the ticket workspace is historical",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("archived-history-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let retired_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node(project_id, archived_node.id)
+            .expect("the retired node reads")
+            .expect("the retired node exists")
+            .revision
+    });
+    let archived = Call::post(
+        format!(
+            "/v1/projects/{}/topology/nodes/{}/archive",
+            composed.project, archived_node.id
+        ),
+        &serde_json::json!({
+            "expected_revision": retired_revision.get(),
+            "reason": "the runtime already archived this historical workspace",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("archived-history-archive")
+    .send(world)
+    .await;
+    assert_eq!(archived.status, 200, "{}", archived.body);
+
+    // Old data may also contain a retired predecessor of the same kind as the
+    // active parent. Parent resolution must follow the active node's exact
+    // `parent_id`; scanning every historical node of that kind makes the
+    // active ECP look ambiguously parented and blocks an otherwise safe
+    // migration.
+    let historical_esw = TopologyNodeId::generate();
+    world.daemon.state().with_store(|store| {
+        let active_esw = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic topology reads")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ESW" && node.lifecycle == TopologyLifecycle::Active)
+            .expect("the active ESW exists");
+        store
+            .create_topology_node(&NewSessionTopologyNode {
+                id: historical_esw,
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: active_esw.topology.clone(),
+                kind: active_esw.kind.clone(),
+                parent_id: active_esw.parent_id,
+                task_id: None,
+                created_at: kontor_api::now(),
+            })
+            .expect("the historical ESW predecessor is represented");
+        let predecessor = store
+            .get_topology_node(project_id, historical_esw)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists");
+        let predecessor = store
+            .transition_topology_node(
+                project_id,
+                historical_esw,
+                TopologyLifecycle::Retired,
+                predecessor.revision,
+                kontor_api::now(),
+            )
+            .expect("the predecessor retires");
+        store
+            .transition_topology_node(
+                project_id,
+                historical_esw,
+                TopologyLifecycle::Archived,
+                predecessor.revision,
+                kontor_api::now(),
+            )
+            .expect("the predecessor archives");
+    });
+
+    // Reproduce a legacy epic created before Team Definition pins existed.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    connection
+        .execute(
+            "DROP TRIGGER mini_project_team_definition_snapshots_are_permanent",
+            [],
+        )
+        .expect("the legacy fixture can remove its Team Definition pin");
+    connection
+        .execute(
+            "DELETE FROM mini_project_team_definition_snapshots
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![composed.project, composed.epic],
+        )
+        .expect("the legacy Team Definition pin is removed");
+    drop(connection);
+
+    let definition = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .team_definitions
+        .into_iter()
+        .next()
+        .expect("the recommended Team Definition");
+    let migration = serde_json::json!({
+        "target_definition": {
+            "id": definition.definition_id.to_string(),
+            "version": definition.version.get(),
+        },
+        "legacy_topics": {},
+        "expected_revision": composed.project_revision,
+    });
+    world.fake.take_calls();
+    let preview = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-preview",
+            composed.project, composed.epic
+        ),
+        &migration,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let target_nodes = preview.json()["targets"]
+        .as_array()
+        .expect("the live migration census")
+        .iter()
+        .filter_map(|target| target["topology_node_id"].as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !target_nodes.contains(&archived_node.id.to_string()),
+        "an archived native container entered the live migration census: {}",
+        preview.body
+    );
+    assert!(
+        !target_nodes.contains(&historical_esw.to_string()),
+        "an archived same-kind predecessor entered the live migration census: {}",
+        preview.body
+    );
+    assert!(world.fake.take_calls().iter().all(|call| {
+        !matches!(call, AdapterCall::PreviewRetitleContainer(node) if *node == archived_node.id)
+    }));
+
+    let applied = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            composed.project, composed.epic
+        ),
+        &serde_json::json!({
+            "upgrade": migration,
+            "preview_hash": preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("archived-history-team-definition-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        world.fake.container_title(archived_node.id).as_deref(),
+        Some(historical_title.as_str()),
+        "migration rewrote an archived native title"
+    );
+    let pinned = world.daemon.state().with_store(|store| {
+        store
+            .get_mini_project_team_definition(project_id, epic_id)
+            .expect("the migrated Team Definition pin reads")
+            .expect("the active epic is pinned")
+    });
+    assert_eq!(pinned.definition.definition_id, definition.definition_id);
+    assert_eq!(pinned.definition.version, definition.version);
+}
+
+/// An open TeamRun can remain as evidence after its exact seat bindings and
+/// TSW are retired. Upgrade preflight must not validate that historical run
+/// against the new definition: only active topology is carried across the pin.
+#[tokio::test]
+async fn a_team_definition_upgrade_ignores_open_runs_on_archived_task_topology() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) =
+        seated_turns(&world, "migration-ignores-archived-team-run").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let team_run_id = TeamRunId::parse(
+        seats.as_array().expect("the seated roster")[0]["team_run_id"]
+            .as_str()
+            .expect("the team run id"),
+    )
+    .expect("a canonical team run id");
+
+    let (task_node, project_revision, target, omitted_slot, historical_title) =
+        world.daemon.state().with_store(|store| {
+            let run = store
+                .get_team_run(project_id, team_run_id)
+                .expect("the team run reads")
+                .expect("the team run exists");
+            let task_node = store
+                .get_task_topology_node(project_id, run.task_id)
+                .expect("the task topology reads")
+                .expect("the task topology exists");
+            let team = TeamTemplateSpec::from_snapshot(&run.snapshot)
+                .expect("the frozen team template parses");
+            let omitted_slot = team
+                .slots
+                .first()
+                .expect("the team declares a slot")
+                .id
+                .clone();
+
+            for seat in store
+                .list_seat_bindings(project_id, task_node.id)
+                .expect("the task seats read")
+            {
+                store
+                    .observe_seat_binding(
+                        project_id,
+                        seat.id,
+                        &kontor_core::repository::SeatLivenessObservation {
+                            released_at: Some(kontor_api::now()),
+                            ..kontor_core::repository::SeatLivenessObservation::default()
+                        },
+                        kontor_api::now(),
+                    )
+                    .expect("the historical seat releases");
+            }
+            let task_node = store
+                .transition_topology_node(
+                    project_id,
+                    task_node.id,
+                    TopologyLifecycle::Retired,
+                    task_node.revision,
+                    kontor_api::now(),
+                )
+                .expect("the historical TSW retires");
+            let task_node = store
+                .transition_topology_node(
+                    project_id,
+                    task_node.id,
+                    TopologyLifecycle::Archived,
+                    task_node.revision,
+                    kontor_api::now(),
+                )
+                .expect("the historical TSW archives");
+
+            assert!(
+                store
+                    .list_open_team_runs(project_id, run.task_id)
+                    .expect("the open runs read")
+                    .iter()
+                    .any(|candidate| candidate.id == team_run_id),
+                "the nonterminal TeamRun remains durable history"
+            );
+
+            let pin = store
+                .get_mini_project_team_definition(project_id, epic_id)
+                .expect("the Team Definition pin reads")
+                .expect("the epic is pinned");
+            let mut target = store
+                .get_team_definition(
+                    project_id,
+                    pin.definition.definition_id,
+                    pin.definition.version,
+                )
+                .expect("the pinned definition reads")
+                .expect("the pinned definition exists");
+            target.version =
+                SpecVersion::parse(target.version.get() + 1).expect("the next version");
+            let tsw = target
+                .containers
+                .iter_mut()
+                .find(|container| container.kind.as_str() == "TSW")
+                .expect("the TSW definition");
+            let before = tsw.team_slots.len();
+            tsw.team_slots.retain(|slot| slot.slot_id != omitted_slot);
+            assert_eq!(
+                tsw.team_slots.len() + 1,
+                before,
+                "the target deliberately omits one archived run slot"
+            );
+            target
+                .containers
+                .iter_mut()
+                .find(|container| container.kind.as_str() == "ESW")
+                .expect("the ESW definition")
+                .prefix = ExternalName::parse("ESW2").expect("a distinct prefix");
+            store
+                .publish_team_definition(project_id, &target, kontor_api::now())
+                .expect("the target definition publishes");
+            let project_revision = store
+                .get_project(project_id)
+                .expect("the project reads")
+                .expect("the project exists")
+                .revision;
+            let historical_title = world
+                .fake
+                .container_title(task_node.id)
+                .expect("the archived TSW retains its native title");
+            (
+                task_node,
+                project_revision,
+                target,
+                omitted_slot,
+                historical_title,
+            )
+        });
+
+    let upgrade = serde_json::json!({
+        "target_definition": {"id": target.definition_id, "version": target.version},
+        "legacy_topics": {},
+        "expected_revision": project_revision,
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(
+        preview.status, 200,
+        "an archived run using omitted slot {omitted_slot} blocked preview: {}",
+        preview.body
+    );
+    assert!(
+        preview.json()["targets"]
+            .as_array()
+            .expect("the migration census")
+            .iter()
+            .all(|target| target["topology_node_id"] != task_node.id.to_string()),
+        "the archived task topology entered the migration census: {}",
+        preview.body
+    );
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &serde_json::json!({
+            "upgrade": upgrade,
+            "preview_hash": preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("migration-ignores-archived-team-run-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        world.fake.container_title(task_node.id).as_deref(),
+        Some(historical_title.as_str()),
+        "the archived TSW title remains immutable evidence"
+    );
 }
 
 #[tokio::test]

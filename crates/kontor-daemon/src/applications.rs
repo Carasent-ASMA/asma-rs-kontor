@@ -1761,6 +1761,17 @@ impl Services {
             }
         }
 
+        let epic_id = self
+            .task_row(project_id, team.task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the TeamRun has no epic whose migration can fence seat release",
+                )
+            })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
+
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "team_run_abandon",
@@ -1845,6 +1856,16 @@ impl Services {
                 .into_disposition_evidence(now)
                 .map_err(|error| self.refuse_domain(&error))?,
         };
+        let epic_id = self
+            .task_row(project_id, team.task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the TeamRun has no epic whose migration can fence seat release",
+                )
+            })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         state
             .with_store(|store| {
                 store.close_team_run(&kontor_core::repository::TeamRunClosure {
@@ -6108,6 +6129,9 @@ impl Services {
             let mut required_topics = BTreeSet::new();
             let mut permitted_topics = BTreeSet::new();
             for node in &nodes {
+                if node.lifecycle != TopologyLifecycle::Active {
+                    continue;
+                }
                 let Some(container) = definition.container(&node.kind) else {
                     continue;
                 };
@@ -6154,6 +6178,15 @@ impl Services {
         let mut actions = Vec::new();
 
         for node in nodes {
+            // A retired or archived node is immutable historical evidence, not
+            // a live native naming subject. Its runtime container may already
+            // be archived and therefore unable to accept an identity-preserving
+            // retitle. Omitting it keeps the migration census aligned with the
+            // repository's live-census contract and prevents rewriting history
+            // merely to make old objects resemble the new definition.
+            if node.lifecycle != TopologyLifecycle::Active {
+                continue;
+            }
             if target_definition
                 .is_some_and(|definition| definition.container(&node.kind).is_none())
             {
@@ -6501,6 +6534,15 @@ impl Services {
         let replayed = self
             .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
             .is_some();
+        if !replayed {
+            let epic_id = node.mini_project_id.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "an unscoped node has no epic whose migration can fence its lifecycle",
+                )
+            })?;
+            self.ensure_no_team_definition_migration(project_id, epic_id)?;
+        }
         let moved = if replayed {
             node
         } else {
@@ -6910,6 +6952,24 @@ impl Services {
         let replayed = self
             .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
             .is_some();
+        if !replayed && act == SeatAct::Retire {
+            let node = state
+                .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the seat's topology node no longer exists",
+                    )
+                })?;
+            let epic_id = node.mini_project_id.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "an unscoped seat has no epic whose migration can fence retirement",
+                )
+            })?;
+            self.ensure_no_team_definition_migration(project_id, epic_id)?;
+        }
 
         // A hosted Core Team seat has its own persisted native identity, distinct
         // from the control-plane container. Attention must inspect that exact
@@ -22405,6 +22465,16 @@ impl ApplicationOperations for Services {
             ));
         }
         let task_id = self.task_for_team_run(project_id, team_run_id)?;
+        let epic_id = self
+            .task_row(project_id, task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the TeamRun has no epic whose migration can fence seat release",
+                )
+            })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
 
         // Canonical, and deliberately free of anything incidental: no waiver id,
         // no idempotency key, no timestamp. An identical retry hashes identically,
@@ -25708,6 +25778,9 @@ impl Services {
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?;
         for node in nodes {
+            if node.lifecycle != TopologyLifecycle::Active {
+                continue;
+            }
             let Some(task_id) = node.task_id else {
                 continue;
             };
@@ -25790,6 +25863,12 @@ impl Services {
                             "a migration target no longer belongs to this epic",
                         )
                     })?;
+                if node.lifecycle != TopologyLifecycle::Active {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "a migration target became historical before its census was recorded",
+                    ));
+                }
                 let container = definition.container(&node.kind).ok_or_else(|| {
                     self.deny(
                         ApiErrorCode::PlacementBlocked,
@@ -25818,21 +25897,25 @@ impl Services {
                         let parent_native_id = match container.parent.as_ref() {
                             None => None,
                             Some(parent_kind) => {
-                                let mut matching = nodes
-                                    .iter()
-                                    .filter(|candidate| &candidate.kind == parent_kind);
-                                let parent = matching.next().ok_or_else(|| {
+                                let parent_id = node.parent_id.ok_or_else(|| {
                                     self.deny(
                                         ApiErrorCode::PlacementBlocked,
-                                        "the configured native parent is absent from the epic",
+                                        "the configured native parent identity is absent from the node",
                                     )
                                 })?;
-                                if matching.next().is_some() {
-                                    return Err(self.deny(
+                                let parent = nodes
+                                    .iter()
+                                    .find(|candidate| {
+                                        candidate.id == parent_id
+                                            && candidate.lifecycle == TopologyLifecycle::Active
+                                            && &candidate.kind == parent_kind
+                                    })
+                                    .ok_or_else(|| {
+                                        self.deny(
                                         ApiErrorCode::PlacementBlocked,
-                                        "the configured native parent is ambiguous in the epic",
-                                    ));
-                                }
+                                            "the exact configured native parent is absent or historical",
+                                        )
+                                    })?;
                                 Some(
                                     state
                                         .with_store(|store| {
@@ -26162,6 +26245,16 @@ impl Services {
         task_node_id: TopologyNodeId,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
+        let epic_id = self
+            .task_row(project_id, task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no epic whose migration can fence seat retirement",
+                )
+            })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let bindings = state
             .with_store(|store| store.list_seat_bindings(project_id, task_node_id))
             .map_err(|error| self.refuse(&error))?;
@@ -26340,6 +26433,16 @@ impl Services {
                 "a non-terminal TeamRun's seats cannot be released",
             ));
         }
+        let epic_id = self
+            .task_row(project_id, team.task_id)?
+            .mini_project_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the TeamRun has no epic whose migration can fence seat release",
+                )
+            })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let Some(node) = state
             .with_store(|store| store.get_task_topology_node(project_id, team.task_id))
             .map_err(|error| self.refuse(&error))?
@@ -26386,6 +26489,7 @@ impl Services {
         epic_id: MiniProjectId,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let Some(control) = state
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?
@@ -27932,6 +28036,7 @@ impl Services {
                     ));
                 }
             }
+            self.ensure_no_team_definition_migration(project_id, epic.id)?;
         }
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
