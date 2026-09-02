@@ -469,12 +469,9 @@ fn a_migration_that_omits_a_live_delivery_seat_is_refused() {
         .expect("the complete enumeration, including the delivery seat, is recorded");
 }
 
-#[test]
-fn a_second_active_seat_on_one_team_run_is_refused_rather_than_guessed() {
-    let w = world();
-    // Nothing durably links a seat binding to an agent run: both name only the
-    // team run. A second active seat on that run makes the native session
-    // unattributable, and guessing would retitle the wrong session or drop one.
+/// Bind one more delivery seat on the shared team run, with its own slot,
+/// agent run and native session.
+fn add_delivery_seat(w: &World, slot: &str, role: &str, native: &str) -> SeatBindingId {
     let catalog = bundled_operational_domain()
         .expect("the bundled domain validates")
         .role_catalogs
@@ -482,14 +479,15 @@ fn a_second_active_seat_on_one_team_run_is_refused_rather_than_guessed() {
         .expect("a catalog")
         .clone();
     let entry = catalog
-        .role(&RoleCode::parse("SA").expect("a role code"))
+        .role(&RoleCode::parse(role).expect("a role code"))
         .expect("the catalog has the role");
+    let seat = SeatBindingId::generate();
     w.store
         .create_seat_binding(&NewSeatBinding {
-            id: SeatBindingId::generate(),
+            id: seat,
             project_id: w.project_id,
             topology_node_id: w.tsw,
-            role_slot_id: RoleSlotId::parse("delivery.reviewer").expect("a slot"),
+            role_slot_id: RoleSlotId::parse(slot).expect("a slot"),
             role: CatalogRoleRef {
                 catalog_id: catalog.catalog_id,
                 catalog_revision: catalog.version,
@@ -503,24 +501,297 @@ fn a_second_active_seat_on_one_team_run_is_refused_rather_than_guessed() {
             parent_seat_binding_id: None,
             created_at: at("2026-09-02T10:40:00Z"),
         })
-        .expect("a second delivery seat is bound to the same team run");
+        .expect("the extra delivery seat is bound");
+    let run = AgentRunId::generate();
+    w.store
+        .create_agent_run(&NewAgentRun {
+            id: run,
+            project_id: w.project_id,
+            team_run_id: w.team_run,
+            parent_agent_run_id: None,
+            // The exact durable shared key: a run persists its slot address as
+            // `role_key`, and the seat persists the same slot.
+            role: RoleSlotId::parse(slot)
+                .expect("a slot")
+                .as_role_key()
+                .clone(),
+            account_profile_id: None,
+            binding: Some(RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: run,
+                identity: identity(native),
+                bound_at: at("2026-09-02T10:41:00Z"),
+            }),
+            created_at: at("2026-09-02T10:41:00Z"),
+        })
+        .expect("its native session is bound");
+    seat
+}
+
+#[test]
+fn an_ordinary_multi_seat_team_run_censuses_each_seat_exactly_once() {
+    let w = world();
+    // A second and third delivery seat on the same TeamRun, each with its own
+    // slot, agent run and native session — the ordinary shape of a delivery
+    // team, and the shape the live high-stakes TSW has.
+    let reviewer = add_delivery_seat(&w, "delivery.reviewer", "SA", "agent_delivery_sa");
+    let lead = add_delivery_seat(&w, "delivery.lead", "LSA", "agent_delivery_lsa");
 
     let census = w
         .store
-        .list_live_native_subjects(w.project_id, w.mini_project_id);
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("an ordinary multi-seat TeamRun censuses cleanly");
+    let seats: Vec<(SeatBindingId, String)> = census
+        .iter()
+        .filter_map(|live| match live.subject {
+            TeamDefinitionMigrationSubject::Seat {
+                seat_binding_id, ..
+            } => Some((seat_binding_id, live.identity.native_id.as_str().to_owned())),
+            TeamDefinitionMigrationSubject::Container { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        seats.len(),
+        3,
+        "each delivery seat is enumerated exactly once, not paired with every \
+         session on its team run: {seats:?}"
+    );
+    let mut paired: Vec<(SeatBindingId, String)> = seats.clone();
+    paired.sort();
+    let mut expected = vec![
+        (w.delivery_seat, "agent_delivery_aud".to_owned()),
+        (reviewer, "agent_delivery_sa".to_owned()),
+        (lead, "agent_delivery_lsa".to_owned()),
+    ];
+    expected.sort();
+    assert_eq!(
+        paired, expected,
+        "every seat keeps its own SeatBinding id and its own native session"
+    );
+
+    // And the whole epic still migrates: a normal multi-seat TeamRun is not a
+    // reason to refuse.
+    let mut targets = complete_targets(&w);
+    for (seat, native, title) in [
+        (reviewer, "agent_delivery_sa", "SA"),
+        (lead, "agent_delivery_lsa", "LSA"),
+    ] {
+        targets.push(NewTeamDefinitionMigrationTarget {
+            subject: TeamDefinitionMigrationSubject::Seat {
+                topology_node_id: w.tsw,
+                seat_binding_id: seat,
+            },
+            identity: identity(native),
+            desired: NativePlacement {
+                title: name(title),
+                parent_native_id: Some(ExternalId::parse("wks_tsw").expect("a native id")),
+                kind: MigrationObjectKind::Seat,
+                canonical_cwd: None,
+            },
+        });
+    }
+    w.store
+        .record_team_definition_migration(&migration(&w, "multi-seat-team-run", targets))
+        .expect("a multi-seat TeamRun is migratable");
+}
+
+#[test]
+fn a_live_delivery_session_with_no_seat_at_its_slot_fails_closed() {
+    let w = world();
+    // A bound agent run whose slot no active seat carries. It cannot be named
+    // as a subject, and excluding it silently is the skip this census exists to
+    // prevent, so the epic is unmigratable until seat and run agree.
+    let orphan = AgentRunId::generate();
+    w.store
+        .create_agent_run(&NewAgentRun {
+            id: orphan,
+            project_id: w.project_id,
+            team_run_id: w.team_run,
+            parent_agent_run_id: None,
+            role: RoleSlotId::parse("delivery.nobody")
+                .expect("a slot")
+                .as_role_key()
+                .clone(),
+            account_profile_id: None,
+            binding: Some(RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: orphan,
+                identity: identity("agent_delivery_orphan"),
+                bound_at: at("2026-09-02T10:41:00Z"),
+            }),
+            created_at: at("2026-09-02T10:41:00Z"),
+        })
+        .expect("the orphaned session is bound");
+
     assert!(
-        census.is_err(),
-        "an unattributable delivery-seat session is refused, not guessed at"
+        w.store
+            .list_live_native_subjects(w.project_id, w.mini_project_id)
+            .is_err(),
+        "a live delivery session with no seat at its slot fails closed"
     );
     assert!(
         w.store
             .record_team_definition_migration(&migration(
                 &w,
-                "ambiguous-delivery-seat",
+                "orphaned-delivery-session",
                 complete_targets(&w)
             ))
             .is_err(),
-        "and no migration can be recorded while the census cannot be proved"
+        "and no migration can be recorded while a live session cannot be named"
+    );
+}
+
+#[test]
+fn an_epic_team_run_with_no_seat_bindings_at_all_cannot_advance_the_pin() {
+    let w = world();
+    // The shape observed live: a delivery TeamRun in the epic whose bound
+    // AgentRuns have no SeatBinding rows whatsoever. Matching on the slot alone
+    // would enumerate nothing for them and let the pin move over four live
+    // native sessions.
+    let task = TaskId::generate();
+    w.store
+        .create_task(&NewTask {
+            id: task,
+            project_id: w.project_id,
+            mini_project_id: Some(w.mini_project_id),
+            title: name("Seatless delivery task"),
+            module: None,
+            state: TaskState::Ready,
+            created_at: at("2026-09-02T10:35:00Z"),
+        })
+        .expect("the task is created");
+    let template = TeamTemplateRevision {
+        template_id: kontor_core::id::TeamTemplateId::generate(),
+        version: SpecVersion::FIRST,
+        name: name("Seatless team"),
+        definition: CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "team": "seatless",
+        }))
+        .expect("a canonical team document"),
+        role_authority: Vec::new(),
+    };
+    w.store
+        .insert_team_template(w.project_id, &template)
+        .expect("the template is stored");
+    let team_run = TeamRunId::generate();
+    w.store
+        .create_team_run(&NewTeamRun {
+            id: team_run,
+            project_id: w.project_id,
+            task_id: task,
+            snapshot: TeamRunSnapshot::from_revision(&template, kontor_core::id::SCHEMA_VERSION),
+            created_at: at("2026-09-02T10:36:00Z"),
+        })
+        .expect("the team run is created");
+    for slot in ["scope", "implement", "verify", "audit"] {
+        let run = AgentRunId::generate();
+        w.store
+            .create_agent_run(&NewAgentRun {
+                id: run,
+                project_id: w.project_id,
+                team_run_id: team_run,
+                parent_agent_run_id: None,
+                role: RoleSlotId::parse(slot)
+                    .expect("a slot")
+                    .as_role_key()
+                    .clone(),
+                account_profile_id: None,
+                binding: Some(RuntimeBinding {
+                    id: RuntimeBindingId::generate(),
+                    agent_run_id: run,
+                    identity: identity(&format!("agent_{slot}")),
+                    bound_at: at("2026-09-02T10:37:00Z"),
+                }),
+                created_at: at("2026-09-02T10:37:00Z"),
+            })
+            .expect("the seatless delivery session is bound");
+    }
+
+    assert!(
+        w.store
+            .list_live_native_subjects(w.project_id, w.mini_project_id)
+            .is_err(),
+        "four bound sessions with no seat rows must fail the census closed"
+    );
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "seatless-team-run",
+                complete_targets(&w)
+            ))
+            .is_err(),
+        "record refuses while a live session cannot be enumerated"
+    );
+    assert_eq!(
+        w.store
+            .get_mini_project_team_definition(w.project_id, w.mini_project_id)
+            .expect("the read succeeds")
+            .expect("the epic is pinned")
+            .definition
+            .version,
+        w.definition.version,
+        "the pin cannot advance over unenumerable live sessions"
+    );
+}
+
+#[test]
+fn a_migration_recorded_before_a_seatless_session_appears_cannot_confirm() {
+    let w = world();
+    let recorded = w
+        .store
+        .record_team_definition_migration(&migration(
+            &w,
+            "seatless-appears-later",
+            complete_targets(&w),
+        ))
+        .expect("a complete migration is recorded while the epic is coherent");
+    read_every_target_back(&w, recorded.id);
+
+    // A bound delivery session appears on the epic's existing team run with no
+    // seat at its slot.
+    let orphan = AgentRunId::generate();
+    w.store
+        .create_agent_run(&NewAgentRun {
+            id: orphan,
+            project_id: w.project_id,
+            team_run_id: w.team_run,
+            parent_agent_run_id: None,
+            role: RoleSlotId::parse("delivery.unseated")
+                .expect("a slot")
+                .as_role_key()
+                .clone(),
+            account_profile_id: None,
+            binding: Some(RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: orphan,
+                identity: identity("agent_delivery_unseated"),
+                bound_at: at("2026-09-02T10:41:00Z"),
+            }),
+            created_at: at("2026-09-02T10:41:00Z"),
+        })
+        .expect("the seatless session is bound");
+
+    assert!(
+        w.store
+            .confirm_team_definition_migration(
+                w.project_id,
+                recorded.id,
+                at("2026-09-02T11:05:00Z")
+            )
+            .is_err(),
+        "confirmation refuses while a live session cannot be enumerated"
+    );
+    assert_eq!(
+        w.store
+            .get_mini_project_team_definition(w.project_id, w.mini_project_id)
+            .expect("the read succeeds")
+            .expect("the epic is pinned")
+            .definition
+            .version,
+        w.definition.version,
+        "the pin does not move"
     );
 }
 

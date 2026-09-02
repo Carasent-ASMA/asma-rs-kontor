@@ -15267,6 +15267,13 @@ impl TeamDefinitionRepository for SqliteStore {
                  -- run's runtime binding rather than by any seat table, so a
                  -- census that reads only containers and consultation seats
                  -- misses every live delivery seat in the epic.
+                 --
+                 -- The slot address is the exact shared key: a run persists
+                 -- `role_key` from its slot (`RoleSlotId::as_role_key`, a
+                 -- transparent wrapper), and the seat persists that same slot in
+                 -- `role_slot_id`. Joining on the team run alone would pair
+                 -- every seat with every session, which is why an ordinary
+                 -- multi-seat TeamRun must be matched slot by slot.
                  SELECT 'seat', node.id, seat.id, node.kind,
                         binding.runtime_kind, binding.host,
                         binding.generation, binding.native_id
@@ -15275,6 +15282,7 @@ impl TeamDefinitionRepository for SqliteStore {
                      ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
                    JOIN seat_bindings AS seat
                      ON seat.team_run_id = run.team_run_id
+                    AND seat.role_slot_id = run.role_key
                     AND seat.project_id = binding.project_id
                     AND seat.lifecycle = 'active'
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
@@ -15325,6 +15333,9 @@ impl TeamDefinitionRepository for SqliteStore {
         // which native session, and guessing would either retitle the wrong
         // session or silently drop one. Refuse instead, so the ambiguity is
         // resolved by a human before any native is touched.
+        // The slot join is exact, so an ordinary multi-seat TeamRun censuses
+        // cleanly. These two checks remain for state the join cannot make sense
+        // of, and both fail closed rather than skipping a live native.
         let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
             BTreeMap::new();
         for live in &subjects {
@@ -15343,9 +15354,48 @@ impl TeamDefinitionRepository for SqliteStore {
             {
                 return Err(conflict(
                     "live native subject",
-                    "a delivery seat's native session cannot be attributed unambiguously",
+                    "one native session is claimed by two seats of this epic",
                 ));
             }
+        }
+        // Every live delivery session of this epic must resolve to exactly one
+        // active seat at its slot. Zero is the case observed live — bound
+        // scope/implement/verify/audit runs whose TSW carries no seat rows at
+        // all — and more than one is corrupt. Both are refused: excluding such
+        // a session silently is precisely the skip this census exists to
+        // prevent, and it would let the epic pin move over natives nobody
+        // enumerated.
+        //
+        // Scoped through the run's task rather than through a seat, because a
+        // session with no seat has no node to be found by.
+        let unresolved: i64 = self
+            .connection
+            .query_row(
+                "SELECT count(*)
+                   FROM runtime_bindings AS binding
+                   JOIN agent_runs AS run
+                     ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
+                   JOIN team_runs AS team ON team.id = run.team_run_id
+                   JOIN tasks AS task ON task.id = team.task_id
+                  WHERE binding.project_id = ?1
+                    AND task.mini_project_id = ?2
+                    AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
+                    AND (
+                        SELECT count(*) FROM seat_bindings AS seat
+                         WHERE seat.team_run_id = run.team_run_id
+                           AND seat.role_slot_id = run.role_key
+                           AND seat.project_id = binding.project_id
+                           AND seat.lifecycle = 'active'
+                    ) <> 1",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if unresolved > 0 {
+            return Err(conflict(
+                "live native subject",
+                "a live delivery session has no single active seat at its slot",
+            ));
         }
         Ok(subjects)
     }
