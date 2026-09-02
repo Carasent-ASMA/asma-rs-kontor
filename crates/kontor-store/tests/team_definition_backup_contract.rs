@@ -12,7 +12,7 @@ use kontor_core::id::{
 };
 use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
-    NativePlacement, NewMiniProject, NewProject, NewSessionTopologyNode,
+    NativePlacement, NewMiniProject, NewNativeContainerBinding, NewProject, NewSessionTopologyNode,
     NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
     ProjectTeamDefinitionDefault, TeamDefinitionMigrationSubject,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
@@ -20,7 +20,7 @@ use kontor_core::repository::{
 use kontor_core::spec::{
     Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
 };
-use kontor_core::state::NativeRuntimeIdentity;
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use kontor_store::backup::{create_snapshot, export_realm, restore_snapshot};
@@ -166,6 +166,17 @@ fn fixture() -> Fixture {
         generation: 1,
         native_id: ExternalId::parse("wks_epic_root").expect("a native id"),
     };
+    store
+        .bind_topology_node_container(&NewNativeContainerBinding {
+            topology_node_id: node,
+            project_id,
+            container_binding_id: ExternalId::parse("bind_wks_epic_root").expect("a binding id"),
+            identity: native.clone(),
+            observed_kind: ObservedContainerKind::Workspace,
+            canonical_cwd: None,
+            observed_at: created_at,
+        })
+        .expect("the live native container is bound before migration preflight");
     let migration = store
         .record_team_definition_migration(&NewTeamDefinitionMigration {
             id: TeamDefinitionMigrationId::generate(),
