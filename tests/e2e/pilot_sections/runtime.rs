@@ -1621,6 +1621,7 @@ fn dispatch_decision(open_replay_gap: bool) -> (usize, Option<String>) {
         task_id: TaskId::generate(),
         mini_project_id: None,
         workflow_id: TaskWorkflowId::generate(),
+        delivery_slots_registered: true,
         state: TaskState::Ready,
         revision: AggregateRevision::INITIAL,
         created_at: taken_at,
