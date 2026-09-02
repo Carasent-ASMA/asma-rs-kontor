@@ -4007,6 +4007,19 @@ pub trait RunRepository {
     /// Refuses a dangling parent, a cross-project parent and a parent cycle.
     fn create_agent_run(&self, request: &NewAgentRun) -> RepositoryResult<AgentRun>;
 
+    /// Every team run of one task that has not closed.
+    ///
+    /// The set a logical repair has to consider: a run still open is one whose
+    /// declared slots ought to have seats, whatever happened at launch.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_open_team_runs(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<TeamRun>>;
+
     /// Read a team run inside a project.
     ///
     /// # Errors

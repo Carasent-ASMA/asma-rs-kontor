@@ -544,7 +544,13 @@
             "segments": [
               { "kind": "token", "value": "ROLE_CODE" }
             ]
-          }
+          },
+          "team_slots": [
+            { "slot_id": "scope", "role_code": "SA", "capability_profile": "delivery-standard" },
+            { "slot_id": "implement", "role_code": "SWE", "capability_profile": "delivery-standard" },
+            { "slot_id": "verify", "role_code": "QA", "capability_profile": "delivery-standard" },
+            { "slot_id": "audit", "role_code": "AUD", "capability_profile": "delivery-high" }
+          ]
         },
         {
           "kind": "ASW",

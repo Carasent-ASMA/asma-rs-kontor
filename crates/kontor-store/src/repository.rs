@@ -11012,6 +11012,37 @@ impl RunRepository for SqliteStore {
         )
     }
 
+    fn list_open_team_runs(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<TeamRun>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id FROM team_runs
+                 WHERE project_id = ?1 AND task_id = ?2 AND closed_at IS NULL
+                 ORDER BY created_at, id",
+            )
+            .map_err(backend)?;
+        let ids: Vec<String> = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?
+            .collect::<Result<_, _>>()
+            .map_err(backend)?;
+        drop(statement);
+        let mut runs = Vec::new();
+        for id in ids {
+            if let Some(run) = self.get_team_run(project_id, TeamRunId::parse(&id)?)? {
+                runs.push(run);
+            }
+        }
+        Ok(runs)
+    }
+
     fn get_team_run(
         &self,
         project_id: ProjectId,

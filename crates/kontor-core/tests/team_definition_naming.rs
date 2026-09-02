@@ -49,6 +49,7 @@ fn definition() -> TeamDefinitionSpec {
             name_template: template(tokens),
             seat_name_template: seat_tokens.map(template),
             slots,
+            team_slots: Vec::new(),
         }
     };
     TeamDefinitionSpec {
@@ -317,4 +318,116 @@ fn unknown_fields_fail_closed_at_every_nested_definition_level() {
         serde_json::from_value::<TeamDefinitionSpec>(changed)
             .expect_err("unknown nested fields must never be discarded before hashing");
     }
+}
+
+#[test]
+fn team_slots_register_delivery_roles_without_inferring_them() {
+    let mut definition = definition();
+    let tsw = definition
+        .containers
+        .iter_mut()
+        .find(|container| container.kind.as_str() == "TSW")
+        .expect("the TSW container");
+    tsw.team_slots = vec![
+        TeamDefinitionSeatSlot {
+            slot_id: RoleSlotId::parse("scope").expect("a slot"),
+            role_code: Some(RoleCode::parse("SA").expect("a role code")),
+            display_name: None,
+            capability_profile: name("delivery-standard"),
+        },
+        TeamDefinitionSeatSlot {
+            slot_id: RoleSlotId::parse("audit").expect("a slot"),
+            role_code: Some(RoleCode::parse("AUD").expect("a role code")),
+            display_name: None,
+            capability_profile: name("delivery-high"),
+        },
+    ];
+    definition
+        .validate()
+        .expect("registered delivery slots are a valid configuration");
+    assert_eq!(
+        definition
+            .team_slot(&kind("TSW"), &RoleSlotId::parse("scope").expect("a slot"))
+            .and_then(|slot| slot.role_code.as_ref())
+            .map(RoleCode::as_str),
+        Some("SA")
+    );
+    // A slot nobody registered has no answer, and the caller must refuse rather
+    // than derive one from the slot's spelling or its logical role.
+    assert!(
+        definition
+            .team_slot(
+                &kind("TSW"),
+                &RoleSlotId::parse("researcher-a").expect("a slot")
+            )
+            .is_none()
+    );
+}
+
+#[test]
+fn two_team_slots_that_would_render_one_seat_name_are_refused() {
+    let mut definition = definition();
+    let tsw = definition
+        .containers
+        .iter_mut()
+        .find(|container| container.kind.as_str() == "TSW")
+        .expect("the TSW container");
+    // Research Spike's shape: two slots under one role code would render one
+    // indistinguishable seat name under a role-code seat template.
+    tsw.team_slots = vec![
+        TeamDefinitionSeatSlot {
+            slot_id: RoleSlotId::parse("researcher-a").expect("a slot"),
+            role_code: Some(RoleCode::parse("BA").expect("a role code")),
+            display_name: None,
+            capability_profile: name("delivery-standard"),
+        },
+        TeamDefinitionSeatSlot {
+            slot_id: RoleSlotId::parse("researcher-b").expect("a slot"),
+            role_code: Some(RoleCode::parse("BA").expect("a role code")),
+            display_name: None,
+            capability_profile: name("delivery-standard"),
+        },
+    ];
+    assert!(
+        definition.validate().is_err(),
+        "such a template stays unregistered until a revision gives its slots \
+         distinct labels"
+    );
+}
+
+#[test]
+fn a_team_slot_the_seat_template_cannot_render_is_refused() {
+    let mut definition = definition();
+    let tsw = definition
+        .containers
+        .iter_mut()
+        .find(|container| container.kind.as_str() == "TSW")
+        .expect("the TSW container");
+    // The TSW seat template renders ROLE_CODE, so a label-only team slot
+    // promises a name the renderer cannot produce.
+    tsw.team_slots = vec![TeamDefinitionSeatSlot {
+        slot_id: RoleSlotId::parse("scope").expect("a slot"),
+        role_code: None,
+        display_name: Some(name("SCOPE")),
+        capability_profile: name("delivery-standard"),
+    }];
+    assert!(definition.validate().is_err());
+}
+
+#[test]
+fn a_duplicate_team_slot_id_is_refused() {
+    let mut definition = definition();
+    let tsw = definition
+        .containers
+        .iter_mut()
+        .find(|container| container.kind.as_str() == "TSW")
+        .expect("the TSW container");
+    let slot = TeamDefinitionSeatSlot {
+        slot_id: RoleSlotId::parse("scope").expect("a slot"),
+        role_code: Some(RoleCode::parse("SA").expect("a role code")),
+        display_name: None,
+        capability_profile: name("delivery-standard"),
+    };
+    tsw.team_slots = vec![slot.clone(), slot];
+    assert!(definition.validate().is_err());
 }

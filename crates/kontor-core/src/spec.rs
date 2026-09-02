@@ -793,6 +793,20 @@ pub struct TeamContainerDefinition {
     /// Exact non-role-code slot labels configured for this kind.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slots: Vec<TeamDefinitionSeatSlot>,
+    /// Exact catalog for the slots a TeamRun supplies to this kind.
+    ///
+    /// Deliberately separate from [`Self::slots`]. Those are this container's
+    /// own static seats — an ECP's `LSA` and `TPM`, a Committee's `SEAT A` —
+    /// which the definition alone decides. These are the delivery slots a
+    /// frozen TeamRun snapshot brings with it, and which slots a run declares
+    /// is not something the definition can know in advance.
+    ///
+    /// This is the only sanctioned way to learn a delivery seat's registered
+    /// role code. Nothing derives it from a logical role, a label or the
+    /// spelling of a slot id: an unregistered slot is a refusal, so a seat is
+    /// never opened under a role no configuration chose for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_slots: Vec<TeamDefinitionSeatSlot>,
 }
 
 /// One immutable Team Definition revision.
@@ -939,6 +953,44 @@ impl TeamDefinitionSpec {
                     ));
                 }
             }
+            // TeamRun-supplied slots are validated on the same terms as the
+            // container's own, in their own namespace: a delivery slot and a
+            // static slot may share neither an id nor a rendered value, or the
+            // rendered seat name would depend on which catalog was consulted.
+            let mut team_slots = BTreeSet::new();
+            for slot in &container.team_slots {
+                if !matches!(
+                    (&slot.role_code, &slot.display_name),
+                    (Some(_), None) | (None, Some(_))
+                ) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "each team slot must declare exactly one role code or display name",
+                    ));
+                }
+                // Slot ids, role codes and labels are all unique inside one
+                // container: under a role-code seat template two slots sharing
+                // a code would render one indistinguishable seat name, which is
+                // exactly what the naming contract forbids. A template whose
+                // slots would collide stays unregistered — and therefore
+                // refused — until a revision gives them distinct labels.
+                if !team_slots.insert(&slot.slot_id)
+                    || slots.contains(&slot.slot_id)
+                    || slot
+                        .display_name
+                        .as_ref()
+                        .is_some_and(|label| !labels.insert(label))
+                    || slot
+                        .role_code
+                        .as_ref()
+                        .is_some_and(|role_code| !role_codes.insert(role_code))
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "declares a duplicate team slot id, role code or display name",
+                    ));
+                }
+            }
             let uses_slot_label = container
                 .seat_name_template
                 .as_ref()
@@ -965,6 +1017,23 @@ impl TeamDefinitionSpec {
                         )
                     })
                 });
+            // A team slot's selected value has to be one the seat template can
+            // actually render, or the configuration promises a name the
+            // renderer cannot produce.
+            if !container.team_slots.is_empty() {
+                let template_supports = |slot: &TeamDefinitionSeatSlot| {
+                    (slot.role_code.is_some() && uses_role_code)
+                        || (slot.display_name.is_some() && uses_slot_label)
+                };
+                if container.seat_name_template.is_none()
+                    || !container.team_slots.iter().all(template_supports)
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "the seat template cannot render a configured team slot",
+                    ));
+                }
+            }
             if uses_slot_label
                 && (container.slots.is_empty()
                     || container
@@ -1086,6 +1155,22 @@ impl TeamDefinitionSpec {
     pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
         self.validate()?;
         CanonicalDocument::from_serializable(self)
+    }
+
+    /// The registered role code or exact label one TeamRun slot is opened under.
+    ///
+    /// `None` means no configuration registered this slot, which is a refusal
+    /// at the call site rather than an invitation to derive one.
+    #[must_use]
+    pub fn team_slot(
+        &self,
+        kind: &TopologyKindKey,
+        slot_id: &crate::id::RoleSlotId,
+    ) -> Option<&TeamDefinitionSeatSlot> {
+        self.container(kind)?
+            .team_slots
+            .iter()
+            .find(|slot| &slot.slot_id == slot_id)
     }
 
     /// Find one configured container kind.

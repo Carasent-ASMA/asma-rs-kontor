@@ -71,6 +71,7 @@ fn recommended() -> TeamDefinitionSpec {
             name_template: template(tokens),
             seat_name_template: seat_tokens.map(template),
             slots,
+            team_slots: Vec::new(),
         }
     };
     TeamDefinitionSpec {
