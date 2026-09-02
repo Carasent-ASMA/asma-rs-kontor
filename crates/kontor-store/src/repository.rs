@@ -14830,20 +14830,40 @@ fn team_definition_migration_in(
         mini_project_id: MiniProjectId::parse(&mini_project_id)?,
         idempotency_key: IdempotencyKey::parse(&idempotency_key)?,
         fingerprint: ContentHash::parse(&fingerprint)?,
-        command_intent_hash: ContentHash::parse(
-            &transaction
+        command_intent_hash: {
+            let command_intent: Option<(Option<String>, String)> = transaction
                 .query_row(
-                    "SELECT intent_hash FROM team_definition_migration_command_intents
+                    "SELECT intent_hash, source
+                     FROM team_definition_migration_command_intents
                      WHERE project_id = ?1 AND intent_id = ?2",
                     params![project_id.to_string(), id.to_string()],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map_err(backend)?
-                .ok_or(RepositoryError::NotFound {
-                    subject: "team definition migration command intent",
-                })?,
-        )?,
+                .map_err(backend)?;
+            match command_intent {
+                Some((Some(hash), source)) if source == "issued" || source == "legacy_receipt" => {
+                    ContentHash::parse(&hash)?
+                }
+                Some((None, source)) if source == "legacy_unrecoverable" => {
+                    return Err(conflict(
+                        "team definition migration",
+                        "the pre-v80 migration has no provable exact command intent",
+                    ));
+                }
+                Some(_) => {
+                    return Err(conflict(
+                        "team definition migration command intent",
+                        "the command-intent source and hash disagree",
+                    ));
+                }
+                None => {
+                    return Err(RepositoryError::NotFound {
+                        subject: "team definition migration command intent",
+                    });
+                }
+            }
+        },
         from,
         to: TeamDefinitionSnapshot {
             definition_id: TeamDefinitionId::parse(&to_definition_id)?,
@@ -15686,8 +15706,8 @@ impl TeamDefinitionRepository for SqliteStore {
         transaction
             .execute(
                 "INSERT INTO team_definition_migration_command_intents
-                     (intent_id, project_id, intent_hash, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4)",
+                     (intent_id, project_id, intent_hash, source, recorded_at)
+                 VALUES (?1, ?2, ?3, 'issued', ?4)",
                 params![
                     migration.id.to_string(),
                     migration.project_id.to_string(),

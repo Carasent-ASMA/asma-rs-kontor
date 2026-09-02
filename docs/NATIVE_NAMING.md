@@ -1,7 +1,7 @@
 # Native naming
 
-> Status: approved contract; implementation complete, final archive verification
-> and live epic migration pending.
+> Status: approved contract; implemented locally, with final archive
+> verification, independent audit and live epic migration pending.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -170,6 +170,12 @@ unregistered because `researcher-a` and `researcher-b` would both render `BA`;
 they require a future `SLOT_DISPLAY_NAME` Team Definition revision rather than
 an inferred suffix.
 
+For a delivery seat, `team_slots[(container kind, role slot id)].role_code` is
+the only rendering input. The older Operational `delivery.role_bindings`, the
+TeamTemplate's logical role and a persisted SeatBinding role remain catalog or
+historical placement evidence; they never override the exact governing Team
+Definition during launch, replacement, reconciliation or migration.
+
 The complete canonical fixture is
 `crates/kontor-profiles/fixtures/operational-domain.json`.
 
@@ -194,10 +200,18 @@ The complete canonical fixture is
   cross-slot binding refuses the complete census instead of omitting a seat.
 - Apply records its intent before the first external retitle. Partial effects
   leave the old pin in force and the epic fenced. The same idempotency key
-  resumes from exact readback; a different key cannot interleave.
+  resumes from fresh exact readback of every target; an earlier success that
+  drifted is repaired again or remains pending. A different key cannot
+  interleave.
 - The pin switches only after every target reads back the desired title under
   the unchanged native identity. Backup/export includes definitions, defaults,
   pins, migration intents, targets, topic provenance and per-seat advice.
+- Schema v80 records the exact canonical apply intent. A data-bearing v79
+  migration is backfilled only from its bound `upgrade_team_definition`
+  command receipt. A recorded, applying or confirmed v79 migration without
+  that receipt remains durable but is explicitly `legacy_unrecoverable`; it is
+  fenced with a typed conflict and is never guessed from its fingerprint or
+  target set.
 
 ## Validation and revision rules
 

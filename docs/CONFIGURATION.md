@@ -96,8 +96,14 @@ unregistered until a future `SLOT_DISPLAY_NAME` revision can name its two `BA`
 seats distinctly.
 
 Schema v77 introduced Team Definitions and migration state; v78-v80 complete
-per-seat advice, receipt recovery and exact command-intent recovery. A deployed
-naming migration is therefore healthy only at schema v80 or later.
+per-seat advice, receipt recovery and exact command-intent recovery. During a
+v79→v80 upgrade, only a migration with a bound
+`upgrade_team_definition` command receipt can recover its exact intent hash.
+Any unreceipted recorded, applying or confirmed legacy migration is retained as
+an explicit `legacy_unrecoverable` fence and returns a typed conflict; Kontor
+never substitutes the migration fingerprint or target set for the missing
+command. A deployed naming migration is therefore healthy only at schema v80
+or later and only when no such recovery fence remains.
 
 ## Seat supervision
 

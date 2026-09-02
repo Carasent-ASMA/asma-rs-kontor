@@ -22277,6 +22277,47 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     assert_eq!(retitled.len(), 3);
     assert_eq!(retitled.iter().copied().collect::<BTreeSet<_>>().len(), 3);
 
+    // One target that already read back successfully drifts before the partial
+    // migration is replayed. Stored success is historical evidence, not a
+    // substitute for fresh readback: replay must repair this exact native
+    // identity again. Lose that repair's acknowledgement so the fixture stays
+    // partial for the crash-window recovery proof below.
+    let drifted_target = retitled
+        .iter()
+        .copied()
+        .find(|node| *node != first_target_node)
+        .expect("another successfully retitled target");
+    world
+        .fake
+        .set_container_title(drifted_target, "externally drifted after partial success");
+    world.fake.lose_next_retitle_ack(drifted_target);
+    let drift_replay = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &migration_apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("item-code-team-definition-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(
+        drift_replay.code(),
+        "rename_pending",
+        "fresh drift remains pending after its lost repair acknowledgement: {}",
+        drift_replay.body
+    );
+    let drift_replay_calls = world.fake.take_calls();
+    assert_eq!(
+        drift_replay_calls
+            .iter()
+            .filter_map(|call| match call {
+                AdapterCall::RetitleContainer(node) => Some(*node),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![drifted_target],
+        "replay re-proves every target and repairs only the freshly drifted one"
+    );
+
     // Reproduce the exact process-death boundary: all native identities have
     // read back, confirmation atomically moved the epic pin, but the daemon
     // died before it could record and bind the command receipt.
@@ -30793,6 +30834,218 @@ async fn an_unregistered_delivery_slot_is_refused_before_any_effect() {
             "the scheduler request that answered `nothing admitted` is recorded"
         );
     });
+}
+
+/// The Team Definition, not the older Operational delivery bindings, owns the
+/// exact native title of every delivery slot at launch and migration time.
+#[tokio::test]
+async fn delivery_names_follow_the_exact_team_definition_when_legacy_bindings_disagree() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let created = ensure_project_raw(
+        &world,
+        "definition-owned-delivery-names",
+        "Kontor",
+        "/tmp/kontor-definition-owned-delivery-names",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+    // Deliberately swap builder and tester away from the Operational
+    // `delivery.role_bindings` projection (builder=SWE, tester=QA).
+    register_test_delivery_slots(
+        &world,
+        &project,
+        &[
+            ("architect", "SA"),
+            ("builder", "QA"),
+            ("tester", "SWE"),
+            ("inspector", "AUD"),
+            ("verifier", "UAT"),
+        ],
+    );
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("definition-owned-delivery-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Definition-owned delivery names",
+            &category,
+            serde_json::json!([{"title": "Use exact configured slot names"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("definition-owned-delivery-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("a revision");
+    confirm_test_epic_identity(&world, &project, &epic);
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": account.json()["account_profile_id"],
+            "reason": "Prove Team Definition naming authority",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("definition-owned-delivery-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let planned = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(planned.status, 200, "{}", planned.body);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": planned.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("definition-owned-delivery-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let seats = started.json()["started"]
+        .as_array()
+        .expect("the five delivery seats")
+        .clone();
+    let seat_for = |slot: &str| {
+        seats
+            .iter()
+            .find(|seat| seat["role_slot"] == slot)
+            .unwrap_or_else(|| panic!("the {slot} seat started: {}", started.body))
+    };
+    let builder = seat_for("builder");
+    let tester = seat_for("tester");
+    let builder_native = ExternalId::parse(
+        builder["native_id"]
+            .as_str()
+            .expect("the builder native id"),
+    )
+    .expect("a native id");
+    let tester_native =
+        ExternalId::parse(tester["native_id"].as_str().expect("the tester native id"))
+            .expect("a native id");
+    assert_eq!(
+        world.fake.seat_title(&builder_native).as_deref(),
+        Some("QA")
+    );
+    assert_eq!(
+        world.fake.seat_title(&tester_native).as_deref(),
+        Some("SWE")
+    );
+
+    // A later immutable definition changes only the builder's registered code.
+    // Migration preview and apply must use that target mapping rather than the
+    // persisted old seat role or the Operational delivery projection.
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let target = world.daemon.state().with_store(|store| {
+        let pin = store
+            .get_mini_project_team_definition(project_id, epic_id)
+            .expect("the epic pin reads")
+            .expect("the epic is pinned");
+        let mut definition = store
+            .get_team_definition(
+                project_id,
+                pin.definition.definition_id,
+                pin.definition.version,
+            )
+            .expect("the definition reads")
+            .expect("the definition exists");
+        definition.version =
+            SpecVersion::parse(definition.version.get() + 1).expect("the next revision");
+        let tsw = definition
+            .containers
+            .iter_mut()
+            .find(|container| container.kind.as_str() == "TSW")
+            .expect("the TSW definition");
+        tsw.team_slots
+            .iter_mut()
+            .find(|slot| slot.slot_id.as_str() == "builder")
+            .expect("the builder registration")
+            .role_code = Some(RoleCode::parse("BA").expect("a registered role code"));
+        store
+            .publish_team_definition(project_id, &definition, kontor_api::now())
+            .expect("the target definition publishes");
+        definition
+    });
+    let upgrade = serde_json::json!({
+        "target_definition": {
+            "id": target.definition_id,
+            "version": target.version,
+        },
+        "legacy_topics": {},
+        "expected_revision": project_revision,
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let builder_run = builder["agent_run_id"].clone();
+    let preview_json = preview.json();
+    let builder_target = preview_json["targets"]
+        .as_array()
+        .expect("the migration census")
+        .iter()
+        .find(|target| target["agent_run_id"] == builder_run)
+        .unwrap_or_else(|| panic!("the builder is censused: {}", preview.body));
+    assert_eq!(builder_target["desired_title"], "BA", "{}", preview.body);
+    let migrated = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &serde_json::json!({
+            "upgrade": upgrade,
+            "preview_hash": preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("definition-owned-delivery-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(migrated.status, 200, "{}", migrated.body);
+    assert_eq!(
+        world.fake.seat_title(&builder_native).as_deref(),
+        Some("BA")
+    );
+    assert_eq!(
+        world.fake.seat_title(&tester_native).as_deref(),
+        Some("SWE")
+    );
 }
 
 /// Freeze a valid four-seat template under the production calibrated slot ids.

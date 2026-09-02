@@ -4,13 +4,13 @@ version: 0.1
 date_created: 2026-09-01
 last_updated: 2026-09-02
 owner: Kontor Lead Software Architect
-status: Verification and release
+status: Verification and re-audit
 tags: [kontor, naming, team-definition, topology, migration, ASMA-8062]
 ---
 
 # Configuration-Driven Native Naming and Live Migration Plan
 
-![Status: Verification and release](https://img.shields.io/badge/status-Verification%20and%20release-yellow)
+![Status: Verification and re-audit](https://img.shields.io/badge/status-Verification%20and%20re--audit-yellow)
 
 > **Jira:** `ASMA-8062`
 > **Kontor task:** `01a05d9b-8014-7182-9b96-921fc9386900` (`KBI-8062`)
@@ -57,10 +57,24 @@ The implementation now resolves the audited baseline gap:
 - scheduler and admission preflight the exact frozen TeamRun slots from durable configuration before runtime evidence or effects. Missing, label-only, unknown-role and duplicate-rendered mappings are `placement_blocked` per candidate.
 - same-key ticket materialization repairs legacy open TeamRuns that have bound AgentRuns but no delivery SeatBindings. Migration census then requires one exact active binding per live `(TeamRun, RoleSlotId)` and preserves every native ID.
 - migration preview/apply derives desired placement from the epic's immutable Team Definition pin, preserves native IDs and reads back parent, kind, cwd and title.
+- launch, replacement, reconciliation and migration render every delivery seat
+  from the exact Team Definition `(container kind, RoleSlotId)` registration;
+  Operational delivery bindings and persisted old roles cannot override it.
+- every partial migration replay freshly re-proves every target; an externally
+  drifted prior success is repaired again or remains pending.
+- schema v80 backfills a v79 command intent only from its exact bound upgrade
+  receipt and explicitly fences every unreceipted legacy migration as
+  unrecoverable rather than guessing.
 - API, MCP, OpenAPI, generated console types, backups and local documentation carry the same definition/default/pin/migration contract.
 - placement fails closed until the immutable epic backlog code and exact confirmed Jira epic/task bindings exist; planning metadata and connector aliases are not treated as readback.
 
-The remaining gap is final archive verification and operational release: merge the verified artifacts, deploy exact master, reconcile the two live KBI TSWs, and apply/read back the live KBI migration.
+The initial final audit rejected commit `f5d0d2d` with three P1 findings: dual
+delivery naming authority, stale-success partial replay, and incomplete
+data-bearing v79→v80 recovery. Focused red/green regressions and deliberate
+semantic mutants now cover and kill all three. The remaining gap is archive
+verification, a fresh passing audit, and operational release: merge the verified
+artifacts, deploy exact master, reconcile the two live KBI TSWs, and apply/read
+back the live KBI migration.
 
 ## 3. Accepted implementation contract
 
@@ -187,6 +201,9 @@ Wave 3 — release
 | Ask the runtime before rejecting an unregistered delivery slot. | Strict zero-call scheduler/daemon test. | Killed |
 | Skip logical delivery-seat repair on a same-key materialization replay. | Calibrated-four legacy replay/second-replay/preview test. | Killed |
 | Permit two slots in one actual team to render the same role code. | Duplicate-rendered TeamRun pre-effect test. | Killed |
+| Render a delivery seat from Operational `delivery.role_bindings` or its persisted old role instead of the exact Team Definition slot. | Deliberately disagreeing launch-and-migration role-code test. | Killed |
+| Skip a previously successful target when fresh partial-replay preview reports native title drift. | Drift-after-partial-success replay test. | Killed |
+| Treat a data-bearing unreceipted v79 migration as absent or invent its v80 command hash. | Recorded/applying/confirmed v79 migration and typed recovery-fence tests. | Killed |
 
 The already-shipped TSW bootstrap checkpoint also has a killed branch-attestation mutant and passed 154 Paseo runtime contracts plus the complete archive gate.
 

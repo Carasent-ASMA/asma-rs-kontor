@@ -13,8 +13,8 @@ use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
     NativePlacement, NewMiniProject, NewProject, NewSeatBinding, NewSessionTopologyNode,
     NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
-    ProjectTeamDefinitionDefault, StoredConsultationProfileRevision, StoredConsultationRun,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    ProjectTeamDefinitionDefault, RepositoryError, StoredConsultationProfileRevision,
+    StoredConsultationRun, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TopologyRepository,
 };
@@ -499,6 +499,53 @@ fn a_migration_replays_under_its_key_instead_of_recording_a_rival() {
         .record_team_definition_migration(&replay)
         .expect("the replay resolves to the original");
     assert_eq!(second.id, first.id, "the same key is the same migration");
+}
+
+#[test]
+fn an_unreceipted_v79_migration_is_explicitly_unrecoverable_not_not_found() {
+    let m = migration_fixture();
+    let recorded = m
+        .fixture
+        .store
+        .record_team_definition_migration(&new_migration(&m, "legacy-unreceipted"))
+        .expect("the migration is initially recorded");
+    let database = m.fixture.home.path().join("kontor.db");
+    let project_id = m.fixture.project_id;
+    drop(m.fixture.store);
+
+    // This is the exact row v80 writes for a v79 migration that has no bound
+    // command receipt from which the original canonical request can be proved.
+    let connection = rusqlite::Connection::open(&database).expect("the database reopens");
+    connection
+        .execute(
+            "DROP TRIGGER team_definition_migration_command_intents_are_immutable",
+            [],
+        )
+        .expect("the migration fixture may expose the legacy classification");
+    connection
+        .execute(
+            "UPDATE team_definition_migration_command_intents
+             SET intent_hash = NULL, source = 'legacy_unrecoverable'
+             WHERE intent_id = ?1",
+            rusqlite::params![recorded.id.to_string()],
+        )
+        .expect("the unprovable legacy intent is classified");
+    drop(connection);
+
+    let restarted = SqliteStore::open(&database).expect("the upgraded store reopens");
+    let error = restarted
+        .get_team_definition_migration(project_id, recorded.id)
+        .expect_err("an unprovable command may not be resumed or mistaken for absence");
+    assert!(
+        matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "team definition migration",
+                rule: "the pre-v80 migration has no provable exact command intent"
+            }
+        ),
+        "the refusal is an explicit recovery fence: {error}"
+    );
 }
 
 #[test]

@@ -507,6 +507,109 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
 }
 
 #[test]
+fn v80_backfills_only_provable_v79_command_intents_and_fences_the_rest() {
+    let connection = Connection::open_in_memory().expect("the v79 fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys enable");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE team_definition_migration_intents (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 fingerprint TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 recorded_at TEXT NOT NULL
+             ) STRICT;
+             CREATE TABLE command_receipts (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 kind TEXT NOT NULL,
+                 intent_hash TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 UNIQUE (project_id, id)
+             ) STRICT;
+             CREATE TABLE team_definition_migration_receipts (
+                 intent_id TEXT PRIMARY KEY
+                     REFERENCES team_definition_migration_intents(id) ON DELETE RESTRICT,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 receipt_id TEXT NOT NULL,
+                 bound_at TEXT NOT NULL,
+                 FOREIGN KEY (project_id, receipt_id)
+                     REFERENCES command_receipts(project_id, id) ON DELETE RESTRICT
+             ) STRICT;
+             INSERT INTO projects (id) VALUES ('project');",
+        )
+        .expect("the v79 parent schema installs");
+    let fingerprint = "f".repeat(64);
+    for (id, state) in [
+        ("recorded", "recorded"),
+        ("applying", "applying"),
+        ("confirmed-unreceipted", "confirmed"),
+        ("confirmed-receipted", "confirmed"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO team_definition_migration_intents
+                     (id, project_id, fingerprint, state, recorded_at)
+                 VALUES (?1, 'project', ?2, ?3, '2026-09-01T12:00:00Z')",
+                rusqlite::params![id, fingerprint, state],
+            )
+            .expect("the v79 migration intent is seeded");
+    }
+    let exact_intent_hash = "a".repeat(64);
+    connection
+        .execute(
+            "INSERT INTO command_receipts
+                 (id, project_id, kind, intent_hash, created_at)
+             VALUES ('receipt', 'project', 'upgrade_team_definition', ?1,
+                     '2026-09-01T12:01:00Z')",
+            rusqlite::params![exact_intent_hash],
+        )
+        .expect("the exact command receipt is seeded");
+    connection
+        .execute(
+            "INSERT INTO team_definition_migration_receipts
+                 (intent_id, project_id, receipt_id, bound_at)
+             VALUES ('confirmed-receipted', 'project', 'receipt',
+                     '2026-09-01T12:02:00Z')",
+            [],
+        )
+        .expect("the confirmed migration is bound to its exact receipt");
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0080_team_definition_migration_command_intents.sql"
+        ))
+        .expect("v80 migrates data-bearing v79 state");
+
+    let migrated = |id: &str| {
+        connection
+            .query_row(
+                "SELECT intent_hash, source
+                 FROM team_definition_migration_command_intents
+                 WHERE intent_id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("every v79 migration is explicitly classified")
+    };
+    for id in ["recorded", "applying", "confirmed-unreceipted"] {
+        assert_eq!(
+            migrated(id),
+            (None, "legacy_unrecoverable".to_owned()),
+            "an unreceipted {id} migration is fenced rather than guessed"
+        );
+    }
+    assert_eq!(
+        migrated("confirmed-receipted"),
+        (Some(exact_intent_hash), "legacy_receipt".to_owned()),
+        "a receipt is the only v79 source that proves the original command intent"
+    );
+}
+
+#[test]
 fn v64_preserves_published_committee_remediation_and_its_immutability() {
     let connection = Connection::open_in_memory().expect("the migration fixture opens");
     connection

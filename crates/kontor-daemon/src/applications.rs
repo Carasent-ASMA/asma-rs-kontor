@@ -15321,18 +15321,12 @@ impl ApplicationOperations for Services {
         }
 
         let mut observations = Vec::new();
-        let already_confirmed = |subject: TeamDefinitionMigrationSubject| {
-            migration.targets.iter().any(|target| {
-                target.subject == subject
-                    && matches!(
-                        target.state,
-                        TeamDefinitionMigrationTargetState::Unchanged
-                            | TeamDefinitionMigrationTargetState::Renamed
-                    )
-            })
-        };
         for (target, planned) in prepared.preview.targets.iter().zip(&targets) {
-            if target.would_change || already_confirmed(planned.subject) {
+            // Every replay is a fresh proof. A target that succeeded on an
+            // earlier attempt may have drifted since that readback; only the
+            // current preview decides whether it is already correct or needs
+            // another exact retitle.
+            if target.would_change {
                 continue;
             }
             let (state_value, observed) = if target.capability == "unchanged" {
@@ -15364,9 +15358,6 @@ impl ApplicationOperations for Services {
                     let subject = TeamDefinitionMigrationSubject::Container {
                         topology_node_id: request.topology_node_id,
                     };
-                    if already_confirmed(subject) {
-                        continue;
-                    }
                     let planned = targets
                         .iter()
                         .find(|target| target.subject == subject)
@@ -15429,9 +15420,6 @@ impl ApplicationOperations for Services {
                                 "the seat action is absent from its migration census",
                             )
                         })?;
-                    if already_confirmed(planned.subject) {
-                        continue;
-                    }
                     match adapter.retitle_seat(&request).await {
                         Ok(outcome)
                             if outcome.identity == planned.identity
@@ -27247,7 +27235,7 @@ impl Services {
         &self,
         project_id: ProjectId,
         task_id: TaskId,
-        scope: &ExecutionScope,
+        _scope: &ExecutionScope,
         team_snapshot: &TeamRunSnapshot,
         slot: &RoleSlotId,
     ) -> Result<ExternalName, ApiError> {
@@ -27261,23 +27249,9 @@ impl Services {
                     "the delivery seat has no pinned task topology node",
                 )
             })?;
-        let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(team_snapshot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let logical_role = team.slot(slot).ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the frozen team snapshot does not declare this role slot",
-            )
-        })?;
-        let area_code = self
-            .domain
-            .delivery
-            .role_code(&logical_role.role.role)
-            .map_or_else(
-                || logical_role.role.role.as_str(),
-                kontor_core::id::RoleCode::as_str,
-            );
-        self.seat_name_with_area_code(project_id, &node, scope, area_code, Some(slot))
+        let role = self.delivery_catalog_role(&node, team_snapshot, slot)?;
+        let definition = self.governing_team_definition(&node)?;
+        self.seat_name_from_definition(&definition, &node, role.role_code.as_str(), Some(slot))
     }
 
     /// Render any persistent seat from its host kind's pinned seat template.
@@ -27393,6 +27367,26 @@ impl Services {
                 "the Team Definition has no seat template for this container",
             )
         })?;
+        // `team_slots` is the sole naming authority for a delivery slot. The
+        // persisted role is historical placement evidence and the Operational
+        // delivery bindings are catalog defaults; neither may override the
+        // exact target definition during launch, replacement, reconciliation
+        // or migration.
+        let role_code = if let Some(role_slot_id) = role_slot_id
+            && let Some(slot) = definition.team_slot(&node.kind, role_slot_id)
+        {
+            slot.role_code
+                .as_ref()
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the configured delivery slot has no registered role code",
+                    )
+                })?
+                .as_str()
+        } else {
+            role_code
+        };
         let mut values = NativeNameValues::new().with_role_code(role_code);
         if template_uses_token(template, NativeNameToken::SlotDisplayName) {
             let role_slot_id = role_slot_id.ok_or_else(|| {
