@@ -3467,6 +3467,26 @@ impl NewTeamDefinitionMigration {
     }
 }
 
+/// One native object of an epic that a migration is obliged to cover.
+///
+/// "Live" means the object exists natively right now: a topology node holding a
+/// native container, or a seat holding a native session. These are exactly the
+/// things whose titles the epic's pin claims to describe, so a migration that
+/// leaves one out would move the pin to a definition that part of the epic does
+/// not render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveNativeSubject {
+    /// Which native object this is.
+    pub subject: TeamDefinitionMigrationSubject,
+    /// The topology kind of the node it belongs to.
+    ///
+    /// Carried so a preflight can ask the target definition whether it can name
+    /// this kind at all, rather than discovering mid-apply that it cannot.
+    pub node_kind: TopologyKindKey,
+    /// Its exact four-part native identity.
+    pub identity: NativeRuntimeIdentity,
+}
+
 /// One durable migration intent as it is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredTeamDefinitionMigration {
@@ -3486,6 +3506,12 @@ pub struct StoredTeamDefinitionMigration {
     pub to: TeamDefinitionSnapshot,
     /// How far it has got.
     pub state: TeamDefinitionMigrationState,
+    /// The command receipt this migration was commanded under, once one exists.
+    ///
+    /// `None` on a `Confirmed` migration is the crash window made visible: the
+    /// pin moved and the receipt did not get written. Recovery completes the
+    /// receipt rather than repeating any native effect.
+    pub receipt_id: Option<CommandReceiptId>,
     /// Its complete target set, in deterministic node order.
     pub targets: Vec<TeamDefinitionMigrationTarget>,
     /// Recording instant.
@@ -3592,6 +3618,52 @@ pub trait TeamDefinitionRepository {
         mini_project_id: MiniProjectId,
     ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>>;
 
+    /// Every live native-bearing subject of one epic.
+    ///
+    /// The census a migration preflight is proved against. Ordered
+    /// deterministically so a preview digest over it means something.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn list_live_native_subjects(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<LiveNativeSubject>>;
+
+    /// Find one migration by the key it was recorded under.
+    ///
+    /// This is the recovery entry point. After a crash between the pin commit
+    /// and the receipt write, the idempotency key is the only handle a retrying
+    /// caller still holds, and the migration it names is terminal — so no apply
+    /// operation will return it.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn get_team_definition_migration_by_key(
+        &self,
+        project_id: ProjectId,
+        idempotency_key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>>;
+
+    /// Bind the command receipt one migration was commanded under.
+    ///
+    /// Write-once. Binding the same receipt again is the replay of a recovery;
+    /// binding a different one would claim the migration was commanded twice.
+    /// This touches no target and no pin: by the time it runs, the native
+    /// effects have already happened and been read back.
+    ///
+    /// # Errors
+    /// Refuses an unknown migration, a migration that has not been confirmed,
+    /// and a second, different receipt.
+    fn bind_team_definition_migration_receipt(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        receipt_id: CommandReceiptId,
+        bound_at: Timestamp,
+    ) -> RepositoryResult<()>;
+
     /// Record one migration intent and its complete target set before any
     /// runtime effect.
     ///
@@ -3601,7 +3673,8 @@ pub trait TeamDefinitionRepository {
     ///
     /// # Errors
     /// Refuses an empty target set, a target set with a duplicate subject or
-    /// native id, a
+    /// native id, a target set that omits any live native subject, a target
+    /// definition that cannot name a live node kind, a
     /// migration for an epic that already has one in flight, a `from` that is
     /// not the epic's current pin, and a `to` this project has not published.
     fn record_team_definition_migration(
@@ -3657,8 +3730,9 @@ pub trait TeamDefinitionRepository {
     /// pin and the intent's confirmation commit together.
     ///
     /// # Errors
-    /// Refuses a terminal migration, an unconfirmed target set, and an epic
-    /// whose pin is no longer the `from` the intent recorded.
+    /// Refuses a terminal migration, an unconfirmed target set, an epic whose
+    /// pin is no longer the `from` the intent recorded, and a live census that
+    /// has gained a subject this migration does not cover.
     fn confirm_team_definition_migration(
         &self,
         project_id: ProjectId,

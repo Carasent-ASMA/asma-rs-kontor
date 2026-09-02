@@ -182,6 +182,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "team_command_replays",
     "team_definitions",
     "team_definition_migration_intents",
+    "team_definition_migration_receipts",
     "team_definition_migration_targets",
     "team_drafts",
     "team_revisions",
@@ -497,7 +498,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // intent an identity-preserving retitle applies under; and v78 keys Advisor
     // advice by the seat that gave it, so one ASW can hold several
     // independently reporting advisor seats.
-    assert_eq!(SCHEMA_VERSION, 78);
+    // v79 records the command receipt a confirmed migration was commanded
+    // under, closing the crash window between the pin commit and the receipt.
+    assert_eq!(SCHEMA_VERSION, 79);
 }
 
 #[test]

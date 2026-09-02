@@ -722,6 +722,12 @@ exported_tables! {
         state: String,
         updated_at: String,
     }
+    team_definition_migration_receipts: TeamDefinitionMigrationReceiptsRow from "team_definition_migration_receipts" key(intent_id) {
+        intent_id: String,
+        project_id: String,
+        receipt_id: String,
+        bound_at: String,
+    }
     role_catalog_revisions: RoleCatalogRevisionsRow from "role_catalog_revisions" key(catalog_id, version) {
         catalog_id: String,
         version: i64,

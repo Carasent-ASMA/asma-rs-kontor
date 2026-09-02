@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 78;
+pub const SCHEMA_VERSION: i64 = 79;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -307,6 +307,10 @@ const MIGRATIONS: &[&str] = &[
     // can hold several independently reporting advisor seats; every existing
     // artifact carries across unchanged and stays immutable.
     include_str!("../migrations/0078_advisor_advice_per_seat.sql"),
+    // Schema v79. The receipt a confirmed migration was commanded under, so a
+    // crash between the pin commit and the receipt write is recoverable from
+    // the migration's own idempotency key.
+    include_str!("../migrations/0079_team_definition_migration_receipts.sql"),
 ];
 
 const _: () = assert!(
