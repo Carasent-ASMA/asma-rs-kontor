@@ -62,7 +62,8 @@ use kontor_core::repository::{
     NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
     ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, SourceDisposition,
     SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, TeamDefinitionRepository,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, TeamDefinitionMigrationObservation,
+    TeamDefinitionMigrationState, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
@@ -22095,6 +22096,79 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
         "a partial native migration must retain the legacy no-pin state"
     );
 
+    let first_attempt_calls = world.fake.take_calls();
+    let retitled: Vec<TopologyNodeId> = first_attempt_calls
+        .iter()
+        .filter_map(|call| match call {
+            AdapterCall::RetitleContainer(node) => Some(*node),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(retitled.len(), 3);
+    assert_eq!(retitled.iter().copied().collect::<BTreeSet<_>>().len(), 3);
+
+    // Reproduce the exact process-death boundary: all native identities have
+    // read back, confirmation atomically moved the epic pin, but the daemon
+    // died before it could record and bind the command receipt.
+    let migration_key =
+        IdempotencyKey::parse("item-code-team-definition-upgrade").expect("an idempotency key");
+    let crashed_migration = world.daemon.state().with_store(|store| {
+        let migration = store
+            .get_team_definition_migration_by_key(project_id, &migration_key)
+            .expect("the migration reads by recovery key")
+            .expect("the partial migration exists");
+        let recovered_at = at("2026-08-30T20:01:00Z");
+        let observations: Vec<_> = migration
+            .targets
+            .iter()
+            .filter(|target| target.state == TeamDefinitionMigrationTargetState::RenamePending)
+            .map(|target| TeamDefinitionMigrationObservation {
+                subject: target.subject,
+                identity: target.identity.clone(),
+                observed: Some(target.desired.clone()),
+                state: TeamDefinitionMigrationTargetState::Renamed,
+                observed_at: recovered_at,
+            })
+            .collect();
+        assert_eq!(
+            observations.len(),
+            1,
+            "only the lost acknowledgement remains"
+        );
+        store
+            .observe_team_definition_migration(
+                project_id,
+                migration.id,
+                &observations,
+                recovered_at,
+            )
+            .expect("the last exact readback is durable");
+        store
+            .confirm_team_definition_migration(project_id, migration.id, recovered_at)
+            .expect("confirmation moves the pin atomically");
+        store
+            .get_team_definition_migration_by_key(project_id, &migration_key)
+            .expect("the confirmed migration reads")
+            .expect("the confirmed migration remains durable")
+    });
+    assert_eq!(
+        crashed_migration.state,
+        TeamDefinitionMigrationState::Confirmed
+    );
+    assert!(crashed_migration.receipt_id.is_none());
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_receipt_by_key(&migration_key)
+                    .expect("the absent crash-window receipt reads")
+            })
+            .is_none(),
+        "the fixture must stop after confirmation and before receipt creation"
+    );
+
     let migrated = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
         &migration_apply,
@@ -22107,19 +22181,37 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     assert_eq!(
         migrated.json()["changed"],
         0,
-        "same-key resume observes all already-renamed identities without another mutation"
+        "same-key crash recovery performs no native mutation"
     );
-    let retitled: Vec<TopologyNodeId> = world
-        .fake
-        .calls()
-        .into_iter()
-        .filter_map(|call| match call {
-            AdapterCall::RetitleContainer(node) => Some(node),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(retitled.len(), 3);
-    assert_eq!(retitled.iter().copied().collect::<BTreeSet<_>>().len(), 3);
+    let recovery_calls = world.fake.take_calls();
+    assert!(
+        recovery_calls.iter().all(|call| !matches!(
+            call,
+            AdapterCall::RetitleContainer(_)
+                | AdapterCall::RetitleSeat(_)
+                | AdapterCall::Launch(_)
+                | AdapterCall::LaunchHostedSeat(_)
+                | AdapterCall::LaunchConsultation(_)
+        )),
+        "receipt recovery must not repeat a native effect: {recovery_calls:?}"
+    );
+    let recovered_migration = world.daemon.state().with_store(|store| {
+        store
+            .get_team_definition_migration_by_key(project_id, &migration_key)
+            .expect("the recovered migration reads")
+            .expect("the recovered migration remains durable")
+    });
+    let recovered_receipt = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&migration_key)
+            .expect("the recovered receipt reads")
+            .expect("the recovered receipt exists")
+    });
+    assert_eq!(recovered_migration.receipt_id, Some(recovered_receipt.id));
+    assert_eq!(
+        migrated.json()["receipt"]["receipt_id"],
+        recovered_receipt.id.to_string()
+    );
     assert_eq!(
         migrated.json()["pinned_definition"]["id"],
         definition.definition_id.to_string()

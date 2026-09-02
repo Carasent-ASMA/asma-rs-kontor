@@ -160,9 +160,9 @@ use kontor_core::repository::{
     StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
     StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
     StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationSubject,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -15040,8 +15040,29 @@ impl ApplicationOperations for Services {
             "legacy_topics": request.upgrade.legacy_topics,
             "preview": request.preview_hash.as_str(),
         }))?;
-        let replayed = self.replayed(key, &intent, Some(&aggregate))?.is_some();
-        if replayed {
+        let replayed = self.replayed(key, &intent, Some(&aggregate))?;
+        if let Some(receipt) = replayed {
+            if let Some(migration) = state
+                .with_store(|store| store.get_team_definition_migration_by_key(project_id, key))
+                .map_err(|error| self.refuse(&error))?
+            {
+                if migration.mini_project_id != epic_id {
+                    return Err(self.deny(
+                        ApiErrorCode::IdempotencyConflict,
+                        "the idempotency key belongs to another Team Definition migration",
+                    ));
+                }
+                state
+                    .with_store(|store| {
+                        store.bind_team_definition_migration_receipt(
+                            project_id,
+                            migration.id,
+                            receipt.id,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             let pin = state
                 .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
                 .map_err(|error| self.refuse(&error))?
@@ -15085,6 +15106,99 @@ impl ApplicationOperations for Services {
                     snapshot_cursor: self.cursor()?,
                 },
             });
+        }
+
+        // Confirmation moves the epic pin atomically with the last exact native
+        // readback. A process may die immediately afterwards, before `record`
+        // creates the command receipt. The migration's idempotency key is the
+        // durable recovery handle for that precise boundary: prove the retried
+        // epic and published target are the confirmed ones, create only the
+        // missing receipt, bind it write-once, and never contact a runtime.
+        let keyed_migration = state
+            .with_store(|store| store.get_team_definition_migration_by_key(project_id, key))
+            .map_err(|error| self.refuse(&error))?;
+        if let Some(migration) = keyed_migration.as_ref() {
+            if migration.mini_project_id != epic_id {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key belongs to another Team Definition migration",
+                ));
+            }
+            if migration.state == TeamDefinitionMigrationState::Failed {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Team Definition migration recorded under this key failed",
+                ));
+            }
+            if migration.state == TeamDefinitionMigrationState::Confirmed {
+                let (target, _) =
+                    self.resolve_team_definition(project_id, &request.upgrade.target_definition)?;
+                if target != migration.to {
+                    return Err(self.deny(
+                        ApiErrorCode::IdempotencyConflict,
+                        "the idempotency key belongs to another Team Definition migration target",
+                    ));
+                }
+                let pin = state
+                    .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the confirmed migration has no epic Team Definition pin",
+                        )
+                    })?
+                    .definition;
+                if pin != migration.to {
+                    return Err(self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the confirmed migration and epic Team Definition pin disagree",
+                    ));
+                }
+                let receipt_id = self.record(
+                    key,
+                    project_id,
+                    CommandKind::UpgradeTeamDefinition,
+                    aggregate,
+                    project.revision,
+                    &intent,
+                )?;
+                state
+                    .with_store(|store| {
+                        store.bind_team_definition_migration_receipt(
+                            project_id,
+                            migration.id,
+                            receipt_id,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                let readback = self
+                    .prepare_native_names(project_id, epic_id, request.upgrade.expected_revision)
+                    .await?
+                    .preview;
+                return Ok(AppliedTeamDefinitionUpgradeDto {
+                    pinned_definition: Self::pinned_team_definition_dto(&pin),
+                    readback: TeamDefinitionUpgradePreviewDto {
+                        realm_id: state.realm_id(),
+                        project_id,
+                        epic_id,
+                        current_definition: Some(Self::pinned_team_definition_dto(&pin)),
+                        target_definition: Self::pinned_team_definition_dto(&pin),
+                        targets: readback.targets,
+                        preview_hash: readback.preview_hash,
+                        snapshot_cursor: self.cursor()?,
+                    },
+                    changed: 0,
+                    receipt: MutationReceiptDto {
+                        realm_id: state.realm_id(),
+                        receipt_id: receipt_id.to_string(),
+                        applied: AppliedDto::Unchanged,
+                        revision: project.revision,
+                        snapshot_cursor: self.cursor()?,
+                    },
+                });
+            }
         }
 
         let in_flight = state
@@ -15342,6 +15456,16 @@ impl ApplicationOperations for Services {
             project.revision,
             &intent,
         )?;
+        state
+            .with_store(|store| {
+                store.bind_team_definition_migration_receipt(
+                    project_id,
+                    migration.id,
+                    receipt_id,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
         let readback = self
             .prepare_native_names(project_id, epic_id, request.upgrade.expected_revision)
             .await?
