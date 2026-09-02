@@ -10,8 +10,10 @@
 //! This drives the real router — the real ingress check, the real bearer
 //! comparison, the real `caller.require`, the real application services and the
 //! real store — using nothing but the admin Lead seat's own tools. Every argument
-//! below is a tool argument. Nothing seeds SQLite, creates a native session, or
-//! calls Paseo, Jira or AgentsRoom.
+//! below is a tool argument. No Kontor aggregate is seeded, and nothing creates a
+//! native session or calls Paseo, Jira or AgentsRoom. The fixture records only the
+//! exact Jira readback evidence that the real Jira boundary would have confirmed;
+//! native naming deliberately refuses to infer that external fact from a link.
 //!
 //! # Why it is not a socket
 //!
@@ -38,10 +40,15 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
 use harness::{World, at, secret};
-use kontor_core::id::AgentRunId;
+use kontor_core::id::{
+    AgentRunId, AggregateRevision, ContentHash, ExternalId, MiniProjectId, ProjectId, TicketLinkId,
+};
 use kontor_core::repository::RealmRepository as _;
 use kontor_mcp::{CallerTier, Dispatcher, FrameBudget, Method, Reply, Transport, TransportFailure};
 use kontor_runtime::RuntimeAdapter as _;
+use kontor_store::{
+    JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,
+};
 use tower::ServiceExt as _;
 
 /// A session with history and a live tail, so a launched seat has something to be.
@@ -279,6 +286,94 @@ async fn finish_natively(world: &World, run: &str) {
         .expect("the runtime observes its own termination");
 }
 
+/// Record the exact successful Jira readbacks that this socket-free journey
+/// cannot obtain from a real connector. A ticket link is desired state, not a
+/// confirmed identity, so the fixture crosses the same durable confirmation
+/// boundary as the connector before native names may be rendered.
+fn confirm_jira_identity(world: &World, project: &str, epic: &str) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-08-10T09:20:00Z");
+        let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("a batch id");
+        let mut items = vec![NewJiraMaterializationItem {
+            id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
+            batch_id: batch_id.clone(),
+            project_id,
+            epic_id,
+            task_id: None,
+            link_id: None,
+            ordinal: 0,
+            item_kind: JiraItemKind::Epic,
+            intent_kind: JiraIntentKind::Link,
+            requested_key: Some(ExternalId::parse("ASMA-8000").expect("an epic Jira key")),
+            marker: ExternalId::parse(&format!("kontor-test-epic-{epic}")).expect("an epic marker"),
+        }];
+        for (index, task) in store
+            .list_epic_tasks(project_id, epic_id)
+            .expect("the journey tasks read")
+            .into_iter()
+            .enumerate()
+        {
+            let links = store
+                .list_task_ticket_links(project_id, task.id)
+                .expect("the journey task links read");
+            let jira = links
+                .iter()
+                .find(|link| link.connector.as_str() == "jira")
+                .expect("the journey task has one Jira link");
+            items.push(NewJiraMaterializationItem {
+                id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: Some(task.id),
+                link_id: Some(TicketLinkId::generate()),
+                ordinal: u32::try_from(index + 1).expect("a fixture ordinal"),
+                item_kind: JiraItemKind::Task,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(jira.external_issue_key.clone()),
+                marker: ExternalId::parse(&format!("kontor-test-task-{}", task.id))
+                    .expect("a task marker"),
+            });
+        }
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: format!("journey-confirm-jira-{epic}"),
+                    preview_hash: ContentHash::of(epic.as_bytes()),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &items,
+            )
+            .expect("the journey Jira plan is durable");
+        for item in store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("the journey Jira items read")
+        {
+            let key = item
+                .requested_key
+                .clone()
+                .expect("a link intent names its exact Jira key");
+            store
+                .confirm_jira_materialization_item(
+                    &item,
+                    &key,
+                    &ContentHash::of(format!("{key}-readback").as_bytes()),
+                    now,
+                )
+                .expect("the journey Jira readback confirms");
+        }
+        store
+            .confirm_jira_materialization_batch(project_id, &batch_id, now)
+            .expect("the journey Jira batch confirms");
+    });
+}
+
 /// The whole journey: an installed, never-used `kontord` reaches a closed epic
 /// without a single call that is not one of the Lead seat's own MCP tools.
 ///
@@ -356,6 +451,117 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     assert_eq!(replayed["revision"], created["revision"]);
     assert_eq!(replayed["created_at"], created["created_at"]);
 
+    // The catalog's production definition intentionally registers only the
+    // calibrated delivery slots. This journey launches the five-slot MVP
+    // template, so it must publish and select that explicit test vocabulary
+    // before the epic freezes its pin. Do it through MCP as well: silently
+    // widening the production fixture or writing the store directly would make
+    // the journey pass while bypassing the configuration contract it claims to
+    // prove.
+    // A fresh project deliberately has no published Team Definition yet, so
+    // the first candidate is authored input, not something a list operation
+    // could return. Start from the shipped recommendation and make only this
+    // journey's explicit slot additions; every acceptance and mutation still
+    // crosses the MCP validate/publish/preview/apply boundary below.
+    let domain = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled operational definition loads");
+    let recommended = domain
+        .team_definitions
+        .first()
+        .cloned()
+        .expect("the build ships a recommended Team Definition");
+    let topology = domain
+        .topology_specs
+        .iter()
+        .find(|topology| {
+            topology.spec_id == recommended.topology.spec_id
+                && topology.version == recommended.topology.version
+        })
+        .cloned()
+        .expect("the definition's validator ships beside it");
+    let topology_candidate = serde_json::to_value(topology).expect("the topology serializes");
+    let topology_validation = ok(
+        &lead,
+        "kontor_topology_spec_validate",
+        serde_json::json!({
+            "project_id": project,
+            "candidate": topology_candidate.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(topology_validation["violations"], serde_json::json!([]));
+    ok(
+        &lead,
+        "kontor_topology_spec_publish",
+        serde_json::json!({
+            "project_id": project,
+            "idempotency_key": "journey-topology-publish-1",
+            "candidate": topology_candidate,
+            "validation_hash": topology_validation["validation_hash"],
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+    let mut candidate = serde_json::to_value(recommended).expect("the definition serializes");
+    let tsw = candidate["containers"]
+        .as_array_mut()
+        .expect("the definition has containers")
+        .iter_mut()
+        .find(|container| container["kind"] == "TSW")
+        .expect("the definition configures TSW");
+    tsw["team_slots"]
+        .as_array_mut()
+        .expect("TSW has an explicit delivery-slot catalog")
+        .extend([
+            serde_json::json!({"slot_id": "architect", "role_code": "SA", "capability_profile": "delivery-standard"}),
+            serde_json::json!({"slot_id": "builder", "role_code": "SWE", "capability_profile": "delivery-standard"}),
+            serde_json::json!({"slot_id": "tester", "role_code": "QA", "capability_profile": "delivery-standard"}),
+            serde_json::json!({"slot_id": "inspector", "role_code": "AUD", "capability_profile": "delivery-high"}),
+            serde_json::json!({"slot_id": "verifier", "role_code": "UAT", "capability_profile": "delivery-high"}),
+        ]);
+    let validation = ok(
+        &lead,
+        "kontor_team_definition_validate",
+        serde_json::json!({"project_id": project, "candidate": candidate.clone()}),
+    )
+    .await;
+    assert_eq!(validation["violations"], serde_json::json!([]));
+    let published = ok(
+        &lead,
+        "kontor_team_definition_publish",
+        serde_json::json!({
+            "project_id": project,
+            "idempotency_key": "journey-team-definition-publish-1",
+            "candidate": candidate,
+            "validation_hash": validation["validation_hash"],
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+    let selection = ok(
+        &lead,
+        "kontor_project_team_definition_selection_preview",
+        serde_json::json!({
+            "project_id": project,
+            "target_definition": {
+                "id": published["definition"]["id"],
+                "version": published["definition"]["version"],
+            },
+        }),
+    )
+    .await;
+    ok(
+        &lead,
+        "kontor_project_team_definition_selection_apply",
+        serde_json::json!({
+            "project_id": project,
+            "idempotency_key": "journey-team-definition-select-1",
+            "preview_hash": selection["preview_hash"],
+            "expected_revision": revision,
+        }),
+    )
+    .await;
+
     // 3. An account profile a run could be pinned to.
     let account = ok(
         &lead,
@@ -383,7 +589,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "expected_revision": revision,
             "name": "Bootstrap epic",
             "execution_scope": {
-                "external_epic_key": "ASMA-JOURNEY",
+                "external_epic_key": "ASMA-8000",
                 "short_title": "Bootstrap epic",
                 "kontor_backlog_code": "JOURNEY",
                 "ai_short_name": "Bootstrap Epic",
@@ -416,6 +622,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         2,
         "one tool call applied the whole graph"
     );
+    confirm_jira_identity(&world, &project, &epic);
 
     // 5. The projection reads the graph back, including the workflow revision a
     //    gate recording has to present.
@@ -484,8 +691,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     );
     assert_eq!(
         transport.calls(),
-        11,
-        "eleven tool invocations made eleven requests: {routes:#?}"
+        17,
+        "seventeen tool invocations made seventeen requests: {routes:#?}"
     );
 
     // ---- 7. From the planning point to a closed epic, through the same seat ----

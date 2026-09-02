@@ -316,6 +316,7 @@ impl World {
             task_id: self.task,
             mini_project_id: None,
             workflow_id: self.workflow,
+            delivery_slots_registered: true,
             state: TaskState::Ready,
             revision: AggregateRevision::INITIAL,
             created_at: now(),

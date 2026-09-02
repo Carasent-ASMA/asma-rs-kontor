@@ -70,6 +70,12 @@ closed_enum! {
         Calendar => "calendar",
         /// Unresolved external conflicts and ticket ownership.
         ExternalWork => "external_work",
+        /// Whether stored configuration can name the seats this task opens.
+        ///
+        /// Before `Runtime` on purpose: it is answered from configuration
+        /// alone, and a task whose seats cannot be named must be refused
+        /// without a runtime being consulted about it at all.
+        StaticPlacement => "static_placement",
         /// The pinned runtime's capabilities, trust, health and reconciliation.
         Runtime => "runtime",
         /// The pinned account's state, compatibility and preflight.
@@ -161,6 +167,7 @@ fn verdict(snapshot: &SchedulingSnapshot, candidate: &Candidate, blocker: Blocke
         Blocker::Authorization => authorization(snapshot, candidate),
         Blocker::Calendar => calendar(candidate),
         Blocker::ExternalWork => external_work(candidate),
+        Blocker::StaticPlacement => static_placement(candidate),
         Blocker::Runtime => runtime(snapshot, candidate),
         Blocker::Account => account(snapshot, candidate),
         Blocker::Worktree => worktree(candidate),
@@ -295,6 +302,15 @@ fn governance(candidate: &Candidate) -> Refusal {
         RosterGovernance::LeadershipSeatUnbound => {
             with(RejectionCode::LeadershipSeatUnbound, Vec::new())
         }
+    }
+}
+
+/// Whether configuration can name every seat this candidate would open.
+fn static_placement(candidate: &Candidate) -> Refusal {
+    if candidate.delivery_slots_registered {
+        None
+    } else {
+        with(RejectionCode::DeliverySlotUnregistered, Vec::new())
     }
 }
 

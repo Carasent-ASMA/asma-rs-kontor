@@ -392,6 +392,22 @@ pub fn router(state: ApiState) -> Router {
                 get(applications::topology_spec),
             )
             .route(
+                "/v1/projects/{project_id}/team-definitions:validate",
+                post(applications::validate_team_definition),
+            )
+            .route(
+                "/v1/projects/{project_id}/team-definitions:publish",
+                post(applications::publish_team_definition),
+            )
+            .route(
+                "/v1/projects/{project_id}/team-definitions",
+                get(applications::team_definitions),
+            )
+            .route(
+                "/v1/projects/{project_id}/team-definitions/{definition_id}/{version}",
+                get(applications::team_definition),
+            )
+            .route(
                 "/v1/catalog/role-catalogs/{catalog_id}/{version}",
                 get(applications::role_catalog),
             )
@@ -462,6 +478,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_project_topology_selection),
             )
             .route(
+                "/v1/projects/{project_id}/team-definition-selection:preview",
+                post(applications::preview_project_team_definition_selection),
+            )
+            .route(
+                "/v1/projects/{project_id}/team-definition-selection:apply",
+                post(applications::apply_project_team_definition_selection),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/jira:preview",
                 post(applications::preview_jira_materialization),
             )
@@ -476,6 +500,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
                 post(applications::apply_topology_upgrade),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-preview",
+                post(applications::preview_team_definition_upgrade),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-apply",
+                post(applications::apply_team_definition_upgrade),
             )
             // Native capacity. `kontor-accounts` owns the observations and the
             // policy; nothing here accepts a threshold, a process id, an argv or a

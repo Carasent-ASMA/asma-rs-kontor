@@ -819,6 +819,10 @@ impl SqliteStore {
                 task_id: task.id,
                 mini_project_id: task.mini_project_id,
                 workflow_id: workflow.id,
+                // Neutral here: whether configuration can name this task's
+                // seats is a Team Definition question the application layer
+                // answers, and it sets this on every candidate before the pass.
+                delivery_slots_registered: true,
                 state: task.state,
                 revision: task.revision,
                 created_at: task.created_at,

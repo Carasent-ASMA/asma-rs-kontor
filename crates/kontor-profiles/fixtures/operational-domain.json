@@ -472,6 +472,156 @@
       ]
     }
   ],
+  "team_definitions": [
+    {
+      "schema_version": 1,
+      "definition_id": "01936f5a-2000-7000-8000-000000000001",
+      "version": 1,
+      "name": "ASMA Operational Team Definition",
+      "topology": {
+        "spec_id": "01936f5a-1000-7000-8000-000000000001",
+        "version": 4,
+        "canonical_hash": "8002119bf101864ce4f8b34c6b9308b08a422210c9baf4f1d5d118e2a6b9b3cf"
+      },
+      "separator": " • ",
+      "containers": [
+        {
+          "kind": "ESW",
+          "parent": null,
+          "prefix": "ESW",
+          "projection_capabilities": ["native_root"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "EPIC_ITEM_CODE" }
+            ]
+          }
+        },
+        {
+          "kind": "ECP",
+          "parent": "ESW",
+          "prefix": "ECP",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "EPIC_ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "ROLE_CODE" }
+            ]
+          },
+          "slots": [
+            {
+              "slot_id": "lsa",
+              "role_code": "LSA",
+              "capability_profile": "epic-leadership"
+            },
+            {
+              "slot_id": "tpm",
+              "role_code": "TPM",
+              "capability_profile": "epic-coordination"
+            }
+          ]
+        },
+        {
+          "kind": "TSW",
+          "parent": "ESW",
+          "prefix": "TSW",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "TASK_ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "ROLE_CODE" }
+            ]
+          },
+          "team_slots": [
+            { "slot_id": "scope", "role_code": "SA", "capability_profile": "delivery-standard" },
+            { "slot_id": "implement", "role_code": "SWE", "capability_profile": "delivery-standard" },
+            { "slot_id": "verify", "role_code": "QA", "capability_profile": "delivery-standard" },
+            { "slot_id": "audit", "role_code": "AUD", "capability_profile": "delivery-high" }
+          ]
+        },
+        {
+          "kind": "ASW",
+          "parent": "ESW",
+          "prefix": "ASW",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "SCOPE_ITEM_CODE" },
+              { "kind": "token", "value": "TOPIC" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "ROLE_CODE" }
+            ]
+          },
+          "slots": [
+            {
+              "slot_id": "software-architect",
+              "role_code": "SA",
+              "capability_profile": "independent-advisor"
+            },
+            {
+              "slot_id": "auditor",
+              "role_code": "AUD",
+              "capability_profile": "independent-advisor"
+            }
+          ]
+        },
+        {
+          "kind": "CSW",
+          "parent": "ESW",
+          "prefix": "CSW",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "SCOPE_ITEM_CODE" },
+              { "kind": "token", "value": "TOPIC" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "SLOT_DISPLAY_NAME" }
+            ]
+          },
+          "slots": [
+            {
+              "slot_id": "reviewer-a",
+              "display_name": "SEAT A",
+              "capability_profile": "independent-reviewer"
+            },
+            {
+              "slot_id": "reviewer-b",
+              "display_name": "SEAT B",
+              "capability_profile": "independent-reviewer"
+            },
+            {
+              "slot_id": "judge",
+              "display_name": "JUDGE",
+              "capability_profile": "committee-judge"
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "role_catalogs": [
     {
       "schema_version": 1,

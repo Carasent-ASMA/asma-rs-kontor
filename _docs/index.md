@@ -10,6 +10,12 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 
 ## Documents by Category
 
+### Plans (`plans/`)
+
+| Document | Summary | Status | When to Load |
+|----------|---------|--------|-------------|
+| [`2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md`](plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md) | Implements ASMA-8062: immutable pinned Team Definition naming/hierarchy, deterministic ASW/CSW topics and seats, identity-preserving migration, exact-master deployment and live readback. | 🟡 In progress | Implementing, reviewing, migrating or delivering configuration-driven native naming |
+
 ### Architecture (`architecture/`)
 
 | Document | Summary | Status | When to Load |
@@ -46,6 +52,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 |--------|----------|
 | `architecture/` | Living repository-local design and engineering-policy decisions |
 | `audits/` | Point-in-time code-quality, completeness, security, and compliance audits of the Kontor implementation |
+| `plans/` | Active implementation plans; compacted into history at closeout |
 
 ## Related authoritative documentation
 

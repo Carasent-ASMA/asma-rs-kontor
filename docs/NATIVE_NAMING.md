@@ -1,6 +1,7 @@
 # Native naming
 
-> Status: approved naming contract; implementation conformance audit pending.
+> Status: approved contract; implemented locally, with final archive
+> verification, independent audit and live epic migration pending.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -14,12 +15,16 @@ defines the meaning of a role code. It does not render a second seat name.
 Models, clients and runtime adapters request semantic kinds/slots and never
 construct a complete native name.
 
-This document records the agreed target contract. It does **not** assert that
-the current schema, seed packs, migrations, APIs, tests or live native objects
-already conform. Those surfaces require the separately planned implementation
-conformance audit. Existing topology-v4 centered-dot names remain historical
-implementation and runtime evidence until an explicit versioned migration is
-implemented and applied.
+The v1 schema, recommended ASMA fixture, publication/selection API and resumable
+epic migration implement this contract. Existing topology-v4 centered-dot names
+remain historical evidence until their owning epic completes an explicit Team
+Definition upgrade.
+
+An epic may freeze its Team Definition at logical creation before Jira
+materialization completes. That pin does not authorize a native effect: ESW,
+ECP, TSW, ASW, CSW and seat materialization fail closed until the epic has an
+active immutable backlog code and the addressed epic/task has one exact
+confirmed Jira readback.
 
 ## Identity inputs
 
@@ -96,36 +101,144 @@ recommended Independent Review setup, not a universal kernel law.
 
 ## Recommended definition shape
 
-Field names below express the approved semantic contract. The implementation
-audit must decide how the current persisted schemas evolve to carry it.
+This is the implemented snake-case v1 wire shape. Templates are typed segment
+vectors; the configured separator is inserted between rendered segments.
 
 ```json
 {
-  "schemaVersion": 1,
-  "naming": {
-    "separator": " • ",
-    "containers": {
-      "esw": { "parent": null, "prefix": "ESW", "template": "{prefix}{separator}{epic.itemCode}" },
-      "ecp": { "parent": "esw", "prefix": "ECP", "template": "{prefix}{separator}{epic.itemCode}" },
-      "tsw": { "parent": "esw", "prefix": "TSW", "template": "{prefix}{separator}{task.itemCode}" },
-      "asw": { "parent": "esw", "prefix": "ASW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" },
-      "csw": { "parent": "esw", "prefix": "CSW", "template": "{prefix}{separator}{scope.itemCode}{separator}{topic}" }
+  "schema_version": 1,
+  "definition_id": "01936f5a-2000-7000-8000-000000000001",
+  "version": 1,
+  "name": "ASMA Operational Team Definition",
+  "topology": { "spec_id": "...", "version": 4, "canonical_hash": "..." },
+  "separator": " • ",
+  "containers": [
+    {
+      "kind": "ESW",
+      "parent": null,
+      "prefix": "ESW",
+      "projection_capabilities": ["native_root"],
+      "read_only": false,
+      "name_template": { "segments": [
+        { "kind": "token", "value": "PREFIX" },
+        { "kind": "token", "value": "EPIC_ITEM_CODE" }
+      ] }
     },
-    "seatTemplates": {
-      "leadership": "{role.code}",
-      "delivery": "{role.code}",
-      "advisor": "{role.code}",
-      "committee": "{slot.displayName}"
+    {
+      "kind": "ASW",
+      "parent": "ESW",
+      "prefix": "ASW",
+      "projection_capabilities": ["native_child", "session_host"],
+      "read_only": true,
+      "name_template": { "segments": [
+        { "kind": "token", "value": "PREFIX" },
+        { "kind": "token", "value": "SCOPE_ITEM_CODE" },
+        { "kind": "token", "value": "TOPIC" }
+      ] },
+      "seat_name_template": { "segments": [
+        { "kind": "token", "value": "ROLE_CODE" }
+      ] },
+      "slots": [
+        { "slot_id": "software-architect", "role_code": "SA", "capability_profile": "independent-advisor" },
+        { "slot_id": "auditor", "role_code": "AUD", "capability_profile": "independent-advisor" }
+      ]
     }
-  }
+  ]
 }
 ```
+
+The shipped document also declares ECP (`LSA`, `TPM`), TSW and CSW (`SEAT A`,
+`SEAT B`, `JUDGE`) rows. ECP uses the exact deterministic Core Team slot
+addresses `lsa→LSA` and `tpm→TPM`; their native titles remain the configured
+uppercase role codes. TSW distinguishes fixed local `slots` from delivery
+`team_slots`. The recommended revision registers exactly:
+
+```json
+"team_slots": [
+  { "slot_id": "scope", "role_code": "SA", "capability_profile": "delivery-standard" },
+  { "slot_id": "implement", "role_code": "SWE", "capability_profile": "delivery-standard" },
+  { "slot_id": "verify", "role_code": "QA", "capability_profile": "delivery-standard" },
+  { "slot_id": "audit", "role_code": "AUD", "capability_profile": "delivery-high" }
+]
+```
+
+The catalog may register alternative-template slot ids under the same role code;
+those alternatives do not necessarily coexist. Before scheduling or touching a
+runtime, Kontor resolves the exact ordered slots of the frozen TeamTemplate.
+Missing mappings, display-label mappings under the recommended `ROLE_CODE` TSW,
+unknown role codes, or two slots in that one TeamRun rendering the same code are
+`placement_blocked`. The shipped Research Spike slots remain deliberately
+unregistered because `researcher-a` and `researcher-b` would both render `BA`;
+they require a future `SLOT_DISPLAY_NAME` Team Definition revision rather than
+an inferred suffix.
+
+One exact `(container kind, RoleSlotId)` resolver covers both fixed local
+`slots` and TeamRun-supplied `team_slots`. Its configured `role_code` or
+`display_name` is the only rendering input. The older Operational
+`delivery.role_bindings`, the TeamTemplate's logical role, a persisted
+SeatBinding role and any caller-supplied role remain catalog or historical
+placement evidence; they never override the exact governing Team Definition
+during launch, replacement, reconciliation or migration. A missing exact slot
+is `placement_blocked`; there is no role fallback.
+
+The complete canonical fixture is
+`crates/kontor-profiles/fixtures/operational-domain.json`.
+
+## Publication and migration
+
+- Validate and publish immutable revisions with
+  `team-definitions:validate` and `team-definitions:publish`.
+- Change what future epics inherit with the project
+  `team-definition-selection:preview` / `:apply` compare-and-swap.
+- Move an existing epic only through
+  `team-definition:upgrade-preview` / `:upgrade-apply`.
+- A migration preview binds every container and seat to its full native runtime
+  identity, parent, kind, cwd, observed title and desired title.
+- Legacy ASW/CSW topics are explicit operator input keyed by topology-node id;
+  unknown, missing or extra mappings are refused.
+- Before upgrading a legacy epic, replay each ticket's existing
+  `topology:materialize` command (or apply one stable repair key) to reconcile
+  every open TeamRun slot into an exact logical SeatBinding. This logical repair
+  creates no native session and is inert on repeated same-key replay.
+- Migration preview requires every live bound delivery AgentRun to match exactly
+  one active SeatBinding at the same `RoleSlotId`. A missing, duplicate or
+  cross-slot binding refuses the complete census instead of omitting a seat.
+- Before its first runtime read, upgrade preview resolves every exact slot of
+  every live TeamRun against the target Team Definition, including duplicate
+  rendered-name checks for the slots that actually coexist in that run.
+- The recorded and confirming censuses are bidirectional over both subject and
+  immutable native identity: every live pair must be enumerated exactly, and an
+  extra, stale or identity-mismatched target refuses the migration.
+- Apply records its intent before the first external retitle. Partial effects
+  leave the old pin in force and the epic fenced. The same idempotency key
+  resumes from fresh exact readback of every target; an earlier success that
+  drifted is repaired again or remains pending. A different key cannot
+  interleave.
+- While that fence exists, delivery admission, topology materialization and
+  replacement refuse before writing a command, retiring a predecessor,
+  creating a successor or contacting a runtime.
+- The pin switches only after every target reads back the desired title under
+  the unchanged native identity. Backup/export includes definitions, defaults,
+  pins, migration intents, targets, topic provenance and per-seat advice.
+- Schema v80 records the exact canonical apply intent. A data-bearing v79
+  migration is backfilled only from its bound `upgrade_team_definition`
+  command receipt. A recorded, applying or confirmed v79 migration without
+  that receipt remains durable but is explicitly `legacy_unrecoverable`; it is
+  fenced with a typed conflict and is never guessed from its fingerprint or
+  target set.
+- Supported generation-2 and generation-3 exports omit the generation-4 Team
+  Definition arrays in their signed canonical representation. The reader adds
+  empty arrays only to its in-memory current record type; legacy hashing,
+  continuity and reserialization retain the exact source-generation shape.
 
 ## Validation and revision rules
 
 - Missing or ambiguous prefix, template, parent, separator, role code, slot
   label, scope item code, topic or capability binding fails before runtime
   mutation.
+- Delivery-slot placement is checked from durable configuration before runtime
+  evidence is requested. A batch may still admit unrelated valid candidates;
+  unnameable candidates remain individually `placement_blocked`.
 - No fallback uses a UUID, title, Jira key, legacy task short code or
   caller-built string.
 - Display names never establish identity; exact native IDs and bindings do.

@@ -50,6 +50,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "consultation_seat_recoveries",
     "consultation_seat_recovery_attempts",
     "consultation_seat_materialization_reroutes",
+    "consultation_topic_migration_provenance",
     // Schema v75 (ASMA-8050): immutable, exact-seat Committee permission
     // responses with durable dispatch and confirmation state.
     "consultation_permission_responses",
@@ -122,6 +123,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_revisions",
     "memory_tombstones",
     "mini_projects",
+    "mini_project_team_definition_snapshots",
     "mini_project_topology_snapshots",
     "open_questions",
     "open_question_dispositions",
@@ -131,6 +133,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "policy_evaluations",
     "projects",
     "project_subject_authority",
+    "project_team_definition_defaults",
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
@@ -177,6 +180,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_worktrees",
     "tasks",
     "team_command_replays",
+    "team_definitions",
+    "team_definition_migration_command_intents",
+    "team_definition_migration_intents",
+    "team_definition_migration_receipts",
+    "team_definition_migration_targets",
     "team_drafts",
     "team_revisions",
     "team_runs",
@@ -484,9 +492,121 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // delivery evidence; v72 adds durable project-scoped epic namespaces; and
     // v73 permits safe link recovery after an unconfirmed create attempt;
     // v74 adds the exact Jira materialization recovery ledger; v75 adds
-    // durable, exact-seat Committee permission responses; and v76 permits the
-    // exact mixed link/create batch interrupted by a Jira connector outage.
-    assert_eq!(SCHEMA_VERSION, 76);
+    // durable, exact-seat Committee permission responses; v76 permits the
+    // exact mixed link/create batch interrupted by a Jira connector outage;
+    // v77 adds the immutable Team Definition that owns native hierarchy and
+    // naming, its project selection and epic pin, and the durable resumable
+    // intent an identity-preserving retitle applies under; and v78 keys Advisor
+    // advice by the seat that gave it, so one ASW can hold several
+    // independently reporting advisor seats.
+    // v79 records the command receipt a confirmed migration was commanded
+    // under, closing the crash window between the pin commit and the receipt.
+    // v80 records the canonical command intent a migration was issued under,
+    // so crash-window recovery can prove the retry is the same command.
+    assert_eq!(SCHEMA_VERSION, 80);
+}
+
+#[test]
+fn v80_backfills_only_provable_v79_command_intents_and_fences_the_rest() {
+    let connection = Connection::open_in_memory().expect("the v79 fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys enable");
+    connection
+        .execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE team_definition_migration_intents (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 fingerprint TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 recorded_at TEXT NOT NULL
+             ) STRICT;
+             CREATE TABLE command_receipts (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 kind TEXT NOT NULL,
+                 intent_hash TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 UNIQUE (project_id, id)
+             ) STRICT;
+             CREATE TABLE team_definition_migration_receipts (
+                 intent_id TEXT PRIMARY KEY
+                     REFERENCES team_definition_migration_intents(id) ON DELETE RESTRICT,
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                 receipt_id TEXT NOT NULL,
+                 bound_at TEXT NOT NULL,
+                 FOREIGN KEY (project_id, receipt_id)
+                     REFERENCES command_receipts(project_id, id) ON DELETE RESTRICT
+             ) STRICT;
+             INSERT INTO projects (id) VALUES ('project');",
+        )
+        .expect("the v79 parent schema installs");
+    let fingerprint = "f".repeat(64);
+    for (id, state) in [
+        ("recorded", "recorded"),
+        ("applying", "applying"),
+        ("confirmed-unreceipted", "confirmed"),
+        ("confirmed-receipted", "confirmed"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO team_definition_migration_intents
+                     (id, project_id, fingerprint, state, recorded_at)
+                 VALUES (?1, 'project', ?2, ?3, '2026-09-01T12:00:00Z')",
+                rusqlite::params![id, fingerprint, state],
+            )
+            .expect("the v79 migration intent is seeded");
+    }
+    let exact_intent_hash = "a".repeat(64);
+    connection
+        .execute(
+            "INSERT INTO command_receipts
+                 (id, project_id, kind, intent_hash, created_at)
+             VALUES ('receipt', 'project', 'upgrade_team_definition', ?1,
+                     '2026-09-01T12:01:00Z')",
+            rusqlite::params![exact_intent_hash],
+        )
+        .expect("the exact command receipt is seeded");
+    connection
+        .execute(
+            "INSERT INTO team_definition_migration_receipts
+                 (intent_id, project_id, receipt_id, bound_at)
+             VALUES ('confirmed-receipted', 'project', 'receipt',
+                     '2026-09-01T12:02:00Z')",
+            [],
+        )
+        .expect("the confirmed migration is bound to its exact receipt");
+
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0080_team_definition_migration_command_intents.sql"
+        ))
+        .expect("v80 migrates data-bearing v79 state");
+
+    let migrated = |id: &str| {
+        connection
+            .query_row(
+                "SELECT intent_hash, source
+                 FROM team_definition_migration_command_intents
+                 WHERE intent_id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("every v79 migration is explicitly classified")
+    };
+    for id in ["recorded", "applying", "confirmed-unreceipted"] {
+        assert_eq!(
+            migrated(id),
+            (None, "legacy_unrecoverable".to_owned()),
+            "an unreceipted {id} migration is fenced rather than guessed"
+        );
+    }
+    assert_eq!(
+        migrated("confirmed-receipted"),
+        (Some(exact_intent_hash), "legacy_receipt".to_owned()),
+        "a receipt is the only v79 source that proves the original command intent"
+    );
 }
 
 #[test]

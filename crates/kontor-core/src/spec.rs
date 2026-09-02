@@ -14,7 +14,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::naming::{NameSeparator, NativeNameTemplate};
+use crate::naming::{NameSeparator, NativeNameTemplate, NativeNameToken};
 
 /// Raw reasoning-effort ids exposed by supported runtimes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -742,6 +742,7 @@ pub struct TopologyNodeDeclaration {
 
 /// The immutable specification reference pinned by one epic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TopologySnapshot {
     /// Specification identity.
     pub spec_id: TopologySpecId,
@@ -749,6 +750,476 @@ pub struct TopologySnapshot {
     pub version: SpecVersion,
     /// Canonical hash of the exact published document.
     pub canonical_hash: ContentHash,
+}
+
+/// One exact local seat label and the capability profile its slot requires.
+///
+/// Role-code seats need no entry here. A slot is declared only when its native
+/// title is intentionally not its role code, such as `SEAT A` or `JUDGE`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionSeatSlot {
+    /// Stable slot identity shared with the owning team/consultation template.
+    pub slot_id: crate::id::RoleSlotId,
+    /// Exact registered professional role code when the seat is role-named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_code: Option<crate::id::RoleCode>,
+    /// Exact local native title when the seat is label-named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<crate::id::ExternalName>,
+    /// Configured capability profile associated with the slot.
+    pub capability_profile: crate::id::ExternalName,
+}
+
+/// One native container kind as a Team Definition renders and places it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamContainerDefinition {
+    /// Stable semantic topology kind.
+    pub kind: TopologyKindKey,
+    /// Exact parent kind; absent only for the definition root.
+    pub parent: Option<TopologyKindKey>,
+    /// Configured local prefix supplied to the `PREFIX` token.
+    pub prefix: crate::id::ExternalName,
+    /// Native projection the topology validator must permit.
+    pub projection_capabilities: Vec<NodeProjectionCapability>,
+    /// Whether every seat in this container is necessarily read-only.
+    pub read_only: bool,
+    /// Complete native container-name template.
+    pub name_template: NativeNameTemplate,
+    /// Complete native seat-name template, when this kind hosts seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_name_template: Option<NativeNameTemplate>,
+    /// Exact non-role-code slot labels configured for this kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<TeamDefinitionSeatSlot>,
+    /// Exact catalog for the slots a TeamRun supplies to this kind.
+    ///
+    /// Deliberately separate from [`Self::slots`]. Those are this container's
+    /// own static seats — an ECP's `LSA` and `TPM`, a Committee's `SEAT A` —
+    /// which the definition alone decides. These are the delivery slots a
+    /// frozen TeamRun snapshot brings with it, and which slots a run declares
+    /// is not something the definition can know in advance.
+    ///
+    /// This is the only sanctioned way to learn a delivery seat's registered
+    /// role code. Nothing derives it from a logical role, a label or the
+    /// spelling of a slot id: an unregistered slot is a refusal, so a seat is
+    /// never opened under a role no configuration chose for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_slots: Vec<TeamDefinitionSeatSlot>,
+}
+
+/// One immutable Team Definition revision.
+///
+/// This is the sole current authority for native hierarchy and names. The
+/// referenced topology revision remains a legality validator: it may reject a
+/// hierarchy or capability the definition asks for, but it never renders a
+/// competing name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionSpec {
+    /// Schema generation of this document.
+    pub schema_version: SchemaVersion,
+    /// Identity shared by every immutable revision.
+    pub definition_id: crate::id::TeamDefinitionId,
+    /// This immutable revision.
+    pub version: SpecVersion,
+    /// Human name.
+    pub name: crate::id::ExternalName,
+    /// Exact topology revision that validates this definition.
+    pub topology: TopologySnapshot,
+    /// Exact bytes joining adjacent rendered segments.
+    pub separator: NameSeparator,
+    /// Configured native hierarchy, in deterministic declaration order.
+    pub containers: Vec<TeamContainerDefinition>,
+}
+
+/// Immutable reference pinned by a project default or epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDefinitionSnapshot {
+    /// Definition lineage.
+    pub definition_id: crate::id::TeamDefinitionId,
+    /// Published revision.
+    pub version: SpecVersion,
+    /// Hash of the exact canonical definition.
+    pub canonical_hash: ContentHash,
+}
+
+impl TeamDefinitionSnapshot {
+    /// Freeze one validated revision.
+    ///
+    /// # Errors
+    /// As [`TeamDefinitionSpec::canonicalize`].
+    pub fn from_revision(revision: &TeamDefinitionSpec) -> DomainResult<Self> {
+        Ok(Self {
+            definition_id: revision.definition_id,
+            version: revision.version,
+            canonical_hash: revision.canonicalize()?.hash().clone(),
+        })
+    }
+}
+
+impl TeamDefinitionSpec {
+    /// Validate the configured hierarchy, templates and local slot labels.
+    ///
+    /// Cross-checking the requested hierarchy and capabilities against the
+    /// referenced topology revision is performed when the two published
+    /// documents are composed. This local validation proves the definition is
+    /// complete and internally deterministic first.
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.containers.is_empty() || self.containers.len() > 64 {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "must declare between one and 64 container kinds",
+            ));
+        }
+        let mut kinds = BTreeMap::new();
+        let mut prefixes = BTreeSet::new();
+        for container in &self.containers {
+            if kinds.insert(&container.kind, container).is_some() {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a duplicate container kind",
+                ));
+            }
+            if container.projection_capabilities.is_empty()
+                || container
+                    .projection_capabilities
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != container.projection_capabilities.len()
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "container projection capabilities must be non-empty and unique",
+                ));
+            }
+            if !prefixes.insert(&container.prefix) {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "container prefixes must be unique within one definition",
+                ));
+            }
+            container.name_template.validate()?;
+            validate_team_definition_template(&container.name_template)?;
+            if let Some(template) = &container.seat_name_template {
+                template.validate()?;
+                validate_team_definition_template(template)?;
+                let segments = template
+                    .segments()
+                    .expect("validated Team Definition templates are typed");
+                if segments.len() != 1
+                    || !matches!(
+                        segments.first(),
+                        Some(crate::naming::NativeNameSegment::Token(
+                            NativeNameToken::RoleCode | NativeNameToken::SlotDisplayName
+                        ))
+                    )
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "seat templates must contain exactly ROLE_CODE or SLOT_DISPLAY_NAME and no container scope",
+                    ));
+                }
+            }
+            let mut slots = BTreeSet::new();
+            let mut labels = BTreeSet::new();
+            let mut role_codes = BTreeSet::new();
+            for slot in &container.slots {
+                if !matches!(
+                    (&slot.role_code, &slot.display_name),
+                    (Some(_), None) | (None, Some(_))
+                ) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "each local slot must declare exactly one role code or display name",
+                    ));
+                }
+                if !slots.insert(&slot.slot_id)
+                    || slot
+                        .display_name
+                        .as_ref()
+                        .is_some_and(|label| !labels.insert(label))
+                    || slot
+                        .role_code
+                        .as_ref()
+                        .is_some_and(|role_code| !role_codes.insert(role_code))
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "declares a duplicate local slot id, role code or display name",
+                    ));
+                }
+            }
+            // TeamRun-supplied slots use the same exclusive value shape as
+            // local slots, but only their ids are catalog-unique. A delivery
+            // slot may not reuse a local slot id; rendered values may repeat
+            // across alternative templates and are checked against the exact
+            // ordered slots only when one TeamRun is admitted.
+            let mut team_slots = BTreeSet::new();
+            for slot in &container.team_slots {
+                if !matches!(
+                    (&slot.role_code, &slot.display_name),
+                    (Some(_), None) | (None, Some(_))
+                ) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "each team slot must declare exactly one role code or display name",
+                    ));
+                }
+                // Slot ids are unique — including against this container's own
+                // static slots — but rendered values deliberately are not. The
+                // catalog serves several alternative templates, and two of them
+                // may name the same registered role by different slot ids;
+                // those slots never necessarily co-reside. What must not
+                // collide is two slots of the *same* TeamRun, which only the
+                // run can be asked about and which admission checks before any
+                // effect.
+                if !team_slots.insert(&slot.slot_id) || slots.contains(&slot.slot_id) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "declares a duplicate team slot id",
+                    ));
+                }
+            }
+            let uses_slot_label = container
+                .seat_name_template
+                .as_ref()
+                .and_then(NativeNameTemplate::segments)
+                .is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        matches!(
+                            segment,
+                            crate::naming::NativeNameSegment::Token(
+                                NativeNameToken::SlotDisplayName
+                            )
+                        )
+                    })
+                });
+            let uses_role_code = container
+                .seat_name_template
+                .as_ref()
+                .and_then(NativeNameTemplate::segments)
+                .is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        matches!(
+                            segment,
+                            crate::naming::NativeNameSegment::Token(NativeNameToken::RoleCode)
+                        )
+                    })
+                });
+            // A team slot's selected value has to be one the seat template can
+            // actually render, or the configuration promises a name the
+            // renderer cannot produce.
+            if !container.team_slots.is_empty() {
+                let template_supports = |slot: &TeamDefinitionSeatSlot| {
+                    (slot.role_code.is_some() && uses_role_code)
+                        || (slot.display_name.is_some() && uses_slot_label)
+                };
+                if container.seat_name_template.is_none()
+                    || !container.team_slots.iter().all(template_supports)
+                {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "the seat template cannot render a configured team slot",
+                    ));
+                }
+            }
+            if uses_slot_label
+                && (container.slots.is_empty()
+                    || container
+                        .slots
+                        .iter()
+                        .any(|slot| slot.display_name.is_none()))
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "SLOT_DISPLAY_NAME requires display-named local slots",
+                ));
+            }
+            if !uses_slot_label
+                && container
+                    .slots
+                    .iter()
+                    .any(|slot| slot.display_name.is_some())
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "display-named slots require SLOT_DISPLAY_NAME",
+                ));
+            }
+            if !container.slots.is_empty()
+                && uses_role_code
+                && container.slots.iter().any(|slot| slot.role_code.is_none())
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "ROLE_CODE containers with declared slots require role-named slots",
+                ));
+            }
+        }
+
+        let roots: Vec<_> = self
+            .containers
+            .iter()
+            .filter(|container| container.parent.is_none())
+            .collect();
+        if roots.len() != 1 {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "must declare exactly one root container",
+            ));
+        }
+        for container in &self.containers {
+            if let Some(parent) = &container.parent
+                && (parent == &container.kind || !kinds.contains_key(parent))
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a container parent is self or undeclared",
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            let mut current = Some(&container.kind);
+            while let Some(kind) = current {
+                if !seen.insert(kind) {
+                    return Err(DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "the configured container hierarchy is cyclic",
+                    ));
+                }
+                current = kinds.get(kind).and_then(|entry| entry.parent.as_ref());
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate this definition against its exact pinned topology document.
+    ///
+    /// # Errors
+    /// Refuses a hash/identity mismatch or any kind, parent, capability or
+    /// read-only policy that the topology validator does not permit.
+    pub fn validate_against(&self, topology: &ProjectSessionTopologySpec) -> DomainResult<()> {
+        self.validate()?;
+        topology.validate()?;
+        let topology_hash = topology.canonicalize()?.hash().clone();
+        if topology.spec_id != self.topology.spec_id
+            || topology.version != self.topology.version
+            || topology_hash != self.topology.canonical_hash
+        {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "does not reference these exact topology bytes",
+            ));
+        }
+        for container in &self.containers {
+            let legal = topology.node_kind(&container.kind).ok_or_else(|| {
+                DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a kind absent from its topology validator",
+                )
+            })?;
+            if container.read_only != legal.read_only
+                || container
+                    .projection_capabilities
+                    .iter()
+                    .any(|capability| !legal.projection_capabilities.contains(capability))
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares capability policy its topology validator does not permit",
+                ));
+            }
+            if let Some(parent) = &container.parent
+                && !legal.allowed_parents.contains(parent)
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a parent its topology validator does not permit",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate and canonicalize this immutable revision.
+    pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        self.validate()?;
+        CanonicalDocument::from_serializable(self)
+    }
+
+    /// The registered role code or exact label one TeamRun slot is opened under.
+    ///
+    /// `None` means no configuration registered this slot, which is a refusal
+    /// at the call site rather than an invitation to derive one.
+    #[must_use]
+    pub fn team_slot(
+        &self,
+        kind: &TopologyKindKey,
+        slot_id: &crate::id::RoleSlotId,
+    ) -> Option<&TeamDefinitionSeatSlot> {
+        self.container(kind)?
+            .team_slots
+            .iter()
+            .find(|slot| &slot.slot_id == slot_id)
+    }
+
+    /// Resolve one exact seat slot, whether the container declares it locally
+    /// or admits it from a TeamRun.
+    ///
+    /// Validation makes the two catalogs disjoint by slot id, so this lookup
+    /// has exactly one authority and never needs a caller-supplied role as a
+    /// fallback.
+    #[must_use]
+    pub fn seat_slot(
+        &self,
+        kind: &TopologyKindKey,
+        slot_id: &crate::id::RoleSlotId,
+    ) -> Option<&TeamDefinitionSeatSlot> {
+        let container = self.container(kind)?;
+        container
+            .slots
+            .iter()
+            .chain(&container.team_slots)
+            .find(|slot| &slot.slot_id == slot_id)
+    }
+
+    /// Find one configured container kind.
+    #[must_use]
+    pub fn container(&self, kind: &TopologyKindKey) -> Option<&TeamContainerDefinition> {
+        self.containers
+            .iter()
+            .find(|container| &container.kind == kind)
+    }
+}
+
+fn validate_team_definition_template(template: &NativeNameTemplate) -> DomainResult<()> {
+    let Some(segments) = template.segments() else {
+        return Err(DomainError::invalid(
+            "TeamDefinitionSpec",
+            "legacy string templates are not valid Team Definition templates",
+        ));
+    };
+    if segments.iter().any(|segment| {
+        matches!(
+            segment,
+            crate::naming::NativeNameSegment::Token(
+                NativeNameToken::AreaCode
+                    | NativeNameToken::JiraCode
+                    | NativeNameToken::KontorBacklogCode
+                    | NativeNameToken::ItemCode
+                    | NativeNameToken::AiShortName
+            )
+        )
+    }) {
+        return Err(DomainError::invalid(
+            "TeamDefinitionSpec",
+            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, TOPIC, ROLE_CODE and SLOT_DISPLAY_NAME",
+        ));
+    }
+    Ok(())
 }
 
 impl ProjectSessionTopologySpec {

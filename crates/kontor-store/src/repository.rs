@@ -29,9 +29,10 @@ use kontor_core::id::{
     IntakeReceiptId, MiniProjectId, ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey,
     ProjectId, ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleCode,
     RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
-    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamRunId,
-    TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
-    TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp, parse_utc_timestamp,
+    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
+    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
@@ -69,13 +70,20 @@ use kontor_core::repository::{
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
+use kontor_core::repository::{
+    LiveNativeSubject, MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, NativePlacement,
+    NewTeamDefinitionMigration, ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+};
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
     ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability,
     ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier,
-    SourceIdentity, TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot, TriggerSpec,
-    WorkProfileSpec,
+    SourceIdentity, TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot,
+    TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
@@ -164,6 +172,7 @@ type ConsultationRunColumns = (
     String,
     String,
     Option<String>,
+    Option<String>,
 );
 
 fn consultation_run_id(
@@ -205,7 +214,11 @@ fn read_consultation_run(
         created_at,
         updated_at,
         settled_at,
+        topic,
     ) = columns;
+    // A stored NULL stays None. Nothing here reconstructs a topic from the
+    // question beside it, which is exactly the inference the contract forbids.
+    let topic = topic.as_deref().map(ExternalName::parse).transpose()?;
     let question = BoundedText::parse(&question)?;
     let question_hash = ContentHash::parse(&question_hash)?;
     if ContentHash::of(question.as_str().as_bytes()) != question_hash {
@@ -239,6 +252,7 @@ fn read_consultation_run(
         id: run_id,
         project_id,
         mini_project_id: MiniProjectId::parse(&mini_project_id)?,
+        topic,
         profile_id,
         profile_version: read_version(profile_version)?,
         definition_hash: ContentHash::parse(&definition_hash)?,
@@ -2196,9 +2210,9 @@ impl SqliteStore {
                       profile_version, definition_hash, question, question_hash,
                       context, context_hash, caller_seat_binding_id, topology_node_id,
                       invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                      updated_at, settled_at)
+                      updated_at, settled_at, topic)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                         ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                         ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                 params![
                     run.id.as_text(),
                     run.project_id.to_string(),
@@ -2223,6 +2237,7 @@ impl SqliteStore {
                     text(run.created_at),
                     text(run.updated_at),
                     run.settled_at.map(text),
+                    run.topic.as_ref().map(ExternalName::as_str),
                 ],
             )
             .map_err(backend)?;
@@ -2359,7 +2374,7 @@ impl SqliteStore {
                         definition_hash, question, question_hash, context,
                         context_hash, caller_seat_binding_id, topology_node_id,
                         invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                        updated_at, settled_at
+                        updated_at, settled_at, topic
                  FROM consultation_runs
                  WHERE project_id = ?1 AND run_id = ?2 AND family = ?3",
                 params![project_id.to_string(), run_id.as_text(), run_id.family().as_str()],
@@ -2385,6 +2400,7 @@ impl SqliteStore {
                         row.get::<_, String>(17)?,
                         row.get::<_, String>(18)?,
                         row.get::<_, Option<String>>(19)?,
+                        row.get::<_, Option<String>>(20)?,
                     ))
                 },
             )
@@ -2415,6 +2431,147 @@ impl SqliteStore {
         };
         let family = ConsultationFamily::parse(&family)?;
         self.get_consultation_run(project_id, consultation_run_id(family, &run_id)?)
+    }
+
+    /// The consultation occupying one ASW/CSW topology node, if any.
+    ///
+    /// This is the lookup Team Definition rendering needs: a container's name
+    /// carries the consultation's topic, and the node is the only thing the
+    /// renderer holds when it is asked for that container's title. The node is
+    /// unique across consultation runs, so at most one can answer.
+    pub fn get_consultation_run_by_topology_node(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+    ) -> RepositoryResult<Option<StoredConsultationRun>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT run_id, family FROM consultation_runs
+                 WHERE project_id = ?1 AND topology_node_id = ?2",
+                params![project_id.to_string(), topology_node_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((run_id, family)) = found else {
+            return Ok(None);
+        };
+        let family = ConsultationFamily::parse(&family)?;
+        self.get_consultation_run(project_id, consultation_run_id(family, &run_id)?)
+    }
+
+    /// Supply the explicit topic one legacy consultation was missing.
+    ///
+    /// This is the only lawful way a consultation recorded before topics
+    /// existed acquires one: an operator states it and the migration carries
+    /// it. Nothing here reads the question, profile, title or node id, because
+    /// deriving a topic from any of those is exactly what the naming contract
+    /// forbids.
+    ///
+    /// Write-once, and only over an absent value. Supplying the same topic
+    /// again is the replay of a migration step and returns the same run;
+    /// supplying a different one is a conflict, because the first value has
+    /// already been rendered into a native title and treated as authoritative.
+    ///
+    /// The intent must still be in flight: a topic is supplied *before* the new
+    /// pin becomes current, so a confirmed migration has nothing left to say
+    /// about what its containers are called.
+    ///
+    /// # Errors
+    /// Refuses an unknown or foreign consultation, an intent from another
+    /// project or epic, a settled intent, and a different existing topic.
+    pub fn supply_legacy_consultation_topic(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        intent_id: TeamDefinitionMigrationId,
+        topic: &ExternalName,
+        supplied_at: Timestamp,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let transaction = self.begin()?;
+        let intent = team_definition_migration_in(&transaction, project_id, intent_id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        if intent.state.is_terminal() {
+            return Err(conflict(
+                "consultation topic",
+                "a settled migration cannot supply a topic",
+            ));
+        }
+        // The consultation is addressed by project *and* node, so a node from
+        // another project cannot be reached even if its id is known.
+        let found: Option<(String, String, String, Option<String>)> = transaction
+            .query_row(
+                "SELECT run_id, family, mini_project_id, topic FROM consultation_runs
+                 WHERE project_id = ?1 AND topology_node_id = ?2",
+                params![project_id.to_string(), topology_node_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (run_id, family, mini_project_id, existing) =
+            found.ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })?;
+        if MiniProjectId::parse(&mini_project_id)? != intent.mini_project_id {
+            return Err(conflict(
+                "consultation topic",
+                "the consultation belongs to a different epic than the migration",
+            ));
+        }
+        let run_id = consultation_run_id(ConsultationFamily::parse(&family)?, &run_id)?;
+        match existing.as_deref() {
+            // Already answered, and answered the same way: this is the replay
+            // of a migration step, not a second decision.
+            Some(current) if current == topic.as_str() => {
+                transaction.commit().map_err(backend)?;
+                return self.get_consultation_run(project_id, run_id)?.ok_or(
+                    RepositoryError::NotFound {
+                        subject: "consultation run",
+                    },
+                );
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "consultation topic",
+                    "this consultation already has a different authoritative topic",
+                ));
+            }
+            None => {}
+        }
+        transaction
+            .execute(
+                "UPDATE consultation_runs SET topic = ?1
+                 WHERE project_id = ?2 AND topology_node_id = ?3 AND topic IS NULL",
+                params![
+                    topic.as_str(),
+                    project_id.to_string(),
+                    topology_node_id.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO consultation_topic_migration_provenance
+                     (project_id, run_id, intent_id, topic, supplied_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    intent_id.to_string(),
+                    topic.as_str(),
+                    text(supplied_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
     }
 
     /// Every run of one family in an epic, oldest first.
@@ -4198,39 +4355,78 @@ impl SqliteStore {
         Ok(Applied::Updated)
     }
 
-    /// Read the immutable advice artifact one Advisor seat submitted.
+    /// Read the one advice artifact a single-seat Advisor run produced.
+    ///
+    /// An ASW may hold several independently reporting seats, and "the advice
+    /// of the run" is then not a single artifact. Rather than silently return
+    /// one of them and let a caller under-report the others, this refuses a
+    /// multi-seat run: use [`SqliteStore::list_advisor_advice`], which is what
+    /// a disposition over all configured seats needs anyway.
     pub fn get_advisor_advice(
         &self,
         project_id: ProjectId,
         advisor_run_id: AdvisorRunId,
     ) -> RepositoryResult<Option<StoredAdvisorAdvice>> {
-        let columns = self
-            .connection
-            .query_row(
-                "SELECT seat_binding_id, document, document_hash, recorded_at
-                 FROM advisor_advice_artifacts
-                 WHERE project_id = ?1 AND advisor_run_id = ?2",
-                params![project_id.to_string(), advisor_run_id.to_string()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(backend)?;
-        columns
-            .map(|columns| read_advisor_advice(project_id, advisor_run_id, columns))
-            .transpose()
+        let mut advice = self.list_advisor_advice(project_id, advisor_run_id)?;
+        if advice.len() > 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "Advisor advice",
+                rule: "a multi-seat Advisor run has no single advice artifact",
+            });
+        }
+        Ok(advice.pop())
     }
 
-    /// Atomically append one Advisor's immutable output and advance its run.
+    /// Every advice artifact one Advisor run has produced, by seat.
     ///
-    /// An exact existing document is a replay. A different document can never
-    /// replace it, and the disposition authority has no operation that writes
+    /// Ordered by seat so a disposition over the set is deterministic. An
+    /// Advisor that has not reported yet simply has fewer artifacts than it has
+    /// seats; nothing here infers a missing one.
+    pub fn list_advisor_advice(
+        &self,
+        project_id: ProjectId,
+        advisor_run_id: AdvisorRunId,
+    ) -> RepositoryResult<Vec<StoredAdvisorAdvice>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT seat_binding_id, document, document_hash, recorded_at
+                 FROM advisor_advice_artifacts
+                 WHERE project_id = ?1 AND advisor_run_id = ?2
+                 ORDER BY seat_binding_id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), advisor_run_id.to_string()])
+            .map_err(backend)?;
+        let mut advice = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            advice.push(read_advisor_advice(
+                project_id,
+                advisor_run_id,
+                (
+                    row.get::<_, String>(0).map_err(backend)?,
+                    row.get::<_, String>(1).map_err(backend)?,
+                    row.get::<_, String>(2).map_err(backend)?,
+                    row.get::<_, String>(3).map_err(backend)?,
+                ),
+            )?);
+        }
+        Ok(advice)
+    }
+
+    /// Atomically append one Advisor *seat's* immutable output and advance the
+    /// run's revision.
+    ///
+    /// Idempotency is per exact seat: an identical document from the same seat
+    /// is a replay, and a different document from that seat can never replace
+    /// what it already said. Another seat of the same run is a different
+    /// artifact, not a conflict — an ASW holds one or more independently
+    /// reporting seats.
+    ///
+    /// This deliberately does not settle the run. One seat reporting is one
+    /// seat reporting; requiring every configured seat before a disposition is
+    /// the disposition authority's rule, and it has no operation that writes
     /// this table.
     #[allow(clippy::too_many_arguments)]
     pub fn record_advisor_advice(
@@ -4248,8 +4444,12 @@ impl SqliteStore {
         let existing: Option<String> = transaction
             .query_row(
                 "SELECT document_hash FROM advisor_advice_artifacts
-                 WHERE project_id = ?1 AND advisor_run_id = ?2",
-                params![project_id.to_string(), advisor_run_id.to_string()],
+                 WHERE project_id = ?1 AND advisor_run_id = ?2 AND seat_binding_id = ?3",
+                params![
+                    project_id.to_string(),
+                    advisor_run_id.to_string(),
+                    seat_binding_id.to_string()
+                ],
                 |row| row.get(0),
             )
             .optional()
@@ -4258,7 +4458,7 @@ impl SqliteStore {
             if existing_hash != document_hash.as_str() {
                 return Err(RepositoryError::Conflict {
                     subject: "Advisor advice",
-                    rule: "the Advisor already submitted different immutable output",
+                    rule: "this Advisor seat already submitted different immutable output",
                 });
             }
             transaction.commit().map_err(backend)?;
@@ -10812,6 +11012,37 @@ impl RunRepository for SqliteStore {
         )
     }
 
+    fn list_open_team_runs(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<TeamRun>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id FROM team_runs
+                 WHERE project_id = ?1 AND task_id = ?2 AND closed_at IS NULL
+                 ORDER BY created_at, id",
+            )
+            .map_err(backend)?;
+        let ids: Vec<String> = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?
+            .collect::<Result<_, _>>()
+            .map_err(backend)?;
+        drop(statement);
+        let mut runs = Vec::new();
+        for id in ids {
+            if let Some(run) = self.get_team_run(project_id, TeamRunId::parse(&id)?)? {
+                runs.push(run);
+            }
+        }
+        Ok(runs)
+    }
+
     fn get_team_run(
         &self,
         project_id: ProjectId,
@@ -14447,4 +14678,1411 @@ fn insert_open_question_round(
         )
         .map_err(backend)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Team Definition
+// ---------------------------------------------------------------------------
+
+/// Read one published Team Definition revision and prove it is the exact bytes
+/// the caller pinned.
+///
+/// The hash comparison is the whole point: the `(project, definition, version)`
+/// reference proves the revision exists, and this proves the caller is talking
+/// about the same document rather than a lineage position that has since been
+/// republished under different bytes.
+fn team_definition_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    snapshot: &TeamDefinitionSnapshot,
+) -> RepositoryResult<TeamDefinitionSpec> {
+    let found: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT definition, definition_hash FROM team_definitions
+             WHERE project_id = ?1 AND definition_id = ?2 AND version = ?3",
+            params![
+                project_id.to_string(),
+                snapshot.definition_id.to_string(),
+                version_column(snapshot.version)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = found.ok_or(RepositoryError::NotFound {
+        subject: "team definition",
+    })?;
+    let hash = ContentHash::parse(&hash)?;
+    if hash != snapshot.canonical_hash {
+        return Err(conflict(
+            "team definition",
+            "the pinned canonical hash does not match the published revision",
+        ));
+    }
+    stored_document(&json, hash.as_str())
+}
+
+/// Read the exact topology document a Team Definition names as its validator.
+///
+/// Returned as the parsed document rather than as a bare existence check, so
+/// publication can compose the definition against the legality rules the
+/// project actually published.
+fn team_definition_validator_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    definition: &TeamDefinitionSpec,
+) -> RepositoryResult<ProjectSessionTopologySpec> {
+    let found: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT definition, definition_hash FROM topology_specs
+             WHERE project_id = ?1 AND spec_id = ?2 AND version = ?3",
+            params![
+                project_id.to_string(),
+                definition.topology.spec_id.to_string(),
+                version_column(definition.topology.version)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = found.ok_or(RepositoryError::NotFound {
+        subject: "topology specification",
+    })?;
+    stored_document(&json, &hash)
+}
+
+/// Read one migration intent and its complete target set inside a transaction.
+type TeamDefinitionMigrationRow = (
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn team_definition_migration_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    id: TeamDefinitionMigrationId,
+) -> RepositoryResult<Option<StoredTeamDefinitionMigration>> {
+    let row: Option<TeamDefinitionMigrationRow> = transaction
+        .query_row(
+            "SELECT mini_project_id, idempotency_key, from_definition_id, from_version,
+                    from_canonical_hash, to_definition_id, to_version, to_canonical_hash,
+                    state, recorded_at, updated_at, fingerprint
+             FROM team_definition_migration_intents
+             WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), id.to_string()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((
+        mini_project_id,
+        idempotency_key,
+        from_definition_id,
+        from_version,
+        from_hash,
+        to_definition_id,
+        to_version,
+        to_hash,
+        state,
+        recorded_at,
+        updated_at,
+        fingerprint,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let from = match (from_definition_id, from_version, from_hash) {
+        (Some(definition_id), Some(version), Some(hash)) => Some(TeamDefinitionSnapshot {
+            definition_id: TeamDefinitionId::parse(&definition_id)?,
+            version: read_version(version)?,
+            canonical_hash: ContentHash::parse(&hash)?,
+        }),
+        _ => None,
+    };
+    Ok(Some(StoredTeamDefinitionMigration {
+        id,
+        project_id,
+        mini_project_id: MiniProjectId::parse(&mini_project_id)?,
+        idempotency_key: IdempotencyKey::parse(&idempotency_key)?,
+        fingerprint: ContentHash::parse(&fingerprint)?,
+        command_intent_hash: {
+            let command_intent: Option<(Option<String>, String)> = transaction
+                .query_row(
+                    "SELECT intent_hash, source
+                     FROM team_definition_migration_command_intents
+                     WHERE project_id = ?1 AND intent_id = ?2",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(backend)?;
+            match command_intent {
+                Some((Some(hash), source)) if source == "issued" || source == "legacy_receipt" => {
+                    ContentHash::parse(&hash)?
+                }
+                Some((None, source)) if source == "legacy_unrecoverable" => {
+                    return Err(conflict(
+                        "team definition migration",
+                        "the pre-v80 migration has no provable exact command intent",
+                    ));
+                }
+                Some(_) => {
+                    return Err(conflict(
+                        "team definition migration command intent",
+                        "the command-intent source and hash disagree",
+                    ));
+                }
+                None => {
+                    return Err(RepositoryError::NotFound {
+                        subject: "team definition migration command intent",
+                    });
+                }
+            }
+        },
+        from,
+        to: TeamDefinitionSnapshot {
+            definition_id: TeamDefinitionId::parse(&to_definition_id)?,
+            version: read_version(to_version)?,
+            canonical_hash: ContentHash::parse(&to_hash)?,
+        },
+        state: TeamDefinitionMigrationState::parse(&state)?,
+        receipt_id: transaction
+            .query_row(
+                "SELECT receipt_id FROM team_definition_migration_receipts
+                 WHERE project_id = ?1 AND intent_id = ?2",
+                params![project_id.to_string(), id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .as_deref()
+            .map(CommandReceiptId::parse)
+            .transpose()?,
+        targets: team_definition_migration_targets_in(transaction, id)?,
+        recorded_at: read_timestamp(&recorded_at)?,
+        updated_at: read_timestamp(&updated_at)?,
+    }))
+}
+
+/// Read one intent's targets in deterministic node order.
+fn team_definition_migration_targets_in(
+    transaction: &Transaction<'_>,
+    intent_id: TeamDefinitionMigrationId,
+) -> RepositoryResult<Vec<TeamDefinitionMigrationTarget>> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT subject_kind, topology_node_id, seat_binding_id,
+                    runtime_kind, native_host, native_generation, native_id,
+                    desired_title, desired_parent_native_id, desired_kind, desired_cwd,
+                    observed_title, observed_parent_native_id, observed_kind, observed_cwd,
+                    state, updated_at
+             FROM team_definition_migration_targets
+             WHERE intent_id = ?1 ORDER BY target_key",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![intent_id.to_string()])
+        .map_err(backend)?;
+    let mut targets = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        let topology_node_id = TopologyNodeId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
+        let seat: Option<String> = row.get(2).map_err(backend)?;
+        let subject = match row.get::<_, String>(0).map_err(backend)?.as_str() {
+            "seat" => TeamDefinitionMigrationSubject::Seat {
+                topology_node_id,
+                seat_binding_id: SeatBindingId::parse(&seat.ok_or_else(|| {
+                    conflict(
+                        "team definition migration target",
+                        "a seat target must name its seat",
+                    )
+                })?)?,
+            },
+            _ => TeamDefinitionMigrationSubject::Container { topology_node_id },
+        };
+        let generation = u64::try_from(row.get::<_, i64>(5).map_err(backend)?).map_err(|_| {
+            RepositoryError::Backend {
+                detail: "a stored native generation is negative".to_owned(),
+            }
+        })?;
+        let identity = NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+            host: ExternalName::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+            generation,
+            native_id: ExternalId::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+        };
+        let desired_parent: Option<String> = row.get(8).map_err(backend)?;
+        let desired_cwd: Option<String> = row.get(10).map_err(backend)?;
+        let desired = NativePlacement {
+            title: ExternalName::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+            parent_native_id: desired_parent
+                .as_deref()
+                .map(ExternalId::parse)
+                .transpose()?,
+            kind: MigrationObjectKind::parse(&row.get::<_, String>(9).map_err(backend)?)?,
+            canonical_cwd: desired_cwd
+                .as_deref()
+                .map(ExternalName::parse)
+                .transpose()?,
+        };
+        let observed_title: Option<String> = row.get(11).map_err(backend)?;
+        let observed_parent: Option<String> = row.get(12).map_err(backend)?;
+        let observed_kind: Option<String> = row.get(13).map_err(backend)?;
+        let observed_cwd: Option<String> = row.get(14).map_err(backend)?;
+        let observed = match (observed_title, observed_kind) {
+            (Some(title), Some(kind)) => Some(NativePlacement {
+                title: ExternalName::parse(&title)?,
+                parent_native_id: observed_parent
+                    .as_deref()
+                    .map(ExternalId::parse)
+                    .transpose()?,
+                kind: MigrationObjectKind::parse(&kind)?,
+                canonical_cwd: observed_cwd
+                    .as_deref()
+                    .map(ExternalName::parse)
+                    .transpose()?,
+            }),
+            _ => None,
+        };
+        targets.push(TeamDefinitionMigrationTarget {
+            intent_id,
+            subject,
+            identity,
+            desired,
+            observed,
+            state: TeamDefinitionMigrationTargetState::parse(
+                &row.get::<_, String>(15).map_err(backend)?,
+            )?,
+            updated_at: read_timestamp(&row.get::<_, String>(16).map_err(backend)?)?,
+        });
+    }
+    Ok(targets)
+}
+
+/// Prove one migration's target set covers the epic's live natives exactly.
+///
+/// Two obligations, both pre-mutation. The target definition has to be able to
+/// *name* every live node kind, or the epic would end up pinned to a document
+/// that cannot describe part of itself. And every live subject has to be
+/// enumerated, or the apply would leave that object rendering the old pin's
+/// name while the epic claims the new one.
+fn prove_migration_covers_live_natives(
+    store: &SqliteStore,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+    definition: &TeamDefinitionSpec,
+    enumerated: &BTreeMap<TeamDefinitionMigrationSubject, NativeRuntimeIdentity>,
+) -> RepositoryResult<()> {
+    let live_subjects = store.list_live_native_subjects(project_id, mini_project_id)?;
+    let mut observed = BTreeMap::new();
+    for live in live_subjects {
+        let container = definition.container(&live.node_kind).ok_or_else(|| {
+            conflict(
+                "team definition migration",
+                "the target definition does not declare a live native node kind",
+            )
+        })?;
+        if matches!(live.subject, TeamDefinitionMigrationSubject::Seat { .. })
+            && container.seat_name_template.is_none()
+        {
+            return Err(conflict(
+                "team definition migration",
+                "the target definition cannot name a live seat of this kind",
+            ));
+        }
+        if observed
+            .insert(live.subject, live.identity.clone())
+            .is_some()
+        {
+            return Err(conflict(
+                "team definition migration",
+                "the live census enumerates one native subject more than once",
+            ));
+        }
+        if enumerated.get(&live.subject) != Some(&live.identity) {
+            return Err(conflict(
+                "team definition migration",
+                "the migration does not match every live native subject and identity of the epic",
+            ));
+        }
+    }
+    if observed.len() != enumerated.len() {
+        return Err(conflict(
+            "team definition migration",
+            "the migration enumerates a subject that is not in the live native census",
+        ));
+    }
+    Ok(())
+}
+
+impl TeamDefinitionRepository for SqliteStore {
+    fn publish_team_definition(
+        &self,
+        project_id: ProjectId,
+        definition: &TeamDefinitionSpec,
+        published_at: Timestamp,
+    ) -> RepositoryResult<ContentHash> {
+        // Canonicalization validates first, so an invalid definition is refused
+        // before it can occupy a lineage position it would then hold forever.
+        let document = definition.canonicalize()?;
+        let transaction = self.begin()?;
+        // Compose against the exact topology document, not merely against the
+        // existence of a row at that version. `canonicalize` proves the
+        // definition is internally complete; only the topology can say whether
+        // the kinds, parents, capabilities and read-only policy it asks for are
+        // legal, and only these bytes can say the hash it cites is really them.
+        // Without this, a definition carrying a forged hash or an illegal
+        // parent could become immutable, selected and epic-pinned.
+        let topology = team_definition_validator_in(&transaction, project_id, definition)?;
+        definition.validate_against(&topology)?;
+        transaction
+            .execute(
+                "INSERT INTO team_definitions
+                     (project_id, definition_id, version, name, topology_spec_id,
+                      topology_version, definition, definition_hash, published_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    project_id.to_string(),
+                    definition.definition_id.to_string(),
+                    version_column(definition.version),
+                    definition.name.as_str(),
+                    definition.topology.spec_id.to_string(),
+                    version_column(definition.topology.version),
+                    document.json(),
+                    document.hash().as_str(),
+                    text(published_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(document.hash().clone())
+    }
+
+    fn get_team_definition(
+        &self,
+        project_id: ProjectId,
+        definition_id: TeamDefinitionId,
+        version: SpecVersion,
+    ) -> RepositoryResult<Option<TeamDefinitionSpec>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT definition, definition_hash FROM team_definitions
+                 WHERE project_id = ?1 AND definition_id = ?2 AND version = ?3",
+                params![
+                    project_id.to_string(),
+                    definition_id.to_string(),
+                    version_column(version)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(json, hash)| stored_document(&json, &hash))
+            .transpose()
+    }
+
+    fn list_team_definitions(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<TeamDefinitionSpec>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT definition, definition_hash FROM team_definitions
+                 WHERE project_id = ?1 ORDER BY definition_id, version",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string()])
+            .map_err(backend)?;
+        let mut definitions = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let document = stored_payload(
+                &row.get::<_, String>(0).map_err(backend)?,
+                &row.get::<_, String>(1).map_err(backend)?,
+            )?;
+            definitions.push(document.deserialize::<TeamDefinitionSpec>()?);
+        }
+        Ok(definitions)
+    }
+
+    fn set_project_team_definition_default(
+        &self,
+        selection: &ProjectTeamDefinitionDefault,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        team_definition_in(&transaction, selection.project_id, &selection.definition)?;
+        // Compare-and-swap. The apply binds the selection its preview saw, in
+        // the same transaction that writes, so a bootstrap that observed "no
+        // default" cannot silently overwrite an explicit selection made between
+        // its read and its write.
+        let current: Option<(String, i64, String)> = transaction
+            .query_row(
+                "SELECT definition_id, version, canonical_hash
+                 FROM project_team_definition_defaults WHERE project_id = ?1",
+                params![selection.project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let current = current
+            .map(|(definition_id, version, hash)| {
+                Ok::<_, RepositoryError>(TeamDefinitionSnapshot {
+                    definition_id: TeamDefinitionId::parse(&definition_id)?,
+                    version: read_version(version)?,
+                    canonical_hash: ContentHash::parse(&hash)?,
+                })
+            })
+            .transpose()?;
+        if current.as_ref() != selection.expected.as_ref() {
+            return Err(conflict(
+                "project team definition default",
+                "the selection changed since the preview it was applied from",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO project_team_definition_defaults
+                     (project_id, definition_id, version, canonical_hash, selected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                     definition_id = excluded.definition_id,
+                     version = excluded.version,
+                     canonical_hash = excluded.canonical_hash,
+                     selected_at = excluded.selected_at",
+                params![
+                    selection.project_id.to_string(),
+                    selection.definition.definition_id.to_string(),
+                    version_column(selection.definition.version),
+                    selection.definition.canonical_hash.as_str(),
+                    text(selection.selected_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get_project_team_definition_default(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Option<ProjectTeamDefinitionDefault>> {
+        let found: Option<(String, i64, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT definition_id, version, canonical_hash, selected_at
+                 FROM project_team_definition_defaults WHERE project_id = ?1",
+                params![project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(definition_id, version, hash, selected_at)| {
+                let definition = TeamDefinitionSnapshot {
+                    definition_id: TeamDefinitionId::parse(&definition_id)?,
+                    version: read_version(version)?,
+                    canonical_hash: ContentHash::parse(&hash)?,
+                };
+                Ok(ProjectTeamDefinitionDefault {
+                    project_id,
+                    // A read reports itself as its own expectation, so a
+                    // caller that previews and then applies passes back
+                    // exactly what it saw.
+                    expected: Some(definition.clone()),
+                    definition,
+                    selected_at: read_timestamp(&selected_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    fn pin_mini_project_team_definition(
+        &self,
+        snapshot: &MiniProjectTeamDefinitionSnapshot,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let owns_mini_project = transaction
+            .query_row(
+                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+                params![
+                    snapshot.project_id.to_string(),
+                    snapshot.mini_project_id.to_string()
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(backend)?
+            .is_some();
+        if !owns_mini_project {
+            return Err(RepositoryError::NotFound {
+                subject: "mini project",
+            });
+        }
+        team_definition_in(&transaction, snapshot.project_id, &snapshot.definition)?;
+        transaction
+            .execute(
+                "INSERT INTO mini_project_team_definition_snapshots
+                     (mini_project_id, project_id, definition_id, version, canonical_hash,
+                      pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    snapshot.mini_project_id.to_string(),
+                    snapshot.project_id.to_string(),
+                    snapshot.definition.definition_id.to_string(),
+                    version_column(snapshot.definition.version),
+                    snapshot.definition.canonical_hash.as_str(),
+                    text(snapshot.pinned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get_mini_project_team_definition(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {
+        let found: Option<(String, i64, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT definition_id, version, canonical_hash, pinned_at
+                 FROM mini_project_team_definition_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(definition_id, version, hash, pinned_at)| {
+                Ok(MiniProjectTeamDefinitionSnapshot {
+                    project_id,
+                    mini_project_id,
+                    definition: TeamDefinitionSnapshot {
+                        definition_id: TeamDefinitionId::parse(&definition_id)?,
+                        version: read_version(version)?,
+                        canonical_hash: ContentHash::parse(&hash)?,
+                    },
+                    pinned_at: read_timestamp(&pinned_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    fn list_live_native_subjects(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<LiveNativeSubject>> {
+        // Containers first, then seats, each ordered by identity, so the census
+        // is the same list every time it is taken.
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT 'container' AS subject_kind, node.id, NULL AS seat_binding_id, node.kind,
+                        container.runtime_kind, container.host, container.generation,
+                        container.native_id
+                   FROM topology_node_containers AS container
+                   JOIN topology_nodes AS node ON node.id = container.topology_node_id
+                  WHERE container.project_id = ?1 AND node.mini_project_id = ?2
+                 UNION ALL
+                 SELECT 'seat', node.id, seat.id, node.kind,
+                        hosted.runtime_kind, hosted.host, hosted.generation, hosted.native_id
+                   FROM hosted_topology_seats AS hosted
+                   JOIN seat_bindings AS seat ON seat.id = hosted.seat_binding_id
+                   JOIN topology_nodes AS node ON node.id = seat.topology_node_id
+                  WHERE hosted.project_id = ?1 AND node.mini_project_id = ?2
+                 UNION ALL
+                 SELECT 'seat', node.id, seat.id, node.kind,
+                        consultation.runtime_kind, consultation.host,
+                        consultation.generation, consultation.native_id
+                   FROM consultation_seats AS consultation
+                   JOIN seat_bindings AS seat ON seat.id = consultation.seat_binding_id
+                   JOIN topology_nodes AS node ON node.id = seat.topology_node_id
+                  WHERE consultation.project_id = ?1 AND node.mini_project_id = ?2
+                    AND consultation.native_id IS NOT NULL
+                 UNION ALL
+                 -- Delivery seats. Their native session is held by the agent
+                 -- run's runtime binding rather than by any seat table, so a
+                 -- census that reads only containers and consultation seats
+                 -- misses every live delivery seat in the epic.
+                 --
+                 -- The slot address is the exact shared key: a run persists
+                 -- `role_key` from its slot (`RoleSlotId::as_role_key`, a
+                 -- transparent wrapper), and the seat persists that same slot in
+                 -- `role_slot_id`. Joining on the team run alone would pair
+                 -- every seat with every session, which is why an ordinary
+                 -- multi-seat TeamRun must be matched slot by slot.
+                 SELECT 'seat', node.id, seat.id, node.kind,
+                        binding.runtime_kind, binding.host,
+                        binding.generation, binding.native_id
+                   FROM runtime_bindings AS binding
+                   JOIN agent_runs AS run
+                     ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
+                   JOIN seat_bindings AS seat
+                     ON seat.team_run_id = run.team_run_id
+                    AND seat.role_slot_id = run.role_key
+                    AND seat.project_id = binding.project_id
+                    AND seat.lifecycle = 'active'
+                   JOIN topology_nodes AS node ON node.id = seat.topology_node_id
+                  WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
+                    AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
+                 ORDER BY 1, 8",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), mini_project_id.to_string()])
+            .map_err(backend)?;
+        let mut subjects = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let topology_node_id =
+                TopologyNodeId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
+            let seat: Option<String> = row.get(2).map_err(backend)?;
+            let subject = match row.get::<_, String>(0).map_err(backend)?.as_str() {
+                "seat" => TeamDefinitionMigrationSubject::Seat {
+                    topology_node_id,
+                    seat_binding_id: SeatBindingId::parse(&seat.ok_or_else(|| {
+                        conflict("live native subject", "a seat subject must name its seat")
+                    })?)?,
+                },
+                _ => TeamDefinitionMigrationSubject::Container { topology_node_id },
+            };
+            let generation =
+                u64::try_from(row.get::<_, i64>(6).map_err(backend)?).map_err(|_| {
+                    RepositoryError::Backend {
+                        detail: "a stored native generation is negative".to_owned(),
+                    }
+                })?;
+            subjects.push(LiveNativeSubject {
+                subject,
+                node_kind: TopologyKindKey::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+                identity: NativeRuntimeIdentity {
+                    runtime_kind: RuntimeKindKey::parse(
+                        &row.get::<_, String>(4).map_err(backend)?,
+                    )?,
+                    host: ExternalName::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+                    generation,
+                    native_id: ExternalId::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+                },
+            });
+        }
+        // Nothing durably links one delivery seat to one agent run: a seat
+        // binding names its team run, and so does the run. Where a team run has
+        // more than one active seat, this join cannot say which seat holds
+        // which native session, and guessing would either retitle the wrong
+        // session or silently drop one. Refuse instead, so the ambiguity is
+        // resolved by a human before any native is touched.
+        // The slot join is exact, so an ordinary multi-seat TeamRun censuses
+        // cleanly. These two checks remain for state the join cannot make sense
+        // of, and both fail closed rather than skipping a live native.
+        let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
+            BTreeMap::new();
+        for live in &subjects {
+            if !matches!(live.subject, TeamDefinitionMigrationSubject::Seat { .. }) {
+                continue;
+            }
+            let key = (
+                live.identity.runtime_kind.as_str().to_owned(),
+                live.identity.host.as_str().to_owned(),
+                live.identity.generation,
+                live.identity.native_id.as_str().to_owned(),
+            );
+            if owners
+                .insert(key, live.subject)
+                .is_some_and(|previous| previous != live.subject)
+            {
+                return Err(conflict(
+                    "live native subject",
+                    "one native session is claimed by two seats of this epic",
+                ));
+            }
+        }
+        // Every live delivery session of this epic must resolve to exactly one
+        // active seat at its slot. Zero is the case observed live — bound
+        // scope/implement/verify/audit runs whose TSW carries no seat rows at
+        // all — and more than one is corrupt. Both are refused: excluding such
+        // a session silently is precisely the skip this census exists to
+        // prevent, and it would let the epic pin move over natives nobody
+        // enumerated.
+        //
+        // Scoped through the run's task rather than through a seat, because a
+        // session with no seat has no node to be found by.
+        let unresolved: i64 = self
+            .connection
+            .query_row(
+                "SELECT count(*)
+                   FROM runtime_bindings AS binding
+                   JOIN agent_runs AS run
+                     ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
+                   JOIN team_runs AS team ON team.id = run.team_run_id
+                   JOIN tasks AS task ON task.id = team.task_id
+                  WHERE binding.project_id = ?1
+                    AND task.mini_project_id = ?2
+                    AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
+                    AND (
+                        SELECT count(*) FROM seat_bindings AS seat
+                         WHERE seat.team_run_id = run.team_run_id
+                           AND seat.role_slot_id = run.role_key
+                           AND seat.project_id = binding.project_id
+                           AND seat.lifecycle = 'active'
+                    ) <> 1",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if unresolved > 0 {
+            return Err(conflict(
+                "live native subject",
+                "a live delivery session has no single active seat at its slot",
+            ));
+        }
+        Ok(subjects)
+    }
+
+    fn get_team_definition_migration_by_key(
+        &self,
+        project_id: ProjectId,
+        idempotency_key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>> {
+        let transaction = self.begin()?;
+        let found: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM team_definition_migration_intents
+                 WHERE project_id = ?1 AND idempotency_key = ?2",
+                params![project_id.to_string(), idempotency_key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let stored = match found {
+            Some(id) => team_definition_migration_in(
+                &transaction,
+                project_id,
+                TeamDefinitionMigrationId::parse(&id)?,
+            )?,
+            None => None,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn bind_team_definition_migration_receipt(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        receipt_id: CommandReceiptId,
+        bound_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        if stored.state != TeamDefinitionMigrationState::Confirmed {
+            return Err(conflict(
+                "team definition migration receipt",
+                "only a confirmed migration has a command to receipt",
+            ));
+        }
+        match stored.receipt_id {
+            // The replay of a recovery that already completed.
+            Some(existing) if existing == receipt_id => {
+                transaction.commit().map_err(backend)?;
+                return Ok(());
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "team definition migration receipt",
+                    "this migration was already commanded under a different receipt",
+                ));
+            }
+            None => {}
+        }
+        transaction
+            .execute(
+                "INSERT INTO team_definition_migration_receipts
+                     (intent_id, project_id, receipt_id, bound_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    id.to_string(),
+                    project_id.to_string(),
+                    receipt_id.to_string(),
+                    text(bound_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn record_team_definition_migration(
+        &self,
+        migration: &NewTeamDefinitionMigration,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration> {
+        if migration.targets.is_empty() {
+            return Err(conflict(
+                "team definition migration",
+                "a migration must enumerate at least one target",
+            ));
+        }
+        let mut subjects = BTreeMap::new();
+        if !migration.targets.iter().all(|target| {
+            subjects
+                .insert(target.subject, target.identity.clone())
+                .is_none()
+        }) {
+            return Err(conflict(
+                "team definition migration",
+                "a migration must not enumerate one native subject twice",
+            ));
+        }
+        // Two subjects claiming one native object would make the identity
+        // proof ambiguous: the readback could satisfy either of them.
+        let mut natives = BTreeSet::new();
+        if !migration.targets.iter().all(|target| {
+            natives.insert((
+                target.identity.runtime_kind.clone(),
+                target.identity.host.clone(),
+                target.identity.generation,
+                target.identity.native_id.clone(),
+            ))
+        }) {
+            return Err(conflict(
+                "team definition migration",
+                "a migration must not enumerate one native id twice",
+            ));
+        }
+        for target in &migration.targets {
+            target.desired.validate()?;
+            if !target.desired.matches_subject(target.subject) {
+                return Err(conflict(
+                    "team definition migration target",
+                    "the recorded object kind does not describe the subject it is about",
+                ));
+            }
+        }
+        let transaction = self.begin()?;
+        // Same key, same migration. A resumed apply continues the intent it
+        // already recorded rather than recording a rival to it, so the replay
+        // is safe without the caller having to check first.
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM team_definition_migration_intents
+                 WHERE project_id = ?1 AND idempotency_key = ?2",
+                params![
+                    migration.project_id.to_string(),
+                    migration.idempotency_key.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let fingerprint = migration.fingerprint();
+        if let Some(id) = existing {
+            let id = TeamDefinitionMigrationId::parse(&id)?;
+            let stored = team_definition_migration_in(&transaction, migration.project_id, id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "team definition migration",
+                })?;
+            // A replay is the same request asked again, not merely the same
+            // key. A key reused for a different epic, target set, identity,
+            // title or destination revision is a conflict: reporting it as
+            // success would silently discard the request that was actually
+            // made.
+            if stored.fingerprint != fingerprint {
+                return Err(conflict(
+                    "team definition migration",
+                    "this idempotency key already records a different migration",
+                ));
+            }
+            // Same plan is not the same command. A retry carrying a different
+            // preview hash or legacy-topic map is a different request, and
+            // answering it with this migration's outcome would report success
+            // for something nobody asked for.
+            if stored.command_intent_hash != migration.command_intent_hash {
+                return Err(conflict(
+                    "team definition migration",
+                    "this idempotency key was issued under a different command intent",
+                ));
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok(stored);
+        }
+        // The `from` the caller recorded has to be the pin the epic actually
+        // holds. A migration that starts from a position the epic left is a
+        // migration of something else.
+        let current =
+            self.get_mini_project_team_definition(migration.project_id, migration.mini_project_id)?;
+        if current.as_ref().map(|pin| &pin.definition) != migration.from.as_ref() {
+            return Err(conflict(
+                "team definition migration",
+                "the recorded prior pin is not the epic's current pin",
+            ));
+        }
+        let target = team_definition_in(&transaction, migration.project_id, &migration.to)?;
+        // The census proof, before the first external effect: the target
+        // definition must be able to name every live node kind, and every live
+        // native subject must be enumerated. A migration that silently skips a
+        // kind would move the pin while part of the epic still renders the old
+        // one's names.
+        prove_migration_covers_live_natives(
+            self,
+            migration.project_id,
+            migration.mini_project_id,
+            &target,
+            &subjects,
+        )?;
+        // Every target must be a node of *this* epic in *this* project. The
+        // composite foreign key proves the project; the epic is proved here,
+        // because a node's epic is nullable and a foreign node would otherwise
+        // let one migration retitle another epic's natives.
+        for target in &migration.targets {
+            let owned = transaction
+                .query_row(
+                    "SELECT 1 FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2 AND mini_project_id = ?3",
+                    params![
+                        migration.project_id.to_string(),
+                        target.subject.topology_node_id().to_string(),
+                        migration.mini_project_id.to_string(),
+                    ],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(backend)?
+                .is_some();
+            if !owned {
+                return Err(conflict(
+                    "team definition migration target",
+                    "a target node does not belong to this project and epic",
+                ));
+            }
+        }
+        transaction
+            .execute(
+                "INSERT INTO team_definition_migration_intents
+                     (id, project_id, mini_project_id, idempotency_key, fingerprint,
+                      from_definition_id, from_version, from_canonical_hash, to_definition_id,
+                      to_version, to_canonical_hash, state, recorded_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?12, ?5, ?6, ?7, ?8, ?9, ?10, 'recorded', ?11, ?11)",
+                params![
+                    migration.id.to_string(),
+                    migration.project_id.to_string(),
+                    migration.mini_project_id.to_string(),
+                    migration.idempotency_key.as_str(),
+                    migration
+                        .from
+                        .as_ref()
+                        .map(|from| from.definition_id.to_string()),
+                    migration
+                        .from
+                        .as_ref()
+                        .map(|from| version_column(from.version)),
+                    migration
+                        .from
+                        .as_ref()
+                        .map(|from| from.canonical_hash.as_str().to_owned()),
+                    migration.to.definition_id.to_string(),
+                    version_column(migration.to.version),
+                    migration.to.canonical_hash.as_str(),
+                    text(migration.recorded_at),
+                    fingerprint.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO team_definition_migration_command_intents
+                     (intent_id, project_id, intent_hash, source, recorded_at)
+                 VALUES (?1, ?2, ?3, 'issued', ?4)",
+                params![
+                    migration.id.to_string(),
+                    migration.project_id.to_string(),
+                    migration.command_intent_hash.as_str(),
+                    text(migration.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        for target in &migration.targets {
+            transaction
+                .execute(
+                    "INSERT INTO team_definition_migration_targets
+                         (intent_id, project_id, target_key, subject_kind, topology_node_id,
+                          seat_binding_id, runtime_kind, native_host, native_generation,
+                          native_id, desired_title, desired_parent_native_id, desired_kind,
+                          desired_cwd, observed_title, observed_parent_native_id,
+                          observed_kind, observed_cwd, state, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                             NULL, NULL, NULL, NULL, 'pending', ?15)",
+                    params![
+                        migration.id.to_string(),
+                        migration.project_id.to_string(),
+                        target.subject.target_key(),
+                        match target.subject {
+                            TeamDefinitionMigrationSubject::Container { .. } => "container",
+                            TeamDefinitionMigrationSubject::Seat { .. } => "seat",
+                        },
+                        target.subject.topology_node_id().to_string(),
+                        target
+                            .subject
+                            .seat_binding_id()
+                            .map(|seat| seat.to_string()),
+                        target.identity.runtime_kind.as_str(),
+                        target.identity.host.as_str(),
+                        i64::try_from(target.identity.generation).unwrap_or(i64::MAX),
+                        target.identity.native_id.as_str(),
+                        target.desired.title.as_str(),
+                        target
+                            .desired
+                            .parent_native_id
+                            .as_ref()
+                            .map(ExternalId::as_str),
+                        target.desired.kind.as_str(),
+                        target
+                            .desired
+                            .canonical_cwd
+                            .as_ref()
+                            .map(ExternalName::as_str),
+                        text(migration.recorded_at),
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        let stored =
+            team_definition_migration_in(&transaction, migration.project_id, migration.id)?.ok_or(
+                RepositoryError::NotFound {
+                    subject: "team definition migration",
+                },
+            )?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn get_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+    ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>> {
+        let transaction = self.begin()?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn get_in_flight_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<StoredTeamDefinitionMigration>> {
+        let transaction = self.begin()?;
+        let found: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM team_definition_migration_intents
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND state IN ('recorded', 'applying')",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let stored = match found {
+            Some(id) => team_definition_migration_in(
+                &transaction,
+                project_id,
+                TeamDefinitionMigrationId::parse(&id)?,
+            )?,
+            None => None,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn observe_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        observations: &[TeamDefinitionMigrationObservation],
+        observed_at: Timestamp,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration> {
+        let transaction = self.begin()?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        if stored.state.is_terminal() {
+            return Err(conflict(
+                "team definition migration",
+                "a settled migration does not take further observations",
+            ));
+        }
+        for observation in observations {
+            let target = stored
+                .targets
+                .iter()
+                .find(|target| target.subject == observation.subject)
+                .ok_or(RepositoryError::NotFound {
+                    subject: "team definition migration target",
+                })?;
+            // The identity check that makes this migration identity-preserving.
+            // A readback carrying a different native id did not observe the
+            // object we asked about, so it can never be recorded against it.
+            // The identity check that makes this migration identity-preserving.
+            // A readback carrying a different runtime, host, generation or
+            // native id did not observe the object we asked about, so it can
+            // never be recorded against it.
+            if target.identity != observation.identity {
+                return Err(conflict(
+                    "team definition migration target",
+                    "the observed native identity is not the one the migration enumerated",
+                ));
+            }
+            // A success is a readback, not a label. Claiming `renamed` or
+            // `unchanged` without the exact desired title and unchanged
+            // placement would move the epic pin to bytes the natives do not
+            // render, which is precisely what this migration exists to prevent.
+            let succeeded = matches!(
+                observation.state,
+                TeamDefinitionMigrationTargetState::Renamed
+                    | TeamDefinitionMigrationTargetState::Unchanged
+            );
+            if succeeded && observation.observed.as_ref() != Some(&target.desired) {
+                return Err(conflict(
+                    "team definition migration target",
+                    "a success state requires the exact desired title and unchanged placement",
+                ));
+            }
+            let observed = observation.observed.as_ref();
+            transaction
+                .execute(
+                    "UPDATE team_definition_migration_targets
+                     SET observed_title = ?1, observed_parent_native_id = ?2,
+                         observed_kind = ?3, observed_cwd = ?4, state = ?5, updated_at = ?6
+                     WHERE intent_id = ?7 AND target_key = ?8",
+                    params![
+                        observed.map(|placement| placement.title.as_str()),
+                        observed.and_then(|placement| placement
+                            .parent_native_id
+                            .as_ref()
+                            .map(ExternalId::as_str)),
+                        observed.map(|placement| placement.kind.as_str()),
+                        observed.and_then(|placement| placement
+                            .canonical_cwd
+                            .as_ref()
+                            .map(ExternalName::as_str)),
+                        observation.state.as_str(),
+                        text(observation.observed_at),
+                        id.to_string(),
+                        observation.subject.target_key(),
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        transaction
+            .execute(
+                "UPDATE team_definition_migration_intents
+                 SET state = 'applying', updated_at = ?1
+                 WHERE project_id = ?2 AND id = ?3",
+                params![text(observed_at), project_id.to_string(), id.to_string()],
+            )
+            .map_err(backend)?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn confirm_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        confirmed_at: Timestamp,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration> {
+        let transaction = self.begin()?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        if stored.state.is_terminal() {
+            return Err(conflict(
+                "team definition migration",
+                "a settled migration cannot be confirmed again",
+            ));
+        }
+        // Every target, without exception. `rename_pending` is the state that
+        // exists precisely so a partial apply cannot be confirmed: the pin does
+        // not move until the natives already render what it says they do.
+        if !stored.targets.iter().all(|target| {
+            matches!(
+                target.state,
+                TeamDefinitionMigrationTargetState::Renamed
+                    | TeamDefinitionMigrationTargetState::Unchanged
+            )
+        }) {
+            return Err(conflict(
+                "team definition migration",
+                "every target must read back its desired title before the pin moves",
+            ));
+        }
+        // And the epic must still be where the intent left it. Anything else
+        // moved the pin behind this migration's back.
+        let current = self.get_mini_project_team_definition(project_id, stored.mini_project_id)?;
+        if current.as_ref().map(|pin| &pin.definition) != stored.from.as_ref() {
+            return Err(conflict(
+                "team definition migration",
+                "the epic's pin moved while the migration was in flight",
+            ));
+        }
+        let target = team_definition_in(&transaction, project_id, &stored.to)?;
+        // Re-prove the census. A native that appeared between preview and
+        // confirmation is not covered by this migration, and moving the pin
+        // over it would leave it rendering a name the new pin does not describe.
+        prove_migration_covers_live_natives(
+            self,
+            project_id,
+            stored.mini_project_id,
+            &target,
+            &stored
+                .targets
+                .iter()
+                .map(|target| (target.subject, target.identity.clone()))
+                .collect::<BTreeMap<_, _>>(),
+        )?;
+        // The pin and the confirmation commit together: neither half of a
+        // migration is allowed to become visible on its own.
+        if stored.from.is_some() {
+            transaction
+                .execute(
+                    "UPDATE mini_project_team_definition_snapshots
+                     SET definition_id = ?1, version = ?2, canonical_hash = ?3, pinned_at = ?4
+                     WHERE project_id = ?5 AND mini_project_id = ?6",
+                    params![
+                        stored.to.definition_id.to_string(),
+                        version_column(stored.to.version),
+                        stored.to.canonical_hash.as_str(),
+                        text(confirmed_at),
+                        project_id.to_string(),
+                        stored.mini_project_id.to_string(),
+                    ],
+                )
+                .map_err(backend)?;
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO mini_project_team_definition_snapshots
+                         (mini_project_id, project_id, definition_id, version, canonical_hash,
+                          pinned_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        stored.mini_project_id.to_string(),
+                        project_id.to_string(),
+                        stored.to.definition_id.to_string(),
+                        version_column(stored.to.version),
+                        stored.to.canonical_hash.as_str(),
+                        text(confirmed_at),
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        transaction
+            .execute(
+                "UPDATE team_definition_migration_intents
+                 SET state = 'confirmed', updated_at = ?1
+                 WHERE project_id = ?2 AND id = ?3",
+                params![text(confirmed_at), project_id.to_string(), id.to_string()],
+            )
+            .map_err(backend)?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn fail_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        id: TeamDefinitionMigrationId,
+        failed_at: Timestamp,
+    ) -> RepositoryResult<StoredTeamDefinitionMigration> {
+        let transaction = self.begin()?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        if stored.state.is_terminal() {
+            return Err(conflict(
+                "team definition migration",
+                "a settled migration cannot be abandoned again",
+            ));
+        }
+        // Abandonment is only honest before the first external effect. Once any
+        // target has moved, part of the runtime renders the new titles while
+        // the epic still holds the old pin, and going terminal would drop the
+        // fence and let new materialization resume under a pin that no longer
+        // describes the natives. Such a migration stays non-terminal and
+        // fenced, and is resumed under the same key.
+        if stored
+            .targets
+            .iter()
+            .any(|target| target.state != TeamDefinitionMigrationTargetState::Pending)
+        {
+            return Err(conflict(
+                "team definition migration",
+                "a migration with runtime effects stays resumable and fenced",
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE team_definition_migration_intents
+                 SET state = 'failed', updated_at = ?1
+                 WHERE project_id = ?2 AND id = ?3",
+                params![text(failed_at), project_id.to_string(), id.to_string()],
+            )
+            .map_err(backend)?;
+        let stored = team_definition_migration_in(&transaction, project_id, id)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "team definition migration",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
 }

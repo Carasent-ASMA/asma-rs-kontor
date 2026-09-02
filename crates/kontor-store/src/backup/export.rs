@@ -46,13 +46,38 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 3;
+pub const EXPORT_SCHEMA_VERSION: u32 = 4;
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
 
 /// Database generation that first persisted exact profile-selection outcomes.
 const PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION: i64 = 62;
+
+/// The export generation that first carried profile-selection outcomes and the
+/// continuity summary.
+///
+/// Named rather than spelled `EXPORT_SCHEMA_VERSION` so that adding a later
+/// generation cannot silently reclassify generation 3 as unable to prove what
+/// it does in fact carry.
+const PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION: u32 = 3;
+
+/// The database generation that introduced the Team Definition surfaces.
+const TEAM_DEFINITION_SCHEMA_VERSION: i64 = 77;
+
+/// The export generation that first carried the Team Definition surfaces.
+const TEAM_DEFINITION_EXPORT_VERSION: u32 = 4;
+
+/// Record arrays introduced together in generation 4.
+const TEAM_DEFINITION_RECORD_FIELDS: [&str; 7] = [
+    "team_definitions",
+    "project_team_definition_defaults",
+    "mini_project_team_definition_snapshots",
+    "team_definition_migration_intents",
+    "team_definition_migration_targets",
+    "team_definition_migration_command_intents",
+    "team_definition_migration_receipts",
+];
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -144,7 +169,14 @@ impl KontorExportV1 {
     /// Returns [`BackupError::Redaction`] only through [`Self::canonical_value`]'s
     /// serialization failure path, which cannot happen for this type.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, BackupError> {
-        canonical_bytes(&canonical_value(self)?)
+        let mut value = canonical_value(self)?;
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_team_definition_record_fields(records)?;
+        }
+        canonical_bytes(&value)
     }
 
     /// The canonical bytes of `records` alone — the bytes
@@ -153,7 +185,11 @@ impl KontorExportV1 {
     /// # Errors
     /// As [`Self::canonical_bytes`].
     pub fn canonical_records_bytes(&self) -> Result<Vec<u8>, BackupError> {
-        canonical_bytes(&canonical_value(&self.records)?)
+        let mut value = canonical_value(&self.records)?;
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            remove_team_definition_record_fields(&mut value)?;
+        }
+        canonical_bytes(&value)
     }
 
     /// Recompute the digest and compare it with the one the document carries.
@@ -171,18 +207,48 @@ impl KontorExportV1 {
                 expected: EXPORT_SCHEMA_VERSION,
             });
         }
-        if self.schema_version < EXPORT_SCHEMA_VERSION
+        if self.schema_version < PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
             && self.database_schema_version >= PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove profile-selection outcome completeness",
             });
         }
-        if self.schema_version < EXPORT_SCHEMA_VERSION
+        if self.schema_version < PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
             && !self.records.profile_selection_outcomes.is_empty()
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation carries profile-selection outcomes it did not define",
+            });
+        }
+        // An export taken from a database that has the Team Definition tables,
+        // by a generation that did not know about them, cannot claim to be a
+        // complete export: it would look whole while having dropped the current
+        // naming authority and every resumable migration.
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
+            && self.database_schema_version >= TEAM_DEFINITION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove Team Definition completeness",
+            });
+        }
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
+            && !(self.records.team_definitions.is_empty()
+                && self.records.project_team_definition_defaults.is_empty()
+                && self
+                    .records
+                    .mini_project_team_definition_snapshots
+                    .is_empty()
+                && self.records.team_definition_migration_intents.is_empty()
+                && self.records.team_definition_migration_targets.is_empty()
+                && self
+                    .records
+                    .team_definition_migration_command_intents
+                    .is_empty()
+                && self.records.team_definition_migration_receipts.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries Team Definition records it did not define",
             });
         }
         if ContentHash::of(&self.canonical_records_bytes()?) != self.records_hash {
@@ -190,8 +256,8 @@ impl KontorExportV1 {
                 detail: "the export's records do not hash to its declared digest",
             });
         }
-        if self.schema_version == EXPORT_SCHEMA_VERSION
-            && self.continuity_summary != self.records.continuity()
+        if self.schema_version >= PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
+            && self.continuity_summary != self.records.continuity_for_export(self.schema_version)
         {
             return Err(BackupError::Verification {
                 detail: "the export's continuity summary does not match its records",
@@ -211,7 +277,7 @@ impl KontorExportV1 {
     /// and [`BackupError::Verification`] when the bytes are not a document of
     /// this one.
     pub fn parse(bytes: &[u8]) -> Result<Self, BackupError> {
-        let value: serde_json::Value =
+        let mut value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| BackupError::Verification {
                 detail: "the export is not a JSON document",
             })?;
@@ -228,6 +294,23 @@ impl KontorExportV1 {
                 expected: EXPORT_SCHEMA_VERSION,
             });
         }
+        // Normalize a supported older generation into the current in-memory
+        // record type only after its version is known. The injected arrays are
+        // representation defaults, not invented history: verification and
+        // canonical hashing continue to use the generation's original shape.
+        if found < TEAM_DEFINITION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_DEFINITION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -235,6 +318,19 @@ impl KontorExportV1 {
         export.verify()?;
         Ok(export)
     }
+}
+
+/// Remove generation-4 arrays from a supported legacy record object.
+fn remove_team_definition_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in TEAM_DEFINITION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
 }
 
 /// Render any serializable value through `serde_json::Value`, whose objects are
@@ -618,6 +714,83 @@ exported_tables! {
         version: i64,
         canonical_hash: String,
         pinned_at: String,
+    }
+    team_definitions: TeamDefinitionsRow from "team_definitions" key(project_id, definition_id, version) {
+        project_id: String,
+        definition_id: String,
+        version: i64,
+        name: String,
+        topology_spec_id: String,
+        topology_version: i64,
+        definition: String,
+        definition_hash: String,
+        published_at: String,
+    }
+    project_team_definition_defaults: ProjectTeamDefinitionDefaultsRow from "project_team_definition_defaults" key(project_id) {
+        project_id: String,
+        definition_id: String,
+        version: i64,
+        canonical_hash: String,
+        selected_at: String,
+    }
+    mini_project_team_definition_snapshots: MiniProjectTeamDefinitionSnapshotsRow from "mini_project_team_definition_snapshots" key(mini_project_id) {
+        mini_project_id: String,
+        project_id: String,
+        definition_id: String,
+        version: i64,
+        canonical_hash: String,
+        pinned_at: String,
+    }
+    team_definition_migration_intents: TeamDefinitionMigrationIntentsRow from "team_definition_migration_intents" key(id) {
+        id: String,
+        project_id: String,
+        mini_project_id: String,
+        idempotency_key: String,
+        fingerprint: String,
+        from_definition_id: Option<String>,
+        from_version: Option<i64>,
+        from_canonical_hash: Option<String>,
+        to_definition_id: String,
+        to_version: i64,
+        to_canonical_hash: String,
+        state: String,
+        recorded_at: String,
+        updated_at: String,
+    }
+    team_definition_migration_targets: TeamDefinitionMigrationTargetsRow from "team_definition_migration_targets" key(intent_id, target_key) {
+        intent_id: String,
+        project_id: String,
+        target_key: String,
+        subject_kind: String,
+        topology_node_id: String,
+        seat_binding_id: Option<String>,
+        runtime_kind: String,
+        native_host: String,
+        native_generation: i64,
+        native_id: String,
+        desired_title: String,
+        desired_parent_native_id: Option<String>,
+        desired_kind: String,
+        desired_cwd: Option<String>,
+        observed_title: Option<String>,
+        observed_parent_native_id: Option<String>,
+        observed_kind: Option<String>,
+        observed_cwd: Option<String>,
+        state: String,
+        updated_at: String,
+    }
+    team_definition_migration_command_intents: TeamDefinitionMigrationCommandIntentsRow from "team_definition_migration_command_intents" key(intent_id) {
+        intent_id: String,
+        project_id: String,
+        intent_hash: Option<String>,
+        source: String,
+        recorded_at: String,
+    }
+    team_definition_migration_receipts: TeamDefinitionMigrationReceiptsRow from "team_definition_migration_receipts" key(intent_id) {
+        intent_id: String,
+        project_id: String,
+        receipt_id: String,
+        bound_at: String,
     }
     role_catalog_revisions: RoleCatalogRevisionsRow from "role_catalog_revisions" key(catalog_id, version) {
         catalog_id: String,
@@ -1505,6 +1678,19 @@ exported_tables! {
 }
 
 impl ExportedRecords {
+    /// Continuity represented in the exact record vocabulary of one supported
+    /// export generation.
+    #[must_use]
+    fn continuity_for_export(&self, schema_version: u32) -> ContinuitySummary {
+        let mut continuity = self.continuity();
+        if schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            for field in TEAM_DEFINITION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        continuity
+    }
+
     /// What this document says about its own completeness.
     ///
     /// Everything is counted from the records themselves. A summary computed by

@@ -136,6 +136,20 @@ impl<'de> Deserialize<'de> for AiShortName {
 crate::closed_enum! {
     /// Closed values a published native-name template may request.
     NativeNameToken, "NativeNameToken" {
+        /// Configured local prefix for one native container kind.
+        Prefix => "PREFIX",
+        /// Jira-derived item code for the owning epic.
+        EpicItemCode => "EPIC_ITEM_CODE",
+        /// Jira-derived item code for the owning task.
+        TaskItemCode => "TASK_ITEM_CODE",
+        /// Subject-selected epic or task item code for a consultation.
+        ScopeItemCode => "SCOPE_ITEM_CODE",
+        /// Explicit bounded consultation topic.
+        Topic => "TOPIC",
+        /// Exact registered local professional role code.
+        RoleCode => "ROLE_CODE",
+        /// Exact display label declared for one local seat slot.
+        SlotDisplayName => "SLOT_DISPLAY_NAME",
         /// Topology kind for a container; snapshotted role code for a seat.
         AreaCode => "AREA_CODE",
         /// The single durable Jira identity applicable to the owning scope.
@@ -151,7 +165,12 @@ crate::closed_enum! {
 
 /// One ordered part of a native display-name template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum NativeNameSegment {
     /// A value resolved from durable typed state.
     Token(NativeNameToken),
@@ -165,7 +184,7 @@ pub enum NativeNameSegment {
 /// exportable. [`Self::validate`] always refuses it, so it can never be newly
 /// published, materialized or used for repair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum NativeNameTemplate {
     /// Current typed template.
     Typed {
@@ -256,7 +275,18 @@ impl NativeNameTemplate {
             .iter()
             .map(|segment| match segment {
                 NativeNameSegment::Literal(value) => Ok(value.as_str()),
-                NativeNameSegment::Token(token) => values.require(*token),
+                NativeNameSegment::Token(token) => {
+                    let value = values.require(*token)?;
+                    if value.contains(separator.as_str())
+                        || value.contains(['\u{2022}', '\u{00b7}'])
+                    {
+                        return Err(DomainError::invalid(
+                            "NativeNameValues",
+                            "a rendered token must not contain a separator glyph",
+                        ));
+                    }
+                    Ok(value)
+                }
             })
             .collect::<DomainResult<Vec<_>>>()?
             .join(separator.as_str());
@@ -273,6 +303,48 @@ impl NativeNameValues {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Add `PREFIX`.
+    #[must_use]
+    pub fn with_prefix(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::Prefix, value)
+    }
+
+    /// Add `EPIC_ITEM_CODE`.
+    #[must_use]
+    pub fn with_epic_item_code(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::EpicItemCode, value)
+    }
+
+    /// Add `TASK_ITEM_CODE`.
+    #[must_use]
+    pub fn with_task_item_code(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::TaskItemCode, value)
+    }
+
+    /// Add `SCOPE_ITEM_CODE`.
+    #[must_use]
+    pub fn with_scope_item_code(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::ScopeItemCode, value)
+    }
+
+    /// Add `TOPIC`.
+    #[must_use]
+    pub fn with_topic(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::Topic, value)
+    }
+
+    /// Add `ROLE_CODE`.
+    #[must_use]
+    pub fn with_role_code(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::RoleCode, value)
+    }
+
+    /// Add `SLOT_DISPLAY_NAME`.
+    #[must_use]
+    pub fn with_slot_display_name(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::SlotDisplayName, value)
     }
 
     /// Add `AREA_CODE`.
@@ -315,6 +387,27 @@ impl NativeNameValues {
             .get(&token)
             .map(String::as_str)
             .ok_or_else(|| match token {
+                NativeNameToken::Prefix => {
+                    DomainError::invalid("NativeNameTemplate", "missing PREFIX")
+                }
+                NativeNameToken::EpicItemCode => {
+                    DomainError::invalid("NativeNameTemplate", "missing EPIC_ITEM_CODE")
+                }
+                NativeNameToken::TaskItemCode => {
+                    DomainError::invalid("NativeNameTemplate", "missing TASK_ITEM_CODE")
+                }
+                NativeNameToken::ScopeItemCode => {
+                    DomainError::invalid("NativeNameTemplate", "missing SCOPE_ITEM_CODE")
+                }
+                NativeNameToken::Topic => {
+                    DomainError::invalid("NativeNameTemplate", "missing TOPIC")
+                }
+                NativeNameToken::RoleCode => {
+                    DomainError::invalid("NativeNameTemplate", "missing ROLE_CODE")
+                }
+                NativeNameToken::SlotDisplayName => {
+                    DomainError::invalid("NativeNameTemplate", "missing SLOT_DISPLAY_NAME")
+                }
                 NativeNameToken::AreaCode => {
                     DomainError::invalid("NativeNameTemplate", "missing AREA_CODE")
                 }

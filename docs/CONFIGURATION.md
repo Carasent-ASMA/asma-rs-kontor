@@ -16,7 +16,7 @@ system behaviour instead of instructions somebody has to remember.
 
 | Location | Holds |
 | --- | --- |
-| `<state-root>/kontor.db` | Every versioned specification published through `/v1`: topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs |
+| `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence |
 | `<state-root>/runtimes.json` | Runtime family, plane endpoint and per-account provider aliases. Schema generation `4`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
 | `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
@@ -48,30 +48,80 @@ claiming ownership of an existing issue's summary, description or workflow
 status; it cannot silently replace the original create batch.
 
 Operational topology v4 (`01936f5a-1000-7000-8000-000000000001`, revision `4`)
-uses the typed `ITEM_CODE` projection and renders centered-dot names in the
-currently shipped implementation. This is historical implementation behavior,
-not current naming authority. The approved target contract moves hierarchy and
-all native rendering to one pinned Team Definition JSON and uses the
-recommended ` • ` templates in [`NATIVE_NAMING.md`](NATIVE_NAMING.md).
-Implementation conformance is pending the next audit. To reproduce or migrate
-the existing v4 behavior, use this order:
+still validates legal hierarchy and native projection capabilities. Its
+centered-dot templates are historical compatibility bytes, not current naming
+authority. ASMA Operational Team Definition v1
+(`01936f5a-2000-7000-8000-000000000001`, revision `1`) owns the recommended
+` • ` rendering in [`NATIVE_NAMING.md`](NATIVE_NAMING.md). Migrate in this
+order:
 
 1. Preview/apply the epic graph and read back its active epic backlog code.
 2. Preview/apply Jira materialization and confirm the epic and task issue
    readbacks. A requested or imported key alone is insufficient.
-3. Preview/apply the project topology selection to revision 4, which controls
-   what new epics inherit.
-4. Preview/apply each existing epic's topology upgrade to revision 4.
-5. Preview/apply native-name reconciliation for containers or seats that were
-   already materialized under revision 1.
+3. Validate/publish the Team Definition revision and preview/apply the project
+   default selection under compare-and-swap. This affects future epics only.
+4. Inventory explicit topics for every legacy ASW/CSW; never derive one from a
+   question, title or transcript.
+5. Reconcile every legacy ticket TSW through `topology:materialize` using its
+   stable historical key where available. The selected/pinned definition maps
+   each open TeamRun's exact slot to one logical SeatBinding without creating or
+   replacing a native session. Replay it again to prove the same binding ids.
+6. Preview the existing epic's Team Definition upgrade. Confirm the complete
+   identity-bound container-and-seat census before apply. Preview first
+   preflights every exact slot of every live TeamRun against the target
+   definition and performs no runtime read when a mapping is missing or two
+   co-resident slots would render the same name.
+7. Apply with one stable idempotency key. A partial result keeps the old pin and
+   fences materialization; replay the same key until every exact native object
+   reads back and the pin switches. The fence blocks admission and replacement
+   before any command write, predecessor retirement or runtime contact.
+
+Logical epic creation may freeze the selected Team Definition before step 2.
+This is safe because a pin is not placement authority: every native
+materialization path independently requires the active immutable epic code and
+the exact confirmed Jira binding for its scope.
 
 The corresponding `/v1` operations are `epics:preview` / `epics:apply`,
-`jira:preview` / `jira:apply`, `topology-selection:preview` /
-`topology-selection:apply`, `topology:upgrade-preview` /
-`topology:upgrade-apply`, and `native-names:preview` / `native-names:apply`.
-Revision 1 is never rewritten. Revision 4 refuses placement before a runtime
-mutation when the active epic namespace or one unambiguous confirmed Jira
-binding is missing.
+`jira:preview` / `jira:apply`, `team-definitions:validate` /
+`team-definitions:publish`, `team-definition-selection:preview` /
+`team-definition-selection:apply`, and `team-definition:upgrade-preview` /
+`team-definition:upgrade-apply`. Historical definitions and topology revisions
+are never rewritten. Placement and migration refuse before runtime mutation
+when the active epic namespace, confirmed Jira binding, topic, definition pin
+or exact identity readback is missing or ambiguous.
+
+The recommended TSW `team_slots` are exactly `scope→SA`, `implement→SWE`,
+`verify→QA`, and `audit→AUD`. These mappings are separate from fixed local
+`slots`. A definition catalog may contain alternative-template slot ids that map
+to the same role code, but a frozen TeamRun containing two slots that render the
+same name is refused before runtime contact. Unknown slots are never mapped from
+their spelling or logical role. In particular, Research Spike remains
+unregistered until a future `SLOT_DISPLAY_NAME` revision can name its two `BA`
+seats distinctly.
+
+All seats, including ECP/ASW/CSW local slots and TSW delivery slots, resolve
+through the same exact `(container kind, RoleSlotId)` lookup. The configured
+role code or display label is authoritative; persisted roles and caller values
+are never fallback names. Migration record and confirmation each compare the
+complete live census bidirectionally by subject and immutable native identity,
+so neither an omitted live object nor a stale extra target can move the pin.
+
+Schema v77 introduced Team Definitions and migration state; v78-v80 complete
+per-seat advice, receipt recovery and exact command-intent recovery. During a
+v79→v80 upgrade, only a migration with a bound
+`upgrade_team_definition` command receipt can recover its exact intent hash.
+Any unreceipted recorded, applying or confirmed legacy migration is retained as
+an explicit `legacy_unrecoverable` fence and returns a typed conflict; Kontor
+never substitutes the migration fingerprint or target set for the missing
+command. A deployed naming migration is therefore healthy only at schema v80
+or later and only when no such recovery fence remains.
+
+Redacted export generation 4 introduced seven Team Definition record arrays.
+When reading supported generations 2 or 3, Kontor supplies those absent arrays
+only as empty in-memory defaults. It removes them again for legacy canonical
+hashing, continuity comparison and serialization; a genuine generation-3
+export therefore verifies byte-for-byte without being rewritten into a false
+generation-4 shape.
 
 ## Seat supervision
 
@@ -130,9 +180,12 @@ second time.
 - Profile packs define phases, gates, artifacts, budgets and runtime routing.
   The bundled manifest declares 17 work-profile categories; four ship today
   (`code`, `ux-ui-layout`, `research`, `docs`).
-- Team Definition JSON revisions define hierarchy, native naming, role slots,
-  exact labels, capabilities, skills, contexts and handoffs. Role slots carry
-  stable ids, so two peers in the same role are explicit rather than duplicate.
+- Team Definition JSON revisions define native hierarchy, naming, fixed slots,
+  delivery `team_slots`, exact labels and slot capability-profile references.
+  Team templates and
+  consultation profiles separately own execution behavior, skills, context and
+  handoffs. Role slots carry stable ids, so two peers in the same role are
+  explicit rather than duplicate.
 - The standard role catalog defines 56 role codes across 9 segments. Seat
   selection is by `role_code`; a free-form role string is not accepted anywhere.
 - Account profiles contain non-secret provider-routing metadata and a credential

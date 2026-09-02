@@ -127,6 +127,7 @@ fn candidate(project: ProjectId, task: TaskId) -> Candidate {
         task_id: task,
         mini_project_id: None,
         workflow_id: TaskWorkflowId::generate(),
+        delivery_slots_registered: true,
         state: TaskState::Ready,
         revision: AggregateRevision::INITIAL,
         created_at: at("2026-08-12T08:00:00Z"),
@@ -342,6 +343,10 @@ fn the_blocker_order_is_the_declared_order_and_covers_every_blocker() {
             Blocker::Authorization,
             Blocker::Calendar,
             Blocker::ExternalWork,
+            // Before `Runtime` deliberately: it is decided from stored
+            // configuration alone, and a candidate whose seats cannot be named
+            // must be refused without a runtime being consulted about it.
+            Blocker::StaticPlacement,
             Blocker::Runtime,
             Blocker::Account,
             Blocker::Worktree,
@@ -1802,4 +1807,66 @@ fn every_candidate_is_decided_exactly_once() {
             });
     assert!(seen.values().all(|count| *count == 1));
     assert_eq!(seen.keys().copied().collect::<BTreeSet<TaskId>>(), expected);
+}
+
+#[test]
+fn a_candidate_whose_slots_are_unregistered_is_refused_before_the_runtime_is_judged() {
+    let project = ProjectId::generate();
+    let task = TaskId::generate();
+    // Unregistered *and* on a runtime that would refuse it too. The reported
+    // blocker must be the static one: it is decided from configuration alone,
+    // so it is answered before anything is asked of a runtime.
+    let mut candidate = candidate(project, task);
+    candidate.delivery_slots_registered = false;
+    candidate.runtime.health = RuntimeHealth::Unavailable;
+    let plan = plan(&snapshot(vec![candidate])).expect("the pass decides");
+    match plan.decisions.first().expect("one decision") {
+        CandidateDecision::Reject { code, .. } => {
+            assert_eq!(*code, RejectionCode::DeliverySlotUnregistered);
+            assert_eq!(
+                code.public_code(),
+                "placement_blocked",
+                "callers keep the agreed external code"
+            );
+        }
+        CandidateDecision::Admit(_) => panic!("an unnameable candidate is not admissible"),
+    }
+}
+
+#[test]
+fn one_unregistered_candidate_does_not_block_the_rest_of_its_batch() {
+    let project = ProjectId::generate();
+    let blocked_task = TaskId::generate();
+    let live_task = TaskId::generate();
+    let mut unregistered = candidate(project, blocked_task);
+    unregistered.delivery_slots_registered = false;
+    let healthy = candidate(project, live_task);
+
+    let plan = plan(&snapshot(vec![unregistered, healthy])).expect("the pass decides");
+    let refused: Vec<_> = plan
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            CandidateDecision::Reject { task_id, code, .. } => Some((*task_id, *code)),
+            CandidateDecision::Admit(_) => None,
+        })
+        .collect();
+    let admitted: Vec<_> = plan
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            CandidateDecision::Admit(admitted) => Some(admitted.task_id),
+            CandidateDecision::Reject { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        refused,
+        vec![(blocked_task, RejectionCode::DeliverySlotUnregistered)],
+        "only the unnameable candidate is refused"
+    );
+    assert_eq!(
+        admitted,
+        vec![live_task],
+        "its neighbour in the same batch is admitted as usual"
+    );
 }
