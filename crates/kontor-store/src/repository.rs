@@ -15480,13 +15480,15 @@ impl TeamDefinitionRepository for SqliteStore {
                 ));
             }
         }
-        // Every live delivery session of this epic must resolve to exactly one
-        // active seat at its slot. Zero is the case observed live — bound
-        // scope/implement/verify/audit runs whose TSW carries no seat rows at
-        // all — and more than one is corrupt. Both are refused: excluding such
-        // a session silently is precisely the skip this census exists to
-        // prevent, and it would let the epic pin move over natives nobody
-        // enumerated.
+        // Every live delivery session on active (or missing) task topology must
+        // resolve to exactly one active seat at its slot. Zero is the case
+        // observed live — bound scope/implement/verify/audit runs whose active
+        // TSW carries no seat rows at all — and more than one is corrupt. Both
+        // are refused: excluding such a session silently is precisely the skip
+        // this census exists to prevent, and it would let the epic pin move
+        // over natives nobody enumerated. A run whose exact task topology is
+        // only retired/archived is immutable history and stays outside the
+        // migration together with that TSW.
         //
         // Scoped through the run's task rather than through a seat, because a
         // session with no seat has no node to be found by.
@@ -15512,6 +15514,10 @@ impl TeamDefinitionRepository for SqliteStore {
                         AND run.project_id = binding.project_id
                        JOIN team_runs AS team ON team.id = run.team_run_id
                        JOIN tasks AS task ON task.id = team.task_id
+                       LEFT JOIN topology_nodes AS task_node
+                         ON task_node.project_id = binding.project_id
+                        AND task_node.task_id = task.id
+                        AND task_node.lifecycle = 'active'
                        LEFT JOIN seat_bindings AS seat
                          ON seat.team_run_id = run.team_run_id
                         AND seat.role_slot_id = run.role_key
@@ -15522,6 +15528,15 @@ impl TeamDefinitionRepository for SqliteStore {
                       WHERE binding.project_id = ?1
                         AND task.mini_project_id = ?2
                         AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
+                        AND (
+                            task_node.id IS NOT NULL
+                            OR NOT EXISTS (
+                                SELECT 1
+                                  FROM topology_nodes AS historical_task_node
+                                 WHERE historical_task_node.project_id = binding.project_id
+                                   AND historical_task_node.task_id = task.id
+                            )
+                        )
                       GROUP BY run.id
                    ) AS candidate
                   WHERE candidate.active_seats <> 1
