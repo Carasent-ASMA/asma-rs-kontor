@@ -11,18 +11,19 @@ use kontor_core::id::{
 use kontor_core::naming::NativeNameValues;
 use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
-    NativePlacement, NewMiniProject, NewProject, NewSeatBinding, NewSessionTopologyNode,
-    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
-    ProjectTeamDefinitionDefault, RepositoryError, StoredConsultationProfileRevision,
-    StoredConsultationRun, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    NativePlacement, NewMiniProject, NewNativeContainerBinding, NewProject, NewSeatBinding,
+    NewSessionTopologyNode, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget,
+    ProjectRepository, ProjectTeamDefinitionDefault, RepositoryError,
+    StoredConsultationProfileRevision, StoredConsultationRun, StoredHostedTopologySeat,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
-    TopologySnapshot,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    TeamDefinitionSnapshot, TeamDefinitionSpec, TopologySnapshot,
 };
-use kontor_core::state::NativeRuntimeIdentity;
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use tempfile::TempDir;
@@ -175,6 +176,85 @@ fn identity(native: &str) -> NativeRuntimeIdentity {
         host: name("localhost"),
         generation: 1,
         native_id: ExternalId::parse(native).expect("a native id"),
+    }
+}
+
+/// Make a migration target part of the durable live-native census first.
+fn bind_container(
+    f: &Fixture,
+    node: TopologyNodeId,
+    native: &NativeRuntimeIdentity,
+    observed_kind: ObservedContainerKind,
+) {
+    f.store
+        .bind_topology_node_container(&NewNativeContainerBinding {
+            topology_node_id: node,
+            project_id: f.project_id,
+            container_binding_id: ExternalId::parse(&format!("bind_{}", native.native_id.as_str()))
+                .expect("a binding id"),
+            identity: native.clone(),
+            observed_kind,
+            canonical_cwd: Some(name("/tmp/kontor")),
+            observed_at: f.created_at,
+        })
+        .expect("the native container is bound before migration preflight");
+}
+
+/// Bind exact persistent control seats so seat migration targets are real
+/// census subjects rather than caller-invented identifiers.
+fn bind_hosted_seats(
+    f: &Fixture,
+    node: TopologyNodeId,
+    seats: &[(SeatBindingId, &str, &str, NativeRuntimeIdentity)],
+) {
+    let catalog = bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .role_catalogs
+        .first()
+        .expect("a role catalog")
+        .clone();
+    f.store
+        .publish_role_catalog(&catalog, &default_stamp(), f.created_at)
+        .expect("the role catalog publishes");
+    let rung = ModelRung {
+        provider: ProviderRef("codex".to_owned()),
+        model: ModelRef("gpt-5.6".to_owned()),
+        effort: None,
+    };
+    for (seat_binding_id, role_slot_id, role_code, native_identity) in seats {
+        let entry = catalog
+            .role(&RoleCode::parse(role_code).expect("a role code"))
+            .expect("the catalog declares the hosted role");
+        f.store
+            .create_seat_binding(&NewSeatBinding {
+                id: *seat_binding_id,
+                project_id: f.project_id,
+                topology_node_id: node,
+                role_slot_id: RoleSlotId::parse(role_slot_id).expect("a role slot"),
+                role: CatalogRoleRef {
+                    catalog_id: catalog.catalog_id,
+                    catalog_revision: catalog.version,
+                    role_code: entry.role_code.clone(),
+                    standard_title: entry.standard_title.clone(),
+                    custom_display_name: None,
+                },
+                task_id: None,
+                team_run_id: None,
+                attach_deadline: at("2026-09-01T12:10:00Z"),
+                parent_seat_binding_id: None,
+                created_at: f.created_at,
+            })
+            .expect("the persistent hosted seat is created");
+        f.store
+            .bind_hosted_topology_seat(&StoredHostedTopologySeat {
+                project_id: f.project_id,
+                seat_binding_id: *seat_binding_id,
+                model_rung: rung.clone(),
+                native_identity: native_identity.clone(),
+                provider_session_id: None,
+                observed_at: f.created_at,
+            })
+            .expect("the hosted seat native identity is bound");
     }
 }
 
@@ -458,6 +538,12 @@ fn migration_fixture() -> Migration {
 }
 
 fn new_migration(m: &Migration, key: &str) -> NewTeamDefinitionMigration {
+    bind_container(
+        &m.fixture,
+        m.node,
+        &m.native,
+        ObservedContainerKind::Workspace,
+    );
     NewTeamDefinitionMigration {
         id: TeamDefinitionMigrationId::generate(),
         project_id: m.fixture.project_id,
@@ -972,13 +1058,15 @@ fn several_seats_on_one_node_are_distinct_targets_that_survive_preview_and_confi
     let container = TeamDefinitionMigrationSubject::Container {
         topology_node_id: ecp,
     };
+    let lsa_seat = SeatBindingId::generate();
     let lsa = TeamDefinitionMigrationSubject::Seat {
         topology_node_id: ecp,
-        seat_binding_id: SeatBindingId::generate(),
+        seat_binding_id: lsa_seat,
     };
+    let tpm_seat = SeatBindingId::generate();
     let tpm = TeamDefinitionMigrationSubject::Seat {
         topology_node_id: ecp,
-        seat_binding_id: SeatBindingId::generate(),
+        seat_binding_id: tpm_seat,
     };
     let subjects = [container, lsa, tpm];
     let identities = [
@@ -991,6 +1079,20 @@ fn several_seats_on_one_node_are_distinct_targets_that_survive_preview_and_confi
         seat_placement("LSA", "wks_ecp_container"),
         seat_placement("TPM", "wks_ecp_container"),
     ];
+    bind_container(
+        &m.fixture,
+        ecp,
+        &identities[0],
+        ObservedContainerKind::Workspace,
+    );
+    bind_hosted_seats(
+        &m.fixture,
+        ecp,
+        &[
+            (lsa_seat, "lsa", "LSA", identities[1].clone()),
+            (tpm_seat, "tpm", "TPM", identities[2].clone()),
+        ],
+    );
 
     let recorded = m
         .fixture
@@ -1144,9 +1246,10 @@ fn all_three_target_kinds_persist_and_confirm_under_their_own_identities() {
     let workspace = TeamDefinitionMigrationSubject::Container {
         topology_node_id: m.fixture.ecp,
     };
+    let seat_binding = SeatBindingId::generate();
     let seat = TeamDefinitionMigrationSubject::Seat {
         topology_node_id: m.fixture.ecp,
-        seat_binding_id: SeatBindingId::generate(),
+        seat_binding_id: seat_binding,
     };
     let subjects = [root, workspace, seat];
     let identities = [
@@ -1159,6 +1262,23 @@ fn all_three_target_kinds_persist_and_confirm_under_their_own_identities() {
         placement("ECP • KBI-8049"),
         seat_placement("LSA", "wks_ecp_container"),
     ];
+    bind_container(
+        &m.fixture,
+        m.node,
+        &identities[0],
+        ObservedContainerKind::Project,
+    );
+    bind_container(
+        &m.fixture,
+        m.fixture.ecp,
+        &identities[1],
+        ObservedContainerKind::Workspace,
+    );
+    bind_hosted_seats(
+        &m.fixture,
+        m.fixture.ecp,
+        &[(seat_binding, "lsa", "LSA", identities[2].clone())],
+    );
 
     let recorded = m
         .fixture
@@ -1381,6 +1501,13 @@ fn a_topic_cannot_be_supplied_across_a_project_boundary() {
             pinned_at: other.created_at,
         })
         .expect("the other epic freezes v1");
+    let foreign_native = identity("wks_other_root");
+    bind_container(
+        &other,
+        other.esw,
+        &foreign_native,
+        ObservedContainerKind::Workspace,
+    );
     let foreign_intent = other
         .store
         .record_team_definition_migration(&NewTeamDefinitionMigration {
@@ -1394,7 +1521,7 @@ fn a_topic_cannot_be_supplied_across_a_project_boundary() {
                 subject: TeamDefinitionMigrationSubject::Container {
                     topology_node_id: other.esw,
                 },
-                identity: identity("wks_other_root"),
+                identity: foreign_native,
                 desired: placement("ESW • KBI-9001"),
             }],
             command_intent_hash: ContentHash::of(b"command-intent"),
