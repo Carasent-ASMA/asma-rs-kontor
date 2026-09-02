@@ -11,23 +11,26 @@
 //! receipt without repeating a single native effect.
 
 use kontor_core::id::{
-    CanonicalDocument, CommandReceiptId, ExternalId, ExternalName, IdempotencyKey, MiniProjectId,
-    ProjectId, RuntimeKindKey, SpecVersion, TeamDefinitionMigrationId, Timestamp, TopologyKindKey,
-    TopologyNodeId, parse_utc_timestamp,
+    AgentRunId, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, ExternalName,
+    IdempotencyKey, MiniProjectId, ProjectId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId,
+    RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamDefinitionMigrationId, TeamRunId,
+    Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     CommandRepository, MigrationObjectKind, MiniProjectTeamDefinitionSnapshot,
-    MiniProjectTopologySnapshot, NativePlacement, NewCommandIntent, NewMiniProject,
-    NewNativeContainerBinding, NewProject, NewSessionTopologyNode, NewTeamDefinitionMigration,
-    NewTeamDefinitionMigrationTarget, ProjectRepository, TeamDefinitionMigrationObservation,
+    MiniProjectTopologySnapshot, NativePlacement, NewAgentRun, NewCommandIntent, NewMiniProject,
+    NewNativeContainerBinding, NewProject, NewSeatBinding, NewSessionTopologyNode, NewTask,
+    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun, ProjectRepository,
+    RunRepository, RuntimeBinding, SpecRepository, TeamDefinitionMigrationObservation,
     TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
 };
 use kontor_core::spec::{
-    Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec, TopologySnapshot,
+    CatalogRoleRef, Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
+    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot,
 };
-use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use tempfile::TempDir;
@@ -67,6 +70,13 @@ struct World {
     second: TeamDefinitionSpec,
     esw: TopologyNodeId,
     ecp: TopologyNodeId,
+    /// A TSW node hosting one delivery seat whose native session is live.
+    tsw: TopologyNodeId,
+    /// That delivery seat's binding.
+    delivery_seat: SeatBindingId,
+    /// The task and team run the delivery seat serves.
+    task: TaskId,
+    team_run: TeamRunId,
 }
 
 /// An epic pinned to v1, with two *live* native containers: an ESW and an ECP.
@@ -186,6 +196,110 @@ fn world() -> World {
         })
         .expect("the epic freezes v1");
 
+    // A delivery seat: a TSW node, an active seat binding on it, and an agent
+    // run whose runtime binding holds the live native session. Its identity
+    // lives in `AgentRun.binding`, not in the container or consultation tables,
+    // which is exactly why a census that reads only those misses it.
+    let tsw = TopologyNodeId::generate();
+    store
+        .create_topology_node(&node(tsw, "TSW", Some(esw), Some(mini_project_id)))
+        .expect("the task workspace node is created");
+    store
+        .bind_topology_node_container(&NewNativeContainerBinding {
+            topology_node_id: tsw,
+            project_id,
+            container_binding_id: ExternalId::parse("bind_wks_tsw").expect("a binding id"),
+            identity: identity("wks_tsw"),
+            observed_kind: ObservedContainerKind::Workspace,
+            canonical_cwd: Some(name("/tmp/kontor")),
+            observed_at: created_at,
+        })
+        .expect("the task workspace takes a native container");
+
+    let catalog = domain.role_catalogs.first().expect("a catalog").clone();
+    store
+        .publish_role_catalog(&catalog, &stamp(), created_at)
+        .expect("the catalog publishes");
+    let entry = catalog
+        .role(&RoleCode::parse("AUD").expect("a role code"))
+        .expect("the catalog has the delivery role");
+    let delivery_seat = SeatBindingId::generate();
+    let task = TaskId::generate();
+    store
+        .create_task(&NewTask {
+            id: task,
+            project_id,
+            mini_project_id: Some(mini_project_id),
+            title: name("Delivery task"),
+            module: None,
+            state: TaskState::Ready,
+            created_at,
+        })
+        .expect("the task is created");
+    let template = TeamTemplateRevision {
+        template_id: kontor_core::id::TeamTemplateId::generate(),
+        version: SpecVersion::FIRST,
+        name: name("Delivery team"),
+        definition: CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "team": "delivery",
+        }))
+        .expect("a canonical team document"),
+        role_authority: Vec::new(),
+    };
+    store
+        .insert_team_template(project_id, &template)
+        .expect("the template is stored");
+    let team_run = TeamRunId::generate();
+    store
+        .create_team_run(&NewTeamRun {
+            id: team_run,
+            project_id,
+            task_id: task,
+            snapshot: TeamRunSnapshot::from_revision(&template, kontor_core::id::SCHEMA_VERSION),
+            created_at,
+        })
+        .expect("the team run is created");
+    let slot = RoleSlotId::parse("delivery.auditor").expect("a slot");
+    store
+        .create_seat_binding(&NewSeatBinding {
+            id: delivery_seat,
+            project_id,
+            topology_node_id: tsw,
+            role_slot_id: slot.clone(),
+            role: CatalogRoleRef {
+                catalog_id: catalog.catalog_id,
+                catalog_revision: catalog.version,
+                role_code: entry.role_code.clone(),
+                standard_title: entry.standard_title.clone(),
+                custom_display_name: None,
+            },
+            task_id: Some(task),
+            team_run_id: Some(team_run),
+            attach_deadline: at("2026-09-02T09:30:00Z"),
+            parent_seat_binding_id: None,
+            created_at,
+        })
+        .expect("the delivery seat is bound");
+    let agent_run = AgentRunId::generate();
+    store
+        .create_agent_run(&NewAgentRun {
+            id: agent_run,
+            project_id,
+            team_run_id: team_run,
+            parent_agent_run_id: None,
+            role: RoleKey::parse("delivery.auditor").expect("a logical role"),
+            account_profile_id: None,
+            binding: Some(RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: agent_run,
+                identity: identity("agent_delivery_aud"),
+                bound_at: created_at,
+            }),
+            created_at,
+        })
+        .expect("the delivery seat's native session is bound");
+
     World {
         home,
         database,
@@ -196,6 +310,10 @@ fn world() -> World {
         second,
         esw,
         ecp,
+        tsw,
+        delivery_seat,
+        task,
+        team_run,
     }
 }
 
@@ -222,7 +340,46 @@ fn complete_targets(w: &World) -> Vec<NewTeamDefinitionMigrationTarget> {
     vec![
         container_target(w.esw, "wks_esw", "ESW • KBI-8049"),
         container_target(w.ecp, "wks_ecp", "ECP • KBI-8049"),
+        container_target(w.tsw, "wks_tsw", "TSW • KBI-8062"),
+        delivery_seat_target(w),
     ]
+}
+
+/// The delivery seat target: a seat, named by its role code alone.
+fn delivery_seat_target(w: &World) -> NewTeamDefinitionMigrationTarget {
+    NewTeamDefinitionMigrationTarget {
+        subject: TeamDefinitionMigrationSubject::Seat {
+            topology_node_id: w.tsw,
+            seat_binding_id: w.delivery_seat,
+        },
+        identity: identity("agent_delivery_aud"),
+        desired: NativePlacement {
+            title: name("AUD"),
+            parent_native_id: Some(ExternalId::parse("wks_tsw").expect("a native id")),
+            kind: MigrationObjectKind::Seat,
+            canonical_cwd: None,
+        },
+    }
+}
+
+/// Read back every enumerated target of one migration exactly as previewed.
+fn read_every_target_back(w: &World, id: TeamDefinitionMigrationId) {
+    for target in complete_targets(w) {
+        w.store
+            .observe_team_definition_migration(
+                w.project_id,
+                id,
+                &[TeamDefinitionMigrationObservation {
+                    subject: target.subject,
+                    identity: target.identity.clone(),
+                    observed: Some(target.desired.clone()),
+                    state: TeamDefinitionMigrationTargetState::Renamed,
+                    observed_at: at("2026-09-02T11:00:00Z"),
+                }],
+                at("2026-09-02T11:00:00Z"),
+            )
+            .expect("each enumerated target reads back");
+    }
 }
 
 fn migration(
@@ -238,6 +395,7 @@ fn migration(
         from: Some(snapshot(&w.definition)),
         to: snapshot(&w.second),
         targets,
+        command_intent_hash: ContentHash::of(b"command-intent"),
         recorded_at: at("2026-09-02T10:00:00Z"),
     }
 }
@@ -253,25 +411,126 @@ fn the_census_lists_every_live_native_bearing_subject_of_the_epic() {
         .store
         .list_live_native_subjects(w.project_id, w.mini_project_id)
         .expect("the census reads");
-    let mut kinds: Vec<String> = census
+    let mut seen: Vec<String> = census
         .iter()
-        .map(|subject| subject.node_kind.as_str().to_owned())
+        .map(|live| {
+            let seat = match live.subject {
+                TeamDefinitionMigrationSubject::Seat { .. } => "seat",
+                TeamDefinitionMigrationSubject::Container { .. } => "container",
+            };
+            format!(
+                "{}/{seat}/{}",
+                live.node_kind.as_str(),
+                live.identity.native_id.as_str()
+            )
+        })
         .collect();
-    kinds.sort();
+    seen.sort();
     assert_eq!(
-        kinds,
-        vec!["ECP".to_owned(), "ESW".to_owned()],
-        "both bound containers are live subjects the migration must cover"
+        seen,
+        vec![
+            "ECP/container/wks_ecp".to_owned(),
+            "ESW/container/wks_esw".to_owned(),
+            "TSW/container/wks_tsw".to_owned(),
+            // The delivery seat's identity lives in `AgentRun.binding`; a census
+            // that reads only containers and consultation seats loses it.
+            "TSW/seat/agent_delivery_aud".to_owned(),
+        ],
+        "every native-bearing family is a live subject the migration must cover"
+    );
+}
+
+#[test]
+fn a_migration_that_omits_a_live_delivery_seat_is_refused() {
+    let w = world();
+    let without_the_seat: Vec<_> = complete_targets(&w)
+        .into_iter()
+        .filter(|target| !matches!(target.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+        .collect();
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "omits-delivery-seat",
+                without_the_seat
+            ))
+            .is_err(),
+        "a delivery seat bound through its agent run is a live native subject"
+    );
+    assert!(
+        w.store
+            .get_in_flight_team_definition_migration(w.project_id, w.mini_project_id)
+            .expect("the read succeeds")
+            .is_none(),
+        "the refusal is pre-mutation"
+    );
+    w.store
+        .record_team_definition_migration(&migration(&w, "covers-the-seat", complete_targets(&w)))
+        .expect("the complete enumeration, including the delivery seat, is recorded");
+}
+
+#[test]
+fn a_second_active_seat_on_one_team_run_is_refused_rather_than_guessed() {
+    let w = world();
+    // Nothing durably links a seat binding to an agent run: both name only the
+    // team run. A second active seat on that run makes the native session
+    // unattributable, and guessing would retitle the wrong session or drop one.
+    let catalog = bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .role_catalogs
+        .first()
+        .expect("a catalog")
+        .clone();
+    let entry = catalog
+        .role(&RoleCode::parse("SA").expect("a role code"))
+        .expect("the catalog has the role");
+    w.store
+        .create_seat_binding(&NewSeatBinding {
+            id: SeatBindingId::generate(),
+            project_id: w.project_id,
+            topology_node_id: w.tsw,
+            role_slot_id: RoleSlotId::parse("delivery.reviewer").expect("a slot"),
+            role: CatalogRoleRef {
+                catalog_id: catalog.catalog_id,
+                catalog_revision: catalog.version,
+                role_code: entry.role_code.clone(),
+                standard_title: entry.standard_title.clone(),
+                custom_display_name: None,
+            },
+            task_id: Some(w.task),
+            team_run_id: Some(w.team_run),
+            attach_deadline: at("2026-09-02T10:40:00Z"),
+            parent_seat_binding_id: None,
+            created_at: at("2026-09-02T10:40:00Z"),
+        })
+        .expect("a second delivery seat is bound to the same team run");
+
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id);
+    assert!(
+        census.is_err(),
+        "an unattributable delivery-seat session is refused, not guessed at"
+    );
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "ambiguous-delivery-seat",
+                complete_targets(&w)
+            ))
+            .is_err(),
+        "and no migration can be recorded while the census cannot be proved"
     );
 }
 
 #[test]
 fn a_migration_that_omits_a_live_native_subject_is_refused_before_any_mutation() {
     let w = world();
-    // Only the ESW is enumerated; the live ECP container is silently skipped.
+    // Only the ESW is enumerated; every other live native is silently skipped.
     let refused = w.store.record_team_definition_migration(&migration(
         &w,
-        "omits-the-ecp",
+        "omits-the-rest",
         vec![container_target(w.esw, "wks_esw", "ESW • KBI-8049")],
     ));
     assert!(
@@ -279,8 +538,6 @@ fn a_migration_that_omits_a_live_native_subject_is_refused_before_any_mutation()
         "a migration that leaves a live native subject unenumerated must be \
          refused before the first retitle"
     );
-    // And nothing was recorded: the refusal is pre-mutation, not a rollback of
-    // something the epic can already see.
     assert!(
         w.store
             .get_in_flight_team_definition_migration(w.project_id, w.mini_project_id)
@@ -298,9 +555,6 @@ fn a_migration_that_omits_a_live_native_subject_is_refused_before_any_mutation()
         w.definition.version,
         "the epic still holds the pin its natives render"
     );
-
-    // The complete enumeration is accepted, so the refusal is about the
-    // omission rather than about the fixture.
     w.store
         .record_team_definition_migration(&migration(&w, "covers-everything", complete_targets(&w)))
         .expect("a complete migration is recorded");
@@ -309,14 +563,15 @@ fn a_migration_that_omits_a_live_native_subject_is_refused_before_any_mutation()
 #[test]
 fn a_target_definition_that_does_not_declare_a_live_node_kind_is_refused() {
     let w = world();
-    // Strip ECP from the target definition while an ECP container is live.
+    // Strip TSW from the target definition while a TSW container and its
+    // delivery seat are live.
     let mut narrowed = w.second.clone();
     narrowed
         .containers
-        .retain(|container| container.kind.as_str() != "ECP");
+        .retain(|container| container.kind.as_str() != "TSW");
     narrowed.version = SpecVersion::parse(3).expect("a valid version");
     w.store
-        .publish_team_definition(w.project_id, &narrowed, at("2026-09-02T09:30:00Z"))
+        .publish_team_definition(w.project_id, &narrowed, at("2026-09-02T09:40:00Z"))
         .expect("the narrowed definition is itself a legal publication");
 
     let mut request = migration(&w, "narrowed-target", complete_targets(&w));
@@ -335,12 +590,13 @@ fn confirmation_re_proves_parity_against_the_live_census() {
         .store
         .record_team_definition_migration(&migration(&w, "parity-at-confirm", complete_targets(&w)))
         .expect("a complete migration is recorded");
+    read_every_target_back(&w, recorded.id);
 
     // A native container appears after the preview was taken.
-    let tsw = TopologyNodeId::generate();
+    let asw = TopologyNodeId::generate();
     w.store
         .create_topology_node(&NewSessionTopologyNode {
-            id: tsw,
+            id: asw,
             project_id: w.project_id,
             mini_project_id: Some(w.mini_project_id),
             topology: w
@@ -349,54 +605,23 @@ fn confirmation_re_proves_parity_against_the_live_census() {
                 .expect("the read succeeds")
                 .expect("the epic pins a topology")
                 .topology,
-            kind: TopologyKindKey::parse("TSW").expect("a kind"),
+            kind: TopologyKindKey::parse("ASW").expect("a kind"),
             parent_id: Some(w.esw),
             task_id: None,
             created_at: at("2026-09-02T10:30:00Z"),
         })
-        .expect("a task workspace node appears");
+        .expect("an advisor workspace node appears");
     w.store
         .bind_topology_node_container(&NewNativeContainerBinding {
-            topology_node_id: tsw,
+            topology_node_id: asw,
             project_id: w.project_id,
-            container_binding_id: ExternalId::parse("bind_wks_tsw").expect("a binding id"),
-            identity: identity("wks_tsw"),
+            container_binding_id: ExternalId::parse("bind_wks_asw").expect("a binding id"),
+            identity: identity("wks_asw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
             observed_at: at("2026-09-02T10:31:00Z"),
         })
         .expect("it takes a native container");
-
-    for (index, (node, native, title)) in [
-        (w.esw, "wks_esw", "ESW • KBI-8049"),
-        (w.ecp, "wks_ecp", "ECP • KBI-8049"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let _ = index;
-        w.store
-            .observe_team_definition_migration(
-                w.project_id,
-                recorded.id,
-                &[TeamDefinitionMigrationObservation {
-                    subject: TeamDefinitionMigrationSubject::Container {
-                        topology_node_id: node,
-                    },
-                    identity: identity(native),
-                    observed: Some(NativePlacement {
-                        title: name(title),
-                        parent_native_id: Some(ExternalId::parse("wks_root").expect("a native id")),
-                        kind: MigrationObjectKind::WorkspaceContainer,
-                        canonical_cwd: Some(name("/tmp/kontor")),
-                    }),
-                    state: TeamDefinitionMigrationTargetState::Renamed,
-                    observed_at: at("2026-09-02T11:00:00Z"),
-                }],
-                at("2026-09-02T11:00:00Z"),
-            )
-            .expect("each enumerated target reads back");
-    }
 
     assert!(
         w.store
@@ -433,32 +658,7 @@ fn a_crash_between_the_pin_commit_and_the_receipt_recovers_from_the_same_key() {
         .store
         .record_team_definition_migration(&migration(&w, key, complete_targets(&w)))
         .expect("the migration is recorded");
-    for (node, native, title) in [
-        (w.esw, "wks_esw", "ESW • KBI-8049"),
-        (w.ecp, "wks_ecp", "ECP • KBI-8049"),
-    ] {
-        w.store
-            .observe_team_definition_migration(
-                w.project_id,
-                recorded.id,
-                &[TeamDefinitionMigrationObservation {
-                    subject: TeamDefinitionMigrationSubject::Container {
-                        topology_node_id: node,
-                    },
-                    identity: identity(native),
-                    observed: Some(NativePlacement {
-                        title: name(title),
-                        parent_native_id: Some(ExternalId::parse("wks_root").expect("a native id")),
-                        kind: MigrationObjectKind::WorkspaceContainer,
-                        canonical_cwd: Some(name("/tmp/kontor")),
-                    }),
-                    state: TeamDefinitionMigrationTargetState::Renamed,
-                    observed_at: at("2026-09-02T11:00:00Z"),
-                }],
-                at("2026-09-02T11:00:00Z"),
-            )
-            .expect("every target reads back");
-    }
+    read_every_target_back(&w, recorded.id);
     let confirmed = w
         .store
         .confirm_team_definition_migration(w.project_id, recorded.id, at("2026-09-02T11:05:00Z"))

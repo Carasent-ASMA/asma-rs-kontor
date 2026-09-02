@@ -472,6 +472,7 @@ fn new_migration(m: &Migration, key: &str) -> NewTeamDefinitionMigration {
             identity: m.native.clone(),
             desired: placement("ESW • KBI-8049"),
         }],
+        command_intent_hash: ContentHash::of(b"command-intent"),
         recorded_at: at("2026-09-01T14:00:00Z"),
     }
 }
@@ -966,6 +967,7 @@ fn several_seats_on_one_node_are_distinct_targets_that_survive_preview_and_confi
                     },
                 )
                 .collect(),
+            command_intent_hash: ContentHash::of(b"command-intent"),
             recorded_at: at("2026-09-01T14:00:00Z"),
         })
         .expect("all three targets are recorded");
@@ -1133,6 +1135,7 @@ fn all_three_target_kinds_persist_and_confirm_under_their_own_identities() {
                     },
                 )
                 .collect(),
+            command_intent_hash: ContentHash::of(b"command-intent"),
             recorded_at: at("2026-09-01T14:00:00Z"),
         })
         .expect("a root, a workspace and a seat are all recordable targets");
@@ -1234,6 +1237,7 @@ fn a_placement_must_describe_the_subject_it_is_recorded_against() {
                         identity: identity("wks_mismatch"),
                         desired,
                     }],
+                    command_intent_hash: ContentHash::of(b"command-intent"),
                     recorded_at: at("2026-09-01T14:00:00Z"),
                 })
                 .is_err(),
@@ -1346,6 +1350,7 @@ fn a_topic_cannot_be_supplied_across_a_project_boundary() {
                 identity: identity("wks_other_root"),
                 desired: placement("ESW • KBI-9001"),
             }],
+            command_intent_hash: ContentHash::of(b"command-intent"),
             recorded_at: other.created_at,
         })
         .expect("the other project records its own intent");
@@ -1503,6 +1508,7 @@ fn a_migration_cannot_enumerate_a_node_of_another_project_or_epic() {
                     identity: identity("wks_foreign"),
                     desired: placement("ESW • KBI-8049"),
                 }],
+                command_intent_hash: ContentHash::of(b"command-intent"),
                 recorded_at: at("2026-09-01T14:00:00Z"),
             })
             .is_err(),

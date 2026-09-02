@@ -181,6 +181,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "tasks",
     "team_command_replays",
     "team_definitions",
+    "team_definition_migration_command_intents",
     "team_definition_migration_intents",
     "team_definition_migration_receipts",
     "team_definition_migration_targets",
@@ -500,7 +501,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // independently reporting advisor seats.
     // v79 records the command receipt a confirmed migration was commanded
     // under, closing the crash window between the pin commit and the receipt.
-    assert_eq!(SCHEMA_VERSION, 79);
+    // v80 records the canonical command intent a migration was issued under,
+    // so crash-window recovery can prove the retry is the same command.
+    assert_eq!(SCHEMA_VERSION, 80);
 }
 
 #[test]

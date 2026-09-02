@@ -15052,6 +15052,14 @@ impl ApplicationOperations for Services {
                         "the idempotency key belongs to another Team Definition migration",
                     ));
                 }
+                // Same proof on the replay path: a receipt already exists, so
+                // the retry must be the command that receipt belongs to.
+                if migration.command_intent_hash != *intent.hash() {
+                    return Err(self.deny(
+                        ApiErrorCode::IdempotencyConflict,
+                        "the idempotency key was issued under a different upgrade intent",
+                    ));
+                }
                 state
                     .with_store(|store| {
                         store.bind_team_definition_migration_receipt(
@@ -15122,6 +15130,17 @@ impl ApplicationOperations for Services {
                 return Err(self.deny(
                     ApiErrorCode::IdempotencyConflict,
                     "the idempotency key belongs to another Team Definition migration",
+                ));
+            }
+            // Prove the retry is the same command, not merely the same epic and
+            // target. The canonical intent carries the preview hash and the
+            // legacy-topic map, so a retry that changed either is a different
+            // request — and it is refused here, before a receipt is minted for
+            // a command nobody issued.
+            if migration.command_intent_hash != *intent.hash() {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was issued under a different upgrade intent",
                 ));
             }
             if migration.state == TeamDefinitionMigrationState::Failed {
@@ -15237,6 +15256,7 @@ impl ApplicationOperations for Services {
                     from: current.clone(),
                     to: target.clone(),
                     targets: targets.clone(),
+                    command_intent_hash: intent.hash().clone(),
                     recorded_at: now,
                 })
             })

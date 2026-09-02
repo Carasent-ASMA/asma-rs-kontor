@@ -22169,6 +22169,66 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
         "the fixture must stop after confirmation and before receipt creation"
     );
 
+    // Recovery has to prove the retry is the *same command*, not merely the
+    // same epic and target. A key reused with a different preview hash or a
+    // different legacy-topic map is a different request, and it is refused
+    // before any receipt is minted for a command nobody issued.
+    let mut changed_preview = migration_apply.clone();
+    changed_preview["preview_hash"] =
+        serde_json::json!("0000000000000000000000000000000000000000000000000000000000000000");
+    let refused_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &changed_preview,
+    )
+    .signed_as(&world, "admin")
+    .with_key("item-code-team-definition-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused_preview.code(),
+        "idempotency_conflict",
+        "a changed preview under the same key is a different command: {}",
+        refused_preview.body
+    );
+
+    let mut changed_topics = migration_apply.clone();
+    changed_topics["upgrade"]["legacy_topics"] =
+        serde_json::json!({ first_target_node.to_string(): "Some other topic" });
+    let refused_topics = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &changed_topics,
+    )
+    .signed_as(&world, "admin")
+    .with_key("item-code-team-definition-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused_topics.code(),
+        "idempotency_conflict",
+        "a changed legacy-topic map under the same key is a different command: {}",
+        refused_topics.body
+    );
+
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_receipt_by_key(&migration_key)
+                    .expect("the crash-window receipt reads")
+            })
+            .is_none(),
+        "a mismatched retry must be refused before any receipt is produced"
+    );
+    assert!(
+        world.fake.take_calls().iter().all(|call| !matches!(
+            call,
+            AdapterCall::RetitleContainer(_) | AdapterCall::RetitleSeat(_)
+        )),
+        "a refused retry touches no native"
+    );
+
     let migrated = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
         &migration_apply,

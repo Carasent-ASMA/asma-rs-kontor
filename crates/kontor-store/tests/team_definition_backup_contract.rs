@@ -6,8 +6,9 @@
 use std::path::PathBuf;
 
 use kontor_core::id::{
-    ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RuntimeKindKey,
-    TeamDefinitionMigrationId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId,
+    RuntimeKindKey, TeamDefinitionMigrationId, Timestamp, TopologyKindKey, TopologyNodeId,
+    parse_utc_timestamp,
 };
 use kontor_core::repository::{
     MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
@@ -186,6 +187,7 @@ fn fixture() -> Fixture {
                     canonical_cwd: None,
                 },
             }],
+            command_intent_hash: ContentHash::of(b"command-intent"),
             recorded_at: created_at,
         })
         .expect("the migration intent is recorded before any runtime effect");

@@ -3374,6 +3374,15 @@ pub struct NewTeamDefinitionMigration {
     pub mini_project_id: MiniProjectId,
     /// The key this migration replays under. Same key, same migration.
     pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact canonical command intent this migration is issued
+    /// under, including its preview hash and legacy-topic map.
+    ///
+    /// Recorded before any external effect, because it is what a retry after a
+    /// crash is compared against. The fingerprint cannot stand in for it: a
+    /// retry can carry a different preview or topic map and still fingerprint
+    /// identically, since those are inputs to the command rather than parts of
+    /// the enumerated plan.
+    pub command_intent_hash: ContentHash,
     /// The pin the epic holds now; absent when it is being pinned first.
     pub from: Option<TeamDefinitionSnapshot>,
     /// The pin the epic moves to on confirmation.
@@ -3500,6 +3509,8 @@ pub struct StoredTeamDefinitionMigration {
     pub idempotency_key: IdempotencyKey,
     /// Digest of everything that makes this request the request it is.
     pub fingerprint: ContentHash,
+    /// Digest of the exact canonical command intent it was issued under.
+    pub command_intent_hash: ContentHash,
     /// The pin held when the intent was recorded.
     pub from: Option<TeamDefinitionSnapshot>,
     /// The pin the epic moves to on confirmation.

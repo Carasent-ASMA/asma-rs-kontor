@@ -722,6 +722,12 @@ exported_tables! {
         state: String,
         updated_at: String,
     }
+    team_definition_migration_command_intents: TeamDefinitionMigrationCommandIntentsRow from "team_definition_migration_command_intents" key(intent_id) {
+        intent_id: String,
+        project_id: String,
+        intent_hash: String,
+        recorded_at: String,
+    }
     team_definition_migration_receipts: TeamDefinitionMigrationReceiptsRow from "team_definition_migration_receipts" key(intent_id) {
         intent_id: String,
         project_id: String,

@@ -14799,6 +14799,20 @@ fn team_definition_migration_in(
         mini_project_id: MiniProjectId::parse(&mini_project_id)?,
         idempotency_key: IdempotencyKey::parse(&idempotency_key)?,
         fingerprint: ContentHash::parse(&fingerprint)?,
+        command_intent_hash: ContentHash::parse(
+            &transaction
+                .query_row(
+                    "SELECT intent_hash FROM team_definition_migration_command_intents
+                     WHERE project_id = ?1 AND intent_id = ?2",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(backend)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "team definition migration command intent",
+                })?,
+        )?,
         from,
         to: TeamDefinitionSnapshot {
             definition_id: TeamDefinitionId::parse(&to_definition_id)?,
@@ -15248,6 +15262,24 @@ impl TeamDefinitionRepository for SqliteStore {
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
                   WHERE consultation.project_id = ?1 AND node.mini_project_id = ?2
                     AND consultation.native_id IS NOT NULL
+                 UNION ALL
+                 -- Delivery seats. Their native session is held by the agent
+                 -- run's runtime binding rather than by any seat table, so a
+                 -- census that reads only containers and consultation seats
+                 -- misses every live delivery seat in the epic.
+                 SELECT 'seat', node.id, seat.id, node.kind,
+                        binding.runtime_kind, binding.host,
+                        binding.generation, binding.native_id
+                   FROM runtime_bindings AS binding
+                   JOIN agent_runs AS run
+                     ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
+                   JOIN seat_bindings AS seat
+                     ON seat.team_run_id = run.team_run_id
+                    AND seat.project_id = binding.project_id
+                    AND seat.lifecycle = 'active'
+                   JOIN topology_nodes AS node ON node.id = seat.topology_node_id
+                  WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
+                    AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
                  ORDER BY 1, 8",
             )
             .map_err(backend)?;
@@ -15286,6 +15318,34 @@ impl TeamDefinitionRepository for SqliteStore {
                     native_id: ExternalId::parse(&row.get::<_, String>(7).map_err(backend)?)?,
                 },
             });
+        }
+        // Nothing durably links one delivery seat to one agent run: a seat
+        // binding names its team run, and so does the run. Where a team run has
+        // more than one active seat, this join cannot say which seat holds
+        // which native session, and guessing would either retitle the wrong
+        // session or silently drop one. Refuse instead, so the ambiguity is
+        // resolved by a human before any native is touched.
+        let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
+            BTreeMap::new();
+        for live in &subjects {
+            if !matches!(live.subject, TeamDefinitionMigrationSubject::Seat { .. }) {
+                continue;
+            }
+            let key = (
+                live.identity.runtime_kind.as_str().to_owned(),
+                live.identity.host.as_str().to_owned(),
+                live.identity.generation,
+                live.identity.native_id.as_str().to_owned(),
+            );
+            if owners
+                .insert(key, live.subject)
+                .is_some_and(|previous| previous != live.subject)
+            {
+                return Err(conflict(
+                    "live native subject",
+                    "a delivery seat's native session cannot be attributed unambiguously",
+                ));
+            }
         }
         Ok(subjects)
     }
@@ -15447,6 +15507,16 @@ impl TeamDefinitionRepository for SqliteStore {
                     "this idempotency key already records a different migration",
                 ));
             }
+            // Same plan is not the same command. A retry carrying a different
+            // preview hash or legacy-topic map is a different request, and
+            // answering it with this migration's outcome would report success
+            // for something nobody asked for.
+            if stored.command_intent_hash != migration.command_intent_hash {
+                return Err(conflict(
+                    "team definition migration",
+                    "this idempotency key was issued under a different command intent",
+                ));
+            }
             transaction.commit().map_err(backend)?;
             return Ok(stored);
         }
@@ -15529,6 +15599,19 @@ impl TeamDefinitionRepository for SqliteStore {
                     migration.to.canonical_hash.as_str(),
                     text(migration.recorded_at),
                     fingerprint.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO team_definition_migration_command_intents
+                     (intent_id, project_id, intent_hash, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    migration.id.to_string(),
+                    migration.project_id.to_string(),
+                    migration.command_intent_hash.as_str(),
+                    text(migration.recorded_at),
                 ],
             )
             .map_err(backend)?;
