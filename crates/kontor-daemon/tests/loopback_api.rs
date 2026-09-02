@@ -31,7 +31,7 @@
 
 mod harness;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
     Arc,
@@ -50,29 +50,31 @@ use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
     ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, ProviderUsageObservationId,
-    QuickSessionId, RoleCode, RoleSlotId, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId,
-    TeamRunId, TicketLinkId, Timestamp, TopologyNodeId,
+    QuickSessionId, RoleCode, RoleSlotId, RuntimeBindingId, SCHEMA_VERSION, SeatBindingId,
+    SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
+    TopologyKindKey, TopologyNodeId,
 };
 use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
-    CapacityRepository, CommandRepository, ConnectorSpecSelector,
+    CapacityRepository, CommandRepository, ConnectorSpecSelector, NewAgentRun,
     NewConsultationMaterializationReroute, NewLocalCommand, NewMiniProject, NewObservation,
     NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent,
     NewSeatBinding, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
-    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, SourceDisposition,
-    SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredPromotion, StoredQuickSession, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketRepository, TopologyRepository, WorkflowRepository,
+    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, RuntimeBinding,
+    SourceDisposition, SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision,
+    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
-    ProviderRef,
+    ProviderRef, TeamRunSnapshot,
 };
 use kontor_core::state::{
-    Freshness, ObservedRunState, RuntimeContact, TerminalEvidence, TerminalEvidenceSource,
-    TerminalOutcome,
+    Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome,
 };
 use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
@@ -84,6 +86,7 @@ use kontor_store::{
     ConsultationPermissionResponseStatus, IdempotencyBinding, JiraIntentKind, JiraItemKind,
     NewJiraMaterializationBatch, NewJiraMaterializationItem, RegisteredPack, TeamTemplateSource,
 };
+use kontor_teams::spec::TeamTemplateSpec;
 use secrecy::SecretString;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2315,6 +2318,20 @@ async fn shutdown_shuts_scheduling_and_releases_the_state_root() {
 
 /// Ensure the one project an empty Realm needs, returning `(id, revision)`.
 async fn ensure_project(world: &World, key: &str, name: &str, root: &str) -> Answer {
+    let created = ensure_project_raw(world, key, name, root).await;
+    // Loopback worlds launch the bundled MVP delivery vocabulary, so the
+    // project registers that vocabulary before any epic freezes a pin. A test
+    // that means to observe an *unregistered* slot uses `ensure_project_raw`
+    // and keeps the shipped selection, which registers only the production
+    // calibrated slots.
+    if let Some(project) = created.json()["project_id"].as_str() {
+        register_mvp_delivery_slots(world, project);
+    }
+    created
+}
+
+/// Create a project and leave its Team Definition selection exactly as shipped.
+async fn ensure_project_raw(world: &World, key: &str, name: &str, root: &str) -> Answer {
     Call::post(
         "/v1/projects:ensure",
         &serde_json::json!({
@@ -9428,7 +9445,27 @@ async fn armed_and_planned_with(
     world: &World,
     slug: &'static str,
 ) -> ((String, String, String), String) {
-    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    armed_and_planned_configured(world, slug, true).await
+}
+
+/// As [`armed_and_planned_with`], optionally registering the MVP delivery
+/// vocabulary before the epic exists.
+///
+/// The registration has to happen between project creation and `epics:apply`:
+/// applying the epic freezes its Team Definition pin, and a pin is immutable,
+/// so a test that launches the MVP template must say so while the project's
+/// selection can still change. Callers that do not launch that vocabulary pass
+/// `false` and keep the shipped selection exactly as production has it.
+async fn armed_and_planned_configured(
+    world: &World,
+    slug: &'static str,
+    register_mvp_slots: bool,
+) -> ((String, String, String), String) {
+    let created = if register_mvp_slots {
+        ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await
+    } else {
+        ensure_project_raw(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await
+    };
     assert_eq!(created.status, 200, "{}", created.body);
     let project = created.json()["project_id"]
         .as_str()
@@ -9500,10 +9537,12 @@ async fn armed_and_planned_with(
     .send(world)
     .await;
     assert_eq!(plan.status, 200, "{}", plan.body);
+    // Only when this world registered the vocabulary it launches: a caller
+    // that deliberately leaves a slot unregistered came to observe the refusal.
     assert_eq!(
         plan.json()["ready"].as_array().expect("ready").len(),
-        1,
-        "the armed task is ready: {}",
+        usize::from(register_mvp_slots),
+        "the armed task is ready exactly when its slots are registered: {}",
         plan.body
     );
     let plan_hash = plan.json()["plan_hash"]
@@ -12580,13 +12619,133 @@ async fn an_unreadable_binding_claim_shuts_scheduling_rather_than_vanishing() {
     drop(directory);
 }
 
+/// Register the bundled MVP delivery vocabulary for one test project.
+///
+/// The shipped Team Definition registers only the production calibrated slots,
+/// and these tests deliberately launch the MVP template's
+/// `architect`/`builder`/`tester`/`inspector`/`verifier`. Rather than widening
+/// the production configuration to whatever a test happens to launch, the test
+/// publishes a revision that *extends* the selection with the vocabulary it is
+/// about, and selects that. Production auto-selection is untouched.
+fn register_mvp_delivery_slots(world: &World, project: &str) {
+    register_test_delivery_slots(
+        world,
+        project,
+        &[
+            ("architect", "SA"),
+            ("builder", "SWE"),
+            ("tester", "QA"),
+            ("inspector", "AUD"),
+            ("verifier", "UAT"),
+        ],
+    );
+}
+
+/// Extend one test project's selected definition with explicit fixture slots.
+///
+/// This is test data, not inference: every bespoke template states the exact
+/// registered role code its slot renders. Repeated calls only add missing slot
+/// ids, so a project can compose the generic MVP vocabulary with the one custom
+/// pack a test deliberately launches.
+fn register_test_delivery_slots(world: &World, project: &str, slots: &[(&str, &str)]) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        let selected = store
+            .get_project_team_definition_default(project_id)
+            .expect("the selection reads");
+        let mut definition = match selected.as_ref() {
+            Some(current) => store
+                .get_team_definition(
+                    project_id,
+                    current.definition.definition_id,
+                    current.definition.version,
+                )
+                .expect("the selected revision reads")
+                .expect("the selected revision exists"),
+            None => domain
+                .team_definitions
+                .first()
+                .expect("a bundled Team Definition")
+                .clone(),
+        };
+        let kind = TopologyKindKey::parse("TSW").expect("a kind");
+        let missing: Vec<_> = slots
+            .iter()
+            .filter(|(slot, _)| {
+                definition
+                    .team_slot(&kind, &RoleSlotId::parse(slot).expect("a slot"))
+                    .is_none()
+            })
+            .copied()
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        // The definition's validator has to be published before a revision can
+        // cite it. Publishing twice is refused, which is harmless here.
+        let topology = domain
+            .topology_specs
+            .iter()
+            .find(|topology| {
+                topology.spec_id == definition.topology.spec_id
+                    && topology.version == definition.topology.version
+            })
+            .expect("its validator is bundled");
+        let _ = store.publish_topology_spec(
+            project_id,
+            topology,
+            &kontor_core::spec::Shareability::default_for(
+                kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+            )
+            .expect("tier B classifies"),
+            kontor_api::now(),
+        );
+        let next = definition.version.get() + 1;
+        definition.version = SpecVersion::parse(next).expect("a test revision");
+        for container in &mut definition.containers {
+            if container.kind.as_str() != "TSW" {
+                continue;
+            }
+            container
+                .team_slots
+                .extend(missing.iter().map(|(slot, code)| {
+                    kontor_core::spec::TeamDefinitionSeatSlot {
+                        slot_id: RoleSlotId::parse(slot).expect("a slot"),
+                        role_code: Some(RoleCode::parse(code).expect("a role code")),
+                        display_name: None,
+                        capability_profile: ExternalName::parse("delivery-standard")
+                            .expect("a profile"),
+                    }
+                }));
+        }
+        store
+            .publish_team_definition(project_id, &definition, kontor_api::now())
+            .expect("the test revision publishes");
+        store
+            .set_project_team_definition_default(
+                &kontor_core::repository::ProjectTeamDefinitionDefault {
+                    project_id,
+                    expected: selected.map(|current| current.definition),
+                    definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
+                        &definition,
+                    )
+                    .expect("a snapshot"),
+                    selected_at: kontor_api::now(),
+                },
+            )
+            .expect("the test selects the vocabulary it launches");
+    });
+}
+
 /// Bring a plane-holding realm to "seats materialized", and return the project,
 /// the epic, the arming account and the started seats.
 async fn seated_turns(
     world: &World,
     slug: &'static str,
 ) -> (String, String, String, serde_json::Value) {
-    let ((project, epic, plan_hash), account) = armed_and_planned_with(world, slug).await;
+    let ((project, epic, plan_hash), account) =
+        armed_and_planned_configured(world, slug, true).await;
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         &serde_json::json!({"plan_hash": plan_hash}),
@@ -14904,6 +15063,16 @@ async fn both_handoff_conditions_withhold_a_follow_up_until_each_is_satisfied() 
         .as_str()
         .expect("id")
         .to_owned();
+    register_test_delivery_slots(
+        &world,
+        &project,
+        &[
+            ("alpha-k1", "SA"),
+            ("alpha-k2", "SWE"),
+            ("alpha-k3", "QA"),
+            ("alpha-k4", "AUD"),
+        ],
+    );
     let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
     let revision = created.json()["revision"].as_u64().expect("revision");
 
@@ -15166,6 +15335,16 @@ async fn the_artifact_condition_alone_withholds_a_follow_up_once_the_phase_is_me
         .as_str()
         .expect("id")
         .to_owned();
+    register_test_delivery_slots(
+        &world,
+        &project,
+        &[
+            ("alpha-k1", "SA"),
+            ("alpha-k2", "SWE"),
+            ("alpha-k3", "QA"),
+            ("alpha-k4", "AUD"),
+        ],
+    );
     let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
     let revision = created.json()["revision"].as_u64().expect("revision");
 
@@ -15961,6 +16140,11 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         .as_str()
         .expect("id")
         .to_owned();
+    register_test_delivery_slots(
+        &world,
+        &project,
+        &[("omega-k1", "SA"), ("omega-k4", "SWE"), ("omega-k3", "QA")],
+    );
     let revision = created.json()["revision"].as_u64().expect("revision");
     let account = Call::post(
         format!("/v1/projects/{project}/provider-account-profiles:ensure"),
@@ -16726,48 +16910,34 @@ async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
     let recovered = omega_with_one_unbound_slot("recover-dispatch", "omega-u-cat").await;
     let project_id = kontor_core::id::ProjectId::parse(&recovered.project).expect("a project id");
     let team_run_id = TeamRunId::parse(&recovered.team_run).expect("a team run id");
-    let (task_id, node_id) = recovered.world.daemon.state().with_store(|store| {
+    let node_id = recovered.world.daemon.state().with_store(|store| {
         let task_id = store
             .get_team_run(project_id, team_run_id)
             .expect("the team run is readable")
             .expect("the team run exists")
             .task_id;
-        let node_id = store
+        store
             .get_task_topology_node(project_id, task_id)
             .expect("the task node is readable")
             .expect("the task node exists")
-            .id;
-        (task_id, node_id)
+            .id
     });
-    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
-    let catalog = domain
-        .role_catalogs
-        .first()
-        .expect("a bundled role catalog");
-    let role = catalog
-        .role(&RoleCode::parse("SWE").expect("a standard role code"))
-        .expect("the catalog has SWE");
     recovered.world.daemon.state().with_store(|store| {
-        store
-            .create_seat_binding(&NewSeatBinding {
-                id: SeatBindingId::generate(),
-                project_id,
-                topology_node_id: node_id,
-                role_slot_id: kontor_core::id::RoleSlotId::parse("omega-k3").expect("a role slot"),
-                role: CatalogRoleRef {
-                    catalog_id: catalog.catalog_id,
-                    catalog_revision: catalog.version,
-                    role_code: role.role_code.clone(),
-                    standard_title: role.standard_title.clone(),
-                    custom_display_name: None,
-                },
-                task_id: Some(task_id),
-                team_run_id: Some(team_run_id),
-                attach_deadline: at("2099-01-01T00:00:00Z"),
-                parent_seat_binding_id: None,
-                created_at: at("2026-08-10T09:00:00Z"),
+        let held: Vec<_> = store
+            .list_seat_bindings(project_id, node_id)
+            .expect("the partial admission's logical seats read")
+            .into_iter()
+            .filter(|seat| {
+                seat.team_run_id == Some(team_run_id)
+                    && seat.role_slot_id.as_str() == "omega-k3"
+                    && seat.is_non_terminal()
             })
-            .expect("the same TeamRun's logical seat already exists");
+            .collect();
+        assert_eq!(
+            held.len(),
+            1,
+            "pre-runtime reconciliation already opened the refused slot's one logical seat"
+        );
     });
     let giver = recovered
         .seats
@@ -29911,6 +30081,15 @@ async fn codex_alias_epic(
         .as_str()
         .expect("id")
         .to_owned();
+    register_test_delivery_slots(
+        world,
+        &project,
+        &[
+            ("ir-commander", "SA"),
+            ("ir-responder", "SWE"),
+            ("ir-auditor", "AUD"),
+        ],
+    );
     let revision = created.json()["revision"].as_u64().expect("revision");
 
     let mut ids = Vec::new();
@@ -30530,4 +30709,556 @@ async fn a_replacement_seat_walks_onto_the_other_account_once_aliases_are_declar
         Some(personal),
         "the successor claims the account the walk selected"
     );
+}
+
+/// A slot no Team Definition registers refuses before anything is created.
+///
+/// The static preflight decides this before any runtime is consulted, so the
+/// acceptance is an unchanged call ledger rather than merely no effect.
+#[tokio::test]
+async fn an_unregistered_delivery_slot_is_refused_before_any_effect() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    // Clear the ledger before arming, so this covers the plan pass as well as
+    // the start: neither may consult a runtime about work whose seats stored
+    // configuration cannot name. World setup legitimately prepares the plane.
+    world.fake.take_calls();
+    // `false`: this project keeps the shipped selection, which registers only
+    // the production calibrated slots, while the profile launches the MVP
+    // vocabulary. That is exactly the unregistered case.
+    let ((project, epic, plan_hash), _account) =
+        armed_and_planned_configured(&world, "unregistered-slot", false).await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("unregistered-slot-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    let blocked = started.json()["blocked"]
+        .as_array()
+        .expect("a blocked plan")
+        .clone();
+    assert_eq!(blocked.len(), 1, "{}", started.body);
+    assert_eq!(blocked[0]["code"], "placement_blocked", "{}", started.body);
+    assert_eq!(
+        started.json()["started"]
+            .as_array()
+            .expect("no seats started")
+            .len(),
+        0
+    );
+
+    // The acceptance: the runtime is never contacted at all for a candidate
+    // whose slots no configuration registers.
+    assert!(
+        world.fake.calls().is_empty(),
+        "an unregistered slot must not contact the runtime: {:?}",
+        world.fake.calls()
+    );
+    world.daemon.state().with_store(|store| {
+        for task in store.list_tasks(project_id).expect("the tasks read") {
+            assert!(
+                store
+                    .list_open_team_runs(project_id, task.id)
+                    .expect("the team runs read")
+                    .is_empty(),
+                "a refused admission leaves no TeamRun behind"
+            );
+        }
+        assert!(
+            store
+                .list_agent_runs(project_id, None)
+                .expect("the agent runs read")
+                .is_empty(),
+            "and no AgentRun"
+        );
+        // The distinction, stated explicitly: the scheduler request itself is a
+        // real command and keeps its receipt — that record is what an operator
+        // reads to find out why nothing ran. What must not exist is an
+        // admission, and the absent TeamRun and AgentRun above are what a
+        // launch would have left behind.
+        assert!(
+            store
+                .get_receipt_by_key(
+                    &IdempotencyKey::parse("unregistered-slot-start").expect("a key")
+                )
+                .expect("the receipt reads")
+                .is_some(),
+            "the scheduler request that answered `nothing admitted` is recorded"
+        );
+    });
+}
+
+/// Freeze a valid four-seat template under the production calibrated slot ids.
+fn calibrated_delivery_template() -> (kontor_core::spec::TeamTemplateRevision, TeamRunSnapshot) {
+    let pack: serde_json::Value = serde_json::from_str(ALPHA_PACK).expect("the alpha pack parses");
+    let mut template: TeamTemplateSpec =
+        serde_json::from_value(pack["teams"][0].clone()).expect("the alpha team parses");
+    let renamed = |slot: &RoleSlotId| {
+        RoleSlotId::parse(match slot.as_str() {
+            "alpha-k1" => "scope",
+            "alpha-k2" => "implement",
+            "alpha-k3" => "verify",
+            "alpha-k4" => "audit",
+            other => panic!("unexpected calibrated fixture slot {other}"),
+        })
+        .expect("a calibrated slot")
+    };
+    for slot in &mut template.slots {
+        slot.id = renamed(&slot.id);
+    }
+    for handoff in &mut template.handoffs {
+        handoff.from_slot = renamed(&handoff.from_slot);
+        handoff.to_slot = renamed(&handoff.to_slot);
+    }
+    template.template_id = TeamTemplateId::generate();
+    template.name = ExternalName::parse("Calibrated delivery four").expect("a template name");
+    let revision = template
+        .to_revision()
+        .expect("the calibrated team validates");
+    let snapshot = TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION);
+    (revision, snapshot)
+}
+
+/// Native identities bound to one TeamRun, keyed by its exact role slot.
+fn bound_delivery_runs(
+    store: &kontor_store::SqliteStore,
+    project_id: ProjectId,
+    team_run_id: TeamRunId,
+) -> BTreeMap<String, (AgentRunId, String)> {
+    store
+        .list_agent_runs(project_id, Some(team_run_id))
+        .expect("the delivery runs read")
+        .into_iter()
+        .map(|summary| {
+            let run = store
+                .get_agent_run(project_id, summary.agent_run_id)
+                .expect("the delivery run reads")
+                .expect("the delivery run exists");
+            let binding = run.binding.expect("the legacy run remains bound");
+            (
+                run.role.as_str().to_owned(),
+                (run.id, binding.identity.native_id.to_string()),
+            )
+        })
+        .collect()
+}
+
+/// One historical ticket materialization receipt repairs delivery bindings on
+/// same-key replay without replacing any native session.
+#[tokio::test]
+async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade_censuses_them() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project_raw(
+        &world,
+        "legacy-delivery-repair",
+        "Kontor",
+        "/tmp/kontor-legacy-delivery-repair",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Legacy delivery repair",
+            &category,
+            serde_json::json!([{"title": "Repair four delivery seats"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("legacy-delivery-repair-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    confirm_test_epic_identity(&world, &project, &epic);
+
+    let materialize_body = serde_json::json!({
+        "target": {"scope": "ticket", "task_id": task},
+        "expected_revision": project_revision,
+    });
+    let first = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &materialize_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("legacy-delivery-repair-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_receipt = receipt_for(&world, "legacy-delivery-repair-materialize")
+        .expect("the first materialization receipt exists")
+        .id;
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let (revision, snapshot) = calibrated_delivery_template();
+    let team_run_id = TeamRunId::generate();
+    let (task_node_id, runs_before) = world.daemon.state().with_store(|store| {
+        store
+            .insert_team_template(project_id, &revision)
+            .expect("the calibrated template publishes");
+        store
+            .create_team_run(&NewTeamRun {
+                id: team_run_id,
+                project_id,
+                task_id,
+                snapshot,
+                created_at: at("2026-08-30T21:00:00Z"),
+            })
+            .expect("the legacy TeamRun is durable");
+        for (ordinal, slot) in ["scope", "implement", "verify", "audit"]
+            .into_iter()
+            .enumerate()
+        {
+            let agent_run_id = AgentRunId::generate();
+            store
+                .create_agent_run(&NewAgentRun {
+                    id: agent_run_id,
+                    project_id,
+                    team_run_id,
+                    parent_agent_run_id: None,
+                    role: RoleSlotId::parse(slot)
+                        .expect("a calibrated slot")
+                        .into_role_key(),
+                    account_profile_id: None,
+                    binding: Some(RuntimeBinding {
+                        id: RuntimeBindingId::generate(),
+                        agent_run_id,
+                        identity: NativeRuntimeIdentity {
+                            runtime_kind: fake_family(),
+                            host: name("legacy-delivery-host"),
+                            generation: 1,
+                            native_id: ExternalId::parse(&format!("legacy-{ordinal}-{slot}"))
+                                .expect("a native id"),
+                        },
+                        bound_at: at("2026-08-30T21:01:00Z"),
+                    }),
+                    created_at: at("2026-08-30T21:01:00Z"),
+                })
+                .expect("the bound legacy AgentRun is durable");
+        }
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("the task node reads")
+            .expect("the first materialization created the TSW");
+        assert!(
+            store
+                .list_seat_bindings(project_id, node.id)
+                .expect("the legacy seat gap reads")
+                .is_empty(),
+            "the live legacy shape has bound AgentRuns and zero SeatBindings"
+        );
+        (node.id, bound_delivery_runs(store, project_id, team_run_id))
+    });
+    assert_eq!(runs_before.len(), 4);
+
+    // Reproduce an epic created before Team Definition pins existed. The
+    // project selection remains the explicit governing authority during repair.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    connection
+        .execute(
+            "DROP TRIGGER mini_project_team_definition_snapshots_are_permanent",
+            [],
+        )
+        .expect("the legacy fixture can expose the pre-pin shape");
+    connection
+        .execute(
+            "DELETE FROM mini_project_team_definition_snapshots
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![project, epic],
+        )
+        .expect("the legacy epic pin is absent");
+    drop(connection);
+
+    world.fake.take_calls();
+    let repaired = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &materialize_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("legacy-delivery-repair-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert_eq!(
+        receipt_for(&world, "legacy-delivery-repair-materialize")
+            .expect("the replay keeps the receipt")
+            .id,
+        first_receipt,
+        "same-key repair reuses the historical receipt"
+    );
+    assert!(
+        world.fake.calls().is_empty(),
+        "logical repair contacts no runtime: {:?}",
+        world.fake.calls()
+    );
+
+    let (seats_after_first, runs_after_first) = world.daemon.state().with_store(|store| {
+        let seats: BTreeMap<_, _> = store
+            .list_seat_bindings(project_id, task_node_id)
+            .expect("the repaired seats read")
+            .into_iter()
+            .filter(|seat| seat.team_run_id == Some(team_run_id))
+            .map(|seat| {
+                (
+                    seat.role_slot_id.as_str().to_owned(),
+                    (seat.id, seat.role.role_code.as_str().to_owned()),
+                )
+            })
+            .collect();
+        (seats, bound_delivery_runs(store, project_id, team_run_id))
+    });
+    assert_eq!(
+        seats_after_first
+            .iter()
+            .map(|(slot, (_, code))| (slot.as_str(), code.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("audit", "AUD"),
+            ("implement", "SWE"),
+            ("scope", "SA"),
+            ("verify", "QA"),
+        ]
+    );
+    assert_eq!(
+        runs_after_first, runs_before,
+        "native identities are unchanged"
+    );
+
+    world.fake.take_calls();
+    let replayed_again = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &materialize_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("legacy-delivery-repair-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(replayed_again.status, 200, "{}", replayed_again.body);
+    let seats_after_second = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_bindings(project_id, task_node_id)
+            .expect("the replayed seats read")
+            .into_iter()
+            .filter(|seat| seat.team_run_id == Some(team_run_id))
+            .map(|seat| (seat.role_slot_id.as_str().to_owned(), seat.id))
+            .collect::<BTreeMap<_, _>>()
+    });
+    assert_eq!(
+        seats_after_second,
+        seats_after_first
+            .iter()
+            .map(|(slot, (id, _))| (slot.clone(), *id))
+            .collect(),
+        "a second replay preserves every deterministic SeatBinding identity"
+    );
+    assert!(
+        world.fake.calls().is_empty(),
+        "a second replay is also inert"
+    );
+
+    let target = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain loads")
+        .team_definitions
+        .into_iter()
+        .next()
+        .expect("the recommended Team Definition");
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &serde_json::json!({
+            "target_definition": {
+                "id": target.definition_id,
+                "version": target.version,
+            },
+            "legacy_topics": {},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let censused: BTreeSet<_> = preview.json()["targets"]
+        .as_array()
+        .expect("the complete migration census")
+        .iter()
+        .filter_map(|target| target["seat_binding_id"].as_str())
+        .filter_map(|id| SeatBindingId::parse(id).ok())
+        .collect();
+    assert!(
+        seats_after_first
+            .values()
+            .all(|(seat_id, _)| censused.contains(seat_id)),
+        "all four repaired delivery seats enter upgrade preview: {}",
+        preview.body
+    );
+}
+
+/// Alternative-template slot ids may share a catalog role, but one actual team
+/// containing both is unnameable and must be refused before any effect.
+#[tokio::test]
+async fn duplicate_rendered_slots_in_one_team_are_refused_before_runtime_or_admission() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let created = ensure_project_raw(
+        &world,
+        "duplicate-rendered-slots",
+        "Kontor",
+        "/tmp/kontor-duplicate-rendered-slots",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+    register_test_delivery_slots(
+        &world,
+        &project,
+        &[
+            ("researcher-a", "BA"),
+            ("researcher-b", "BA"),
+            ("judge", "QA"),
+            ("synthesizer", "SWE"),
+            ("final-reviewer", "AUD"),
+        ],
+    );
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("duplicate-rendered-slots-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Duplicate rendered slots",
+            "research",
+            serde_json::json!([{"title": "Reject ambiguous seats"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("duplicate-rendered-slots-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("a revision");
+    confirm_test_epic_identity(&world, &project, &epic);
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": account_id,
+            "reason": "Prove duplicate seat refusal",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("duplicate-rendered-slots-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    world.fake.take_calls();
+    let planned = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(planned.status, 200, "{}", planned.body);
+    assert!(
+        planned.json()["ready"]
+            .as_array()
+            .expect("ready")
+            .is_empty()
+    );
+    assert_eq!(
+        planned.json()["blocked"][0]["code"],
+        "placement_blocked",
+        "{}",
+        planned.body
+    );
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": planned.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("duplicate-rendered-slots-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert_eq!(started.json()["blocked"][0]["code"], "placement_blocked");
+    assert!(
+        world.fake.calls().is_empty(),
+        "duplicate-render refusal contacts no runtime: {:?}",
+        world.fake.calls()
+    );
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_tasks(project_id)
+                .expect("the task reads")
+                .iter()
+                .all(|task| store
+                    .list_open_team_runs(project_id, task.id)
+                    .expect("the team runs read")
+                    .is_empty()),
+            "no TeamRun is admitted"
+        );
+        assert!(
+            store
+                .list_agent_runs(project_id, None)
+                .expect("the AgentRuns read")
+                .is_empty(),
+            "no AgentRun is admitted"
+        );
+    });
 }

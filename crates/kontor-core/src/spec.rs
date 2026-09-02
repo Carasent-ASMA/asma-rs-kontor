@@ -953,10 +953,11 @@ impl TeamDefinitionSpec {
                     ));
                 }
             }
-            // TeamRun-supplied slots are validated on the same terms as the
-            // container's own, in their own namespace: a delivery slot and a
-            // static slot may share neither an id nor a rendered value, or the
-            // rendered seat name would depend on which catalog was consulted.
+            // TeamRun-supplied slots use the same exclusive value shape as
+            // local slots, but only their ids are catalog-unique. A delivery
+            // slot may not reuse a local slot id; rendered values may repeat
+            // across alternative templates and are checked against the exact
+            // ordered slots only when one TeamRun is admitted.
             let mut team_slots = BTreeSet::new();
             for slot in &container.team_slots {
                 if !matches!(
@@ -968,26 +969,18 @@ impl TeamDefinitionSpec {
                         "each team slot must declare exactly one role code or display name",
                     ));
                 }
-                // Slot ids, role codes and labels are all unique inside one
-                // container: under a role-code seat template two slots sharing
-                // a code would render one indistinguishable seat name, which is
-                // exactly what the naming contract forbids. A template whose
-                // slots would collide stays unregistered — and therefore
-                // refused — until a revision gives them distinct labels.
-                if !team_slots.insert(&slot.slot_id)
-                    || slots.contains(&slot.slot_id)
-                    || slot
-                        .display_name
-                        .as_ref()
-                        .is_some_and(|label| !labels.insert(label))
-                    || slot
-                        .role_code
-                        .as_ref()
-                        .is_some_and(|role_code| !role_codes.insert(role_code))
-                {
+                // Slot ids are unique — including against this container's own
+                // static slots — but rendered values deliberately are not. The
+                // catalog serves several alternative templates, and two of them
+                // may name the same registered role by different slot ids;
+                // those slots never necessarily co-reside. What must not
+                // collide is two slots of the *same* TeamRun, which only the
+                // run can be asked about and which admission checks before any
+                // effect.
+                if !team_slots.insert(&slot.slot_id) || slots.contains(&slot.slot_id) {
                     return Err(DomainError::invalid(
                         "TeamDefinitionSpec",
-                        "declares a duplicate team slot id, role code or display name",
+                        "declares a duplicate team slot id",
                     ));
                 }
             }

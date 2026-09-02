@@ -53,11 +53,14 @@ The implementation now resolves the audited baseline gap:
 - recommended ASMA rendering uses exact ` • ` bytes and role-only/configured-label seat names.
 - ASW/CSW persist explicit topics, retain epic/task subject scope and render the matching item code.
 - every frozen Advisor seat materializes; Committee seats use configured `SEAT A`, `SEAT B`, `JUDGE` labels.
+- the recommended TSW definition registers exactly `scope→SA`, `implement→SWE`, `verify→QA`, and `audit→AUD` as delivery `team_slots`; it invents no mapping for other TeamTemplates.
+- scheduler and admission preflight the exact frozen TeamRun slots from durable configuration before runtime evidence or effects. Missing, label-only, unknown-role and duplicate-rendered mappings are `placement_blocked` per candidate.
+- same-key ticket materialization repairs legacy open TeamRuns that have bound AgentRuns but no delivery SeatBindings. Migration census then requires one exact active binding per live `(TeamRun, RoleSlotId)` and preserves every native ID.
 - migration preview/apply derives desired placement from the epic's immutable Team Definition pin, preserves native IDs and reads back parent, kind, cwd and title.
 - API, MCP, OpenAPI, generated console types, backups and local documentation carry the same definition/default/pin/migration contract.
 - placement fails closed until the immutable epic backlog code and exact confirmed Jira epic/task bindings exist; planning metadata and connector aliases are not treated as readback.
 
-The remaining gap is operational release only: merge the verified artifacts, deploy exact master, and apply/read back the live KBI migration.
+The remaining gap is final archive verification and operational release: merge the verified artifacts, deploy exact master, reconcile the two live KBI TSWs, and apply/read back the live KBI migration.
 
 ## 3. Accepted implementation contract
 
@@ -124,7 +127,7 @@ Historical definitions, topology name fields, receipts and literal readbacks rem
 | REQ-005 | ASW/CSW persist subject/topic and reuse only the exact same consultation identity. | Schema/repository/loopback tests. |
 | REQ-006 | Multi-seat Advisors and configured Committee labels materialize exactly once. | Runtime/application contract tests. |
 | REQ-007 | Migration preview/apply preserves all native IDs and reports pending names honestly. | Fake and Paseo retitle tests plus live readback. |
-| REQ-008 | API, MCP, generated CLI, console and docs expose the same pin and desired/observed names. | Contract snapshot, parity and frontend tests. |
+| REQ-008 | API, MCP, OpenAPI, console and docs expose the same pin and desired/observed names. | Contract snapshot, parity and frontend tests. |
 | REQ-009 | Jira aliases canonicalize to `connector.jira` while old duplicate evidence remains readable and non-authoritative. | Store/application regression and migration test. |
 | REQ-010 | Exact merged artifacts migrate the live realm and render `ESW • KBI-8049`, `ECP • KBI-8049`, and `TSW • KBI-8062`. | Backup, schema, hash, runtime ID and native-title receipts. |
 
@@ -139,13 +142,13 @@ Wave 0 — contracts
 
 Wave 1 — domain and persistence
   RED-01 -> IMP-01 typed Team Definition and renderer
-  RED-02 -> IMP-02 schema v77, repositories, export/restore
+  RED-02 -> IMP-02 schema v77-v80, repositories, export/restore and command-intent recovery
   RED-03 -> IMP-03 invocation/topic/reuse and seat materialization
 
 Wave 2 — orchestration and public surfaces
   IMP-01 + IMP-02 -> IMP-04 project selection, epic pin and migration preview/apply
-  IMP-01 + IMP-03 -> IMP-05 naming for materialization and retitle
-  IMP-04 + IMP-05 -> IMP-06 API/MCP/CLI/OpenAPI/console parity
+  IMP-01 + IMP-03 -> IMP-05 naming, delivery-seat reconciliation and retitle
+  IMP-04 + IMP-05 -> IMP-06 API/MCP/OpenAPI/console parity
 
 Wave 3 — release
   IMP-06 -> VER-01 focused tests and mutation ledger
@@ -159,9 +162,9 @@ Wave 3 — release
 
 - `crates/kontor-core/src/naming.rs`, topology/spec/repository IDs and projections.
 - `crates/kontor-teams/src/spec.rs` and bundled Team Definition fixtures.
-- `crates/kontor-store/migrations/0077_*.sql`, repository/export/import/backup code and schema tests.
+- `crates/kontor-store/migrations/0077_*.sql` through `0080_*.sql`, repository/export/import/backup code and schema tests.
 - `crates/kontor-daemon/src/applications.rs` for selection, pins, rendering, consultation reuse and migration orchestration.
-- `crates/kontor-api`, committed OpenAPI, generated CLI/MCP registry and console projections.
+- `crates/kontor-api`, committed OpenAPI, generated MCP registry and console projections.
 - `crates/kontor-runtime*` only where exact retitle or readback contracts need extension.
 - repository README/architecture/configuration/recovery/change log and the authoritative parent naming references.
 
@@ -179,8 +182,23 @@ Wave 3 — release
 | Reuse an ASW/CSW across different topics or subjects. | Consultation identity/reuse test. | Killed |
 | Retitle a different native ID or accept absent readback. | Identity-preserving apply refusal test. | Killed |
 | Treat `jira` and `connector.jira` as different active connectors. | Connector canonicalization test. | Killed |
+| Omit delivery seats from the migration census. | Delivery migration completeness and multi-seat census tests. | Killed |
+| Match a delivery AgentRun to a different slot's SeatBinding. | Exact `RoleSlotId` census test. | Killed |
+| Ask the runtime before rejecting an unregistered delivery slot. | Strict zero-call scheduler/daemon test. | Killed |
+| Skip logical delivery-seat repair on a same-key materialization replay. | Calibrated-four legacy replay/second-replay/preview test. | Killed |
+| Permit two slots in one actual team to render the same role code. | Duplicate-rendered TeamRun pre-effect test. | Killed |
 
 The already-shipped TSW bootstrap checkpoint also has a killed branch-attestation mutant and passed 154 Paseo runtime contracts plus the complete archive gate.
+
+### 7.1 Final pre-commit verification (2026-09-02)
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy -p kontor-core -p kontor-store -p kontor-scheduler -p kontor-daemon -p kontor-profiles --all-targets -- -D warnings`: passed.
+- `cargo test -p kontor-daemon --test loopback_api`: 239 passed, 0 failed, 1 pre-existing superseded Jira test ignored.
+- `cargo test -p kontor-core -p kontor-store -p kontor-scheduler -p kontor-profiles`: passed in full, including schema v80, Team Definition persistence/backup/restore, migration completeness, exact naming bytes and static-placement ordering.
+
+This evidence is pre-commit. The merge decision still requires the archive gate
+to pass again on the exact clean committed head.
 
 ## 8. Delivery and rollback
 
@@ -192,4 +210,4 @@ The already-shipped TSW bootstrap checkpoint also has a killed branch-attestatio
 
 ## 9. Completion rule
 
-Complete only when all RED contracts are green, every recorded mutant is killed, the exact committed archive gate passes, the delivery PR is merged, exact master binaries are deployed, schema v77 is healthy, the recommended definition is published and pinned, live native IDs are preserved with exact new names read back, the high-stakes TeamRun artifacts/gates close, Jira `ASMA-8062` and the Kontor task are complete, and the implementation worktree is removed cleanly.
+Complete only when all RED contracts are green, every recorded mutant is killed, the exact committed archive gate passes, the delivery PR is merged, exact master binaries are deployed, schema v80 is healthy, the recommended definition is explicitly published/selected and pinned, both live KBI TSWs have their calibrated delivery SeatBindings reconciled, live native IDs are preserved with exact new names read back, the high-stakes TeamRun artifacts/gates close, Jira `ASMA-8062` and the Kontor task are complete, and the implementation worktree is removed cleanly.

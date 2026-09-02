@@ -31,6 +31,7 @@ use kontor_core::repository::{
     NewAgentRun, NewProject, NewTask, NewTeamRun, ProjectRepository, RunRepository, RuntimeBinding,
     SpecRepository,
 };
+use kontor_core::repository::{TeamDefinitionRepository, TopologyRepository};
 use kontor_core::spec::TeamRunSnapshot;
 use kontor_core::state::{NativeRuntimeIdentity, TaskState};
 use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
@@ -337,6 +338,90 @@ impl World {
                 // The team revision comes from the bundled pack rather than from a
                 // hand-rolled document: the run's foreign key demands a stored
                 // revision, and inventing one would test a shape no deployment has.
+                // Make this world's naming authority explicit. The recommended
+                // ASMA definition registers only the production delivery slots,
+                // and these generic tests launch the bundled MVP vocabulary, so
+                // the world publishes and selects a *test* revision that
+                // registers exactly the template under test. The alternative —
+                // widening the shipped configuration to whatever a test happens
+                // to launch — would make production naming a function of the
+                // test suite.
+                let domain =
+                    kontor_profiles::bundled_operational_domain().expect("the domain loads");
+                let mut definition = domain
+                    .team_definitions
+                    .first()
+                    .expect("a bundled Team Definition")
+                    .clone();
+                let topology = domain
+                    .topology_specs
+                    .iter()
+                    .find(|topology| {
+                        topology.spec_id == definition.topology.spec_id
+                            && topology.version == definition.topology.version
+                    })
+                    .expect("its validator is bundled")
+                    .clone();
+                store
+                    .publish_topology_spec(
+                        project,
+                        &topology,
+                        &kontor_core::spec::Shareability::default_for(
+                            kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+                        )
+                        .expect("tier B classifies"),
+                        at("2026-08-10T09:00:00Z"),
+                    )
+                    .expect("the validator publishes");
+                definition.version =
+                    kontor_core::id::SpecVersion::parse(2).expect("a test revision");
+                for container in &mut definition.containers {
+                    if container.kind.as_str() != "TSW" {
+                        continue;
+                    }
+                    // Extend, never replace: the production four stay registered
+                    // so tests using the calibrated vocabulary keep working, and
+                    // the bundled MVP template's slots are added beside them.
+                    // `scope` and `architect` are both `SA`, which the catalog
+                    // permits because no run declares both.
+                    container.team_slots.extend(
+                        [
+                            ("architect", "SA"),
+                            ("builder", "SWE"),
+                            ("tester", "QA"),
+                            ("inspector", "AUD"),
+                            ("verifier", "UAT"),
+                        ]
+                        .into_iter()
+                        .map(|(slot, code)| {
+                            kontor_core::spec::TeamDefinitionSeatSlot {
+                                slot_id: kontor_core::id::RoleSlotId::parse(slot).expect("a slot"),
+                                role_code: Some(
+                                    kontor_core::id::RoleCode::parse(code).expect("a role code"),
+                                ),
+                                display_name: None,
+                                capability_profile: name("delivery-standard"),
+                            }
+                        }),
+                    );
+                }
+                store
+                    .publish_team_definition(project, &definition, at("2026-08-10T09:00:00Z"))
+                    .expect("the test Team Definition publishes");
+                store
+                    .set_project_team_definition_default(
+                        &kontor_core::repository::ProjectTeamDefinitionDefault {
+                            project_id: project,
+                            expected: None,
+                            definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
+                                &definition,
+                            )
+                            .expect("a snapshot"),
+                            selected_at: at("2026-08-10T09:00:00Z"),
+                        },
+                    )
+                    .expect("the world selects its own naming authority");
+
                 let pack = bundled_pack().expect("the bundled pack loads");
                 let entry = pack
                     .manifest

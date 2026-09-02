@@ -948,6 +948,16 @@ pub struct Candidate {
     pub mini_project_id: Option<MiniProjectId>,
     /// The task's active workflow, whose pinned profile routed it.
     pub workflow_id: TaskWorkflowId,
+    /// Whether stored configuration can name every seat this task would open.
+    ///
+    /// Answered by the caller from durable state only — the frozen team
+    /// template's slots against the governing Team Definition — because it has
+    /// to be known before the pass asks a runtime for evidence. Defaults to
+    /// `true` on deserialization: a snapshot written before this field existed
+    /// described work nothing was known against, and defaulting to `false`
+    /// would turn every legacy candidate into newly blocked work.
+    #[serde(default = "registered_by_default")]
+    pub delivery_slots_registered: bool,
     /// Lifecycle state.
     pub state: TaskState,
     /// The revision the decision is computed against. The admission transaction
@@ -1196,6 +1206,13 @@ closed_enum! {
         AuthorizationScopeMismatch => "authorization_scope_mismatch",
         /// Its authorization's window has passed or has not opened.
         AuthorizationExpired => "authorization_expired",
+        /// No pinned Team Definition registers a delivery slot this task's
+        /// frozen team template declares.
+        ///
+        /// Decided from stored configuration alone, so it is reached before any
+        /// runtime is asked anything: a task whose seats cannot be named must
+        /// not cause a runtime to be contacted on its behalf.
+        DeliverySlotUnregistered => "delivery_slot_unregistered",
         /// The runtime does not declare a capability the launch needs.
         RuntimeCapabilityMissing => "runtime_capability_missing",
         /// The runtime's trust grade may not be driven autonomously.
@@ -1241,7 +1258,27 @@ closed_enum! {
     }
 }
 
+/// A candidate carrying no static-placement answer is not blocked by one.
+const fn registered_by_default() -> bool {
+    true
+}
+
 impl RejectionCode {
+    /// The code a caller outside this crate sees.
+    ///
+    /// Most reasons are their own public code. Static-placement refusal is
+    /// deliberately not: callers already handle `placement_blocked` for "this
+    /// work has nowhere legal to go", and splitting a second external code out
+    /// of it would break every consumer that switches on the agreed one. The
+    /// specific reason travels in the next action and the evidence.
+    #[must_use]
+    pub const fn public_code(self) -> &'static str {
+        match self {
+            Self::DeliverySlotUnregistered => "placement_blocked",
+            other => other.as_str(),
+        }
+    }
+
     /// The next CLI/MCP move a caller holding only this code can try.
     #[must_use]
     pub const fn next_action(self) -> &'static str {
@@ -1257,6 +1294,9 @@ impl RejectionCode {
             }
             Self::LeadershipSeatUnbound => {
                 "a mandatory leadership seat is missing; kontor_core_team_materialize creates the seats the frozen roster declares"
+            }
+            Self::DeliverySlotUnregistered => {
+                "the pinned Team Definition registers no delivery slot this task's team template declares; publish and select a revision whose team_slots cover it"
             }
             Self::DependencyIncomplete => "wait for the named dependency to finish, then re-plan",
             Self::SerializationPeerInFlight => {

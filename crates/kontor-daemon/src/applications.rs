@@ -3456,7 +3456,32 @@ impl Services {
             .map(|task| task.id)
             .collect();
 
-        let runtime = self.runtime_evidence(project_id, now).await?;
+        // Answered from stored configuration alone, and answered *first*: a
+        // task whose seats no pinned Team Definition can name has nowhere legal
+        // to go, and asking a runtime anything on its behalf would be contact
+        // made for work that was never admissible.
+        let mut registered: BTreeMap<TaskId, bool> = BTreeMap::new();
+        for task in &tasks {
+            if let Some(answer) = self.delivery_slots_registered(project_id, epic_id, task.id)? {
+                registered.insert(task.id, answer);
+            }
+        }
+        // If nothing in this batch can be placed, the runtime is not consulted
+        // at all. The sentinel is never read: `StaticPlacement` refuses every
+        // candidate before `Runtime` is evaluated.
+        let runtime = if tasks
+            .iter()
+            .any(|task| task.state == TaskState::Ready && registered.get(&task.id) == Some(&true))
+        {
+            self.runtime_evidence(project_id, now).await?
+        } else {
+            unreachable_runtime(
+                project_id,
+                RuntimeKindKey::parse("none").map_err(|error| self.refuse_domain(&error))?,
+                ExternalName::parse("loopback").map_err(|error| self.refuse_domain(&error))?,
+                kontor_scheduler::ready::minimum_launch_capabilities(),
+            )
+        };
         // Once per epic, not once per task: leadership is a property of the epic,
         // and asking it per candidate would resolve the same control plane for
         // every task in the batch to get the same answer.
@@ -3497,6 +3522,7 @@ impl Services {
             candidates.push(Candidate {
                 project_id,
                 task_id: task.id,
+                delivery_slots_registered: registered.get(&task.id).copied().unwrap_or(true),
                 mini_project_id: Some(epic_id),
                 workflow_id: workflow.id,
                 state: task.state,
@@ -13921,6 +13947,11 @@ impl ApplicationOperations for Services {
         if replayed && let Some(task_id) = scope.task_id {
             let leaf = self.ensure_task_node(project_id, task_id)?;
             self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
+            // A historical materialization receipt is exactly the shape the
+            // logical gap lives in: the ticket was materialized before the slot
+            // mapping existed, so its seats were never opened. Repair on replay
+            // too, or the only epics that need this could never get it.
+            self.reconcile_ticket_delivery_seats(project_id, &leaf, task_id)?;
         }
 
         if !replayed {
@@ -13969,6 +14000,13 @@ impl ApplicationOperations for Services {
                 Some(task_id) => self.ensure_task_node(project_id, task_id)?,
                 None => self.ensure_scope_chain(project_id, &scope)?,
             };
+            // Before the runtime is contacted at all. Every open TeamRun slot
+            // must resolve against the governing Team Definition, so an
+            // unregistered slot refuses while nothing has been prepared,
+            // created or renamed.
+            if let Some(task_id) = scope.task_id {
+                self.reconcile_ticket_delivery_seats(project_id, &leaf, task_id)?;
+            }
             let spec = self.pinned_spec(project_id)?;
             let declared = spec
                 .node_kinds
@@ -21102,7 +21140,7 @@ impl ApplicationOperations for Services {
                     ..
                 } => blocked.push(blocked_task(
                     *task_id,
-                    code.as_str(),
+                    code.public_code(),
                     code.next_action(),
                     evidence,
                 )),
@@ -21245,7 +21283,7 @@ impl ApplicationOperations for Services {
                     ..
                 } => blocked.push(blocked_task(
                     *task_id,
-                    code.as_str(),
+                    code.public_code(),
                     code.next_action(),
                     evidence,
                 )),
@@ -24995,6 +25033,12 @@ impl Services {
             &ordered,
             &task_root,
         )?;
+        // Before the runtime is contacted at all. `ensure_seat_binding` checks
+        // the same thing when it opens each seat, but by then a TeamRun, an
+        // AgentRun and a prepared plane already exist — and a slot the
+        // governing Team Definition does not register must leave none of them
+        // behind.
+        self.preflight_delivery_slots(&placement, &ordered)?;
         let scope = self.execution_scope(
             project_id,
             epic_id,
@@ -26364,14 +26408,11 @@ impl Services {
     /// point of persisting it: derived from `created_at` at read time it would
     /// move every time the row was read (OP-REQ-039a).
     ///
-    /// A role slot the seeded delivery data does not spell as a standard code
-    /// gets no binding, and says so. Recording one under a guessed standard role
-    /// would be worse evidence than recording nothing: the whole value of the
-    /// row is that the code in it came from a published catalog.
-    ///
-    /// Skipping rather than refusing is deliberate. The correspondence is seeded
-    /// data an operator's own team templates can outrun, and a slot with no
-    /// entry is a gap in that data — not a reason the work cannot run.
+    /// The governing Team Definition must register the exact TeamRun slot under
+    /// a role the pinned catalog declares. Missing or ambiguous configuration is
+    /// a placement refusal before runtime contact; this function repeats that
+    /// check as defense in depth and never guesses from slot spelling or logical
+    /// role.
     fn ensure_seat_binding(
         &self,
         node: &SessionTopologyNode,
@@ -26383,13 +26424,11 @@ impl Services {
     ) -> Result<(), ApiError> {
         let state = self.state()?;
         let project_id = node.project_id;
-        let Some(role) = self.catalog_role(team_snapshot, slot)? else {
-            tracing::warn!(
-                role_slot = %slot.as_str(),
-                "no seeded standard role for this slot, so its seat is not recorded in the topology"
-            );
-            return Ok(());
-        };
+        // The Team Definition is the sole authority for what a delivery seat is
+        // opened as. A slot it does not register is a refusal, not a seat to
+        // skip: warning and returning `Ok` is what left live TeamRuns with no
+        // seat bindings at all, and left their native sessions unnameable.
+        let role = self.delivery_catalog_role(node, team_snapshot, slot)?;
         let held = state
             .with_store(|store| store.list_seat_bindings(project_id, node.id))
             .map_err(|error| self.refuse(&error))?;
@@ -26432,25 +26471,288 @@ impl Services {
         Ok(())
     }
 
-    /// The standard catalog role one Foundation slot is recorded under, when the
-    /// seeded delivery data spells one for it.
-    fn catalog_role(
+    /// Prove every delivery slot is registered before anything is committed.
+    ///
+    /// Resolves the governing definition once and asks it for each slot. It
+    /// deliberately does not consult the frozen snapshot: the question here is
+    /// only whether configuration names a role for the slot, and it has to be
+    /// answerable before a TeamRun exists.
+    ///
+    /// # Errors
+    /// Refuses a project with no governing definition, a container kind it does
+    /// not configure, an unregistered slot, a slot registered as a display
+    /// label rather than a role code, and two slots of one run that would
+    /// render the same seat name.
+    fn preflight_delivery_slots(
         &self,
-        snapshot: &TeamRunSnapshot,
-        slot: &RoleSlotId,
-    ) -> Result<Option<CatalogRoleRef>, ApiError> {
-        let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let logical_role = team.slot(slot).ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the frozen team snapshot does not declare this role slot",
-            )
-        })?;
-        let Some(code) = self.domain.delivery.role_code(&logical_role.role.role) else {
+        node: &SessionTopologyNode,
+        slots: &[RoleSlotId],
+    ) -> Result<(), ApiError> {
+        self.preflight_delivery_slots_for(node.project_id, node.mini_project_id, &node.kind, slots)
+    }
+
+    /// Whether stored configuration can name every seat one task would open.
+    ///
+    /// Read-only and runtime-free: it resolves the task's active workflow, the
+    /// team template that workflow pinned, and the governing Team Definition,
+    /// then applies exactly the checks the admission preflight applies. A task
+    /// that cannot even be resolved this far is not judged unplaceable — it
+    /// simply is not blocked by this question, and its own blocker will report
+    /// it.
+    fn delivery_slots_registered(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: TaskId,
+    ) -> Result<Option<bool>, ApiError> {
+        let state = self.state()?;
+        // A task with no active workflow is not a candidate at all. `None`
+        // says there is no candidate to include in the runtime-evidence
+        // decision. A workflow that deliberately prescribes no team is still a
+        // candidate; it simply has no delivery slots to block, so it returns
+        // `Some(true)` and keeps the ordinary runtime checks in force.
+        let Some(workflow) = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
             return Ok(None);
         };
-        self.catalog_role_for_code(code).map(Some)
+        let Some(pinned) = workflow.snapshot.definition.team_template.as_ref() else {
+            return Ok(Some(true));
+        };
+        // From here every failure is a refusal, never a pass. Durable state
+        // that cannot answer "what would this task's seats be called" cannot be
+        // read as permission to go and ask a runtime about them.
+        let Some(revision) = state
+            .with_store(|store| {
+                store.get_team_template(project_id, pinned.template_id, pinned.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(Some(false));
+        };
+        let Ok(team) = kontor_teams::spec::TeamTemplateSpec::from_revision(&revision) else {
+            return Ok(Some(false));
+        };
+        let slots: Vec<RoleSlotId> = team.slots.iter().map(|slot| slot.id.clone()).collect();
+        match self.preflight_delivery_slots_for(
+            project_id,
+            Some(epic_id),
+            &self.domain.delivery.task_kind,
+            &slots,
+        ) {
+            Ok(()) => Ok(Some(true)),
+            Err(error) if error.code == ApiErrorCode::PlacementBlocked => Ok(Some(false)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// As [`Self::preflight_delivery_slots`], addressed by scope rather than by
+    /// a placed node.
+    ///
+    /// The scheduler has to answer this before a task has been placed, so the
+    /// question is asked of the epic's governing definition and the delivery
+    /// kind rather than of a node that may not exist yet.
+    ///
+    /// # Errors
+    /// As [`Self::preflight_delivery_slots`].
+    fn preflight_delivery_slots_for(
+        &self,
+        project_id: ProjectId,
+        epic_id: Option<MiniProjectId>,
+        kind: &TopologyKindKey,
+        slots: &[RoleSlotId],
+    ) -> Result<(), ApiError> {
+        let definition = self.governing_team_definition_for(project_id, epic_id)?;
+        let mut rendered = BTreeSet::new();
+        for slot in slots {
+            let Some(registered) = definition.team_slot(kind, slot) else {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the governing Team Definition registers no delivery slot of this id",
+                ));
+            };
+            let Some(code) = registered.role_code.as_ref() else {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this delivery slot is registered as a display label and has no role code",
+                ));
+            };
+            // Two slots of one run that render the same seat name would make
+            // the container's seats indistinguishable. That is the case the
+            // definition cannot see and only the run can answer, so it is
+            // refused here rather than rendered ambiguously.
+            if !rendered.insert(code.clone()) {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "two slots of this TeamRun are registered under the same role code",
+                ));
+            }
+            // And the registered code has to be one the catalog actually
+            // declares. Proving it here means a repair that writes several
+            // seats cannot get half way and then fail on the last one.
+            self.catalog_role_for_code(code)?;
+        }
+        Ok(())
+    }
+
+    /// Give every open TeamRun of one ticket the seats its slots declare.
+    ///
+    /// Purely logical: it starts nothing, replaces nothing, renames nothing and
+    /// moves no pin, so a replay simply closes whatever gap is left. Every slot
+    /// is resolved against the governing Team Definition *first*, so an
+    /// unregistered slot refuses before a single seat is written.
+    ///
+    /// # Errors
+    /// As [`Self::delivery_catalog_role`], plus a blocked placement when the
+    /// ticket's owning control seat cannot be opened.
+    fn reconcile_ticket_delivery_seats(
+        &self,
+        project_id: ProjectId,
+        leaf: &SessionTopologyNode,
+        task_id: TaskId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let open = state
+            .with_store(|store| store.list_open_team_runs(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        if open.is_empty() {
+            return Ok(());
+        }
+        let mut planned = Vec::new();
+        for run in open {
+            let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&run.snapshot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            let slots: Vec<RoleSlotId> = team.slots.iter().map(|slot| slot.id.clone()).collect();
+            // Resolve before writing anything: a slot the definition does not
+            // register must not leave half a repair behind.
+            self.preflight_delivery_slots(leaf, &slots)?;
+            for slot in slots {
+                planned.push((run.id, run.snapshot.clone(), slot));
+            }
+        }
+        let owner = self.ensure_epic_control_seat(project_id, leaf)?;
+        for (team_run_id, snapshot, slot) in planned {
+            self.ensure_seat_binding(leaf, task_id, team_run_id, &snapshot, &slot, owner)?;
+        }
+        Ok(())
+    }
+
+    /// The registered catalog role one TeamRun slot opens its seat under.
+    ///
+    /// Resolved from the epic's pinned Team Definition, or — for an epic that
+    /// has not been pinned yet — from the project's already stored selection.
+    /// Nothing falls back to the slot's logical role, its label or the spelling
+    /// of its id.
+    ///
+    /// # Errors
+    /// Refuses a slot the frozen snapshot does not declare, a container kind
+    /// the definition does not configure, a slot no configuration registers,
+    /// and a registered slot that carries a display label rather than a role
+    /// code — a delivery seat is opened under a registered role, so a template
+    /// needing labels must first publish a definition revision that says so.
+    fn delivery_catalog_role(
+        &self,
+        node: &SessionTopologyNode,
+        team_snapshot: &TeamRunSnapshot,
+        slot: &RoleSlotId,
+    ) -> Result<CatalogRoleRef, ApiError> {
+        let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(team_snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if team.slot(slot).is_none() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the frozen team snapshot does not declare this role slot",
+            ));
+        }
+        let definition = self.governing_team_definition(node)?;
+        let Some(registered) = definition.team_slot(&node.kind, slot) else {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the governing Team Definition registers no delivery slot of this id",
+            ));
+        };
+        let Some(code) = registered.role_code.as_ref() else {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this delivery slot is registered as a display label and has no role code",
+            ));
+        };
+        self.catalog_role_for_code(code)
+    }
+
+    /// The Team Definition that governs one node's seats.
+    ///
+    /// The epic's pin when it has one; otherwise the project's already stored
+    /// selection. Nothing is published, selected or pinned here: an epic is
+    /// never named as a side effect of opening a seat, and a project that has
+    /// made no selection blocks until one is explicitly applied.
+    fn governing_team_definition(
+        &self,
+        node: &SessionTopologyNode,
+    ) -> Result<TeamDefinitionSpec, ApiError> {
+        self.governing_team_definition_for(node.project_id, node.mini_project_id)
+    }
+
+    /// As [`Self::governing_team_definition`], addressed by scope.
+    ///
+    /// # Errors
+    /// As [`Self::governing_team_definition`].
+    fn governing_team_definition_for(
+        &self,
+        project_id: ProjectId,
+        epic: Option<MiniProjectId>,
+    ) -> Result<TeamDefinitionSpec, ApiError> {
+        let state = self.state()?;
+        if let Some(epic_id) = epic
+            && let Some(pin) = state
+                .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+        {
+            return state
+                .with_store(|store| {
+                    store.get_team_definition(
+                        project_id,
+                        pin.definition.definition_id,
+                        pin.definition.version,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the epic's pinned Team Definition revision is unavailable",
+                    )
+                });
+        }
+        // Deliberately not `project_team_definition`: that publishes the
+        // bundled pack and may select a default, which is a mutation, and
+        // opening a seat must never be the thing that decides what an epic is
+        // named under. Read the stored selection only.
+        let selected = state
+            .with_store(|store| store.get_project_team_definition_default(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this project has selected no Team Definition to govern delivery seats",
+                )
+            })?;
+        state
+            .with_store(|store| {
+                store.get_team_definition(
+                    project_id,
+                    selected.definition.definition_id,
+                    selected.definition.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the selected Team Definition revision is unavailable",
+                )
+            })
     }
 
     /// The pinned catalog projection of one standard role code.

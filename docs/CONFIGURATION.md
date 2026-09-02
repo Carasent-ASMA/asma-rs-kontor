@@ -62,9 +62,13 @@ order:
    default selection under compare-and-swap. This affects future epics only.
 4. Inventory explicit topics for every legacy ASW/CSW; never derive one from a
    question, title or transcript.
-5. Preview the existing epic's Team Definition upgrade. Confirm the complete
+5. Reconcile every legacy ticket TSW through `topology:materialize` using its
+   stable historical key where available. The selected/pinned definition maps
+   each open TeamRun's exact slot to one logical SeatBinding without creating or
+   replacing a native session. Replay it again to prove the same binding ids.
+6. Preview the existing epic's Team Definition upgrade. Confirm the complete
    identity-bound container-and-seat census before apply.
-6. Apply with one stable idempotency key. A partial result keeps the old pin and
+7. Apply with one stable idempotency key. A partial result keeps the old pin and
    fences materialization; replay the same key until every exact native object
    reads back and the pin switches.
 
@@ -81,6 +85,19 @@ The corresponding `/v1` operations are `epics:preview` / `epics:apply`,
 are never rewritten. Placement and migration refuse before runtime mutation
 when the active epic namespace, confirmed Jira binding, topic, definition pin
 or exact identity readback is missing or ambiguous.
+
+The recommended TSW `team_slots` are exactly `scope→SA`, `implement→SWE`,
+`verify→QA`, and `audit→AUD`. These mappings are separate from fixed local
+`slots`. A definition catalog may contain alternative-template slot ids that map
+to the same role code, but a frozen TeamRun containing two slots that render the
+same name is refused before runtime contact. Unknown slots are never mapped from
+their spelling or logical role. In particular, Research Spike remains
+unregistered until a future `SLOT_DISPLAY_NAME` revision can name its two `BA`
+seats distinctly.
+
+Schema v77 introduced Team Definitions and migration state; v78-v80 complete
+per-seat advice, receipt recovery and exact command-intent recovery. A deployed
+naming migration is therefore healthy only at schema v80 or later.
 
 ## Seat supervision
 
@@ -139,8 +156,9 @@ second time.
 - Profile packs define phases, gates, artifacts, budgets and runtime routing.
   The bundled manifest declares 17 work-profile categories; four ship today
   (`code`, `ux-ui-layout`, `research`, `docs`).
-- Team Definition JSON revisions define native hierarchy, naming, role slots,
-  exact labels and slot capability-profile references. Team templates and
+- Team Definition JSON revisions define native hierarchy, naming, fixed slots,
+  delivery `team_slots`, exact labels and slot capability-profile references.
+  Team templates and
   consultation profiles separately own execution behavior, skills, context and
   handoffs. Role slots carry stable ids, so two peers in the same role are
   explicit rather than duplicate.

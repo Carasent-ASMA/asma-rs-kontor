@@ -365,34 +365,34 @@ fn team_slots_register_delivery_roles_without_inferring_them() {
 }
 
 #[test]
-fn two_team_slots_that_would_render_one_seat_name_are_refused() {
+fn alternative_templates_may_register_one_role_code_under_different_slot_ids() {
     let mut definition = definition();
     let tsw = definition
         .containers
         .iter_mut()
         .find(|container| container.kind.as_str() == "TSW")
         .expect("the TSW container");
-    // Research Spike's shape: two slots under one role code would render one
-    // indistinguishable seat name under a role-code seat template.
+    // One catalog serves several alternative delivery templates. `scope` and
+    // `architect` are both `SA`, and no TeamRun declares both, so the catalog
+    // holds them side by side. Two slots of one *run* rendering the same name
+    // is a different question, and admission is what answers it.
     tsw.team_slots = vec![
         TeamDefinitionSeatSlot {
-            slot_id: RoleSlotId::parse("researcher-a").expect("a slot"),
-            role_code: Some(RoleCode::parse("BA").expect("a role code")),
+            slot_id: RoleSlotId::parse("scope").expect("a slot"),
+            role_code: Some(RoleCode::parse("SA").expect("a role code")),
             display_name: None,
             capability_profile: name("delivery-standard"),
         },
         TeamDefinitionSeatSlot {
-            slot_id: RoleSlotId::parse("researcher-b").expect("a slot"),
-            role_code: Some(RoleCode::parse("BA").expect("a role code")),
+            slot_id: RoleSlotId::parse("architect").expect("a slot"),
+            role_code: Some(RoleCode::parse("SA").expect("a role code")),
             display_name: None,
             capability_profile: name("delivery-standard"),
         },
     ];
-    assert!(
-        definition.validate().is_err(),
-        "such a template stays unregistered until a revision gives its slots \
-         distinct labels"
-    );
+    definition
+        .validate()
+        .expect("a catalog may register one role code under different slot ids");
 }
 
 #[test]

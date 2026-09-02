@@ -1,6 +1,7 @@
 # Native naming
 
-> Status: approved contract; local implementation verified, live epic migration pending.
+> Status: approved contract; implementation complete, final archive verification
+> and live epic migration pending.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -146,9 +147,30 @@ vectors; the configured separator is inserted between rendered segments.
 }
 ```
 
-The shipped document also declares ECP (`LSA`, `TPM`), TSW (role-coded,
-team-template supplied delivery slots) and CSW (`SEAT A`, `SEAT B`, `JUDGE`)
-rows. The complete canonical fixture is
+The shipped document also declares ECP (`LSA`, `TPM`), TSW and CSW (`SEAT A`,
+`SEAT B`, `JUDGE`) rows. TSW distinguishes fixed local `slots` from delivery
+`team_slots`. The recommended revision registers exactly:
+
+```json
+"team_slots": [
+  { "slot_id": "scope", "role_code": "SA", "capability_profile": "delivery-standard" },
+  { "slot_id": "implement", "role_code": "SWE", "capability_profile": "delivery-standard" },
+  { "slot_id": "verify", "role_code": "QA", "capability_profile": "delivery-standard" },
+  { "slot_id": "audit", "role_code": "AUD", "capability_profile": "delivery-high" }
+]
+```
+
+The catalog may register alternative-template slot ids under the same role code;
+those alternatives do not necessarily coexist. Before scheduling or touching a
+runtime, Kontor resolves the exact ordered slots of the frozen TeamTemplate.
+Missing mappings, display-label mappings under the recommended `ROLE_CODE` TSW,
+unknown role codes, or two slots in that one TeamRun rendering the same code are
+`placement_blocked`. The shipped Research Spike slots remain deliberately
+unregistered because `researcher-a` and `researcher-b` would both render `BA`;
+they require a future `SLOT_DISPLAY_NAME` Team Definition revision rather than
+an inferred suffix.
+
+The complete canonical fixture is
 `crates/kontor-profiles/fixtures/operational-domain.json`.
 
 ## Publication and migration
@@ -163,6 +185,13 @@ rows. The complete canonical fixture is
   identity, parent, kind, cwd, observed title and desired title.
 - Legacy ASW/CSW topics are explicit operator input keyed by topology-node id;
   unknown, missing or extra mappings are refused.
+- Before upgrading a legacy epic, replay each ticket's existing
+  `topology:materialize` command (or apply one stable repair key) to reconcile
+  every open TeamRun slot into an exact logical SeatBinding. This logical repair
+  creates no native session and is inert on repeated same-key replay.
+- Migration preview requires every live bound delivery AgentRun to match exactly
+  one active SeatBinding at the same `RoleSlotId`. A missing, duplicate or
+  cross-slot binding refuses the complete census instead of omitting a seat.
 - Apply records its intent before the first external retitle. Partial effects
   leave the old pin in force and the epic fenced. The same idempotency key
   resumes from exact readback; a different key cannot interleave.
@@ -175,6 +204,9 @@ rows. The complete canonical fixture is
 - Missing or ambiguous prefix, template, parent, separator, role code, slot
   label, scope item code, topic or capability binding fails before runtime
   mutation.
+- Delivery-slot placement is checked from durable configuration before runtime
+  evidence is requested. A batch may still admit unrelated valid candidates;
+  unnameable candidates remain individually `placement_blocked`.
 - No fallback uses a UUID, title, Jira key, legacy task short code or
   caller-built string.
 - Display names never establish identity; exact native IDs and bindings do.
