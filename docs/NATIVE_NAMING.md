@@ -148,7 +148,9 @@ vectors; the configured separator is inserted between rendered segments.
 ```
 
 The shipped document also declares ECP (`LSA`, `TPM`), TSW and CSW (`SEAT A`,
-`SEAT B`, `JUDGE`) rows. TSW distinguishes fixed local `slots` from delivery
+`SEAT B`, `JUDGE`) rows. ECP uses the exact deterministic Core Team slot
+addresses `lsa→LSA` and `tpm→TPM`; their native titles remain the configured
+uppercase role codes. TSW distinguishes fixed local `slots` from delivery
 `team_slots`. The recommended revision registers exactly:
 
 ```json
@@ -170,11 +172,14 @@ unregistered because `researcher-a` and `researcher-b` would both render `BA`;
 they require a future `SLOT_DISPLAY_NAME` Team Definition revision rather than
 an inferred suffix.
 
-For a delivery seat, `team_slots[(container kind, role slot id)].role_code` is
-the only rendering input. The older Operational `delivery.role_bindings`, the
-TeamTemplate's logical role and a persisted SeatBinding role remain catalog or
-historical placement evidence; they never override the exact governing Team
-Definition during launch, replacement, reconciliation or migration.
+One exact `(container kind, RoleSlotId)` resolver covers both fixed local
+`slots` and TeamRun-supplied `team_slots`. Its configured `role_code` or
+`display_name` is the only rendering input. The older Operational
+`delivery.role_bindings`, the TeamTemplate's logical role, a persisted
+SeatBinding role and any caller-supplied role remain catalog or historical
+placement evidence; they never override the exact governing Team Definition
+during launch, replacement, reconciliation or migration. A missing exact slot
+is `placement_blocked`; there is no role fallback.
 
 The complete canonical fixture is
 `crates/kontor-profiles/fixtures/operational-domain.json`.
@@ -198,11 +203,20 @@ The complete canonical fixture is
 - Migration preview requires every live bound delivery AgentRun to match exactly
   one active SeatBinding at the same `RoleSlotId`. A missing, duplicate or
   cross-slot binding refuses the complete census instead of omitting a seat.
+- Before its first runtime read, upgrade preview resolves every exact slot of
+  every live TeamRun against the target Team Definition, including duplicate
+  rendered-name checks for the slots that actually coexist in that run.
+- The recorded and confirming censuses are bidirectional over both subject and
+  immutable native identity: every live pair must be enumerated exactly, and an
+  extra, stale or identity-mismatched target refuses the migration.
 - Apply records its intent before the first external retitle. Partial effects
   leave the old pin in force and the epic fenced. The same idempotency key
   resumes from fresh exact readback of every target; an earlier success that
   drifted is repaired again or remains pending. A different key cannot
   interleave.
+- While that fence exists, delivery admission, topology materialization and
+  replacement refuse before writing a command, retiring a predecessor,
+  creating a successor or contacting a runtime.
 - The pin switches only after every target reads back the desired title under
   the unchanged native identity. Backup/export includes definitions, defaults,
   pins, migration intents, targets, topic provenance and per-seat advice.
@@ -212,6 +226,10 @@ The complete canonical fixture is
   that receipt remains durable but is explicitly `legacy_unrecoverable`; it is
   fenced with a typed conflict and is never guessed from its fingerprint or
   target set.
+- Supported generation-2 and generation-3 exports omit the generation-4 Team
+  Definition arrays in their signed canonical representation. The reader adds
+  empty arrays only to its in-memory current record type; legacy hashing,
+  continuity and reserialization retain the exact source-generation shape.
 
 ## Validation and revision rules
 

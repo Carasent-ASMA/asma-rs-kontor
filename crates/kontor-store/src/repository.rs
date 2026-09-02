@@ -14995,9 +14995,11 @@ fn prove_migration_covers_live_natives(
     project_id: ProjectId,
     mini_project_id: MiniProjectId,
     definition: &TeamDefinitionSpec,
-    enumerated: &BTreeSet<TeamDefinitionMigrationSubject>,
+    enumerated: &BTreeMap<TeamDefinitionMigrationSubject, NativeRuntimeIdentity>,
 ) -> RepositoryResult<()> {
-    for live in store.list_live_native_subjects(project_id, mini_project_id)? {
+    let live_subjects = store.list_live_native_subjects(project_id, mini_project_id)?;
+    let mut observed = BTreeMap::new();
+    for live in live_subjects {
         let container = definition.container(&live.node_kind).ok_or_else(|| {
             conflict(
                 "team definition migration",
@@ -15012,12 +15014,27 @@ fn prove_migration_covers_live_natives(
                 "the target definition cannot name a live seat of this kind",
             ));
         }
-        if !enumerated.contains(&live.subject) {
+        if observed
+            .insert(live.subject, live.identity.clone())
+            .is_some()
+        {
             return Err(conflict(
                 "team definition migration",
-                "the migration does not cover every live native subject of the epic",
+                "the live census enumerates one native subject more than once",
             ));
         }
+        if enumerated.get(&live.subject) != Some(&live.identity) {
+            return Err(conflict(
+                "team definition migration",
+                "the migration does not match every live native subject and identity of the epic",
+            ));
+        }
+    }
+    if observed.len() != enumerated.len() {
+        return Err(conflict(
+            "team definition migration",
+            "the migration enumerates a subject that is not in the live native census",
+        ));
     }
     Ok(())
 }
@@ -15538,12 +15555,12 @@ impl TeamDefinitionRepository for SqliteStore {
                 "a migration must enumerate at least one target",
             ));
         }
-        let mut subjects = BTreeSet::new();
-        if !migration
-            .targets
-            .iter()
-            .all(|target| subjects.insert(target.subject))
-        {
+        let mut subjects = BTreeMap::new();
+        if !migration.targets.iter().all(|target| {
+            subjects
+                .insert(target.subject, target.identity.clone())
+                .is_none()
+        }) {
             return Err(conflict(
                 "team definition migration",
                 "a migration must not enumerate one native subject twice",
@@ -15962,8 +15979,8 @@ impl TeamDefinitionRepository for SqliteStore {
             &stored
                 .targets
                 .iter()
-                .map(|target| target.subject)
-                .collect::<BTreeSet<_>>(),
+                .map(|target| (target.subject, target.identity.clone()))
+                .collect::<BTreeMap<_, _>>(),
         )?;
         // The pin and the confirmation commit together: neither half of a
         // migration is allowed to become visible on its own.

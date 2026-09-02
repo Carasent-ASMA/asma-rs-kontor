@@ -68,6 +68,17 @@ const TEAM_DEFINITION_SCHEMA_VERSION: i64 = 77;
 /// The export generation that first carried the Team Definition surfaces.
 const TEAM_DEFINITION_EXPORT_VERSION: u32 = 4;
 
+/// Record arrays introduced together in generation 4.
+const TEAM_DEFINITION_RECORD_FIELDS: [&str; 7] = [
+    "team_definitions",
+    "project_team_definition_defaults",
+    "mini_project_team_definition_snapshots",
+    "team_definition_migration_intents",
+    "team_definition_migration_targets",
+    "team_definition_migration_command_intents",
+    "team_definition_migration_receipts",
+];
+
 /// How deep an embedded document is followed by the canary scan.
 ///
 /// Persisted documents are already depth-bounded by
@@ -158,7 +169,14 @@ impl KontorExportV1 {
     /// Returns [`BackupError::Redaction`] only through [`Self::canonical_value`]'s
     /// serialization failure path, which cannot happen for this type.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, BackupError> {
-        canonical_bytes(&canonical_value(self)?)
+        let mut value = canonical_value(self)?;
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_team_definition_record_fields(records)?;
+        }
+        canonical_bytes(&value)
     }
 
     /// The canonical bytes of `records` alone — the bytes
@@ -167,7 +185,11 @@ impl KontorExportV1 {
     /// # Errors
     /// As [`Self::canonical_bytes`].
     pub fn canonical_records_bytes(&self) -> Result<Vec<u8>, BackupError> {
-        canonical_bytes(&canonical_value(&self.records)?)
+        let mut value = canonical_value(&self.records)?;
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            remove_team_definition_record_fields(&mut value)?;
+        }
+        canonical_bytes(&value)
     }
 
     /// Recompute the digest and compare it with the one the document carries.
@@ -218,7 +240,12 @@ impl KontorExportV1 {
                     .mini_project_team_definition_snapshots
                     .is_empty()
                 && self.records.team_definition_migration_intents.is_empty()
-                && self.records.team_definition_migration_targets.is_empty())
+                && self.records.team_definition_migration_targets.is_empty()
+                && self
+                    .records
+                    .team_definition_migration_command_intents
+                    .is_empty()
+                && self.records.team_definition_migration_receipts.is_empty())
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation carries Team Definition records it did not define",
@@ -230,7 +257,7 @@ impl KontorExportV1 {
             });
         }
         if self.schema_version >= PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
-            && self.continuity_summary != self.records.continuity()
+            && self.continuity_summary != self.records.continuity_for_export(self.schema_version)
         {
             return Err(BackupError::Verification {
                 detail: "the export's continuity summary does not match its records",
@@ -250,7 +277,7 @@ impl KontorExportV1 {
     /// and [`BackupError::Verification`] when the bytes are not a document of
     /// this one.
     pub fn parse(bytes: &[u8]) -> Result<Self, BackupError> {
-        let value: serde_json::Value =
+        let mut value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| BackupError::Verification {
                 detail: "the export is not a JSON document",
             })?;
@@ -267,6 +294,23 @@ impl KontorExportV1 {
                 expected: EXPORT_SCHEMA_VERSION,
             });
         }
+        // Normalize a supported older generation into the current in-memory
+        // record type only after its version is known. The injected arrays are
+        // representation defaults, not invented history: verification and
+        // canonical hashing continue to use the generation's original shape.
+        if found < TEAM_DEFINITION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_DEFINITION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -274,6 +318,19 @@ impl KontorExportV1 {
         export.verify()?;
         Ok(export)
     }
+}
+
+/// Remove generation-4 arrays from a supported legacy record object.
+fn remove_team_definition_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in TEAM_DEFINITION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
 }
 
 /// Render any serializable value through `serde_json::Value`, whose objects are
@@ -1621,6 +1678,19 @@ exported_tables! {
 }
 
 impl ExportedRecords {
+    /// Continuity represented in the exact record vocabulary of one supported
+    /// export generation.
+    #[must_use]
+    fn continuity_for_export(&self, schema_version: u32) -> ContinuitySummary {
+        let mut continuity = self.continuity();
+        if schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            for field in TEAM_DEFINITION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        continuity
+    }
+
     /// What this document says about its own completeness.
     ///
     /// Everything is counted from the records themselves. A summary computed by

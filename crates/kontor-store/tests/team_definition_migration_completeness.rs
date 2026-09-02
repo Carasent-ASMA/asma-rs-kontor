@@ -469,6 +469,96 @@ fn a_migration_that_omits_a_live_delivery_seat_is_refused() {
         .expect("the complete enumeration, including the delivery seat, is recorded");
 }
 
+#[test]
+fn a_migration_must_match_the_live_census_in_both_subject_and_identity_directions() {
+    let w = world();
+
+    let mut wrong_identity = complete_targets(&w);
+    wrong_identity
+        .iter_mut()
+        .find(|target| {
+            target.subject
+                == (TeamDefinitionMigrationSubject::Seat {
+                    topology_node_id: w.tsw,
+                    seat_binding_id: w.delivery_seat,
+                })
+        })
+        .expect("the delivery seat is enumerated")
+        .identity = identity("a_stale_predecessor_identity");
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "wrong-live-native-identity",
+                wrong_identity,
+            ))
+            .is_err(),
+        "the right SeatBinding with the wrong native identity is not the live census"
+    );
+
+    let catalog = bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .role_catalogs
+        .first()
+        .expect("a catalog")
+        .clone();
+    let role = catalog
+        .role(&RoleCode::parse("SA").expect("a role code"))
+        .expect("the catalog has SA");
+    let stale_seat = SeatBindingId::generate();
+    w.store
+        .create_seat_binding(&NewSeatBinding {
+            id: stale_seat,
+            project_id: w.project_id,
+            topology_node_id: w.tsw,
+            role_slot_id: RoleSlotId::parse("delivery.stale").expect("a slot"),
+            role: CatalogRoleRef {
+                catalog_id: catalog.catalog_id,
+                catalog_revision: catalog.version,
+                role_code: role.role_code.clone(),
+                standard_title: role.standard_title.clone(),
+                custom_display_name: None,
+            },
+            task_id: Some(w.task),
+            team_run_id: Some(w.team_run),
+            attach_deadline: at("2026-09-02T10:45:00Z"),
+            parent_seat_binding_id: None,
+            created_at: at("2026-09-02T10:44:00Z"),
+        })
+        .expect("the logical seat exists without a native session");
+    let mut extra_subject = complete_targets(&w);
+    extra_subject.push(NewTeamDefinitionMigrationTarget {
+        subject: TeamDefinitionMigrationSubject::Seat {
+            topology_node_id: w.tsw,
+            seat_binding_id: stale_seat,
+        },
+        identity: identity("a_native_that_is_not_live"),
+        desired: NativePlacement {
+            title: name("SA"),
+            parent_native_id: Some(ExternalId::parse("wks_tsw").expect("a native id")),
+            kind: MigrationObjectKind::Seat,
+            canonical_cwd: None,
+        },
+    });
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "extra-stale-native-subject",
+                extra_subject,
+            ))
+            .is_err(),
+        "an enumerated logical seat with no live native may not survive as a stale target"
+    );
+    assert!(
+        w.store
+            .get_in_flight_team_definition_migration(w.project_id, w.mini_project_id)
+            .expect("the fence reads")
+            .is_none(),
+        "both census mismatches are refused before a migration is recorded"
+    );
+}
+
 /// Bind one more delivery seat on the shared team run, with its own slot,
 /// agent run and native session.
 fn add_delivery_seat(w: &World, slot: &str, role: &str, native: &str) -> SeatBindingId {

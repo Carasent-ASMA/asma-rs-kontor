@@ -67,10 +67,14 @@ order:
    each open TeamRun's exact slot to one logical SeatBinding without creating or
    replacing a native session. Replay it again to prove the same binding ids.
 6. Preview the existing epic's Team Definition upgrade. Confirm the complete
-   identity-bound container-and-seat census before apply.
+   identity-bound container-and-seat census before apply. Preview first
+   preflights every exact slot of every live TeamRun against the target
+   definition and performs no runtime read when a mapping is missing or two
+   co-resident slots would render the same name.
 7. Apply with one stable idempotency key. A partial result keeps the old pin and
    fences materialization; replay the same key until every exact native object
-   reads back and the pin switches.
+   reads back and the pin switches. The fence blocks admission and replacement
+   before any command write, predecessor retirement or runtime contact.
 
 Logical epic creation may freeze the selected Team Definition before step 2.
 This is safe because a pin is not placement authority: every native
@@ -95,6 +99,13 @@ their spelling or logical role. In particular, Research Spike remains
 unregistered until a future `SLOT_DISPLAY_NAME` revision can name its two `BA`
 seats distinctly.
 
+All seats, including ECP/ASW/CSW local slots and TSW delivery slots, resolve
+through the same exact `(container kind, RoleSlotId)` lookup. The configured
+role code or display label is authoritative; persisted roles and caller values
+are never fallback names. Migration record and confirmation each compare the
+complete live census bidirectionally by subject and immutable native identity,
+so neither an omitted live object nor a stale extra target can move the pin.
+
 Schema v77 introduced Team Definitions and migration state; v78-v80 complete
 per-seat advice, receipt recovery and exact command-intent recovery. During a
 v79→v80 upgrade, only a migration with a bound
@@ -104,6 +115,13 @@ an explicit `legacy_unrecoverable` fence and returns a typed conflict; Kontor
 never substitutes the migration fingerprint or target set for the missing
 command. A deployed naming migration is therefore healthy only at schema v80
 or later and only when no such recovery fence remains.
+
+Redacted export generation 4 introduced seven Team Definition record arrays.
+When reading supported generations 2 or 3, Kontor supplies those absent arrays
+only as empty in-memory defaults. It removes them again for legacy canonical
+hashing, continuity comparison and serialization; a genuine generation-3
+export therefore verifies byte-for-byte without being rewritten into a false
+generation-4 shape.
 
 ## Seat supervision
 

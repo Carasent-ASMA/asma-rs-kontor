@@ -13539,6 +13539,158 @@ async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
     );
 }
 
+#[tokio::test]
+async fn an_in_flight_team_definition_migration_fences_replacement_before_any_effect() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "migration-fences-replace").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let (project_revision, target) = world.daemon.state().with_store(|store| {
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        let pin = store
+            .get_mini_project_team_definition(project_id, epic_id)
+            .expect("the pin reads")
+            .expect("the epic is pinned");
+        let mut definition = store
+            .get_team_definition(
+                project_id,
+                pin.definition.definition_id,
+                pin.definition.version,
+            )
+            .expect("the definition reads")
+            .expect("the definition exists");
+        definition.version =
+            SpecVersion::parse(definition.version.get() + 1).expect("the next revision");
+        definition
+            .containers
+            .iter_mut()
+            .find(|container| container.kind.as_str() == "ESW")
+            .expect("the ESW definition")
+            .prefix = ExternalName::parse("ESW2").expect("a distinct configured prefix");
+        store
+            .publish_team_definition(project_id, &definition, kontor_api::now())
+            .expect("the target definition publishes");
+        (revision, definition)
+    });
+    let upgrade = serde_json::json!({
+        "target_definition": {"id": target.definition_id, "version": target.version},
+        "legacy_topics": {},
+        "expected_revision": project_revision,
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let changing_node = preview.json()["targets"]
+        .as_array()
+        .expect("the migration census")
+        .iter()
+        .find(|target| target["subject_kind"] == "container" && target["would_change"] == true)
+        .and_then(|target| target["topology_node_id"].as_str())
+        .map(TopologyNodeId::parse)
+        .transpose()
+        .expect("a valid topology node")
+        .expect("a changing container");
+    world.fake.lose_next_retitle_ack(changing_node);
+    let partial = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &serde_json::json!({"upgrade": upgrade, "preview_hash": preview.json()["preview_hash"]}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("migration-fences-replace-upgrade")
+    .send(&world)
+    .await;
+    assert_eq!(partial.code(), "rename_pending", "{}", partial.body);
+
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let binding = before.binding.as_ref().expect("the predecessor is bound");
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the route is frozen")
+        .provider
+        .0;
+    world.fake.provider_outage(
+        &provider,
+        Some(kontor_core::spec::ModelRung {
+            provider: kontor_core::spec::ProviderRef("codex".to_owned()),
+            model: kontor_core::spec::ModelRef("gpt-5.6-sol".to_owned()),
+            effort: Some(kontor_core::spec::EffortLevel::Xhigh),
+        }),
+    );
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    world.fake.take_calls();
+    let blocked = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": {
+                "runtime_binding_id": binding.id,
+                "native_id": binding.identity.native_id,
+                "provider": provider,
+            },
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("migration-fences-replace-attempt")
+    .send(&world)
+    .await;
+    assert_eq!(blocked.status, 409, "{}", blocked.body);
+    assert_eq!(blocked.code(), "placement_blocked", "{}", blocked.body);
+    assert!(
+        world.fake.take_calls().is_empty(),
+        "the migration fence is checked before retirement or any other runtime call"
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    assert_eq!(
+        after, before,
+        "the predecessor is byte-identical after refusal"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_receipt_by_key(
+                &IdempotencyKey::parse("migration-fences-replace-attempt").expect("a key")
+            ))
+            .expect("the receipt lookup succeeds")
+            .is_none(),
+        "the refusal records no replacement command"
+    );
+}
+
 /// A provider outage may retire a reachable idle seat only while its durable
 /// evidence has never advanced beyond launch and Admin names the immutable
 /// binding exactly. This is the supported replacement path for the dormant
@@ -30966,12 +31118,14 @@ async fn delivery_names_follow_the_exact_team_definition_when_legacy_bindings_di
         Some("SWE")
     );
 
-    // A later immutable definition changes only the builder's registered code.
-    // Migration preview and apply must use that target mapping rather than the
-    // persisted old seat role or the Operational delivery projection.
+    // Migration refuses a missing registration and a collision inside this
+    // exact active TeamRun before asking the runtime. A later valid immutable
+    // definition changes only the builder's registered code; preview and apply
+    // must use that target mapping rather than the persisted old seat role or
+    // the Operational delivery projection.
     let project_id = ProjectId::parse(&project).expect("a project id");
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
-    let target = world.daemon.state().with_store(|store| {
+    let (missing, collision, target) = world.daemon.state().with_store(|store| {
         let pin = store
             .get_mini_project_team_definition(project_id, epic_id)
             .expect("the epic pin reads")
@@ -30984,14 +31138,44 @@ async fn delivery_names_follow_the_exact_team_definition_when_legacy_bindings_di
             )
             .expect("the definition reads")
             .expect("the definition exists");
-        definition.version =
-            SpecVersion::parse(definition.version.get() + 1).expect("the next revision");
-        let tsw = definition
+        let base_version = definition.version.get();
+
+        let mut missing = definition.clone();
+        missing.version = SpecVersion::parse(base_version + 1).expect("the missing revision");
+        missing
+            .containers
+            .iter_mut()
+            .find(|container| container.kind.as_str() == "TSW")
+            .expect("the TSW definition")
+            .team_slots
+            .retain(|slot| slot.slot_id.as_str() != "builder");
+        store
+            .publish_team_definition(project_id, &missing, kontor_api::now())
+            .expect("the missing-slot definition publishes for preflight");
+
+        let mut collision = definition.clone();
+        collision.version = SpecVersion::parse(base_version + 2).expect("the collision revision");
+        let collision_tsw = collision
             .containers
             .iter_mut()
             .find(|container| container.kind.as_str() == "TSW")
             .expect("the TSW definition");
-        tsw.team_slots
+        for slot in &mut collision_tsw.team_slots {
+            if matches!(slot.slot_id.as_str(), "builder" | "tester") {
+                slot.role_code = Some(RoleCode::parse("BA").expect("a registered role code"));
+            }
+        }
+        store
+            .publish_team_definition(project_id, &collision, kontor_api::now())
+            .expect("alternative slots may publish a repeated role code");
+
+        definition.version = SpecVersion::parse(base_version + 3).expect("the valid revision");
+        definition
+            .containers
+            .iter_mut()
+            .find(|container| container.kind.as_str() == "TSW")
+            .expect("the TSW definition")
+            .team_slots
             .iter_mut()
             .find(|slot| slot.slot_id.as_str() == "builder")
             .expect("the builder registration")
@@ -30999,16 +31183,40 @@ async fn delivery_names_follow_the_exact_team_definition_when_legacy_bindings_di
         store
             .publish_team_definition(project_id, &definition, kontor_api::now())
             .expect("the target definition publishes");
-        definition
+        (missing, collision, definition)
     });
-    let upgrade = serde_json::json!({
-        "target_definition": {
-            "id": target.definition_id,
-            "version": target.version,
-        },
-        "legacy_topics": {},
-        "expected_revision": project_revision,
-    });
+    let upgrade_for = |definition: &kontor_core::spec::TeamDefinitionSpec| {
+        serde_json::json!({
+            "target_definition": {
+                "id": definition.definition_id,
+                "version": definition.version,
+            },
+            "legacy_topics": {},
+            "expected_revision": project_revision,
+        })
+    };
+    world.fake.take_calls();
+    for (label, invalid) in [("missing", &missing), ("collision", &collision)] {
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+            &upgrade_for(invalid),
+        )
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+        assert_eq!(refused.status, 409, "{label}: {}", refused.body);
+        assert_eq!(
+            refused.code(),
+            "placement_blocked",
+            "{label}: {}",
+            refused.body
+        );
+        assert!(
+            world.fake.take_calls().is_empty(),
+            "{label} target definition is refused before any runtime read or effect"
+        );
+    }
+    let upgrade = upgrade_for(&target);
     let preview = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
         &upgrade,

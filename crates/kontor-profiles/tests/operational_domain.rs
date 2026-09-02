@@ -150,6 +150,17 @@ fn the_recommended_team_definition_owns_exact_native_names_and_local_seat_labels
     );
     assert_eq!(
         definition
+            .container(&kind("ECP"))
+            .expect("ECP")
+            .slots
+            .iter()
+            .map(|slot| slot.slot_id.as_str())
+            .collect::<Vec<_>>(),
+        ["lsa", "tpm"],
+        "the definition registers the exact deterministic Core Team slot ids"
+    );
+    assert_eq!(
+        definition
             .container(&kind("ASW"))
             .expect("ASW")
             .slots

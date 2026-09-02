@@ -6325,12 +6325,7 @@ impl Services {
                 let scope =
                     self.execution_scope(project_id, epic_id, node.task_id, adapter.as_ref())?;
                 let desired_title = if let Some(definition) = target_definition {
-                    self.seat_name_from_definition(
-                        definition,
-                        &node,
-                        seat.role.role_code.as_str(),
-                        Some(&seat.role_slot_id),
-                    )?
+                    self.seat_name_from_definition(definition, &node, &seat.role_slot_id)?
                 } else {
                     self.seat_name(
                         project_id,
@@ -22864,6 +22859,17 @@ impl ApplicationOperations for Services {
                 "the task moved since the replacement was authorized",
             ));
         }
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the replacement task is not scoped to an epic",
+            )
+        })?;
+        // This precedes the command intent, predecessor retirement and every
+        // runtime call. A partial native-name migration must leave the exact
+        // censused predecessor untouched and create no successor to escape its
+        // target set.
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let team = state
             .with_store(|store| store.get_team_run(project_id, predecessor.team_run_id))
             .map_err(|error| self.refuse(&error))?
@@ -23041,12 +23047,6 @@ impl ApplicationOperations for Services {
         let workspace = self
             .ensure_container(project_id, &node, &task_root, adapter.as_ref())
             .await?;
-        let epic_id = task.mini_project_id.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the replacement task is not scoped to an epic",
-            )
-        })?;
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
         let quota_states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
@@ -25013,6 +25013,10 @@ impl Services {
                 "the admitted task is not scoped to an epic",
             )
         })?;
+        // Admission is fenced before placement writes, scheduler commits or
+        // runtime preparation. Otherwise a new native could appear outside the
+        // migration's exact census while the old pin is still retained.
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let task_root = self.task_root(project_id, admitted.task_id)?;
         let placement = self.resolve_placement(
             project_id,
@@ -25554,16 +25558,7 @@ impl Services {
         epic_id: MiniProjectId,
     ) -> Result<Option<TeamDefinitionSpec>, ApiError> {
         let state = self.state()?;
-        if state
-            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
-            .map_err(|error| self.refuse(&error))?
-            .is_some()
-        {
-            return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "this epic has a Team Definition migration in flight",
-            ));
-        }
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let Some(pinned) = state
             .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?
@@ -25594,6 +25589,27 @@ impl Services {
             ));
         }
         Ok(Some(definition))
+    }
+
+    /// Fence every admission or replacement before its first durable or
+    /// runtime effect while this epic's native-name migration is unsettled.
+    fn ensure_no_team_definition_migration(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        if state
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this epic has a Team Definition migration in flight",
+            ));
+        }
+        Ok(())
     }
 
     fn resolve_team_definition(
@@ -25661,6 +25677,11 @@ impl Services {
                 "the epic already pins that Team Definition revision",
             ));
         }
+        // Resolve every slot of every live TeamRun against the *target*
+        // definition before preview performs its first runtime read. The
+        // current pin is irrelevant to this proof: it is the target bytes that
+        // will become the sole naming authority if confirmation succeeds.
+        self.preflight_migrated_team_runs(project_id, epic_id, &definition)?;
         let topics = self.parse_legacy_topics(&request.legacy_topics)?;
         let prepared = self
             .prepare_native_names_for(
@@ -25672,6 +25693,36 @@ impl Services {
             )
             .await?;
         Ok((current, target, definition, topics, prepared))
+    }
+
+    /// Prove the target definition can name every slot of every live TeamRun
+    /// whose task node this migration will carry across the pin change.
+    fn preflight_migrated_team_runs(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        definition: &TeamDefinitionSpec,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let nodes = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?;
+        for node in nodes {
+            let Some(task_id) = node.task_id else {
+                continue;
+            };
+            let runs = state
+                .with_store(|store| store.list_open_team_runs(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?;
+            for run in runs {
+                let team = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&run.snapshot)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let slots: Vec<RoleSlotId> =
+                    team.slots.iter().map(|slot| slot.id.clone()).collect();
+                self.preflight_delivery_slots_against(definition, &node.kind, &slots)?;
+            }
+        }
+        Ok(())
     }
 
     fn migration_seat_identity(
@@ -25971,6 +26022,7 @@ impl Services {
                     "this task belongs to no epic, so it has no place in the session topology",
                 )
             })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let topology = self.project_topology(project_id)?;
         let spec = state
             .with_store(|store| {
@@ -26552,6 +26604,19 @@ impl Services {
         slots: &[RoleSlotId],
     ) -> Result<(), ApiError> {
         let definition = self.governing_team_definition_for(project_id, epic_id)?;
+        self.preflight_delivery_slots_against(&definition, kind, slots)
+    }
+
+    /// Apply the delivery-slot preflight to one exact immutable definition.
+    ///
+    /// Upgrade preview uses this form so it proves the target revision before
+    /// any runtime read instead of accidentally validating the current pin.
+    fn preflight_delivery_slots_against(
+        &self,
+        definition: &TeamDefinitionSpec,
+        kind: &TopologyKindKey,
+        slots: &[RoleSlotId],
+    ) -> Result<(), ApiError> {
         let mut rendered = BTreeSet::new();
         for slot in slots {
             let Some(registered) = definition.team_slot(kind, slot) else {
@@ -27249,9 +27314,11 @@ impl Services {
                     "the delivery seat has no pinned task topology node",
                 )
             })?;
-        let role = self.delivery_catalog_role(&node, team_snapshot, slot)?;
+        // Keep catalog validation as an admission invariant, but render only
+        // from the exact Team Definition slot resolved below.
+        self.delivery_catalog_role(&node, team_snapshot, slot)?;
         let definition = self.governing_team_definition(&node)?;
-        self.seat_name_from_definition(&definition, &node, role.role_code.as_str(), Some(slot))
+        self.seat_name_from_definition(&definition, &node, slot)
     }
 
     /// Render any persistent seat from its host kind's pinned seat template.
@@ -27283,7 +27350,13 @@ impl Services {
         if let Some(epic_id) = node.mini_project_id
             && let Some(definition) = self.pinned_team_definition(project_id, epic_id)?
         {
-            return self.seat_name_from_definition(&definition, node, area_code, role_slot_id);
+            let role_slot_id = role_slot_id.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a Team Definition seat requires an exact configured slot identity",
+                )
+            })?;
+            return self.seat_name_from_definition(&definition, node, role_slot_id);
         }
 
         let spec = state
@@ -27352,8 +27425,7 @@ impl Services {
         &self,
         definition: &TeamDefinitionSpec,
         node: &SessionTopologyNode,
-        role_code: &str,
-        role_slot_id: Option<&RoleSlotId>,
+        role_slot_id: &RoleSlotId,
     ) -> Result<ExternalName, ApiError> {
         let container = definition.container(&node.kind).ok_or_else(|| {
             self.deny(
@@ -27367,48 +27439,32 @@ impl Services {
                 "the Team Definition has no seat template for this container",
             )
         })?;
-        // `team_slots` is the sole naming authority for a delivery slot. The
-        // persisted role is historical placement evidence and the Operational
-        // delivery bindings are catalog defaults; neither may override the
-        // exact target definition during launch, replacement, reconciliation
-        // or migration.
-        let role_code = if let Some(role_slot_id) = role_slot_id
-            && let Some(slot) = definition.team_slot(&node.kind, role_slot_id)
-        {
-            slot.role_code
-                .as_ref()
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the configured delivery slot has no registered role code",
-                    )
-                })?
-                .as_str()
-        } else {
-            role_code
-        };
-        let mut values = NativeNameValues::new().with_role_code(role_code);
-        if template_uses_token(template, NativeNameToken::SlotDisplayName) {
-            let role_slot_id = role_slot_id.ok_or_else(|| {
+        // One resolver covers both static container slots and TeamRun-supplied
+        // delivery slots. The persisted role is historical placement evidence,
+        // never a fallback naming authority.
+        let slot = definition
+            .seat_slot(&node.kind, role_slot_id)
+            .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
-                    "the configured seat name requires an exact slot identity",
+                    "the Team Definition does not declare this exact seat slot",
                 )
             })?;
-            let slot = container
-                .slots
-                .iter()
-                .find(|slot| &slot.slot_id == role_slot_id)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the Team Definition does not declare this local seat slot",
-                    )
-                })?;
+        let mut values = NativeNameValues::new();
+        if template_uses_token(template, NativeNameToken::RoleCode) {
+            let role_code = slot.role_code.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the configured seat slot has no registered role code",
+                )
+            })?;
+            values = values.with_role_code(role_code.as_str());
+        }
+        if template_uses_token(template, NativeNameToken::SlotDisplayName) {
             let display_name = slot.display_name.as_ref().ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
-                    "the configured local seat slot has no display name",
+                    "the configured seat slot has no display name",
                 )
             })?;
             values = values.with_slot_display_name(display_name.as_str());

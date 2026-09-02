@@ -1166,6 +1166,26 @@ impl TeamDefinitionSpec {
             .find(|slot| &slot.slot_id == slot_id)
     }
 
+    /// Resolve one exact seat slot, whether the container declares it locally
+    /// or admits it from a TeamRun.
+    ///
+    /// Validation makes the two catalogs disjoint by slot id, so this lookup
+    /// has exactly one authority and never needs a caller-supplied role as a
+    /// fallback.
+    #[must_use]
+    pub fn seat_slot(
+        &self,
+        kind: &TopologyKindKey,
+        slot_id: &crate::id::RoleSlotId,
+    ) -> Option<&TeamDefinitionSeatSlot> {
+        let container = self.container(kind)?;
+        container
+            .slots
+            .iter()
+            .chain(&container.team_slots)
+            .find(|slot| &slot.slot_id == slot_id)
+    }
+
     /// Find one configured container kind.
     #[must_use]
     pub fn container(&self, kind: &TopologyKindKey) -> Option<&TeamContainerDefinition> {

@@ -517,12 +517,12 @@
           },
           "slots": [
             {
-              "slot_id": "lead-software-architect",
+              "slot_id": "lsa",
               "role_code": "LSA",
               "capability_profile": "epic-leadership"
             },
             {
-              "slot_id": "technical-program-manager",
+              "slot_id": "tpm",
               "role_code": "TPM",
               "capability_profile": "epic-coordination"
             }

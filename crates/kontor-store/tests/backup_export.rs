@@ -754,6 +754,38 @@ fn a_future_export_generation_is_refused_and_this_one_parses() {
 }
 
 #[test]
+fn an_exact_generation_three_export_from_the_previous_binary_remains_readable() {
+    let bytes = include_bytes!("fixtures/export-v3-empty.json");
+
+    let parsed = KontorExportV1::parse(bytes)
+        .expect("the exact generation-three fixture from the previous binary parses");
+
+    assert_eq!(parsed.schema_version, 3);
+    assert!(parsed.records.team_definitions.is_empty());
+    assert!(parsed.records.project_team_definition_defaults.is_empty());
+    assert!(
+        parsed
+            .records
+            .mini_project_team_definition_snapshots
+            .is_empty()
+    );
+    assert!(parsed.records.team_definition_migration_intents.is_empty());
+    assert!(parsed.records.team_definition_migration_targets.is_empty());
+    assert!(
+        parsed
+            .records
+            .team_definition_migration_command_intents
+            .is_empty()
+    );
+    assert!(parsed.records.team_definition_migration_receipts.is_empty());
+    assert_eq!(
+        parsed.canonical_bytes().expect("legacy canonical bytes"),
+        bytes,
+        "normalization must not rewrite or forge the signed generation-three shape"
+    );
+}
+
+#[test]
 fn generation_two_without_profile_selection_outcomes_remains_importable() {
     let source = seed();
     let current =
@@ -771,6 +803,26 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         .and_then(serde_json::Value::as_object_mut)
         .expect("record counts are an object")
         .remove("profile_selection_outcomes");
+    for field in [
+        "team_definitions",
+        "project_team_definition_defaults",
+        "mini_project_team_definition_snapshots",
+        "team_definition_migration_intents",
+        "team_definition_migration_targets",
+        "team_definition_migration_command_intents",
+        "team_definition_migration_receipts",
+    ] {
+        legacy
+            .pointer_mut("/records")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("records are an object")
+            .remove(field);
+        legacy
+            .pointer_mut("/continuity_summary/record_counts")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("record counts are an object")
+            .remove(field);
+    }
     rehash_records(&mut legacy);
     legacy["database_schema_version"] = serde_json::json!(62);
     assert!(
