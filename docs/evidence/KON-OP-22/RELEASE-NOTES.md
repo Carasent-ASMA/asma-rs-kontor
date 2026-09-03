@@ -63,7 +63,7 @@ only along this validated route:
 Rollback is by restoring the pre-deploy database and matching binary fleet as
 one unit. A pre-v83 binary cannot serve a v83 database.
 
-## Pending post-release recovery correction
+## Final post-release recovery correction
 
 Closeout exposed one further fail-closed recovery case: the exact ASMA-7869
 materialization is split across two legacy pending batches. The correction
@@ -116,3 +116,31 @@ gate reported no known production vulnerabilities. The compatibility pin adds
 no package or version to that audited lock; it makes the already-transitive
 `tinyvec 1.12.0` dependency direct so fresh resolution cannot select the broken
 `1.13.0` release.
+
+PR #162 completed the last live create-contract correction. Its six-file diff
+added bounded `create_fields` configuration per Jira issue kind, protected the
+six structural fields owned by Kontor, and converted Jira 400 failures into
+safe field-identifier diagnostics without reflecting Jira error prose. Commit
+`7d13379999fe6f9aa45ba7fd00a85bbc7311741d` merged as
+`d224b153bd6430f1df37e6c9a96a59cec9ab17b0`; the merge tree was byte-identical
+to the head that passed the complete local release verifier.
+
+The exact merge daemon was deployed with hash
+`248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`
+and restarted as PID `43055`. Rollback is the coherent unit at
+`/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`,
+including a schema-v83 snapshot that passed quick and foreign-key checks.
+
+The original Kontor materialization replay then created exactly three children:
+
+- `ASMA-8088` for `KON-OP-20`;
+- `ASMA-8089` for `KON-OP-21`; and
+- `ASMA-8090` for `KON-OP-22`.
+
+All three are Jira `Task` items under `ASMA-7869`, with Product `Both`, exact
+Kontor markers, and status `In Development`. The original receipt
+`01a0683f-7579-7d82-90b7-00781902f8b3` and activation
+`01a06994-ff6e-7501-82d5-1199259eea08` replayed unchanged, proving no duplicate
+effect. Every one of the epic's 21 task reconciliation plans now returns
+`converged: true` and an empty diff. Jira Epic `ASMA-7869` is `In Development`
+with no unresolved Kontor epic conflict.

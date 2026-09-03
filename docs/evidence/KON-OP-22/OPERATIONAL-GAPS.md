@@ -168,13 +168,32 @@ authority.
   hierarchy-level-zero non-subtask, but its create screen requires Product
   (`customfield_10251`) with no default. Every existing child of ASMA-7869 uses
   Product `Both`, option `10459`.
-- Current correction: `jira.json` may declare bounded additional create fields
+- Final correction: `jira.json` may declare bounded additional create fields
   independently for epics and tasks. It cannot override Kontor-owned
   structural fields. The ASMA operator configuration supplies Task Product
   option `10459`; Jira 400 diagnostics retain only safe field identifiers and
   discard Jira's prose.
-- Resume checkpoint: promote this create-contract correction, replay the same
-  Kontor apply receipt, read back all three bindings, then prove an exact
-  effect-free replay before closing the gap.
-- Owner/status: implementation, connector regression and strict clippy pass;
-  full local release verification, promotion and recovery readback pending.
+- Fifth promotion: commit `7d13379999fe6f9aa45ba7fd00a85bbc7311741d`
+  merged through PR #162 as
+  `d224b153bd6430f1df37e6c9a96a59cec9ab17b0`. The complete local release
+  verifier passed formatting, workspace Clippy, every locked Rust test, schema
+  and recovery suites, Cargo audit/deny, frontend typecheck, all 296 frontend
+  tests and the production dependency audit. GitHub Actions remained disabled
+  by the explicit Kontor policy.
+- Live deployment: the exact merge daemon hash is
+  `248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`.
+  LaunchAgent PID `43055` serves the healthy schema-v83 realm. The coherent
+  rollback unit and verified pre-deploy snapshot are under
+  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`.
+- Recovery result: the original materialization receipt
+  `01a0683f-7579-7d82-90b7-00781902f8b3` activated as
+  `01a06994-ff6e-7501-82d5-1199259eea08` and created exactly `ASMA-8088`,
+  `ASMA-8089` and `ASMA-8090`. An identical replay returned those same receipt,
+  activation, batch, link and issue identities.
+- Final readback: the three issues are Jira `Task` items under `ASMA-7869`,
+  carry Product `Both`, have distinct immutable Kontor markers and are
+  `In Development`. All 21 task reconciliation plans for this epic return
+  `converged: true` with empty diffs. Jira Epic `ASMA-7869` is also
+  `In Development`, and its Kontor epic has no unresolved Jira conflict.
+- Owner/status: closed end to end. No direct Jira or database mutation was used
+  for recovery; the only fallbacks were the documented read-only diagnostics.
