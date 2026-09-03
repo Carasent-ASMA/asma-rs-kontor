@@ -718,8 +718,13 @@ fn a_revoked_covering_grant_blocks_until_a_new_arm() {
         allowed_end: at("2026-08-13T00:00:00Z"),
         max_concurrency: 8,
     };
-    let (attached, blocked_by) =
-        covering_authority(&[], std::slice::from_ref(&revoked), None, task);
+    let (attached, blocked_by) = covering_authority(
+        &[],
+        std::slice::from_ref(&revoked),
+        None,
+        task,
+        at("2026-08-12T12:00:00Z"),
+    );
     assert!(attached.is_none());
     assert_eq!(blocked_by, Some(revoked.id));
 
@@ -749,8 +754,13 @@ fn a_whitelist_grant_attaches_so_the_excluded_sibling_is_a_scope_mismatch() {
         allowed_end: at("2026-08-13T00:00:00Z"),
         max_concurrency: 8,
     };
-    let (attached, blocked_by) =
-        covering_authority(std::slice::from_ref(&grant), &[], None, excluded);
+    let (attached, blocked_by) = covering_authority(
+        std::slice::from_ref(&grant),
+        &[],
+        None,
+        excluded,
+        at("2026-08-12T12:00:00Z"),
+    );
     assert!(blocked_by.is_none());
     assert_eq!(attached.as_ref().map(|grant| grant.id), Some(grant.id));
 
@@ -760,6 +770,102 @@ fn a_whitelist_grant_attaches_so_the_excluded_sibling_is_a_scope_mismatch() {
         &plan(&snapshot(vec![sibling])).expect("the pass runs"),
         excluded,
         RejectionCode::AuthorizationScopeMismatch,
+    );
+}
+
+#[test]
+fn the_newest_covering_grant_wins_over_an_older_sibling() {
+    let project = ProjectId::generate();
+    let task = TaskId::generate();
+    let older = AuthorizationEvidence {
+        id: ExecutionAuthorizationId::generate(),
+        project_id: project,
+        scope: WorkScope::Project,
+        selected_tasks: BTreeSet::new(),
+        allowed_start: at("2026-08-12T00:00:00Z"),
+        allowed_end: at("2026-08-14T00:00:00Z"),
+        max_concurrency: 8,
+    };
+    let newer = AuthorizationEvidence {
+        id: ExecutionAuthorizationId::generate(),
+        project_id: project,
+        scope: WorkScope::Project,
+        selected_tasks: BTreeSet::new(),
+        allowed_start: at("2026-08-13T00:00:00Z"),
+        allowed_end: at("2026-08-14T00:00:00Z"),
+        max_concurrency: 8,
+    };
+    let both_live = at("2026-08-13T00:00:00Z");
+    let (attached, blocked_by) =
+        covering_authority(&[older.clone(), newer.clone()], &[], None, task, both_live);
+    assert!(blocked_by.is_none());
+    assert_eq!(attached.as_ref().map(|grant| grant.id), Some(newer.id));
+
+    // Reversing the arrival order must not change the winner: recency is the
+    // key, not the store's ordering.
+    let (attached, blocked_by) =
+        covering_authority(&[newer.clone(), older], &[], None, task, both_live);
+    assert!(blocked_by.is_none());
+    assert_eq!(attached.as_ref().map(|grant| grant.id), Some(newer.id));
+}
+
+/// A grant outside its own window never shadows one that is live now.
+///
+/// The window is not re-read after selection: whichever grant
+/// `covering_authority` attaches is the one the ready pass judges, and it
+/// answers `AuthorizationExpired` for a window that does not cover the snapshot
+/// instant. Scope specificity must therefore not outrank liveness.
+#[test]
+fn a_stale_narrow_grant_does_not_shadow_a_live_broader_one() {
+    let project = ProjectId::generate();
+    let epic = MiniProjectId::generate();
+    let task = TaskId::generate();
+    let now = at("2026-08-20T12:00:00Z");
+
+    let stale_task_grant = AuthorizationEvidence {
+        id: ExecutionAuthorizationId::generate(),
+        project_id: project,
+        scope: WorkScope::Task { task_id: task },
+        selected_tasks: BTreeSet::new(),
+        allowed_start: at("2026-08-12T00:00:00Z"),
+        allowed_end: at("2026-08-13T00:00:00Z"),
+        max_concurrency: 4,
+    };
+    let live_project_grant = AuthorizationEvidence {
+        id: ExecutionAuthorizationId::generate(),
+        project_id: project,
+        scope: WorkScope::Project,
+        selected_tasks: BTreeSet::new(),
+        allowed_start: at("2026-08-20T00:00:00Z"),
+        allowed_end: at("2026-08-21T00:00:00Z"),
+        max_concurrency: 8,
+    };
+
+    for order in [
+        vec![stale_task_grant.clone(), live_project_grant.clone()],
+        vec![live_project_grant.clone(), stale_task_grant.clone()],
+    ] {
+        let (attached, blocked_by) = covering_authority(&order, &[], Some(epic), task, now);
+        assert!(blocked_by.is_none());
+        assert_eq!(
+            attached.as_ref().map(|grant| grant.id),
+            Some(live_project_grant.id),
+            "the live grant must win regardless of scope rank or arrival order"
+        );
+    }
+
+    let (attached, blocked_by) = covering_authority(
+        std::slice::from_ref(&stale_task_grant),
+        &[],
+        Some(epic),
+        task,
+        now,
+    );
+    assert!(blocked_by.is_none());
+    assert_eq!(
+        attached.as_ref().map(|grant| grant.id),
+        Some(stale_task_grant.id),
+        "a lone stale grant remains attached so the ready pass returns a typed expiration"
     );
 }
 

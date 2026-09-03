@@ -374,6 +374,32 @@ pub struct IntegrationRecord {
     pub receipt: ContentHash,
     /// Per-repository results; no single branch is assumed.
     pub repositories: Vec<RepositoryOutcome>,
+    /// Era and immutable completion definition that accepted this result.
+    #[serde(default)]
+    pub decided_in: Option<EraStamp>,
+}
+
+/// Immutable attribution for a result retained across completion reopenings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EraStamp {
+    /// Reopening era that produced the result.
+    pub generation: u32,
+    /// Exact completion definition used in that era.
+    pub definition_hash: ContentHash,
+    /// Team or committee that produced the result, where applicable.
+    #[serde(default)]
+    pub team: Option<ExternalName>,
+}
+
+/// Closeout evidence archived when a completed era is reopened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedCloseout {
+    /// Era that recorded the closeout.
+    pub generation: u32,
+    /// Exact completion definition used by that era.
+    pub definition_hash: ContentHash,
+    /// Immutable closeout receipts from that era.
+    pub evidence: CloseoutEvidence,
 }
 
 /// Final Committee result.
@@ -406,6 +432,9 @@ pub struct CompletionRound {
     pub remediation_hash: Option<ContentHash>,
     /// Roles and consultation path used by the round.
     pub deliberation: Vec<DeliberationStep>,
+    /// Era and immutable completion definition that accepted this verdict.
+    #[serde(default)]
+    pub decided_in: Option<EraStamp>,
 }
 
 /// One authenticated control-plane authority.
@@ -449,6 +478,24 @@ pub struct RemediationRecord {
     pub authorization: RemediationAuthorization,
     /// Polyrepo result.
     pub integration: IntegrationRecord,
+    /// Era and immutable completion definition that accepted this remediation.
+    #[serde(default)]
+    pub decided_in: Option<EraStamp>,
+}
+
+/// Original completion era. Legacy snapshots predate reopening and belong here.
+#[must_use]
+pub const fn initial_completion_generation() -> u32 {
+    1
+}
+
+/// Era of a historical record, treating pre-era records as era one.
+#[must_use]
+pub const fn recorded_era(stamp: &Option<EraStamp>) -> u32 {
+    match stamp {
+        Some(stamp) => stamp.generation,
+        None => initial_completion_generation(),
+    }
 }
 
 /// Durable completion-run state.
@@ -492,6 +539,12 @@ pub struct CompletionState {
     pub handled_signals: BTreeSet<ContentHash>,
     /// Consecutive polling attempts in the current phase.
     pub polling_attempts: u8,
+    /// Current completion era; increments on every successful reopening.
+    #[serde(default = "initial_completion_generation")]
+    pub generation: u32,
+    /// Closeout receipts retained from earlier eras.
+    #[serde(default)]
+    pub closeout_history: Vec<RecordedCloseout>,
     /// Optimistic-concurrency revision.
     pub revision: AggregateRevision,
 }
@@ -526,6 +579,8 @@ pub fn start(
         needs_human: None,
         handled_signals: BTreeSet::new(),
         polling_attempts: 0,
+        generation: initial_completion_generation(),
+        closeout_history: Vec::new(),
         revision: AggregateRevision::INITIAL,
     })
 }
@@ -566,6 +621,11 @@ pub enum CompletionObservation {
         remediation_hash: Option<ContentHash>,
         /// Roles/consultations that produced the verdict.
         deliberation: Vec<DeliberationStep>,
+    },
+    /// Unfinished ticket work exists again, read fresh from the epic.
+    TicketWorkReopened {
+        /// The epic's ticket contract as it reads now.
+        requirements: Vec<TicketRequirement>,
     },
     /// LSA proposed and TPM routed the next remediation round.
     RemediationApproved(RemediationApproval),
@@ -696,7 +756,11 @@ pub fn advance(
                     compiled.profile.max_remediation_rounds,
                 ) == Some(approval.round)
     );
-    if current.phase.is_terminal() && !governed_needs_human_recovery {
+    let reopened = matches!(
+        &signal.observation,
+        CompletionObservation::TicketWorkReopened { .. }
+    );
+    if current.phase.is_terminal() && !governed_needs_human_recovery && !reopened {
         return Err(DomainError::Terminal {
             subject: "completion",
         });
@@ -704,7 +768,7 @@ pub fn advance(
     current
         .revision
         .expect("completion", signal.expected_revision)?;
-    if current.profile.definition_hash != compiled.definition_hash {
+    if !reopened && current.profile.definition_hash != compiled.definition_hash {
         return Err(DomainError::invalid(
             "completion",
             "the compiled profile does not match the pinned definition",
@@ -715,6 +779,41 @@ pub fn advance(
     let mut next = current.clone();
     let mut commands = Vec::new();
     match (&signal.observation, current.phase) {
+        (CompletionObservation::TicketWorkReopened { requirements }, _) => {
+            let outstanding = ticket_gate_blockers(requirements, &[])?;
+            if outstanding.is_empty() {
+                return Err(DomainError::invalid(
+                    "completion",
+                    "no ticket work is outstanding, so there is nothing to reopen",
+                ));
+            }
+            next.profile = CompletionProfileRef {
+                id: compiled.profile.id.clone(),
+                version: compiled.profile.version,
+                name: compiled.profile.name.clone(),
+                definition_hash: compiled.definition_hash.clone(),
+            };
+            next.phase = CompletionPhase::Tickets;
+            next.ticket_requirements.clone_from(requirements);
+            next.ticket_evidence.clear();
+            next.pending_remediation = None;
+            if current.closeout != CloseoutEvidence::default() {
+                next.closeout_history.push(RecordedCloseout {
+                    generation: current.generation,
+                    definition_hash: current.profile.definition_hash.clone(),
+                    evidence: current.closeout.clone(),
+                });
+            }
+            next.closeout = CloseoutEvidence::default();
+            next.needs_human = None;
+            next.open_questions.clear();
+            next.generation = current.generation.checked_add(1).ok_or_else(|| {
+                DomainError::invalid(
+                    "completion",
+                    "this epic has reopened as many times as can be recorded",
+                )
+            })?;
+        }
         (CompletionObservation::TicketsClosed(evidence), CompletionPhase::Tickets) => {
             let blockers = ticket_gate_blockers(&current.ticket_requirements, evidence)?;
             if !blockers.is_empty() {
@@ -734,7 +833,15 @@ pub fn advance(
             CompletionPhase::Integration,
         ) => {
             validate_integration(integration)?;
-            next.integrations.push(integration.clone());
+            let stamped = IntegrationRecord {
+                decided_in: Some(EraStamp {
+                    generation: next.generation,
+                    definition_hash: compiled.definition_hash.clone(),
+                    team: Some(compiled.profile.integration_team.clone()),
+                }),
+                ..integration.clone()
+            };
+            next.integrations.push(stamped);
             next.phase = CompletionPhase::Verdict(1);
             commands.push(CompletionCommand::InvokeCommittee {
                 committee: compiled.profile.verdict_committee.clone(),
@@ -767,6 +874,11 @@ pub fn advance(
                 result_hash: result_hash.clone(),
                 remediation_hash: remediation_hash.clone(),
                 deliberation: deliberation.clone(),
+                decided_in: Some(EraStamp {
+                    generation: next.generation,
+                    definition_hash: compiled.definition_hash.clone(),
+                    team: Some(compiled.profile.verdict_committee.clone()),
+                }),
             });
             match verdict {
                 CommitteeVerdict::Pass => next.phase = CompletionPhase::Closeout,
@@ -822,11 +934,24 @@ pub fn advance(
             if authorization.needs_human_recovery {
                 validate_new_recovery_integration(&next, integration)?;
             }
-            next.integrations.push(integration.clone());
+            let stamped = IntegrationRecord {
+                decided_in: Some(EraStamp {
+                    generation: next.generation,
+                    definition_hash: compiled.definition_hash.clone(),
+                    team: Some(compiled.profile.integration_team.clone()),
+                }),
+                ..integration.clone()
+            };
+            next.integrations.push(stamped.clone());
             next.remediations.push(RemediationRecord {
                 round,
                 authorization,
-                integration: integration.clone(),
+                integration: stamped,
+                decided_in: Some(EraStamp {
+                    generation: next.generation,
+                    definition_hash: compiled.definition_hash.clone(),
+                    team: Some(compiled.profile.integration_team.clone()),
+                }),
             });
             let verdict_round = round.checked_add(1).ok_or_else(|| {
                 DomainError::invalid("completion remediation", "the verdict round overflowed")
@@ -928,14 +1053,15 @@ pub enum CompletionBlocker {
 /// Only if persisted ticket declarations/evidence violate their uniqueness
 /// contract.
 pub fn blockers(state: &CompletionState) -> DomainResult<Vec<CompletionBlocker>> {
+    let outstanding = ticket_gate_blockers(&state.ticket_requirements, &state.ticket_evidence)?;
+    if !outstanding.is_empty() {
+        return Ok(outstanding
+            .into_iter()
+            .map(CompletionBlocker::Ticket)
+            .collect());
+    }
     match state.phase {
-        CompletionPhase::Tickets => Ok(ticket_gate_blockers(
-            &state.ticket_requirements,
-            &state.ticket_evidence,
-        )?
-        .into_iter()
-        .map(CompletionBlocker::Ticket)
-        .collect()),
+        CompletionPhase::Tickets => Ok(Vec::new()),
         CompletionPhase::Integration => Ok(vec![CompletionBlocker::IntegrationTeamRun]),
         CompletionPhase::Verdict(round) => Ok(vec![CompletionBlocker::CommitteeVerdict { round }]),
         CompletionPhase::AwaitRemediation(round) => {
@@ -1029,10 +1155,10 @@ pub fn needs_human_recovery_round(
     let failed = state.rounds.last()?;
     if failed.round <= max_remediation_rounds
         || failed.verdict != CommitteeVerdict::Fail
-        || state
-            .remediations
-            .iter()
-            .any(|remediation| remediation.round == failed.round)
+        || state.remediations.iter().any(|remediation| {
+            remediation.round == failed.round
+                && recorded_era(&remediation.decided_in) == recorded_era(&failed.decided_in)
+        })
     {
         return None;
     }
@@ -1206,6 +1332,7 @@ const fn phase_name(phase: CompletionPhase) -> &'static str {
 const fn observation_name(observation: &CompletionObservation) -> &'static str {
     match observation {
         CompletionObservation::TicketsClosed(_) => "tickets_closed",
+        CompletionObservation::TicketWorkReopened { .. } => "ticket_work_reopened",
         CompletionObservation::IntegrationCompleted(_) => "integration_completed",
         CompletionObservation::VerdictRecorded { .. } => "verdict_recorded",
         CompletionObservation::RemediationApproved(_) => "remediation_approved",

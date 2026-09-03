@@ -41,7 +41,7 @@ use axum::body::Body;
 use axum::http::Request;
 use harness::{World, at, secret};
 use kontor_core::id::{
-    AgentRunId, AggregateRevision, ContentHash, ExternalId, MiniProjectId, ProjectId, TicketLinkId,
+    AgentRunId, AggregateRevision, ContentHash, ExternalId, MiniProjectId, ProjectId,
 };
 use kontor_core::repository::RealmRepository as _;
 use kontor_mcp::{CallerTier, Dispatcher, FrameBudget, Method, Reply, Transport, TransportFailure};
@@ -290,7 +290,7 @@ async fn finish_natively(world: &World, run: &str) {
 /// cannot obtain from a real connector. A ticket link is desired state, not a
 /// confirmed identity, so the fixture crosses the same durable confirmation
 /// boundary as the connector before native names may be rendered.
-fn confirm_jira_identity(world: &World, project: &str, epic: &str) {
+fn confirm_jira_identity(world: &World, project: &str, epic: &str, task_jira_keys: &[&str]) {
     let project_id = ProjectId::parse(project).expect("a project id");
     let epic_id = MiniProjectId::parse(epic).expect("an epic id");
     world.daemon.state().with_store(|store| {
@@ -309,33 +309,54 @@ fn confirm_jira_identity(world: &World, project: &str, epic: &str) {
             requested_key: Some(ExternalId::parse("ASMA-8000").expect("an epic Jira key")),
             marker: ExternalId::parse(&format!("kontor-test-epic-{epic}")).expect("an epic marker"),
         }];
-        for (index, task) in store
+        let tasks = store
             .list_epic_tasks(project_id, epic_id)
-            .expect("the journey tasks read")
+            .expect("the journey tasks read");
+        assert_eq!(
+            tasks.len(),
+            task_jira_keys.len(),
+            "the fixture names one exact Jira readback for every task"
+        );
+        let mut expected_task_bindings = Vec::with_capacity(tasks.len());
+        for (index, (task, requested_key)) in tasks
             .into_iter()
+            .zip(task_jira_keys.iter().copied())
             .enumerate()
         {
             let links = store
                 .list_task_ticket_links(project_id, task.id)
                 .expect("the journey task links read");
-            let jira = links
+            let mut jira_links = links
                 .iter()
-                .find(|link| link.connector.as_str() == "jira")
-                .expect("the journey task has one Jira link");
+                .filter(|link| link.connector.as_str() == "connector.jira");
+            let jira = jira_links
+                .next()
+                .expect("the journey task has one canonical Jira link");
+            assert!(
+                jira_links.next().is_none(),
+                "the journey task has only one canonical Jira link"
+            );
+            let requested_key =
+                ExternalId::parse(requested_key).expect("an exact task Jira readback key");
+            assert_eq!(
+                jira.external_issue_key, requested_key,
+                "the desired link preserves the exact declared Jira key"
+            );
             items.push(NewJiraMaterializationItem {
                 id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
                 batch_id: batch_id.clone(),
                 project_id,
                 epic_id,
                 task_id: Some(task.id),
-                link_id: Some(TicketLinkId::generate()),
+                link_id: Some(jira.id),
                 ordinal: u32::try_from(index + 1).expect("a fixture ordinal"),
                 item_kind: JiraItemKind::Task,
                 intent_kind: JiraIntentKind::Link,
-                requested_key: Some(jira.external_issue_key.clone()),
+                requested_key: Some(requested_key.clone()),
                 marker: ExternalId::parse(&format!("kontor-test-task-{}", task.id))
                     .expect("a task marker"),
             });
+            expected_task_bindings.push((task.id, requested_key));
         }
         store
             .plan_jira_materialization(
@@ -371,6 +392,27 @@ fn confirm_jira_identity(world: &World, project: &str, epic: &str) {
         store
             .confirm_jira_materialization_batch(project_id, &batch_id, now)
             .expect("the journey Jira batch confirms");
+        for (task_id, expected_key) in expected_task_bindings {
+            assert_eq!(
+                store
+                    .confirmed_jira_task_key(project_id, task_id)
+                    .expect("the canonical Jira task key reads"),
+                Some(expected_key.clone()),
+                "the exact confirmed Jira key becomes canonical"
+            );
+            let jira_links = store
+                .list_task_ticket_links(project_id, task_id)
+                .expect("the confirmed journey task links read")
+                .into_iter()
+                .filter(|link| link.connector.as_str() == "connector.jira")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                jira_links.len(),
+                1,
+                "one canonical Jira link is materialized"
+            );
+            assert_eq!(jira_links[0].external_issue_key, expected_key);
+        }
     });
 }
 
@@ -622,7 +664,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         2,
         "one tool call applied the whole graph"
     );
-    confirm_jira_identity(&world, &project, &epic);
+    confirm_jira_identity(&world, &project, &epic, &["ASMA-1", "ASMA-2"]);
 
     // 5. The projection reads the graph back, including the workflow revision a
     //    gate recording has to present.

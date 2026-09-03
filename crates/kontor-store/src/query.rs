@@ -813,7 +813,7 @@ impl SqliteStore {
                 .mini_project_id
                 .map_or(RosterGovernance::Seated, |epic_id| governance[&epic_id]);
             let (authorization, blocked_by) =
-                covering_authority(&active, &revoked, task.mini_project_id, task.id);
+                covering_authority(&active, &revoked, task.mini_project_id, task.id, now);
             candidates.push(Candidate {
                 project_id,
                 task_id: task.id,

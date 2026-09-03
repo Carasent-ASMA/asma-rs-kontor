@@ -1367,6 +1367,9 @@ pub struct InitialConsultationRecoveryProfileRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommitteeReReviewProvenance {
+    /// Reopening era containing the remediated round.
+    #[serde(default = "first_completion_generation")]
+    pub completion_generation: u32,
     /// Completion round whose failed result is being remediated.
     pub completion_round: u8,
     /// The completion revision after the remediation evidence freeze.
@@ -1967,6 +1970,12 @@ pub struct CompletionRoundDto {
     pub remediation_hash: Option<ContentHash>,
     /// The roles and consultations that produced it.
     pub deliberation: Vec<DeliberationStepDto>,
+    /// Reopening era that produced the round.
+    pub generation: u32,
+    /// Exact completion definition used for the round, when recorded.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_under: Option<ContentHash>,
 }
 
 /// One repository's integration outcome.
@@ -1998,6 +2007,12 @@ pub struct IntegrationRecordDto {
     pub receipt: ContentHash,
     /// Per-repository results, in a stable order.
     pub repositories: Vec<RepositoryOutcomeDto>,
+    /// Reopening era that produced the result.
+    pub generation: u32,
+    /// Exact completion definition used for the result, when recorded.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_under: Option<ContentHash>,
 }
 
 /// One authenticated control-plane remediation authority.
@@ -2039,6 +2054,12 @@ pub struct RemediationRecordDto {
     pub authorization: RemediationAuthorizationDto,
     /// Integration result; `receipt` is a frozen content digest.
     pub integration: IntegrationRecordDto,
+    /// Reopening era that produced the remediation.
+    pub generation: u32,
+    /// Exact completion definition used for the remediation, when recorded.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_under: Option<ContentHash>,
 }
 
 /// The closeout receipts recorded so far.
@@ -2101,6 +2122,22 @@ pub struct NeedsHumanDto {
     pub tried_deliberation_path: Vec<DeliberationStepDto>,
 }
 
+const fn first_completion_generation() -> u32 {
+    kontor_scheduler::initial_completion_generation()
+}
+
+/// Closeout evidence retained from one earlier completion era.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RecordedCloseoutDto {
+    /// Era that recorded it.
+    pub generation: u32,
+    /// Exact completion definition used by that era.
+    #[schema(value_type = String)]
+    pub decided_under: ContentHash,
+    /// Immutable closeout receipts.
+    pub evidence: CloseoutEvidenceDto,
+}
+
 /// One epic's completion state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CompletionStateDto {
@@ -2128,6 +2165,10 @@ pub struct CompletionStateDto {
     pub wakes: Vec<CompletionWakeDto>,
     /// Present only in the `needs_human` phase.
     pub needs_human: Option<NeedsHumanDto>,
+    /// Closeouts archived from eras that later reopened.
+    pub closeout_history: Vec<RecordedCloseoutDto>,
+    /// Current reopening era.
+    pub generation: u32,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -2156,7 +2197,7 @@ pub struct AdvanceCompletionRequest {
 }
 
 /// One operator-asserted completion fact, tagged by the phase it answers.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompletionEvidenceDto {
     /// What integration actually produced, per repository.
@@ -2190,7 +2231,7 @@ pub enum CompletionEvidenceDto {
 /// Distinct from the `Serialize` [`RepositoryOutcomeDto`] the read model
 /// projects: this one is the wire input, so its fields arrive as plain strings
 /// and are parsed into validated names by the daemon rather than by serde.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryOutcomeInputDto {
     /// Repository or module name.
@@ -5430,6 +5471,45 @@ pub struct TicketConflictDto {
     pub resolved_at: Option<Timestamp>,
 }
 
+/// Whether an epic conflict read includes conflicts already closed.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::IntoParams)]
+pub struct EpicConflictQuery {
+    /// Include resolved conflicts. Defaults to open conflicts only.
+    pub include_resolved: Option<bool>,
+}
+
+/// One recorded disagreement about an epic's own Jira status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct EpicConflictDto {
+    /// The conflict.
+    pub conflict_id: String,
+    /// The epic it was raised on.
+    pub epic_id: String,
+    /// Which typed conflict it is.
+    pub kind: String,
+    /// The epic's exact confirmed external issue key.
+    pub external_issue_key: String,
+    /// The observed external status identity.
+    pub observed_status_id: String,
+    /// The observed external status label.
+    pub observed_status_name: String,
+    /// When Jira was observed.
+    #[schema(value_type = String)]
+    pub observed_at: Timestamp,
+    /// The epic revision judged by the controller.
+    #[schema(value_type = u64)]
+    pub epic_revision: AggregateRevision,
+    /// The exact workflow specification revision used.
+    #[schema(value_type = u32)]
+    pub spec_version: SpecVersion,
+    /// When the disagreement was detected.
+    #[schema(value_type = String)]
+    pub detected_at: Timestamp,
+    /// When an operator resolved it, when applicable.
+    #[schema(value_type = Option<String>)]
+    pub resolved_at: Option<Timestamp>,
+}
+
 /// What `ticket:resolve-conflict` is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct ResolveConflictRequest {
@@ -6517,6 +6597,23 @@ pub trait ApplicationOperations: Send + Sync {
         task_id: TaskId,
         request: &ResolveConflictRequest,
     ) -> Result<TicketConflictDto, ApiError>;
+
+    /// Conflicts recorded against an epic's own Jira issue.
+    fn epic_ticket_conflicts(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        include_resolved: bool,
+    ) -> Result<Vec<EpicConflictDto>, ApiError>;
+
+    /// Close one epic Jira conflict under explicit operator authority.
+    async fn resolve_epic_ticket_conflict(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &ResolveConflictRequest,
+    ) -> Result<EpicConflictDto, ApiError>;
 
     /// Mirror one task's inbound external comments.
     async fn pull_ticket_comments(
@@ -10416,6 +10513,71 @@ pub async fn resolve_ticket_conflict(
         state
             .applications()
             .resolve_ticket_conflict(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// The conflicts standing against one epic's own Jira issue.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("include_resolved" = Option<bool>, Query, description = "Include already-closed conflicts")
+    ),
+    responses(
+        (status = 200, body = Vec<EpicConflictDto>),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn epic_ticket_conflicts(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Query(query): Query<EpicConflictQuery>,
+) -> Result<Json<Vec<EpicConflictDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(state.applications().epic_ticket_conflicts(
+        project_id,
+        epic_id,
+        query.include_resolved.unwrap_or(false),
+    )?))
+}
+
+/// Close one conflict standing against an epic's Jira issue.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ResolveConflictRequest,
+    responses(
+        (status = 200, body = EpicConflictDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The conflict is already resolved, or the key was reused")
+    )
+)]
+pub async fn resolve_epic_ticket_conflict(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveConflictRequest>,
+) -> Result<Json<EpicConflictDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .resolve_epic_ticket_conflict(&key, project_id, epic_id, &request)
             .await?,
     ))
 }

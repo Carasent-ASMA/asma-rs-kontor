@@ -34,6 +34,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "availability_overrides",
     "calendar_exceptions",
     "calendar_profiles",
+    "canonical_jira_task_links",
     "capacity_configuration",
     "capacity_observations",
     "child_calendar_windows",
@@ -71,7 +72,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_backlog_codes",
     "epic_native_name_tokens",
     "epic_execution_scopes",
+    "epic_jira_transition_intents",
     "epic_rosters",
+    "epic_status_conflicts",
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
@@ -502,8 +505,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v79 records the command receipt a confirmed migration was commanded
     // under, closing the crash window between the pin commit and the receipt.
     // v80 records the canonical command intent a migration was issued under,
-    // so crash-window recovery can prove the retry is the same command.
-    assert_eq!(SCHEMA_VERSION, 80);
+    // so crash-window recovery can prove the retry is the same command. v81
+    // adds the canonical Jira task-link and unique-open-conflict ledgers. v82
+    // adds first-class epic Jira conflict and transition-intent ledgers. v83
+    // attributes remediation evidence and replay claims to a completion era.
+    assert_eq!(SCHEMA_VERSION, 83);
 }
 
 #[test]
@@ -783,6 +789,99 @@ fn v65_backfills_published_proposals_and_fences_new_generations() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("the schema version reads"),
         65
+    );
+}
+
+#[test]
+fn v83_preserves_era_one_remediation_and_separates_reopened_rounds() {
+    let connection = Connection::open_in_memory().expect("fixture opens");
+    let hash_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let hash_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let project = "0193f000-0000-7000-8000-000000000001";
+    let epic = "0193f000-0000-7000-8000-000000000002";
+    let seat = "0193f000-0000-7000-8000-000000000003";
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (id TEXT NOT NULL, project_id TEXT NOT NULL,
+                 PRIMARY KEY (project_id, id)) STRICT;
+             CREATE TABLE epic_completion_remediation_proposals (
+                 project_id TEXT NOT NULL, mini_project_id TEXT NOT NULL,
+                 round INTEGER NOT NULL, failed_round_evidence TEXT NOT NULL,
+                 proposal TEXT NOT NULL, lsa_seat_binding_id TEXT NOT NULL,
+                 proposed_at TEXT NOT NULL, lsa_occupancy_generation INTEGER NOT NULL,
+                 PRIMARY KEY (project_id, mini_project_id, round)) STRICT;
+             CREATE TABLE epic_completion_remediation_command_claims (
+                 project_id TEXT NOT NULL, mini_project_id TEXT NOT NULL,
+                 round INTEGER NOT NULL, action TEXT NOT NULL,
+                 idempotency_key TEXT NOT NULL UNIQUE, intent_hash TEXT NOT NULL,
+                 effect_revision INTEGER NULL, claimed_at TEXT NOT NULL,
+                 PRIMARY KEY (project_id, mini_project_id, round, action)) STRICT;
+             CREATE TRIGGER epic_completion_remediation_command_claims_are_immutable
+             BEFORE UPDATE ON epic_completion_remediation_command_claims
+             BEGIN SELECT RAISE(ABORT, 'old immutable claim'); END;
+             CREATE TRIGGER epic_completion_remediation_command_claims_are_permanent
+             BEFORE DELETE ON epic_completion_remediation_command_claims
+             BEGIN SELECT RAISE(ABORT, 'old permanent claim'); END;
+             INSERT INTO projects VALUES ('{project}');
+             INSERT INTO mini_projects VALUES ('{epic}', '{project}');
+             INSERT INTO epic_completion_remediation_proposals VALUES
+                 ('{project}', '{epic}', 1, '{hash_a}', '{hash_b}', '{seat}',
+                  '2026-09-03T09:00:00Z', 1);
+             INSERT INTO epic_completion_remediation_command_claims VALUES
+                 ('{project}', '{epic}', 1, 'lsa_proposal', 'era-one', '{hash_a}',
+                  2, '2026-09-03T09:00:00Z');"
+        ))
+        .expect("era-one rows seed");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0083_completion_remediation_generations.sql"
+        ))
+        .expect("v83 applies");
+    let preserved: (i64, i64) = connection
+        .query_row(
+            "SELECT
+                (SELECT completion_generation FROM epic_completion_remediation_proposals),
+                (SELECT completion_generation FROM epic_completion_remediation_command_claims)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("backfill reads");
+    assert_eq!(preserved, (1, 1));
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_proposals
+                 (project_id, mini_project_id, completion_generation, round,
+                  failed_round_evidence, proposal, lsa_seat_binding_id, proposed_at,
+                  lsa_occupancy_generation)
+             VALUES (?1, ?2, 2, 1, ?3, ?4, ?5, ?6, 1)",
+            rusqlite::params![project, epic, hash_b, hash_a, seat, "2026-09-03T10:00:00Z"],
+        )
+        .expect("era two may own round one independently");
+    connection
+        .execute(
+            "INSERT INTO epic_completion_remediation_command_claims
+                 (project_id, mini_project_id, completion_generation, round, action,
+                  idempotency_key, intent_hash, effect_revision, claimed_at)
+             VALUES (?1, ?2, 2, 1, 'lsa_proposal', 'era-two', ?3, 3, ?4)",
+            rusqlite::params![project, epic, hash_b, "2026-09-03T10:00:00Z"],
+        )
+        .expect("era two may own its replay claim independently");
+    assert!(
+        connection
+            .execute(
+                "UPDATE epic_completion_remediation_command_claims SET intent_hash = ?1
+                 WHERE completion_generation = 2",
+                [hash_a],
+            )
+            .is_err(),
+        "the rebuilt claim remains immutable"
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("version reads"),
+        83
     );
 }
 

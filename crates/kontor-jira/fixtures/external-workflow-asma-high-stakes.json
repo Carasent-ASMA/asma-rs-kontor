@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "connector": "connector.jira",
+  "project": "asma",
+  "issue_type": "task",
+  "work_profile": "asma-high-stakes-primary-20260829",
+  "work_profile_version": 1,
+  "version": 2,
+  "milestones": [
+    {
+      "milestone": "terminal_done",
+      "predicate": {
+        "kind": "all",
+        "of": [
+          { "kind": "run_terminal", "outcome": "succeeded" },
+          { "kind": "all_required_gates_passed" }
+        ]
+      },
+      "target": {
+        "status_id": "10228",
+        "status_name": "Closed"
+      }
+    },
+    {
+      "milestone": "terminal_hold",
+      "predicate": {
+        "kind": "task_state_is",
+        "state": "blocked"
+      },
+      "target": {
+        "status_id": "10231",
+        "status_name": "On hold"
+      }
+    },
+    {
+      "milestone": "audit_active",
+      "predicate": {
+        "kind": "gate_state_is",
+        "gate": "high-audit-gate",
+        "state": "active"
+      },
+      "target": {
+        "status_id": "10254",
+        "status_name": "To be released"
+      }
+    },
+    {
+      "milestone": "verification_active",
+      "predicate": {
+        "kind": "gate_state_is",
+        "gate": "high-verification-gate",
+        "state": "active"
+      },
+      "target": {
+        "status_id": "10234",
+        "status_name": "QA"
+      }
+    },
+    {
+      "milestone": "implementation_active",
+      "predicate": {
+        "kind": "task_state_is",
+        "state": "in_progress"
+      },
+      "target": {
+        "status_id": "10214",
+        "status_name": "In Development"
+      }
+    }
+  ],
+  "statuses": [
+    {
+      "selector": { "status_id": "10237", "status_name": "DRAFT" },
+      "class": "active"
+    },
+    {
+      "selector": { "status_id": "10213", "status_name": "READY FOR DEVELOPMENT" },
+      "class": "active"
+    },
+    {
+      "selector": { "status_id": "10214", "status_name": "In Development" },
+      "class": "active"
+    },
+    {
+      "selector": { "status_id": "10229", "status_name": "Code review" },
+      "class": "active"
+    },
+    {
+      "selector": { "status_id": "10234", "status_name": "QA" },
+      "class": "active"
+    },
+    {
+      "selector": { "status_id": "10254", "status_name": "To be released" },
+      "class": "active"
+    },
+    {
+      "selector": { "status_id": "10231", "status_name": "On hold" },
+      "class": "hold"
+    },
+    {
+      "selector": { "status_id": "10228", "status_name": "Closed" },
+      "class": "terminal_success"
+    },
+    {
+      "selector": { "status_id": "10235", "status_name": "WON'T DO" },
+      "class": "terminal_cancelled"
+    },
+    {
+      "selector": { "status_id": "10256", "status_name": "REMOVED" },
+      "class": "terminal_rejected"
+    }
+  ],
+  "inbound_compatible": [
+    { "status_id": "10237", "status_name": "DRAFT" },
+    { "status_id": "10213", "status_name": "READY FOR DEVELOPMENT" },
+    { "status_id": "10214", "status_name": "In Development" },
+    { "status_id": "10229", "status_name": "Code review" },
+    { "status_id": "10234", "status_name": "QA" },
+    { "status_id": "10254", "status_name": "To be released" }
+  ],
+  "ownership_milestone": "implementation_active",
+  "ownership": {
+    "identity_source": "external_account_id",
+    "mismatch": "accept_external",
+    "terminal_action": "preserve"
+  },
+  "hold": { "status_id": "10231", "status_name": "On hold" },
+  "reopen": { "status_id": "10213", "status_name": "READY FOR DEVELOPMENT" }
+}

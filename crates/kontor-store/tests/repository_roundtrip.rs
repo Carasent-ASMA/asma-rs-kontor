@@ -39,15 +39,15 @@ use kontor_core::receipt::{
 };
 use kontor_core::repository::RealmRepository;
 use kontor_core::repository::{
-    AccountProfileUpdate, CalendarRepository, CommandRepository, ConnectorSpecSelector,
-    CredentialReference, CredentialReferenceKind, IntakeOutcome, IntakeRepository,
-    NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation, NewIntakeReevaluation,
-    NewLocalCommand, NewMiniProject, NewObservation, NewProject, NewRuntimeEvent, NewSourceEvent,
-    NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
-    ProjectRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RunClosure,
-    RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository, StoredCompletionProfile,
-    StoredCompletionWake, StoredEpicCompletion, StoredRemediationProposal, TaskTransitionRequest,
-    TeamRunAdvance, TeamRunClosure, TicketRepository, WorkflowRepository,
+    AccountProfileUpdate, CalendarRepository, CommandRepository, CompletionWrite,
+    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, IntakeOutcome,
+    IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewObservation, NewProject,
+    NewRuntimeEvent, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun,
+    NewTicketLink, PhaseAdvance, ProjectRepository, ReceiptAdvance, ReevaluationOutcome,
+    RepositoryError, RunClosure, RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository,
+    StoredCompletionProfile, StoredCompletionWake, StoredEpicCompletion, StoredRemediationProposal,
+    TaskTransitionRequest, TeamRunAdvance, TeamRunClosure, TicketRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     ArtifactContentType, ArtifactContractSpec, BudgetBounds, CanonicalSourceEvent, DedupExpression,
@@ -101,6 +101,7 @@ const CENSUS_TABLES: &[&str] = &[
     "committee_re_review_claims",
     "context_packs",
     "epic_completion_remediation_command_claims",
+    "epic_jira_transition_intents",
     "execution_authorization_tasks",
     "execution_authorizations",
     "external_comments",
@@ -122,6 +123,7 @@ const CENSUS_TABLES: &[&str] = &[
     "schedule_overrides",
     "source_events",
     "status_conflicts",
+    "epic_status_conflicts",
     "status_transition_receipts",
     "task_dependencies",
     "task_gate_evaluations",
@@ -2836,42 +2838,114 @@ fn a_conflict_keeps_its_inputs_and_resolves_exactly_once() {
         .insert_conflict(fixture.project, &conflict)
         .expect("the conflict is recorded");
 
-    let receipt = with_receipt(
-        &fixture,
-        "resolve-conflict",
-        CommandKind::ResolveStatusConflict,
-        AggregateRef::TicketLink { link_id: link },
-    );
+    let mut replay = conflict.clone();
+    replay.id = StatusConflictId::generate();
+    replay.detected_at = at("2026-08-09T10:01:00Z");
     fixture
         .store
-        .resolve_conflict(
+        .insert_conflict(fixture.project, &replay)
+        .expect("the exact open conflict is an idempotent replay");
+    let count = Connection::open(&fixture.path)
+        .expect("the database opens")
+        .query_row(
+            "SELECT count(*) FROM status_conflicts
+             WHERE project_id = ?1 AND link_id = ?2 AND kind = ?3
+               AND resolved_at IS NULL",
+            rusqlite::params![
+                fixture.project.to_string(),
+                link.to_string(),
+                conflict.kind.as_str()
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("open conflicts are countable");
+    assert_eq!(count, 1, "an exact replay cannot accumulate another row");
+
+    let mut contradictory = replay;
+    contradictory.task_revision = AggregateRevision::parse(2).expect("a valid revision");
+    assert!(matches!(
+        fixture
+            .store
+            .insert_conflict(fixture.project, &contradictory),
+        Err(RepositoryError::Conflict { .. })
+    ));
+
+    let command = NewLocalCommand {
+        project_id: fixture.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse("resolve-conflict").expect("a valid key"),
+        kind: CommandKind::ResolveStatusConflict,
+        target: AggregateRef::TicketLink { link_id: link },
+        target_revision: AggregateRevision::INITIAL,
+        intent: document("resolve-conflict"),
+        created_at: at("2026-08-09T12:00:00Z"),
+    };
+    let first = fixture
+        .store
+        .resolve_task_jira_conflict_atomically(
             fixture.project,
             conflict.id,
-            receipt,
+            &command,
             at("2026-08-09T12:00:00Z"),
         )
         .expect("the conflict resolves");
+    assert!(first.is_fresh());
+    let replayed = fixture
+        .store
+        .resolve_task_jira_conflict_atomically(
+            fixture.project,
+            conflict.id,
+            &command,
+            at("2026-08-09T13:00:00Z"),
+        )
+        .expect("the same key replays its own close");
+    assert!(!replayed.is_fresh());
+
+    let losing_key = IdempotencyKey::parse("resolve-conflict-loser").expect("a valid key");
+    let competing = NewLocalCommand {
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: losing_key.clone(),
+        ..command
+    };
     assert!(
         fixture
             .store
-            .resolve_conflict(
+            .resolve_task_jira_conflict_atomically(
                 fixture.project,
                 conflict.id,
-                receipt,
+                &competing,
                 at("2026-08-09T13:00:00Z")
             )
             .is_err(),
-        "a conflict resolves exactly once"
+        "another key cannot claim the completed resolution"
+    );
+    assert!(
+        fixture
+            .store
+            .get_receipt_by_key(&losing_key)
+            .expect("the receipt ledger reads")
+            .is_none(),
+        "the losing key leaves no false effect receipt"
     );
 
     // Another project cannot resolve it at all.
     assert!(
         fixture
             .store
-            .resolve_conflict(
+            .resolve_task_jira_conflict_atomically(
                 fixture.other_project,
                 conflict.id,
-                receipt,
+                &NewLocalCommand {
+                    project_id: fixture.other_project,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: IdempotencyKey::parse("resolve-conflict-other-project")
+                        .expect("a valid key"),
+                    kind: CommandKind::ResolveStatusConflict,
+                    target: AggregateRef::TicketLink { link_id: link },
+                    target_revision: AggregateRevision::INITIAL,
+                    intent: document("resolve-conflict-other-project"),
+                    created_at: at("2026-08-09T13:00:00Z"),
+                },
                 at("2026-08-09T13:00:00Z")
             )
             .is_err()
@@ -7229,6 +7303,116 @@ fn a_published_completion_profile_revision_cannot_be_republished() {
     );
 }
 
+/// A deterministic derived profile belongs to the project, not to one epic.
+/// A second epic that resolves the same exact revision must reuse the immutable
+/// row rather than treating its JSON definition as different content.
+#[test]
+fn two_epics_reuse_the_same_exact_derived_completion_profile() {
+    let fixture = fixture();
+    let first_epic = MiniProjectId::generate();
+    let second_epic = MiniProjectId::generate();
+    for (epic, title) in [
+        (first_epic, "First derived-profile epic"),
+        (second_epic, "Second derived-profile epic"),
+    ] {
+        fixture
+            .store
+            .create_mini_project(&NewMiniProject {
+                id: epic,
+                project_id: fixture.project,
+                name: name(title),
+                created_at: now(),
+            })
+            .expect("the epic exists");
+    }
+
+    let profile = StoredCompletionProfile {
+        project_id: fixture.project,
+        id: name("derived-operational-default"),
+        version: SpecVersion::parse(1).expect("a version"),
+        name: name("Derived operational default"),
+        definition: serde_json::json!({
+            "id": "derived-operational-default",
+            "policy": {"required_gates": ["review", "qa", "release"]},
+            "version": 1
+        }),
+        definition_hash: ContentHash::of(b"derived-operational-default@1"),
+        published_at: now(),
+    };
+    let completion = |epic| StoredEpicCompletion {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        profile_id: profile.id.clone(),
+        profile_version: profile.version,
+        definition_hash: profile.definition_hash.clone(),
+        state: serde_json::json!({"phase": "tickets"}),
+        revision: AggregateRevision::INITIAL,
+        updated_at: now(),
+    };
+    let command = |epic, key: &str| NewLocalCommand {
+        project_id: fixture.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse(key).expect("a valid key"),
+        kind: CommandKind::AdvanceCompletion,
+        target: AggregateRef::MiniProject {
+            mini_project_id: epic,
+        },
+        target_revision: AggregateRevision::INITIAL,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "completion_advance",
+            "epic": epic.to_string(),
+        }))
+        .expect("the intent canonicalizes"),
+        created_at: now(),
+    };
+
+    fixture
+        .store
+        .commit_epic_completion_with_profile(
+            &completion(first_epic),
+            CompletionWrite::Create,
+            Some(&profile),
+            &[],
+            &command(first_epic, "completion-derived-profile-first"),
+        )
+        .expect("the first epic publishes and pins the derived profile");
+    fixture
+        .store
+        .commit_epic_completion_with_profile(
+            &completion(second_epic),
+            CompletionWrite::Create,
+            Some(&profile),
+            &[],
+            &command(second_epic, "completion-derived-profile-second"),
+        )
+        .expect("the second epic reuses the identical derived profile");
+
+    assert_eq!(
+        fixture
+            .store
+            .list_completion_profiles(fixture.project)
+            .expect("the profile catalog reads")
+            .len(),
+        1,
+        "both epics share one immutable project profile revision"
+    );
+    assert!(
+        fixture
+            .store
+            .get_epic_completion(fixture.project, first_epic)
+            .expect("the first completion reads")
+            .is_some()
+    );
+    assert!(
+        fixture
+            .store
+            .get_epic_completion(fixture.project, second_epic)
+            .expect("the second completion reads")
+            .is_some()
+    );
+}
+
 /// Two advances from one revision cannot both win.
 ///
 /// The compare-and-swap is what makes the planned effects safe: if the second
@@ -7295,6 +7479,184 @@ fn a_completion_transition_from_a_superseded_revision_changes_nothing() {
             .expect("readable")
             .is_none()
     );
+}
+
+/// A wake that cannot be stored takes its completion transition and receipt
+/// down with it.
+///
+/// Completion state, every derived wake and the command receipt are one
+/// durable effect. A foreign-project wake exercises a real database boundary:
+/// the foreign key rejects it, and the transaction must leave the prior
+/// completion revision and the command ledger untouched.
+#[test]
+fn a_completion_whose_wake_cannot_be_stored_commits_neither() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    let completion = |revision: u64, phase: &str| StoredEpicCompletion {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        profile_id: name("operational_default"),
+        profile_version: SpecVersion::parse(1).expect("a version"),
+        definition_hash: ContentHash::of(b"operational_default@1"),
+        state: serde_json::json!({"phase": phase}),
+        revision: AggregateRevision::parse(revision).expect("a revision"),
+        updated_at: now(),
+    };
+    fixture
+        .store
+        .create_epic_completion(&completion(1, "tickets"))
+        .expect("the run starts");
+
+    let key = IdempotencyKey::parse("completion-atomic-wake").expect("a valid key");
+    let command = NewLocalCommand {
+        project_id: fixture.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: key.clone(),
+        kind: CommandKind::AdvanceCompletion,
+        target: AggregateRef::MiniProject {
+            mini_project_id: epic,
+        },
+        target_revision: AggregateRevision::INITIAL,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "completion_advance",
+            "epic": epic.to_string(),
+        }))
+        .expect("the intent canonicalizes"),
+        created_at: now(),
+    };
+    let wake = StoredCompletionWake {
+        project_id: ProjectId::generate(),
+        mini_project_id: epic,
+        completion_revision: AggregateRevision::parse(2).expect("a revision"),
+        reason: name("completion_advanced"),
+        seat_binding_id: SeatBindingId::generate(),
+        receipt: ContentHash::of(b"operational_default@1"),
+        appended_at: now(),
+        acknowledged_at: None,
+    };
+
+    let first = AggregateRevision::parse(1).expect("a revision");
+    fixture
+        .store
+        .commit_epic_completion(
+            &completion(2, "integration"),
+            CompletionWrite::Advance(first),
+            &[wake],
+            &command,
+        )
+        .expect_err("a wake that cannot be stored refuses the whole commit");
+
+    let stored = fixture
+        .store
+        .get_epic_completion(fixture.project, epic)
+        .expect("the run reads")
+        .expect("the run is still there");
+    assert_eq!(
+        stored.revision, first,
+        "the transition is unmade, not left standing without its wake"
+    );
+    assert!(
+        fixture
+            .store
+            .get_receipt_by_key(&key)
+            .expect("the receipt read succeeds")
+            .is_none(),
+        "no receipt may stand for a transition that did not commit"
+    );
+}
+
+#[test]
+fn a_completion_commit_refuses_command_scope_and_unchanged_state_mismatches() {
+    let fixture = fixture();
+    let epic = MiniProjectId::generate();
+    let other = MiniProjectId::generate();
+    for (id, title) in [(epic, "Owned completion"), (other, "Foreign completion")] {
+        fixture
+            .store
+            .create_mini_project(&NewMiniProject {
+                id,
+                project_id: fixture.project,
+                name: name(title),
+                created_at: now(),
+            })
+            .expect("the epic exists");
+    }
+    let completion = |phase: &str| StoredEpicCompletion {
+        project_id: fixture.project,
+        mini_project_id: epic,
+        profile_id: name("operational_default"),
+        profile_version: SpecVersion::parse(1).expect("a version"),
+        definition_hash: ContentHash::of(b"operational_default@1"),
+        state: serde_json::json!({"phase": phase}),
+        revision: AggregateRevision::INITIAL,
+        updated_at: now(),
+    };
+    fixture
+        .store
+        .create_epic_completion(&completion("tickets"))
+        .expect("the run starts");
+
+    let command = |target| NewLocalCommand {
+        project_id: fixture.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse(&format!("completion-scope-{target:?}"))
+            .expect("a key"),
+        kind: CommandKind::AdvanceCompletion,
+        target,
+        target_revision: AggregateRevision::INITIAL,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "completion_advance",
+            "epic": epic.to_string(),
+        }))
+        .expect("intent"),
+        created_at: now(),
+    };
+
+    assert!(matches!(
+        fixture.store.commit_epic_completion(
+            &completion("tickets"),
+            CompletionWrite::Unchanged,
+            &[],
+            &command(AggregateRef::MiniProject {
+                mini_project_id: other
+            }),
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+    assert!(matches!(
+        fixture.store.commit_epic_completion(
+            &completion("changed-without-write"),
+            CompletionWrite::Unchanged,
+            &[],
+            &command(AggregateRef::MiniProject {
+                mini_project_id: epic
+            }),
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+    let foreign_wake = StoredCompletionWake {
+        project_id: fixture.project,
+        mini_project_id: other,
+        completion_revision: AggregateRevision::INITIAL,
+        reason: name("completion_advanced"),
+        seat_binding_id: SeatBindingId::generate(),
+        receipt: completion("tickets").definition_hash,
+        appended_at: now(),
+        acknowledged_at: None,
+    };
+    assert!(matches!(
+        fixture.store.commit_epic_completion(
+            &completion("tickets"),
+            CompletionWrite::Unchanged,
+            &[foreign_wake],
+            &command(AggregateRef::MiniProject {
+                mini_project_id: epic
+            }),
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
 }
 
 /// One observation wakes the TPM once, however many times it is delivered.
@@ -7382,6 +7744,7 @@ fn a_second_remediation_proposal_for_one_round_is_refused() {
     let proposal = |correction: &str| StoredRemediationProposal {
         project_id: fixture.project,
         mini_project_id: epic,
+        completion_generation: 1,
         round: 1,
         failed_round_evidence: ContentHash::of(b"round-1-findings"),
         proposal: ContentHash::of(correction.as_bytes()),
@@ -7451,7 +7814,7 @@ fn a_second_remediation_proposal_for_one_round_is_refused() {
 
     let stored = fixture
         .store
-        .get_remediation_proposal(fixture.project, epic, 1)
+        .get_remediation_proposal(fixture.project, epic, 1, 1)
         .expect("readable")
         .expect("the proposal stands");
     assert_eq!(
@@ -7463,7 +7826,7 @@ fn a_second_remediation_proposal_for_one_round_is_refused() {
     assert!(
         fixture
             .store
-            .get_remediation_proposal(fixture.project, epic, 2)
+            .get_remediation_proposal(fixture.project, epic, 1, 2)
             .expect("readable")
             .is_none(),
         "an unproposed round has nothing to route"
@@ -7489,6 +7852,7 @@ fn an_exact_orphaned_proposal_claim_recovers_once_and_rejects_impostors() {
     let proposal = StoredRemediationProposal {
         project_id: fixture.project,
         mini_project_id: epic,
+        completion_generation: 1,
         round: 1,
         failed_round_evidence: ContentHash::of(b"failed-round"),
         proposal: ContentHash::of(b"bounded correction"),
@@ -7716,6 +8080,7 @@ fn an_exact_orphaned_route_effect_recovers_receipt_and_wake_once() {
         .commit_remediation_route(
             &command(key.clone(), intent.clone()),
             1,
+            1,
             &next,
             AggregateRevision::INITIAL,
             AggregateRevision::parse(2).expect("a revision"),
@@ -7730,6 +8095,7 @@ fn an_exact_orphaned_route_effect_recovers_receipt_and_wake_once() {
         .store
         .commit_remediation_route(
             &command(key.clone(), intent.clone()),
+            1,
             1,
             &next,
             AggregateRevision::INITIAL,
@@ -7761,6 +8127,7 @@ fn an_exact_orphaned_route_effect_recovers_receipt_and_wake_once() {
         fixture.store.commit_remediation_route(
             &command(key, different),
             1,
+            1,
             &next,
             AggregateRevision::INITIAL,
             AggregateRevision::parse(2).expect("a revision"),
@@ -7775,6 +8142,7 @@ fn an_exact_orphaned_route_effect_recovers_receipt_and_wake_once() {
                 IdempotencyKey::parse("route-impostor-key").expect("a valid key"),
                 intent,
             ),
+            1,
             1,
             &next,
             AggregateRevision::INITIAL,
@@ -7805,6 +8173,7 @@ fn orphaned_remediation_effects_without_claims_cannot_be_adopted() {
     let proposal = StoredRemediationProposal {
         project_id: fixture.project,
         mini_project_id: proposal_epic,
+        completion_generation: 1,
         round: 1,
         failed_round_evidence: ContentHash::of(b"failed-round"),
         proposal: ContentHash::of(b"unclaimed correction"),
@@ -7925,6 +8294,7 @@ fn orphaned_remediation_effects_without_claims_cannot_be_adopted() {
     assert!(matches!(
         fixture.store.commit_remediation_route(
             &route_command,
+            1,
             1,
             &routed,
             AggregateRevision::INITIAL,

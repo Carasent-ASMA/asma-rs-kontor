@@ -9,14 +9,14 @@ use kontor_core::id::{
 use kontor_core::open_question::{OpenQuestionStatus, OpenQuestionSummary};
 use kontor_policy::{
     CloseoutEvidence, CloseoutRequirement, DeliberationStep, NeedsHumanPayload,
-    OpenQuestionBlocker, TicketEvidence, TicketRequirement,
+    OpenQuestionBlocker, TicketEvidence, TicketGateBlocker, TicketRequirement,
 };
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
     CompletionEdgeCondition, CompletionNodeKey, CompletionObservation, CompletionPhase,
     CompletionProfile, CompletionSignal, CompletionState, IntegrationRecord, PollingFallback,
     RemediationApproval, RemediationAuthorization, RepositoryOutcome, SignalDelivery, advance,
-    blockers, compile, operational_default, outstanding, start,
+    blockers, compile, initial_completion_generation, operational_default, outstanding, start,
 };
 
 fn name(value: &str) -> ExternalName {
@@ -45,6 +45,7 @@ fn ticket_evidence(task_id: TaskId) -> TicketEvidence {
 
 fn integration(marker: &str) -> IntegrationRecord {
     IntegrationRecord {
+        decided_in: None,
         receipt: digest(&format!("{marker}-receipt")),
         repositories: vec![
             RepositoryOutcome {
@@ -814,4 +815,115 @@ fn closeout_receipts_and_questions_are_independent_gates() {
             .iter()
             .any(|blocker| matches!(blocker, CompletionBlocker::OpenQuestion(_)))
     );
+}
+
+#[test]
+fn tasks_added_after_advancement_reopen_the_ticket_gate_from_verdict() {
+    let compiled = compile(operational_default().expect("bundled profile")).expect("compiles");
+    let tpm = SeatBindingId::generate();
+    let shipped = TaskId::generate();
+    let mut state = start(&compiled, tpm, vec![requirement(shipped)]).expect("starts");
+
+    for (id, observation) in [
+        (
+            "tickets-closed",
+            CompletionObservation::TicketsClosed(vec![ticket_evidence(shipped)]),
+        ),
+        (
+            "integration-done",
+            CompletionObservation::IntegrationCompleted(integration("integration")),
+        ),
+    ] {
+        let signal = callback(&state, id, observation);
+        state = advance(&compiled, &state, &signal).expect("advances").state;
+    }
+    assert_eq!(state.phase, CompletionPhase::Verdict(1));
+
+    let late = TaskId::generate();
+    let refreshed = vec![requirement(shipped), requirement(late)];
+    let signal = callback(
+        &state,
+        "work-reopened",
+        CompletionObservation::TicketWorkReopened {
+            requirements: refreshed.clone(),
+        },
+    );
+    let reopened = advance(&compiled, &state, &signal).expect("reopens").state;
+
+    assert_eq!(reopened.phase, CompletionPhase::Tickets);
+    assert_eq!(reopened.ticket_requirements, refreshed);
+    assert!(reopened.ticket_evidence.is_empty());
+    assert_eq!(reopened.integrations, state.integrations);
+    assert!(
+        blockers(&reopened)
+            .expect("blockers read")
+            .contains(&CompletionBlocker::Ticket(
+                TicketGateBlocker::MissingTicket(late)
+            ))
+    );
+}
+
+#[test]
+fn unfinished_ticket_work_outranks_a_terminal_phase_blocker() {
+    let compiled = compile(operational_default().expect("bundled profile")).expect("compiles");
+    let tpm = SeatBindingId::generate();
+    let task = TaskId::generate();
+    let mut state = start(&compiled, tpm, vec![requirement(task)]).expect("starts");
+    state.phase = CompletionPhase::Done;
+
+    assert_eq!(
+        blockers(&state).expect("blockers read"),
+        vec![CompletionBlocker::Ticket(TicketGateBlocker::MissingTicket(
+            task
+        ))]
+    );
+}
+
+#[test]
+fn reopening_starts_a_new_attributed_era_and_archives_closeout() {
+    let compiled = compile(operational_default().expect("the built-in profile")).expect("compiles");
+    let task = TaskId::generate();
+    let mut finished = start(
+        &compiled,
+        SeatBindingId::generate(),
+        vec![requirement(task)],
+    )
+    .expect("a run starts");
+    finished.phase = CompletionPhase::Done;
+    finished.closeout = CloseoutEvidence {
+        merge_receipt: Some(digest("merged")),
+        release_receipt: Some(digest("released")),
+        delivered_versions: BTreeMap::from([(name("kontor"), name("0.2.1"))]),
+        summary_receipt: Some(digest("summarized")),
+        notification_receipt: Some(digest("notified")),
+        archive_receipt: Some(digest("archived")),
+    };
+
+    let reopened = advance(
+        &compiled,
+        &finished,
+        &callback(
+            &finished,
+            "reopen-era",
+            CompletionObservation::TicketWorkReopened {
+                requirements: vec![requirement(task)],
+            },
+        ),
+    )
+    .expect("the finished run reopens")
+    .state;
+
+    assert_eq!(finished.generation, initial_completion_generation());
+    assert_eq!(reopened.generation, initial_completion_generation() + 1);
+    assert_eq!(reopened.closeout, CloseoutEvidence::default());
+    assert_eq!(reopened.closeout_history.len(), 1);
+    assert_eq!(
+        reopened.closeout_history[0].generation,
+        initial_completion_generation()
+    );
+    assert_eq!(
+        reopened.closeout_history[0].definition_hash,
+        finished.profile.definition_hash
+    );
+    assert_eq!(reopened.closeout_history[0].evidence, finished.closeout);
 }

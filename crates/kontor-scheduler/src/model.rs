@@ -324,12 +324,25 @@ impl AuthorizationEvidence {
 /// [`RejectionCode::AuthorizationScopeMismatch`] instead of disappearing into
 /// default-allow. When no active grant covers the scope, a revoked covering
 /// grant is a stop, not a return to unarmed.
+///
+/// # Why liveness outranks scope
+///
+/// The window is not re-read downstream: whichever grant is attached here is
+/// the one `authorization` in the ready pass judges, and it answers
+/// [`RejectionCode::AuthorizationExpired`] for a window that does not cover
+/// `now`. Attaching an out-of-window grant while a live one also covers the
+/// task would therefore refuse admissible work.
+///
+/// A non-live grant is still attached when it is the only covering one, because
+/// a typed `AuthorizationExpired` naming the exact stale grant is actionable,
+/// while silently returning "unarmed" would read as default-allow.
 #[must_use]
 pub fn covering_authority(
     active: &[AuthorizationEvidence],
     revoked: &[AuthorizationEvidence],
     mini_project_id: Option<MiniProjectId>,
     task_id: TaskId,
+    now: Timestamp,
 ) -> (
     Option<AuthorizationEvidence>,
     Option<ExecutionAuthorizationId>,
@@ -342,10 +355,22 @@ pub fn covering_authority(
         WorkScope::MiniProject { .. } => 1,
         WorkScope::Project => 2,
     };
+    // Every element is "smaller is better": a live grant before a stale one,
+    // then the narrowest scope, then the most recent window, then the newest
+    // time-ordered UUIDv7 id.
+    let preference = |authorization: &AuthorizationEvidence| {
+        let live = now >= authorization.allowed_start && now <= authorization.allowed_end;
+        (
+            u8::from(!live),
+            rank(authorization),
+            core::cmp::Reverse(authorization.allowed_start),
+            core::cmp::Reverse(authorization.id),
+        )
+    };
     if let Some(grant) = active
         .iter()
         .filter(in_scope)
-        .min_by_key(|grant| rank(grant))
+        .min_by_key(|grant| preference(grant))
     {
         return (Some(grant.clone()), None);
     }
@@ -354,7 +379,7 @@ pub fn covering_authority(
         revoked
             .iter()
             .filter(in_scope)
-            .min_by_key(|grant| rank(grant))
+            .min_by_key(|grant| preference(grant))
             .map(|authorization| authorization.id),
     )
 }

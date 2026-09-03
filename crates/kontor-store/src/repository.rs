@@ -47,9 +47,9 @@ use kontor_core::repository::OpenQuestionRepository;
 use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
     CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
-    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateEvaluation,
-    HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
-    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    CompletionWrite, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
+    GateEvaluation, HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
+    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
     NewConsultationRecoveryAttempt, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
@@ -96,9 +96,24 @@ use kontor_core::state::{
     evaluate_seat_attachment, plan_team_advance, plan_team_closure,
 };
 use kontor_core::ticket::{
-    ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
-    StatusTransitionReceipt, TicketFieldSpec, TicketSyncProjection,
+    EpicStatusConflict, EpicStatusTransitionIntent, ExternalCommentRevision,
+    ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict, StatusTransitionReceipt,
+    TicketFieldSpec, TicketSyncProjection,
 };
+
+type EpicTransitionIntentRow = (
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -149,6 +164,15 @@ fn canonical_json(value: &serde_json::Value, subject: &'static str) -> Repositor
             subject,
             rule: "the document cannot be canonicalized",
         })
+}
+
+pub(crate) fn is_jira_connector(connector: &kontor_core::id::ConnectorKey) -> bool {
+    matches!(connector.as_str(), "jira" | "connector.jira")
+}
+
+pub(crate) fn canonical_jira_connector() -> kontor_core::id::ConnectorKey {
+    kontor_core::id::ConnectorKey::parse("connector.jira")
+        .expect("the built-in Jira connector key is valid")
 }
 
 type ConsultationRunColumns = (
@@ -320,6 +344,7 @@ fn remediation_claim(
     transaction: &Transaction<'_>,
     request: &NewLocalCommand,
     mini_project_id: MiniProjectId,
+    completion_generation: u32,
     round: u8,
     action: RemediationCommandAction,
     effect_revision: Option<AggregateRevision>,
@@ -329,10 +354,11 @@ fn remediation_claim(
             "SELECT idempotency_key, intent_hash, effect_revision
                FROM epic_completion_remediation_command_claims
               WHERE project_id = ?1 AND mini_project_id = ?2
-                AND round = ?3 AND action = ?4",
+                AND completion_generation = ?3 AND round = ?4 AND action = ?5",
             params![
                 request.project_id.to_string(),
                 mini_project_id.to_string(),
+                i64::from(completion_generation),
                 i64::from(round),
                 action.as_str(),
             ],
@@ -357,12 +383,13 @@ fn remediation_claim(
     transaction
         .execute(
             "INSERT INTO epic_completion_remediation_command_claims
-                 (project_id, mini_project_id, round, action, idempotency_key,
-                  intent_hash, effect_revision, claimed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (project_id, mini_project_id, completion_generation, round, action,
+                  idempotency_key, intent_hash, effect_revision, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 request.project_id.to_string(),
                 mini_project_id.to_string(),
+                i64::from(completion_generation),
                 i64::from(round),
                 action.as_str(),
                 request.idempotency_key.as_str(),
@@ -392,6 +419,7 @@ fn remediation_proposal_in(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     mini_project_id: MiniProjectId,
+    completion_generation: u32,
     round: u8,
 ) -> RepositoryResult<Option<StoredRemediationProposal>> {
     transaction
@@ -399,10 +427,12 @@ fn remediation_proposal_in(
             "SELECT failed_round_evidence, proposal, lsa_seat_binding_id,
                     lsa_occupancy_generation, proposed_at
                FROM epic_completion_remediation_proposals
-              WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
+              WHERE project_id = ?1 AND mini_project_id = ?2
+                AND completion_generation = ?3 AND round = ?4",
             params![
                 project_id.to_string(),
                 mini_project_id.to_string(),
+                i64::from(completion_generation),
                 i64::from(round),
             ],
             |row| {
@@ -421,6 +451,7 @@ fn remediation_proposal_in(
             Ok(StoredRemediationProposal {
                 project_id,
                 mini_project_id,
+                completion_generation,
                 round,
                 failed_round_evidence: ContentHash::parse(&columns.0)?,
                 proposal: ContentHash::parse(&columns.1)?,
@@ -442,6 +473,7 @@ fn same_remediation_proposal(
 ) -> bool {
     stored.project_id == requested.project_id
         && stored.mini_project_id == requested.mini_project_id
+        && stored.completion_generation == requested.completion_generation
         && stored.round == requested.round
         && stored.failed_round_evidence == requested.failed_round_evidence
         && stored.proposal == requested.proposal
@@ -456,12 +488,14 @@ fn insert_remediation_proposal_in(
     transaction
         .execute(
             "INSERT INTO epic_completion_remediation_proposals
-                 (project_id, mini_project_id, round, failed_round_evidence, proposal,
-                  lsa_seat_binding_id, lsa_occupancy_generation, proposed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (project_id, mini_project_id, completion_generation, round,
+                  failed_round_evidence, proposal, lsa_seat_binding_id,
+                  lsa_occupancy_generation, proposed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 proposal.project_id.to_string(),
                 proposal.mini_project_id.to_string(),
+                i64::from(proposal.completion_generation),
                 i64::from(proposal.round),
                 proposal.failed_round_evidence.as_str(),
                 proposal.proposal.as_str(),
@@ -5496,6 +5530,50 @@ impl SqliteStore {
             .transpose()
     }
 
+    /// Read one bounded, stable page of completion runs for resident
+    /// reconciliation.
+    pub fn list_epic_completions_after(
+        &self,
+        after: Option<(ProjectId, MiniProjectId)>,
+        limit: u32,
+    ) -> RepositoryResult<Vec<StoredEpicCompletion>> {
+        let (project_cursor, epic_cursor) = after.map_or_else(
+            || (String::new(), String::new()),
+            |(project, epic)| (project.to_string(), epic.to_string()),
+        );
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT project_id, mini_project_id, profile_id, profile_version,
+                        definition_hash, state, revision, updated_at
+                 FROM epic_completion
+                 WHERE (project_id, mini_project_id) > (?1, ?2)
+                 ORDER BY project_id, mini_project_id
+                 LIMIT ?3",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_cursor, epic_cursor, i64::from(limit)])
+            .map_err(backend)?;
+        let mut runs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let state: String = row.get(5).map_err(backend)?;
+            runs.push(StoredEpicCompletion {
+                project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                mini_project_id: MiniProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+                profile_id: ExternalName::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+                profile_version: read_version(row.get::<_, i64>(3).map_err(backend)?)?,
+                definition_hash: ContentHash::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+                state: serde_json::from_str(&state).map_err(|error| RepositoryError::Backend {
+                    detail: format!("a stored completion state is unreadable: {error}"),
+                })?,
+                revision: revision_of(row.get::<_, i64>(6).map_err(backend)?)?,
+                updated_at: read_timestamp(&row.get::<_, String>(7).map_err(backend)?)?,
+            });
+        }
+        Ok(runs)
+    }
+
     /// Start one epic's completion run.
     ///
     /// # Errors
@@ -5628,6 +5706,246 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         Ok(inserted == 1)
+    }
+
+    /// Commit one completion transition, every derived wake, and its command.
+    ///
+    /// These are one effect: a completion revision without its wake is stranded
+    /// state, while a receipt without the revision falsely claims success.
+    pub fn commit_epic_completion(
+        &self,
+        completion: &StoredEpicCompletion,
+        write: CompletionWrite,
+        wakes: &[StoredCompletionWake],
+        command: &NewLocalCommand,
+    ) -> RepositoryResult<CommandReceiptId> {
+        self.commit_epic_completion_with_profile(completion, write, None, wakes, command)
+    }
+
+    /// As [`Self::commit_epic_completion`], additionally publishing the exact
+    /// derived profile the new completion pin names in the same transaction.
+    pub fn commit_epic_completion_with_profile(
+        &self,
+        completion: &StoredEpicCompletion,
+        write: CompletionWrite,
+        derived_profile: Option<&StoredCompletionProfile>,
+        wakes: &[StoredCompletionWake],
+        command: &NewLocalCommand,
+    ) -> RepositoryResult<CommandReceiptId> {
+        let transaction = self.begin()?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: completion.mini_project_id,
+        };
+        if command.project_id != completion.project_id
+            || command.kind != CommandKind::AdvanceCompletion
+            || command.target != target
+        {
+            return Err(conflict(
+                "epic completion",
+                "the completion command must advance this exact project and epic",
+            ));
+        }
+        if wakes.iter().any(|wake| {
+            wake.project_id != completion.project_id
+                || wake.mini_project_id != completion.mini_project_id
+                || wake.completion_revision != completion.revision
+                || wake.receipt != completion.definition_hash
+        }) {
+            return Err(conflict(
+                "epic completion wake",
+                "every wake must describe this exact completion revision and definition",
+            ));
+        }
+        if let Some(profile) = derived_profile {
+            if profile.project_id != completion.project_id
+                || profile.id != completion.profile_id
+                || profile.version != completion.profile_version
+                || profile.definition_hash != completion.definition_hash
+            {
+                return Err(conflict(
+                    "completion profile revision",
+                    "the derived profile must be the exact new completion pin",
+                ));
+            }
+            let serialized_definition = profile.definition.to_string();
+            let existing = transaction
+                .query_row(
+                    "SELECT name, definition, definition_hash
+                     FROM completion_profile_revisions
+                     WHERE project_id = ?1 AND id = ?2 AND version = ?3",
+                    params![
+                        profile.project_id.to_string(),
+                        profile.id.as_str(),
+                        version_column(profile.version),
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(backend)?;
+            match existing {
+                Some((name, definition, hash))
+                    if name == profile.name.as_str()
+                        && definition == serialized_definition
+                        && hash == profile.definition_hash.as_str() => {}
+                Some(_) => {
+                    return Err(conflict(
+                        "completion profile revision",
+                        "this derived profile identity already names different content",
+                    ));
+                }
+                None => {
+                    transaction
+                        .execute(
+                            "INSERT INTO completion_profile_revisions
+                                 (project_id, id, version, name, definition, definition_hash,
+                                  published_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                profile.project_id.to_string(),
+                                profile.id.as_str(),
+                                version_column(profile.version),
+                                profile.name.as_str(),
+                                serialized_definition,
+                                profile.definition_hash.as_str(),
+                                text(profile.published_at),
+                            ],
+                        )
+                        .map_err(backend)?;
+                }
+            }
+        }
+        match write {
+            CompletionWrite::Create => {
+                transaction
+                    .execute(
+                        "INSERT INTO epic_completion
+                         (project_id, mini_project_id, profile_id, profile_version,
+                          definition_hash, state, revision, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        params![
+                            completion.project_id.to_string(),
+                            completion.mini_project_id.to_string(),
+                            completion.profile_id.as_str(),
+                            version_column(completion.profile_version),
+                            completion.definition_hash.as_str(),
+                            completion.state.to_string(),
+                            revision_column(completion.revision)?,
+                            text(completion.updated_at),
+                        ],
+                    )
+                    .map_err(|error| match error {
+                        rusqlite::Error::SqliteFailure(failure, _)
+                            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                        {
+                            conflict("epic completion", "one epic has exactly one completion run")
+                        }
+                        other => backend(other),
+                    })?;
+            }
+            CompletionWrite::Advance(expected) => {
+                let changed = transaction
+                    .execute(
+                        "UPDATE epic_completion
+                     SET profile_id = ?3, profile_version = ?4, definition_hash = ?5,
+                         state = ?6, revision = ?7, updated_at = ?8
+                     WHERE project_id = ?1 AND mini_project_id = ?2 AND revision = ?9",
+                        params![
+                            completion.project_id.to_string(),
+                            completion.mini_project_id.to_string(),
+                            completion.profile_id.as_str(),
+                            version_column(completion.profile_version),
+                            completion.definition_hash.as_str(),
+                            completion.state.to_string(),
+                            revision_column(completion.revision)?,
+                            text(completion.updated_at),
+                            revision_column(expected)?,
+                        ],
+                    )
+                    .map_err(backend)?;
+                if changed != 1 {
+                    let exists = transaction
+                        .query_row(
+                            "SELECT 1 FROM epic_completion
+                         WHERE project_id = ?1 AND mini_project_id = ?2",
+                            params![
+                                completion.project_id.to_string(),
+                                completion.mini_project_id.to_string()
+                            ],
+                            |_| Ok(()),
+                        )
+                        .optional()
+                        .map_err(backend)?
+                        .is_some();
+                    return Err(if exists {
+                        RepositoryError::Conflict {
+                            subject: "epic completion",
+                            rule: "the completion run moved since the caller read it",
+                        }
+                    } else {
+                        RepositoryError::NotFound {
+                            subject: "epic completion",
+                        }
+                    });
+                }
+            }
+            CompletionWrite::Unchanged => {
+                let stored = epic_completion_in(
+                    &transaction,
+                    completion.project_id,
+                    completion.mini_project_id,
+                )?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "epic completion",
+                })?;
+                if stored != *completion {
+                    return Err(conflict(
+                        "epic completion",
+                        "a no-change completion commit must exactly match persisted state",
+                    ));
+                }
+            }
+        }
+        for wake in wakes {
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO epic_completion_wakes
+                         (project_id, mini_project_id, completion_revision, reason,
+                          seat_binding_id, receipt, appended_at, acknowledged_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        wake.project_id.to_string(),
+                        wake.mini_project_id.to_string(),
+                        revision_column(wake.completion_revision)?,
+                        wake.reason.as_str(),
+                        wake.seat_binding_id.to_string(),
+                        wake.receipt.as_str(),
+                        text(wake.appended_at),
+                        wake.acknowledged_at.map(text),
+                    ],
+                )
+                .map_err(backend)?;
+        }
+        let receipt_id = match crate::commands::intent::insert_local_command(&transaction, command)?
+        {
+            Some(existing) => existing.id,
+            None => command.receipt_id,
+        };
+        ensure_receipt_authorizes(
+            &transaction,
+            "epic completion",
+            completion.project_id,
+            receipt_id,
+            CommandKind::AdvanceCompletion,
+            target,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(receipt_id)
     }
 
     /// Record that the runtime took the turn one wake intent asked for.
@@ -6148,6 +6466,7 @@ impl SqliteStore {
         envelope: &ReceiptEnvelope<NewLocalCommand>,
         project_id: ProjectId,
         mini_project_id: MiniProjectId,
+        completion_generation: u32,
         round: u8,
         effect_revision: AggregateRevision,
     ) -> RepositoryResult<bool> {
@@ -6158,10 +6477,12 @@ impl SqliteStore {
                 "SELECT idempotency_key, intent_hash, effect_revision
                    FROM epic_completion_remediation_command_claims
                   WHERE project_id = ?1 AND mini_project_id = ?2
-                    AND round = ?3 AND action = 'lsa_proposal'",
+                    AND completion_generation = ?3 AND round = ?4
+                    AND action = 'lsa_proposal'",
                 params![
                     project_id.to_string(),
                     mini_project_id.to_string(),
+                    i64::from(completion_generation),
                     i64::from(round),
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -6209,6 +6530,7 @@ impl SqliteStore {
             &transaction,
             request,
             proposal.mini_project_id,
+            proposal.completion_generation,
             proposal.round,
             RemediationCommandAction::LsaProposal,
             Some(effect_revision),
@@ -6218,6 +6540,7 @@ impl SqliteStore {
             &transaction,
             proposal.project_id,
             proposal.mini_project_id,
+            proposal.completion_generation,
             proposal.round,
         )?;
         let applied = match (claim_existed, stored) {
@@ -6265,6 +6588,7 @@ impl SqliteStore {
     pub fn commit_remediation_route(
         &self,
         envelope: &ReceiptEnvelope<NewLocalCommand>,
+        completion_generation: u32,
         round: u8,
         next: &StoredEpicCompletion,
         expected_revision: AggregateRevision,
@@ -6288,6 +6612,7 @@ impl SqliteStore {
             &transaction,
             request,
             next.mini_project_id,
+            completion_generation,
             round,
             RemediationCommandAction::TpmRoute,
             Some(effect_revision),
@@ -6366,6 +6691,7 @@ impl SqliteStore {
         &self,
         project_id: ProjectId,
         mini_project_id: MiniProjectId,
+        completion_generation: u32,
         round: u8,
     ) -> RepositoryResult<Option<StoredRemediationProposal>> {
         self.connection
@@ -6373,10 +6699,12 @@ impl SqliteStore {
                 "SELECT failed_round_evidence, proposal, lsa_seat_binding_id,
                         lsa_occupancy_generation, proposed_at
                  FROM epic_completion_remediation_proposals
-                 WHERE project_id = ?1 AND mini_project_id = ?2 AND round = ?3",
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND completion_generation = ?3 AND round = ?4",
                 params![
                     project_id.to_string(),
                     mini_project_id.to_string(),
+                    i64::from(completion_generation),
                     i64::from(round)
                 ],
                 |row| {
@@ -6395,6 +6723,7 @@ impl SqliteStore {
                 Ok(StoredRemediationProposal {
                     project_id,
                     mini_project_id,
+                    completion_generation,
                     round,
                     failed_round_evidence: ContentHash::parse(&columns.0)?,
                     proposal: ContentHash::parse(&columns.1)?,
@@ -11928,6 +12257,70 @@ impl CommandRepository for SqliteStore {
 impl TicketRepository for SqliteStore {
     fn create_ticket_link(&self, request: &NewTicketLink) -> RepositoryResult<TicketLink> {
         let transaction = self.begin()?;
+        let connector = if is_jira_connector(&request.connector) {
+            canonical_jira_connector()
+        } else {
+            request.connector.clone()
+        };
+
+        if is_jira_connector(&connector) {
+            let by_task = transaction
+                .query_row(
+                    "SELECT link.id, ledger.external_issue_key, link.revision, link.created_at
+                     FROM canonical_jira_task_links AS ledger
+                     JOIN jira_links AS link
+                       ON link.project_id = ledger.project_id AND link.id = ledger.link_id
+                     WHERE ledger.project_id = ?1 AND ledger.task_id = ?2",
+                    params![request.project_id.to_string(), request.task_id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(backend)?;
+            if let Some((id, issue_key, revision, created_at)) = by_task {
+                if issue_key != request.external_issue_key.as_str() {
+                    return Err(conflict(
+                        "Jira task link",
+                        "one task cannot be linked to more than one Jira issue",
+                    ));
+                }
+                return Ok(TicketLink {
+                    id: TicketLinkId::parse(&id)?,
+                    project_id: request.project_id,
+                    task_id: request.task_id,
+                    connector,
+                    external_issue_key: ExternalId::parse(&issue_key)?,
+                    revision: revision_of(revision)?,
+                    created_at: parse_utc_timestamp(&created_at)?,
+                });
+            }
+
+            let task_for_key = transaction
+                .query_row(
+                    "SELECT task_id FROM canonical_jira_task_links
+                     WHERE project_id = ?1 AND external_issue_key = ?2",
+                    params![
+                        request.project_id.to_string(),
+                        request.external_issue_key.as_str()
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            if task_for_key.is_some() {
+                return Err(conflict(
+                    "Jira task link",
+                    "one Jira issue cannot be linked to more than one task",
+                ));
+            }
+        }
+
         transaction
             .execute(
                 "INSERT INTO jira_links
@@ -11937,18 +12330,33 @@ impl TicketRepository for SqliteStore {
                     request.id.to_string(),
                     request.project_id.to_string(),
                     request.task_id.to_string(),
-                    request.connector.as_str(),
+                    connector.as_str(),
                     request.external_issue_key.as_str(),
                     text(request.created_at)
                 ],
             )
             .map_err(backend)?;
+        if is_jira_connector(&connector) {
+            transaction
+                .execute(
+                    "INSERT INTO canonical_jira_task_links
+                         (project_id, task_id, external_issue_key, link_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        request.project_id.to_string(),
+                        request.task_id.to_string(),
+                        request.external_issue_key.as_str(),
+                        request.id.to_string()
+                    ],
+                )
+                .map_err(backend)?;
+        }
         transaction.commit().map_err(backend)?;
         Ok(TicketLink {
             id: request.id,
             project_id: request.project_id,
             task_id: request.task_id,
-            connector: request.connector.clone(),
+            connector,
             external_issue_key: request.external_issue_key.clone(),
             revision: AggregateRevision::INITIAL,
             created_at: request.created_at,
@@ -12092,6 +12500,45 @@ impl TicketRepository for SqliteStore {
         conflict_record: &StatusConflict,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
+        let existing = transaction
+            .query_row(
+                "SELECT observation_id, task_revision, spec_version, milestone
+                 FROM status_conflicts
+                 WHERE project_id = ?1 AND link_id = ?2 AND kind = ?3
+                   AND resolved_at IS NULL",
+                params![
+                    project_id.to_string(),
+                    conflict_record.link_id.to_string(),
+                    conflict_record.kind.as_str()
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((observation_id, task_revision, spec_version, milestone)) = existing {
+            let exact = observation_id == conflict_record.observation_id.to_string()
+                && task_revision == revision_column(conflict_record.task_revision)?
+                && spec_version == version_column(conflict_record.spec_version)
+                && milestone.as_deref()
+                    == conflict_record
+                        .milestone
+                        .as_ref()
+                        .map(kontor_core::id::SemanticMilestoneKey::as_str);
+            if exact {
+                return Ok(());
+            }
+            return Err(conflict(
+                "status conflict",
+                "an open conflict of this kind already carries different evidence",
+            ));
+        }
         transaction
             .execute(
                 "INSERT INTO status_conflicts
@@ -16173,5 +16620,466 @@ impl TeamDefinitionRepository for SqliteStore {
         )?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
+    }
+}
+
+impl SqliteStore {
+    /// Record one unresolved epic Jira conflict, de-duplicated by epic and kind.
+    ///
+    /// The first observation remains the evidence an operator resolves. Later
+    /// controller passes do not rewrite it or create alert storms.
+    pub fn insert_epic_status_conflict(
+        &self,
+        project_id: ProjectId,
+        record: &EpicStatusConflict,
+    ) -> RepositoryResult<bool> {
+        if record.resolved_at.is_some() || record.resolution_receipt_id.is_some() {
+            return Err(RepositoryError::Conflict {
+                subject: "epic Jira conflict",
+                rule: "a new conflict must be unresolved",
+            });
+        }
+        let transaction = self.begin()?;
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM epic_status_conflicts
+                     WHERE project_id = ?1 AND epic_id = ?2 AND kind = ?3
+                       AND resolved_at IS NULL
+                 )",
+                params![
+                    project_id.to_string(),
+                    record.epic_id.to_string(),
+                    record.kind.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if exists {
+            let existing: (
+                String,
+                String,
+                String,
+                String,
+                String,
+                i64,
+                i64,
+                Option<String>,
+            ) = transaction
+                .query_row(
+                    "SELECT external_issue_key, observed_status_id, observed_status_name,
+                            observed_at, payload_hash, epic_revision, spec_version, milestone
+                     FROM epic_status_conflicts
+                     WHERE project_id = ?1 AND epic_id = ?2 AND kind = ?3
+                       AND resolved_at IS NULL",
+                    params![
+                        project_id.to_string(),
+                        record.epic_id.to_string(),
+                        record.kind.as_str()
+                    ],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ))
+                    },
+                )
+                .map_err(backend)?;
+            let exact = existing.0 == record.external_issue_key.as_str()
+                && existing.1 == record.observed_status.status_id.as_str()
+                && existing.2 == record.observed_status.status_name.as_str()
+                && existing.3 == text(record.observed_at)
+                && existing.4 == record.payload_hash.as_str()
+                && existing.5 == revision_column(record.epic_revision)?
+                && existing.6 == version_column(record.spec_version)
+                && existing.7.as_deref()
+                    == record
+                        .milestone
+                        .as_ref()
+                        .map(kontor_core::id::SemanticMilestoneKey::as_str);
+            if exact {
+                transaction.commit().map_err(backend)?;
+                return Ok(false);
+            }
+            return Err(conflict(
+                "epic Jira conflict",
+                "an open conflict of this kind already carries different evidence",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO epic_status_conflicts
+                     (id, project_id, epic_id, kind, external_issue_key,
+                      observed_status_id, observed_status_name, observed_at,
+                      payload_hash, epic_revision, spec_version, milestone,
+                      detected_at, resolved_at, resolution_receipt_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, NULL, NULL)",
+                params![
+                    record.id.to_string(),
+                    project_id.to_string(),
+                    record.epic_id.to_string(),
+                    record.kind.as_str(),
+                    record.external_issue_key.as_str(),
+                    record.observed_status.status_id.as_str(),
+                    record.observed_status.status_name.as_str(),
+                    text(record.observed_at),
+                    record.payload_hash.as_str(),
+                    revision_column(record.epic_revision)?,
+                    version_column(record.spec_version),
+                    record
+                        .milestone
+                        .as_ref()
+                        .map(kontor_core::id::SemanticMilestoneKey::as_str),
+                    text(record.detected_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(true)
+    }
+
+    /// Read every epic Jira conflict in stable detection order.
+    pub fn list_epic_status_conflicts(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> RepositoryResult<Vec<EpicStatusConflict>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, kind, external_issue_key, observed_status_id,
+                        observed_status_name, observed_at, payload_hash,
+                        epic_revision, spec_version, milestone, detected_at,
+                        resolved_at, resolution_receipt_id
+                 FROM epic_status_conflicts
+                 WHERE project_id = ?1 AND epic_id = ?2
+                 ORDER BY detected_at, id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), epic_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        rows.map(|row| {
+            let (
+                id,
+                kind,
+                issue_key,
+                status_id,
+                status_name,
+                observed_at,
+                payload_hash,
+                epic_revision,
+                spec_version,
+                milestone,
+                detected_at,
+                resolved_at,
+                resolution_receipt_id,
+            ) = row.map_err(backend)?;
+            Ok(EpicStatusConflict {
+                id: StatusConflictId::parse(&id)?,
+                epic_id,
+                kind: kontor_core::ticket::StatusConflictKind::parse(&kind)?,
+                external_issue_key: ExternalId::parse(&issue_key)?,
+                observed_status: kontor_core::ticket::StatusSelector {
+                    status_id: ExternalId::parse(&status_id)?,
+                    status_name: ExternalName::parse(&status_name)?,
+                },
+                observed_at: read_timestamp(&observed_at)?,
+                payload_hash: ContentHash::parse(&payload_hash)?,
+                epic_revision: revision_of(epic_revision)?,
+                spec_version: read_version(spec_version)?,
+                milestone: milestone
+                    .as_deref()
+                    .map(kontor_core::id::SemanticMilestoneKey::parse)
+                    .transpose()?,
+                detected_at: read_timestamp(&detected_at)?,
+                resolved_at: resolved_at.as_deref().map(read_timestamp).transpose()?,
+                resolution_receipt_id: resolution_receipt_id
+                    .as_deref()
+                    .map(CommandReceiptId::parse)
+                    .transpose()?,
+            })
+        })
+        .collect()
+    }
+
+    /// Resolve one epic Jira conflict using authority aimed at that exact epic.
+    pub fn resolve_epic_status_conflict(
+        &self,
+        project_id: ProjectId,
+        conflict_id: StatusConflictId,
+        receipt: CommandReceiptId,
+        resolved_at: Timestamp,
+    ) -> RepositoryResult<EpicStatusConflict> {
+        let transaction = self.begin()?;
+        let epic: Option<String> = transaction
+            .query_row(
+                "SELECT epic_id FROM epic_status_conflicts
+                 WHERE project_id = ?1 AND id = ?2 AND resolved_at IS NULL",
+                params![project_id.to_string(), conflict_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(epic) = epic else {
+            return Err(conflict(
+                "epic Jira conflict",
+                "the conflict is unknown or already resolved",
+            ));
+        };
+        ensure_receipt_authorizes(
+            &transaction,
+            "EpicStatusConflict",
+            project_id,
+            receipt,
+            CommandKind::ResolveStatusConflict,
+            AggregateRef::MiniProject {
+                mini_project_id: MiniProjectId::parse(&epic)?,
+            },
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE epic_status_conflicts
+                 SET resolved_at = ?1, resolution_receipt_id = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND resolved_at IS NULL",
+                params![
+                    text(resolved_at),
+                    receipt.to_string(),
+                    project_id.to_string(),
+                    conflict_id.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "epic Jira conflict",
+                "the conflict is unknown or already resolved",
+            ));
+        }
+        transaction.commit().map_err(backend)?;
+        self.list_epic_status_conflicts(project_id, MiniProjectId::parse(&epic)?)?
+            .into_iter()
+            .find(|candidate| candidate.id == conflict_id)
+            .ok_or_else(|| {
+                conflict(
+                    "epic Jira conflict",
+                    "the resolved conflict did not read back",
+                )
+            })
+    }
+
+    /// Persist authority for one epic Jira transition before the external call.
+    pub fn insert_epic_transition_intent(
+        &self,
+        project_id: ProjectId,
+        intent: &EpicStatusTransitionIntent,
+    ) -> RepositoryResult<CommandReceiptId> {
+        if intent.confirmed_at.is_some() || intent.confirmation_payload_hash.is_some() {
+            return Err(RepositoryError::Conflict {
+                subject: "epic Jira transition intent",
+                rule: "a new transition intent must be unconfirmed",
+            });
+        }
+        let transaction = self.begin()?;
+        let existing: Option<EpicTransitionIntentRow> = transaction
+            .query_row(
+                "SELECT id, external_issue_key, intent_hash, epic_revision,
+                        spec_version, milestone, target_status_id,
+                        target_status_name, destination_status_id,
+                        destination_status_name, prior_payload_hash
+                 FROM epic_jira_transition_intents
+                 WHERE project_id = ?1 AND idempotency_key = ?2",
+                params![project_id.to_string(), intent.idempotency_key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(existing) = existing {
+            let exact = existing.1 == intent.external_issue_key.as_str()
+                && existing.2 == intent.intent_hash.as_str()
+                && existing.3 == revision_column(intent.epic_revision)?
+                && existing.4 == version_column(intent.spec_version)
+                && existing.5 == intent.milestone.as_str()
+                && existing.6 == intent.target.status_id.as_str()
+                && existing.7 == intent.target.status_name.as_str()
+                && existing.8 == intent.destination.status_id.as_str()
+                && existing.9 == intent.destination.status_name.as_str()
+                && existing.10 == intent.prior_payload_hash.as_str();
+            if !exact {
+                return Err(conflict(
+                    "epic Jira transition intent",
+                    "an idempotency key already authorizes another transition",
+                ));
+            }
+            transaction.commit().map_err(backend)?;
+            return CommandReceiptId::parse(&existing.0).map_err(RepositoryError::from);
+        }
+        transaction
+            .execute(
+                "INSERT INTO epic_jira_transition_intents
+                     (id, project_id, epic_id, external_issue_key,
+                      idempotency_key, intent_hash, epic_revision, spec_version,
+                      milestone, target_status_id, target_status_name,
+                      destination_status_id, destination_status_name,
+                      prior_payload_hash, planned_at, confirmed_at,
+                      confirmation_payload_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14, ?15, NULL, NULL)",
+                params![
+                    intent.id.to_string(),
+                    project_id.to_string(),
+                    intent.epic_id.to_string(),
+                    intent.external_issue_key.as_str(),
+                    intent.idempotency_key.as_str(),
+                    intent.intent_hash.as_str(),
+                    revision_column(intent.epic_revision)?,
+                    version_column(intent.spec_version),
+                    intent.milestone.as_str(),
+                    intent.target.status_id.as_str(),
+                    intent.target.status_name.as_str(),
+                    intent.destination.status_id.as_str(),
+                    intent.destination.status_name.as_str(),
+                    intent.prior_payload_hash.as_str(),
+                    text(intent.planned_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(intent.id)
+    }
+
+    /// Attach connector-confirmed readback to an existing epic Jira intent.
+    pub fn confirm_epic_transition_intent(
+        &self,
+        project_id: ProjectId,
+        id: CommandReceiptId,
+        payload_hash: &ContentHash,
+        confirmed_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        let existing: Option<(Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT confirmed_at, confirmation_payload_hash
+                 FROM epic_jira_transition_intents
+                 WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        match existing {
+            None => {
+                return Err(RepositoryError::NotFound {
+                    subject: "epic Jira transition intent",
+                });
+            }
+            Some((Some(stored_at), Some(stored_hash))) => {
+                if stored_at != text(confirmed_at) || stored_hash != payload_hash.as_str() {
+                    return Err(conflict(
+                        "epic Jira transition intent",
+                        "the transition already carries another confirmation",
+                    ));
+                }
+                transaction.commit().map_err(backend)?;
+                return Ok(());
+            }
+            Some((None, None)) => {}
+            Some(_) => {
+                return Err(conflict(
+                    "epic Jira transition intent",
+                    "the stored confirmation is incomplete",
+                ));
+            }
+        }
+        transaction
+            .execute(
+                "UPDATE epic_jira_transition_intents
+                 SET confirmed_at = ?1, confirmation_payload_hash = ?2
+                 WHERE project_id = ?3 AND id = ?4
+                   AND confirmed_at IS NULL",
+                params![
+                    text(confirmed_at),
+                    payload_hash.as_str(),
+                    project_id.to_string(),
+                    id.to_string()
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Recover any interrupted epic transition whose destination is now the
+    /// freshly observed Jira status.
+    pub fn confirm_matching_epic_transition_intents(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        external_issue_key: &ExternalId,
+        destination_status_id: &ExternalId,
+        payload_hash: &ContentHash,
+        confirmed_at: Timestamp,
+    ) -> RepositoryResult<usize> {
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE epic_jira_transition_intents
+                 SET confirmed_at = ?1, confirmation_payload_hash = ?2
+                 WHERE project_id = ?3 AND epic_id = ?4
+                   AND external_issue_key = ?5
+                   AND destination_status_id = ?6
+                   AND confirmed_at IS NULL",
+                params![
+                    text(confirmed_at),
+                    payload_hash.as_str(),
+                    project_id.to_string(),
+                    epic_id.to_string(),
+                    external_issue_key.as_str(),
+                    destination_status_id.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(changed)
     }
 }

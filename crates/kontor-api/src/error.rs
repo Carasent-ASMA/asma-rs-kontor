@@ -742,8 +742,11 @@ impl ApiError {
                 );
                 Self::new(
                     realm_id,
-                    ApiErrorCode::StaleBinding,
+                    ApiErrorCode::PlacementBlocked,
                     "this process cannot prove where the session's seat is placed",
+                )
+                .advising(
+                    "re-prove the seat's workspace placement, then resume the exact queued run",
                 )
             }
             RuntimeError::WorkspaceMismatch { rule } => {
@@ -925,6 +928,16 @@ mod tests {
             body["native_runtime_refusal"]["caller_agent_id"],
             caller.as_str()
         );
+    }
+
+    #[test]
+    fn an_unplaced_seat_refuses_with_placement_not_a_settle_instruction() {
+        let refusal =
+            ApiError::from_runtime(RealmId::generate(), &RuntimeError::WorkspaceBindingRequired);
+
+        assert_eq!(refusal.code, ApiErrorCode::PlacementBlocked);
+        assert!(refusal.action.contains("resume the exact queued run"));
+        assert!(!refusal.action.contains("settle"));
     }
 
     #[test]

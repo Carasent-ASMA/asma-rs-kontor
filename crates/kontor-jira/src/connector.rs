@@ -11,7 +11,7 @@ use kontor_core::id::{
 };
 use kontor_core::ticket::OwnershipAction;
 use reqwest::{Client, Method, StatusCode, Url};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -27,6 +27,7 @@ const KEYCHAIN_SERVICE: &str = "kontor-jira";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -208,9 +209,32 @@ impl JiraConnector {
         })
     }
 
-    fn credentials(&self) -> Result<JiraCredentials, JiraError> {
-        let target = KeychainTarget::new(KEYCHAIN_SERVICE, self.credential_alias.clone());
-        let secret: SecretString = self.keychain.secret(&target).map_err(|_| {
+    async fn credentials(&self) -> Result<JiraCredentials, JiraError> {
+        let keychain = Arc::clone(&self.keychain);
+        let alias = self.credential_alias.clone();
+        let secret = tokio::time::timeout(
+            CREDENTIAL_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                let target = KeychainTarget::new(KEYCHAIN_SERVICE, alias);
+                keychain.secret(&target)
+            }),
+        )
+        .await
+        .map_err(|_| {
+            JiraError::unavailable(
+                "credential",
+                UnavailableReason::Credential,
+                "the keychain credential read exceeded its bound",
+            )
+        })?
+        .map_err(|_| {
+            JiraError::unavailable(
+                "credential",
+                UnavailableReason::Credential,
+                "the keychain credential read was cancelled",
+            )
+        })?
+        .map_err(|_| {
             JiraError::unavailable(
                 "credential",
                 UnavailableReason::Credential,
@@ -249,7 +273,7 @@ impl JiraConnector {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, JiraError> {
-        let credentials = self.credentials()?;
+        let credentials = self.credentials().await?;
         let mut request = self
             .client
             .request(method, self.url(path)?)

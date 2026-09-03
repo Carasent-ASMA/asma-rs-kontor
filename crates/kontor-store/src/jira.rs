@@ -6,11 +6,29 @@ use kontor_core::id::{
     AggregateRevision, CommandReceiptId, ContentHash, ExternalId, MiniProjectId, ProjectId, TaskId,
     TicketLinkId, Timestamp, format_utc_timestamp, parse_utc_timestamp,
 };
-use kontor_core::repository::{RepositoryError, RepositoryResult};
+use kontor_core::receipt::{AggregateRef, CommandKind};
+use kontor_core::repository::{NewLocalCommand, RepositoryError, RepositoryResult};
 use rusqlite::{OptionalExtension, params};
 
 use crate::SqliteStore;
-use crate::repository::backend;
+use crate::repository::{backend, conflict, ensure_receipt_authorizes, text};
+
+/// The honest result of an atomic Jira conflict close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictClose {
+    /// This call persisted the command and closed the conflict together.
+    Closed(CommandReceiptId),
+    /// The same idempotency key already owns the durable close.
+    Replayed(CommandReceiptId),
+}
+
+impl ConflictClose {
+    /// Whether this call committed the close instead of replaying it.
+    #[must_use]
+    pub const fn is_fresh(self) -> bool {
+        matches!(self, Self::Closed(_))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JiraItemKind {
@@ -128,6 +146,147 @@ pub struct RecoveredJiraMaterialization {
 }
 
 impl SqliteStore {
+    /// Record authority and close one task Jira conflict in one transaction.
+    pub fn resolve_task_jira_conflict_atomically(
+        &self,
+        project_id: ProjectId,
+        conflict_id: kontor_core::id::StatusConflictId,
+        command: &NewLocalCommand,
+        resolved_at: Timestamp,
+    ) -> RepositoryResult<ConflictClose> {
+        let transaction = self.begin()?;
+        let (receipt_id, recorded_earlier) =
+            match crate::commands::intent::insert_local_command(&transaction, command)? {
+                Some(existing) => (existing.id, true),
+                None => (command.receipt_id, false),
+            };
+        let row: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT link_id, resolution_receipt_id FROM status_conflicts
+                 WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), conflict_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((link_id, resolution)) = row else {
+            return Err(conflict("status conflict", "no such conflict is recorded"));
+        };
+        if let Some(resolution) = resolution {
+            let owner = CommandReceiptId::parse(&resolution)?;
+            if recorded_earlier && owner == receipt_id {
+                transaction.commit().map_err(backend)?;
+                return Ok(ConflictClose::Replayed(owner));
+            }
+            return Err(conflict(
+                "status conflict",
+                "the conflict is already resolved and its resolution is final",
+            ));
+        }
+        ensure_receipt_authorizes(
+            &transaction,
+            "StatusConflict",
+            project_id,
+            receipt_id,
+            CommandKind::ResolveStatusConflict,
+            AggregateRef::TicketLink {
+                link_id: TicketLinkId::parse(&link_id)?,
+            },
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE status_conflicts SET resolved_at = ?1, resolution_receipt_id = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND resolved_at IS NULL",
+                params![
+                    text(resolved_at),
+                    receipt_id.to_string(),
+                    project_id.to_string(),
+                    conflict_id.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "status conflict",
+                "the conflict changed before its resolution could commit",
+            ));
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(ConflictClose::Closed(receipt_id))
+    }
+
+    /// Record authority and close one epic Jira conflict in one transaction.
+    pub fn resolve_epic_jira_conflict_atomically(
+        &self,
+        project_id: ProjectId,
+        conflict_id: kontor_core::id::StatusConflictId,
+        command: &NewLocalCommand,
+        resolved_at: Timestamp,
+    ) -> RepositoryResult<ConflictClose> {
+        let transaction = self.begin()?;
+        let (receipt_id, recorded_earlier) =
+            match crate::commands::intent::insert_local_command(&transaction, command)? {
+                Some(existing) => (existing.id, true),
+                None => (command.receipt_id, false),
+            };
+        let row: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT epic_id, resolution_receipt_id FROM epic_status_conflicts
+                 WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), conflict_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((epic_id, resolution)) = row else {
+            return Err(conflict(
+                "epic Jira conflict",
+                "no such conflict is recorded",
+            ));
+        };
+        if let Some(resolution) = resolution {
+            let owner = CommandReceiptId::parse(&resolution)?;
+            if recorded_earlier && owner == receipt_id {
+                transaction.commit().map_err(backend)?;
+                return Ok(ConflictClose::Replayed(owner));
+            }
+            return Err(conflict(
+                "epic Jira conflict",
+                "the conflict is already resolved and its resolution is final",
+            ));
+        }
+        ensure_receipt_authorizes(
+            &transaction,
+            "EpicStatusConflict",
+            project_id,
+            receipt_id,
+            CommandKind::ResolveStatusConflict,
+            AggregateRef::MiniProject {
+                mini_project_id: MiniProjectId::parse(&epic_id)?,
+            },
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE epic_status_conflicts SET resolved_at = ?1, resolution_receipt_id = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND resolved_at IS NULL",
+                params![
+                    text(resolved_at),
+                    receipt_id.to_string(),
+                    project_id.to_string(),
+                    conflict_id.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "epic Jira conflict",
+                "the conflict changed before its resolution could commit",
+            ));
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(ConflictClose::Closed(receipt_id))
+    }
+
     /// Persist a complete plan before its first Jira effect.
     pub fn plan_jira_materialization(
         &self,
@@ -662,13 +821,12 @@ impl SqliteStore {
         let (key, count): (Option<String>, i64) = self
             .connection
             .query_row(
-                "SELECT MIN(link.external_issue_key), COUNT(*)
-                 FROM jira_links AS link
+                "SELECT MIN(ledger.external_issue_key), COUNT(*)
+                 FROM canonical_jira_task_links AS ledger
                  JOIN jira_task_binding_confirmations AS confirmation
-                   ON confirmation.project_id = link.project_id
-                  AND confirmation.link_id = link.id
-                 WHERE link.project_id = ?1 AND link.task_id = ?2
-                   AND link.connector = 'connector.jira'",
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1 AND ledger.task_id = ?2",
                 params![project_id.to_string(), task_id.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -858,6 +1016,40 @@ impl SqliteStore {
                             ],
                         )
                         .map_err(backend)?;
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO canonical_jira_task_links
+                             (project_id, task_id, external_issue_key, link_id)
+                         VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(project_id, task_id) DO NOTHING",
+                        params![
+                            item.project_id.to_string(),
+                            task_id.to_string(),
+                            key.as_str(),
+                            effective_link_id,
+                        ],
+                    )
+                    .map_err(backend)?;
+                let canonical: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT external_issue_key, link_id
+                         FROM canonical_jira_task_links
+                         WHERE project_id = ?1 AND task_id = ?2",
+                        params![item.project_id.to_string(), task_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(backend)?;
+                if canonical
+                    .as_ref()
+                    .map(|(issue, link)| (issue.as_str(), link.as_str()))
+                    != Some((key.as_str(), effective_link_id.as_str()))
+                {
+                    return Err(RepositoryError::Conflict {
+                        subject: "Jira task binding",
+                        rule: "the confirmed Jira issue contradicts the canonical task-link ledger",
+                    });
                 }
                 let stored_link_id: Option<String> = transaction
                     .query_row(

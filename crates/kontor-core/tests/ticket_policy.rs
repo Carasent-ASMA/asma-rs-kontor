@@ -21,18 +21,19 @@ use std::collections::BTreeSet;
 use kontor_core::DomainError;
 use kontor_core::id::{
     AggregateRevision, BoundedText, ContentHash, ExternalId, ExternalName, GateKey, IdempotencyKey,
-    SemanticMilestoneKey, SpecVersion, TaskId, TicketLinkId, TicketObservationId,
+    MiniProjectId, SemanticMilestoneKey, SpecVersion, TaskId, TicketLinkId, TicketObservationId,
     TicketProjectionId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::state::{Freshness, GateState, TaskState, TerminalOutcome};
 use kontor_core::ticket::{
-    AssigneeIdentitySource, CommentPolicy, ExternalCommentRevision, ExternalFieldMapping,
-    ExternalFieldOption, ExternalFieldType, ExternalTicketObservation, ExternalWorkflowSpec,
-    FieldDirection, FieldEncoding, FieldOwner, FieldValue, InternalPredicate, InternalTaskFacts,
+    AssigneeIdentitySource, CommentPolicy, EpicCompletionEvidence, EpicReconciliationInput,
+    ExternalCommentRevision, ExternalEpicObservation, ExternalFieldMapping, ExternalFieldOption,
+    ExternalFieldType, ExternalTicketObservation, ExternalWorkflowSpec, FieldDirection,
+    FieldEncoding, FieldOwner, FieldValue, InternalEpicFacts, InternalPredicate, InternalTaskFacts,
     LiveTransition, OwnershipAction, OwnershipMismatchBehavior, ProjectedField,
     ReconciliationInput, ReconciliationOutcome, SelectedTransition, SemanticStatusClass,
     StatusConflictKind, StatusSelector, TicketFieldKey, TicketFieldMapping, TicketFieldSpec,
-    TicketPrincipal, TicketSyncProjection, TransitionPlan, reconcile,
+    TicketPrincipal, TicketSyncProjection, TransitionPlan, reconcile, reconcile_epic,
 };
 
 const WORKFLOW_ONE: &str = include_str!("fixtures/external_workflow_asma.json");
@@ -645,6 +646,80 @@ fn predicates_read_kontor_state_and_nothing_else() {
         true,
         Some(TerminalOutcome::Succeeded)
     )));
+}
+
+#[test]
+fn epic_predicates_cannot_be_satisfied_by_task_facts() {
+    let task = facts(TaskState::Done, true, Some(TerminalOutcome::Succeeded));
+    let epic = InternalPredicate::EpicCompletionIs {
+        state: EpicCompletionEvidence::Done,
+    };
+    let children = InternalPredicate::AllChildTasksTerminal;
+
+    assert!(!epic.evaluate(&task));
+    assert!(!children.evaluate(&task));
+}
+
+#[test]
+fn an_epic_closes_only_from_completion_and_child_evidence() {
+    let mut spec = workflows().remove(0);
+    spec.milestones[0].predicate = InternalPredicate::All {
+        of: vec![
+            InternalPredicate::EpicCompletionIs {
+                state: EpicCompletionEvidence::Done,
+            },
+            InternalPredicate::AllChildTasksTerminal,
+        ],
+    };
+    let target = spec.milestones[0].target.clone();
+    let current = first_inbound(&spec);
+    let observation = ExternalEpicObservation {
+        status: current,
+        assignee_account_id: Some(external("acct-kontor")),
+        external_version: Some(external("1")),
+        observed_at: at("2026-08-09T10:00:00Z"),
+        payload_hash: ContentHash::of(b"epic-observation"),
+    };
+    let live = [LiveTransition {
+        transition_id: external("close-epic"),
+        to: target,
+    }];
+    let base = InternalEpicFacts {
+        epic_id: MiniProjectId::generate(),
+        epic_revision: AggregateRevision::INITIAL,
+        completion: EpicCompletionEvidence::Done,
+        all_child_tasks_terminal: false,
+    };
+    let principal = principal();
+
+    assert_eq!(
+        reconcile_epic(&EpicReconciliationInput {
+            spec: &spec,
+            observation: &observation,
+            freshness: Freshness::Fresh,
+            facts: &base,
+            live_transitions: &live,
+            principal: &principal,
+        }),
+        ReconciliationOutcome::NoOp,
+        "completion alone must not close an epic while a child remains open"
+    );
+
+    let complete = InternalEpicFacts {
+        all_child_tasks_terminal: true,
+        ..base
+    };
+    assert!(matches!(
+        reconcile_epic(&EpicReconciliationInput {
+            spec: &spec,
+            observation: &observation,
+            freshness: Freshness::Fresh,
+            facts: &complete,
+            live_transitions: &live,
+            principal: &principal,
+        }),
+        ReconciliationOutcome::Transition(_)
+    ));
 }
 
 // ---------------------------------------------------------------------------

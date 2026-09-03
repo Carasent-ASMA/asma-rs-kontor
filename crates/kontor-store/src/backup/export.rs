@@ -46,7 +46,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 4;
+pub const EXPORT_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -78,6 +78,25 @@ const TEAM_DEFINITION_RECORD_FIELDS: [&str; 7] = [
     "team_definition_migration_command_intents",
     "team_definition_migration_receipts",
 ];
+
+/// Database generation that introduced the canonical Jira task-link ledger.
+const CANONICAL_JIRA_LINK_SCHEMA_VERSION: i64 = 81;
+
+/// The export generation that first carried the canonical Jira task-link ledger.
+const CANONICAL_JIRA_LINK_EXPORT_VERSION: u32 = 5;
+
+/// Record arrays introduced together in generation 5.
+const CANONICAL_JIRA_LINK_RECORD_FIELDS: [&str; 1] = ["canonical_jira_task_links"];
+
+/// Database generation that introduced first-class epic Jira reconciliation.
+const EPIC_JIRA_RECONCILIATION_SCHEMA_VERSION: i64 = 82;
+
+/// The export generation that first carried epic Jira reconciliation evidence.
+const EPIC_JIRA_RECONCILIATION_EXPORT_VERSION: u32 = 6;
+
+/// Record arrays introduced together in generation 6.
+const EPIC_JIRA_RECONCILIATION_RECORD_FIELDS: [&str; 2] =
+    ["epic_status_conflicts", "epic_jira_transition_intents"];
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -176,6 +195,18 @@ impl KontorExportV1 {
             })?;
             remove_team_definition_record_fields(records)?;
         }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_canonical_jira_link_record_fields(records)?;
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_epic_jira_reconciliation_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -188,6 +219,12 @@ impl KontorExportV1 {
         let mut value = canonical_value(&self.records)?;
         if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
             remove_team_definition_record_fields(&mut value)?;
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            remove_canonical_jira_link_record_fields(&mut value)?;
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            remove_epic_jira_reconciliation_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -230,6 +267,35 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove Team Definition completeness",
+            });
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION
+            && self.database_schema_version >= CANONICAL_JIRA_LINK_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove canonical Jira task-link completeness",
+            });
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION
+            && !self.records.canonical_jira_task_links.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries canonical Jira task links it did not define",
+            });
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION
+            && self.database_schema_version >= EPIC_JIRA_RECONCILIATION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove epic Jira reconciliation completeness",
+            });
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION
+            && !(self.records.epic_status_conflicts.is_empty()
+                && self.records.epic_jira_transition_intents.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries epic Jira reconciliation records it did not define",
             });
         }
         if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
@@ -311,6 +377,32 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in CANONICAL_JIRA_LINK_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -328,6 +420,32 @@ fn remove_team_definition_record_fields(
         detail: "the export records are not an object",
     })?;
     for field in TEAM_DEFINITION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-5 arrays from a supported legacy record object.
+fn remove_canonical_jira_link_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in CANONICAL_JIRA_LINK_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-6 arrays from a supported legacy record object.
+fn remove_epic_jira_reconciliation_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -1140,6 +1258,12 @@ exported_tables! {
         revision: i64,
         created_at: String,
     }
+    canonical_jira_task_links: CanonicalJiraTaskLinksRow from "canonical_jira_task_links" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        external_issue_key: String,
+        link_id: String,
+    }
     ticket_field_specs: TicketFieldSpecsRow from "ticket_field_specs" key(project_id, connector, external_project, issue_type, version) {
         project_id: String,
         connector: String,
@@ -1204,6 +1328,42 @@ exported_tables! {
         detected_at: String,
         resolved_at: Option<String>,
         resolution_receipt_id: Option<String>,
+    }
+    epic_status_conflicts: EpicStatusConflictsRow from "epic_status_conflicts" key(id) {
+        id: String,
+        project_id: String,
+        epic_id: String,
+        kind: String,
+        external_issue_key: String,
+        observed_status_id: String,
+        observed_status_name: String,
+        observed_at: String,
+        payload_hash: String,
+        epic_revision: i64,
+        spec_version: i64,
+        milestone: Option<String>,
+        detected_at: String,
+        resolved_at: Option<String>,
+        resolution_receipt_id: Option<String>,
+    }
+    epic_jira_transition_intents: EpicJiraTransitionIntentsRow from "epic_jira_transition_intents" key(id) {
+        id: String,
+        project_id: String,
+        epic_id: String,
+        external_issue_key: String,
+        idempotency_key: String,
+        intent_hash: String,
+        epic_revision: i64,
+        spec_version: i64,
+        milestone: String,
+        target_status_id: String,
+        target_status_name: String,
+        destination_status_id: String,
+        destination_status_name: String,
+        prior_payload_hash: String,
+        planned_at: String,
+        confirmed_at: Option<String>,
+        confirmation_payload_hash: Option<String>,
     }
     status_transition_receipts: StatusTransitionReceiptsRow from "status_transition_receipts" key(id) {
         id: String,
@@ -1685,6 +1845,16 @@ impl ExportedRecords {
         let mut continuity = self.continuity();
         if schema_version < TEAM_DEFINITION_EXPORT_VERSION {
             for field in TEAM_DEFINITION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            for field in CANONICAL_JIRA_LINK_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

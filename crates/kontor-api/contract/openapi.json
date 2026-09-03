@@ -3981,6 +3981,68 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The conflicts standing against one epic's own Jira issue.",
+        "operationId": "epic_ticket_conflicts",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_resolved",
+            "in": "query",
+            "description": "Include already-closed conflicts",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EpicConflictDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/jira:preview": {
       "post": {
         "tags": [
@@ -4040,6 +4102,78 @@
           },
           "409": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Close one conflict standing against an epic's Jira issue.",
+        "operationId": "resolve_epic_ticket_conflict",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveConflictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicConflictDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The conflict is already resolved, or the key was reused"
           }
         }
       }
@@ -11149,6 +11283,12 @@
           "remediation_integration_receipt"
         ],
         "properties": {
+          "completion_generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reopening era containing the remediated round.",
+            "minimum": 0
+          },
           "completion_revision": {
             "type": "integer",
             "format": "int64",
@@ -11899,7 +12039,8 @@
           "round",
           "verdict",
           "evidence",
-          "deliberation"
+          "deliberation",
+          "generation"
         ],
         "properties": {
           "committee_run_id": {
@@ -11908,6 +12049,13 @@
               "null"
             ],
             "description": "The exact Committee run that produced this round."
+          },
+          "decided_under": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact completion definition used for the round, when recorded."
           },
           "deliberation": {
             "type": "array",
@@ -11919,6 +12067,12 @@
           "evidence": {
             "type": "string",
             "description": "The immutable finding/evidence digest."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reopening era that produced the round.",
+            "minimum": 0
           },
           "remediation_hash": {
             "type": [
@@ -11960,6 +12114,8 @@
           "remediations",
           "closeout",
           "wakes",
+          "closeout_history",
+          "generation",
           "revision",
           "snapshot_cursor"
         ],
@@ -11975,9 +12131,22 @@
             "$ref": "#/components/schemas/CloseoutEvidenceDto",
             "description": "The closeout receipts recorded so far."
           },
+          "closeout_history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordedCloseoutDto"
+            },
+            "description": "Closeouts archived from eras that later reopened."
+          },
           "epic_id": {
             "type": "string",
             "description": "The epic."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Current reopening era.",
+            "minimum": 0
           },
           "integrations": {
             "type": "array",
@@ -13455,6 +13624,75 @@
         },
         "additionalProperties": false
       },
+      "EpicConflictDto": {
+        "type": "object",
+        "description": "One recorded disagreement about an epic's own Jira status.",
+        "required": [
+          "conflict_id",
+          "epic_id",
+          "kind",
+          "external_issue_key",
+          "observed_status_id",
+          "observed_status_name",
+          "observed_at",
+          "epic_revision",
+          "spec_version",
+          "detected_at"
+        ],
+        "properties": {
+          "conflict_id": {
+            "type": "string",
+            "description": "The conflict."
+          },
+          "detected_at": {
+            "type": "string",
+            "description": "When the disagreement was detected."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic it was raised on."
+          },
+          "epic_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision judged by the controller.",
+            "minimum": 0
+          },
+          "external_issue_key": {
+            "type": "string",
+            "description": "The epic's exact confirmed external issue key."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Which typed conflict it is."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "When Jira was observed."
+          },
+          "observed_status_id": {
+            "type": "string",
+            "description": "The observed external status identity."
+          },
+          "observed_status_name": {
+            "type": "string",
+            "description": "The observed external status label."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When an operator resolved it, when applicable."
+          },
+          "spec_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The exact workflow specification revision used.",
+            "minimum": 0
+          }
+        }
+      },
       "EpicExecutionScopeDto": {
         "type": "object",
         "description": "The runtime-facing identity an epic declares independently of its display\nname and of any process-wide runtime configuration.",
@@ -14327,9 +14565,23 @@
         "description": "One durable integration result, initial or remediation.",
         "required": [
           "receipt",
-          "repositories"
+          "repositories",
+          "generation"
         ],
         "properties": {
+          "decided_under": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact completion definition used for the result, when recorded."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reopening era that produced the result.",
+            "minimum": 0
+          },
           "receipt": {
             "type": "string",
             "description": "Receipt for the integration TeamRun/result."
@@ -16982,6 +17234,31 @@
         },
         "additionalProperties": false
       },
+      "RecordedCloseoutDto": {
+        "type": "object",
+        "description": "Closeout evidence retained from one earlier completion era.",
+        "required": [
+          "generation",
+          "decided_under",
+          "evidence"
+        ],
+        "properties": {
+          "decided_under": {
+            "type": "string",
+            "description": "Exact completion definition used by that era."
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/CloseoutEvidenceDto",
+            "description": "Immutable closeout receipts."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Era that recorded it.",
+            "minimum": 0
+          }
+        }
+      },
       "RecoverConsultationSeatRequest": {
         "type": "object",
         "description": "Exact compare-and-swap request for one consultation seat recovery.",
@@ -17207,12 +17484,26 @@
         "required": [
           "round",
           "authorization",
-          "integration"
+          "integration",
+          "generation"
         ],
         "properties": {
           "authorization": {
             "$ref": "#/components/schemas/RemediationAuthorizationDto",
             "description": "The two-authority approval."
+          },
+          "decided_under": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact completion definition used for the remediation, when recorded."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reopening era that produced the remediation.",
+            "minimum": 0
           },
           "integration": {
             "$ref": "#/components/schemas/IntegrationRecordDto",

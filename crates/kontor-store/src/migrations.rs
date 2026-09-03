@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 80;
+pub const SCHEMA_VERSION: i64 = 83;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -315,6 +315,14 @@ const MIGRATIONS: &[&str] = &[
     // under, so a retry carrying a different preview or legacy-topic map is
     // refused before a receipt is produced for a command nobody issued.
     include_str!("../migrations/0080_team_definition_migration_command_intents.sql"),
+    // Schema v81. One canonical Jira task-to-issue identity, while retaining
+    // legacy alias rows and every immutable receipt/evidence reference to them.
+    include_str!("../migrations/0081_canonical_jira_task_link_ledger.sql"),
+    // Schema v82. First-class epic Jira conflict and transition-intent ledgers.
+    include_str!("../migrations/0082_epic_jira_reconciliation.sql"),
+    // Schema v83. Reopened completion eras own distinct remediation evidence
+    // and replay claims even though their round numbers restart at one.
+    include_str!("../migrations/0083_completion_remediation_generations.sql"),
 ];
 
 const _: () = assert!(

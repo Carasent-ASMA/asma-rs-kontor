@@ -22,10 +22,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::id::{
-    AggregateRevision, BoundedText, CanonicalDocument, ConnectorKey, ContentHash, ExternalId,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey, PhaseKey,
-    SchemaVersion, SemanticMilestoneKey, SpecVersion, StatusConflictId, TaskId, TicketLinkId,
-    TicketObservationId, TicketProjectionId, Timestamp, WorkProfileKey,
+    AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
+    ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey,
+    MiniProjectId, PhaseKey, SchemaVersion, SemanticMilestoneKey, SpecVersion, StatusConflictId,
+    TaskId, TicketLinkId, TicketObservationId, TicketProjectionId, Timestamp, WorkProfileKey,
 };
 use crate::state::{Freshness, GateState, TaskState, TerminalOutcome};
 use crate::{DomainError, DomainResult};
@@ -643,6 +643,13 @@ pub enum InternalPredicate {
         /// Required run outcome.
         outcome: TerminalOutcome,
     },
+    /// The epic completion machine has reached this semantic state.
+    EpicCompletionIs {
+        /// Required epic completion evidence.
+        state: EpicCompletionEvidence,
+    },
+    /// Every declared child task is terminal.
+    AllChildTasksTerminal,
     /// Every nested predicate holds.
     All {
         /// Nested predicates.
@@ -678,8 +685,36 @@ impl InternalPredicate {
                 .any(|(key, value)| key == gate && value == state),
             Self::AllRequiredGatesPassed => facts.all_required_gates_passed,
             Self::RunTerminal { outcome } => facts.run_outcome == Some(*outcome),
+            Self::EpicCompletionIs { .. } | Self::AllChildTasksTerminal => false,
             Self::All { of } => of.iter().all(|p| p.evaluate_at(facts, depth + 1)),
             Self::Any { of } => of.iter().any(|p| p.evaluate_at(facts, depth + 1)),
+        }
+    }
+
+    /// Evaluate against epic-scoped facts.
+    #[must_use]
+    pub fn evaluate_epic(&self, facts: &InternalEpicFacts) -> bool {
+        self.evaluate_epic_at(facts, 0)
+    }
+
+    fn evaluate_epic_at(&self, facts: &InternalEpicFacts, depth: usize) -> bool {
+        if depth > MAX_PREDICATE_DEPTH {
+            return false;
+        }
+        match self {
+            Self::EpicCompletionIs { state } => facts.completion == *state,
+            Self::AllChildTasksTerminal => facts.all_child_tasks_terminal,
+            Self::All { of } => of
+                .iter()
+                .all(|predicate| predicate.evaluate_epic_at(facts, depth + 1)),
+            Self::Any { of } => of
+                .iter()
+                .any(|predicate| predicate.evaluate_epic_at(facts, depth + 1)),
+            Self::TaskStateIs { .. }
+            | Self::PhaseCompleted { .. }
+            | Self::GateStateIs { .. }
+            | Self::AllRequiredGatesPassed
+            | Self::RunTerminal { .. } => false,
         }
     }
 
@@ -926,6 +961,53 @@ pub struct ExternalTicketObservation {
     pub payload_hash: ContentHash,
 }
 
+closed_enum! {
+    /// The epic-completion evidence Jira reconciliation is allowed to read.
+    ///
+    /// The detailed completion DAG belongs to `kontor-scheduler`; this compact
+    /// semantic projection keeps the connector policy independent of that crate.
+    EpicCompletionEvidence, "EpicCompletionEvidence" {
+        /// No completion run exists yet, or it is still progressing.
+        Active => "active",
+        /// The completion machine explicitly requires a human decision.
+        NeedsHuman => "needs_human",
+        /// The completion machine reached its proven successful terminal node.
+        Done => "done",
+    }
+}
+
+/// One fresh observation of an externally bound epic.
+///
+/// Unlike [`ExternalTicketObservation`], an epic observation carries no
+/// synthetic task-link identity. The epic binding is its own aggregate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalEpicObservation {
+    /// The observed external status.
+    pub status: StatusSelector,
+    /// The observed assignee's external account id, if any.
+    pub assignee_account_id: Option<ExternalId>,
+    /// The external system's own version/update token.
+    pub external_version: Option<ExternalId>,
+    /// When Kontor observed it.
+    pub observed_at: Timestamp,
+    /// Digest of the canonical observation payload.
+    pub payload_hash: ContentHash,
+}
+
+/// Kontor's own epic facts, kept separate from task facts so an epic workflow
+/// can never become true through a fabricated task or ticket-link identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InternalEpicFacts {
+    /// The epic.
+    pub epic_id: MiniProjectId,
+    /// Its aggregate revision.
+    pub epic_revision: AggregateRevision,
+    /// Semantic evidence from the epic-completion state machine.
+    pub completion: EpicCompletionEvidence,
+    /// Whether every declared child task is terminal.
+    pub all_child_tasks_terminal: bool,
+}
+
 /// Kontor's own facts about a task, as reconciliation reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InternalTaskFacts {
@@ -1084,6 +1166,74 @@ pub struct StatusConflict {
     pub detected_at: Timestamp,
 }
 
+/// A durable epic-scoped Jira status disagreement.
+///
+/// Task conflicts are link-scoped; epic bindings have no task link, so keeping
+/// this as its own record prevents a synthetic link from becoming authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpicStatusConflict {
+    /// Conflict identity.
+    pub id: StatusConflictId,
+    /// The epic whose Jira binding was observed.
+    pub epic_id: MiniProjectId,
+    /// Why reconciliation stopped.
+    pub kind: StatusConflictKind,
+    /// Exact confirmed Jira epic key.
+    pub external_issue_key: ExternalId,
+    /// Observed status.
+    pub observed_status: StatusSelector,
+    /// Observation instant.
+    pub observed_at: Timestamp,
+    /// Digest of the observation payload.
+    pub payload_hash: ContentHash,
+    /// Epic revision at detection.
+    pub epic_revision: AggregateRevision,
+    /// Pinned workflow-spec revision.
+    pub spec_version: SpecVersion,
+    /// Desired milestone, when one was selected.
+    pub milestone: Option<SemanticMilestoneKey>,
+    /// Detection instant.
+    pub detected_at: Timestamp,
+    /// Resolution instant, when an operator resolved it.
+    pub resolved_at: Option<Timestamp>,
+    /// Durable receipt authorizing resolution.
+    pub resolution_receipt_id: Option<CommandReceiptId>,
+}
+
+/// Durable authority and readback for one epic Jira transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpicStatusTransitionIntent {
+    /// Authority identity passed to the connector.
+    pub id: CommandReceiptId,
+    /// Epic being converged.
+    pub epic_id: MiniProjectId,
+    /// Exact Jira identity.
+    pub external_issue_key: ExternalId,
+    /// Stable controller key.
+    pub idempotency_key: IdempotencyKey,
+    /// Canonical delegation intent.
+    pub intent_hash: ContentHash,
+    /// Epic revision represented by the intent.
+    pub epic_revision: AggregateRevision,
+    /// Exact workflow-spec revision.
+    pub spec_version: SpecVersion,
+    /// Desired milestone.
+    pub milestone: SemanticMilestoneKey,
+    /// Desired status.
+    pub target: StatusSelector,
+    /// Status this individual attempt must reach. This differs from `target`
+    /// only for a specification-declared staged reopen hop.
+    pub destination: StatusSelector,
+    /// Observation the decision was computed from.
+    pub prior_payload_hash: ContentHash,
+    /// Planning instant.
+    pub planned_at: Timestamp,
+    /// Confirmed readback instant.
+    pub confirmed_at: Option<Timestamp>,
+    /// Confirmed observation digest.
+    pub confirmation_payload_hash: Option<ContentHash>,
+}
+
 /// The complete, pure result of reconciling one external ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconciliationOutcome {
@@ -1106,6 +1256,27 @@ pub struct ReconciliationInput<'a> {
     pub freshness: Freshness,
     /// Kontor's own facts.
     pub facts: &'a InternalTaskFacts,
+    /// The transitions the external system currently offers.
+    pub live_transitions: &'a [LiveTransition],
+    /// The principal Kontor acts as.
+    pub principal: &'a TicketPrincipal,
+}
+
+/// Everything epic reconciliation is allowed to read.
+///
+/// This is intentionally distinct from [`ReconciliationInput`]: an epic has
+/// neither a task id nor a ticket-link id, and manufacturing either would blur
+/// which aggregate authorized an external write.
+#[derive(Debug, Clone)]
+pub struct EpicReconciliationInput<'a> {
+    /// The pinned epic workflow specification.
+    pub spec: &'a ExternalWorkflowSpec,
+    /// The newest epic observation.
+    pub observation: &'a ExternalEpicObservation,
+    /// How old that observation is.
+    pub freshness: Freshness,
+    /// Kontor's own epic facts.
+    pub facts: &'a InternalEpicFacts,
     /// The transitions the external system currently offers.
     pub live_transitions: &'a [LiveTransition],
     /// The principal Kontor acts as.
@@ -1158,6 +1329,132 @@ fn staged_hop<'live>(
         return Err(StatusConflictKind::MultipleLiveTransitions);
     }
     Ok(Some(selected))
+}
+
+fn staged_epic_hop<'live>(
+    input: &'live EpicReconciliationInput<'_>,
+    target: &StatusSelector,
+) -> Result<Option<&'live LiveTransition>, StatusConflictKind> {
+    let Some(hop) = input.spec.reopen.as_ref() else {
+        return Ok(None);
+    };
+    if hop.status_id == input.observation.status.status_id || hop.status_id == target.status_id {
+        return Ok(None);
+    }
+    if input.spec.class_of(&hop.status_id).is_none() {
+        return Ok(None);
+    }
+    let mut matching = input
+        .live_transitions
+        .iter()
+        .filter(|live| live.to.status_id == hop.status_id);
+    let Some(selected) = matching.next() else {
+        return Ok(None);
+    };
+    if matching.next().is_some() {
+        return Err(StatusConflictKind::MultipleLiveTransitions);
+    }
+    Ok(Some(selected))
+}
+
+/// Reconcile one Jira epic from epic-completion and child-task evidence.
+///
+/// The algorithm deliberately mirrors [`reconcile`] while consuming only
+/// epic-scoped facts. It never fabricates a task/link identity and never lets a
+/// task-oriented predicate become true for an epic.
+#[must_use]
+pub fn reconcile_epic(input: &EpicReconciliationInput<'_>) -> ReconciliationOutcome {
+    use ReconciliationOutcome::{Conflict, NoOp, Transition};
+
+    if input.freshness != Freshness::Fresh {
+        return Conflict(StatusConflictKind::StaleObservation);
+    }
+
+    let Some(current_class) = input.spec.class_of(&input.observation.status.status_id) else {
+        return Conflict(StatusConflictKind::UnknownStatusClass);
+    };
+    if current_class.is_terminal() && !internal_epic_evidence_supports(current_class, input.facts) {
+        return Conflict(StatusConflictKind::ExternalTerminalBeforeInternalEvidence);
+    }
+    if current_class.is_terminal()
+        && input.spec.ownership.terminal_action == OwnershipAction::Preserve
+    {
+        return NoOp;
+    }
+
+    let Some(rule) = input
+        .spec
+        .milestones
+        .iter()
+        .find(|rule| rule.predicate.evaluate_epic(input.facts))
+    else {
+        return NoOp;
+    };
+    if input.spec.class_of(&rule.target.status_id).is_none() {
+        return Conflict(StatusConflictKind::UnknownTransitionPath);
+    }
+
+    let takes_ownership = rule.milestone == input.spec.ownership_milestone;
+    let assignee_matches =
+        input.observation.assignee_account_id.as_ref() == Some(&input.principal.account_id);
+    if takes_ownership && !assignee_matches {
+        if input.observation.assignee_account_id.is_some() {
+            if input.spec.ownership.mismatch == OwnershipMismatchBehavior::RaiseConflict {
+                return Conflict(StatusConflictKind::OwnershipMismatch);
+            }
+        } else {
+            return Transition(Box::new(TransitionPlan {
+                milestone: rule.milestone.clone(),
+                target: rule.target.clone(),
+                transition: None,
+                assignment: Some(AssignmentPlan {
+                    assign_to: Some(input.principal.account_id.clone()),
+                    action: OwnershipAction::ReassignToPrincipal,
+                }),
+                assignment_prerequisite: true,
+            }));
+        }
+    }
+
+    if input.observation.status.status_id == rule.target.status_id {
+        return NoOp;
+    }
+    if !input
+        .spec
+        .inbound_compatible
+        .iter()
+        .any(|selector| selector.status_id == input.observation.status.status_id)
+    {
+        return Conflict(StatusConflictKind::IncompatibleHumanMove);
+    }
+
+    let mut matching = input
+        .live_transitions
+        .iter()
+        .filter(|transition| transition.to.status_id == rule.target.status_id);
+    let selected = if let Some(direct) = matching.next() {
+        if matching.next().is_some() {
+            return Conflict(StatusConflictKind::MultipleLiveTransitions);
+        }
+        direct
+    } else {
+        match staged_epic_hop(input, &rule.target) {
+            Ok(Some(hop)) => hop,
+            Ok(None) => return Conflict(StatusConflictKind::NoLiveTransition),
+            Err(kind) => return Conflict(kind),
+        }
+    };
+
+    Transition(Box::new(TransitionPlan {
+        milestone: rule.milestone.clone(),
+        target: rule.target.clone(),
+        transition: Some(SelectedTransition {
+            transition_id: selected.transition_id.clone(),
+            to: selected.to.clone(),
+        }),
+        assignment: None,
+        assignment_prerequisite: false,
+    }))
 }
 
 /// Reconcile Kontor's state with an external ticket.
@@ -1313,6 +1610,18 @@ fn internal_evidence_supports(class: SemanticStatusClass, facts: &InternalTaskFa
             facts.run_outcome == Some(TerminalOutcome::Cancelled)
         }
         SemanticStatusClass::TerminalRejected => facts.run_outcome == Some(TerminalOutcome::Failed),
+        SemanticStatusClass::Active | SemanticStatusClass::Hold => true,
+    }
+}
+
+fn internal_epic_evidence_supports(class: SemanticStatusClass, facts: &InternalEpicFacts) -> bool {
+    match class {
+        SemanticStatusClass::TerminalSuccess => {
+            facts.completion == EpicCompletionEvidence::Done && facts.all_child_tasks_terminal
+        }
+        // The completion machine has no semantic cancellation/rejection proof.
+        // `NeedsHuman` is a hold, not authority to close an epic as abandoned.
+        SemanticStatusClass::TerminalCancelled | SemanticStatusClass::TerminalRejected => false,
         SemanticStatusClass::Active | SemanticStatusClass::Hold => true,
     }
 }

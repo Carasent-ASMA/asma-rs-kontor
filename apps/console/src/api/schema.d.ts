@@ -1249,6 +1249,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The conflicts standing against one epic's own Jira issue. */
+        get: operations["epic_ticket_conflicts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/jira:preview": {
         parameters: {
             query?: never;
@@ -1260,6 +1277,23 @@ export interface paths {
         put?: never;
         /** Preview the complete Jira graph for one epic without writing Jira or SQLite. */
         post: operations["preview_jira_materialization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close one conflict standing against an epic's Jira issue. */
+        post: operations["resolve_epic_ticket_conflict"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3796,6 +3830,11 @@ export interface components {
          */
         CommitteeReReviewProvenance: {
             /**
+             * Format: int32
+             * @description Reopening era containing the remediated round.
+             */
+            completion_generation?: number;
+            /**
              * Format: int64
              * @description The completion revision after the remediation evidence freeze.
              */
@@ -4087,10 +4126,17 @@ export interface components {
         CompletionRoundDto: {
             /** @description The exact Committee run that produced this round. */
             committee_run_id?: string | null;
+            /** @description Exact completion definition used for the round, when recorded. */
+            decided_under?: string | null;
             /** @description The roles and consultations that produced it. */
             deliberation: components["schemas"]["DeliberationStepDto"][];
             /** @description The immutable finding/evidence digest. */
             evidence: string;
+            /**
+             * Format: int32
+             * @description Reopening era that produced the round.
+             */
+            generation: number;
             /** @description Hash of the durable remediation that follows this failed round. */
             remediation_hash?: string | null;
             /**
@@ -4112,8 +4158,15 @@ export interface components {
             blockers: components["schemas"]["CompletionBlockerDto"][];
             /** @description The closeout receipts recorded so far. */
             closeout: components["schemas"]["CloseoutEvidenceDto"];
+            /** @description Closeouts archived from eras that later reopened. */
+            closeout_history: components["schemas"]["RecordedCloseoutDto"][];
             /** @description The epic. */
             epic_id: string;
+            /**
+             * Format: int32
+             * @description Current reopening era.
+             */
+            generation: number;
             /** @description Initial and remediation integration results, oldest first. */
             integrations: components["schemas"]["IntegrationRecordDto"][];
             needs_human?: null | components["schemas"]["NeedsHumanDto"];
@@ -4833,6 +4886,37 @@ export interface components {
             /** @description The standard role the session's seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
         };
+        /** @description One recorded disagreement about an epic's own Jira status. */
+        EpicConflictDto: {
+            /** @description The conflict. */
+            conflict_id: string;
+            /** @description When the disagreement was detected. */
+            detected_at: string;
+            /** @description The epic it was raised on. */
+            epic_id: string;
+            /**
+             * Format: int64
+             * @description The epic revision judged by the controller.
+             */
+            epic_revision: number;
+            /** @description The epic's exact confirmed external issue key. */
+            external_issue_key: string;
+            /** @description Which typed conflict it is. */
+            kind: string;
+            /** @description When Jira was observed. */
+            observed_at: string;
+            /** @description The observed external status identity. */
+            observed_status_id: string;
+            /** @description The observed external status label. */
+            observed_status_name: string;
+            /** @description When an operator resolved it, when applicable. */
+            resolved_at?: string | null;
+            /**
+             * Format: int32
+             * @description The exact workflow specification revision used.
+             */
+            spec_version: number;
+        };
         /**
          * @description The runtime-facing identity an epic declares independently of its display
          *     name and of any process-wide runtime configuration.
@@ -5269,6 +5353,13 @@ export interface components {
         };
         /** @description One durable integration result, initial or remediation. */
         IntegrationRecordDto: {
+            /** @description Exact completion definition used for the result, when recorded. */
+            decided_under?: string | null;
+            /**
+             * Format: int32
+             * @description Reopening era that produced the result.
+             */
+            generation: number;
             /** @description Receipt for the integration TeamRun/result. */
             receipt: string;
             /** @description Per-repository results, in a stable order. */
@@ -6522,6 +6613,18 @@ export interface components {
              */
             windows?: components["schemas"]["QuotaWindowDto"][];
         };
+        /** @description Closeout evidence retained from one earlier completion era. */
+        RecordedCloseoutDto: {
+            /** @description Exact completion definition used by that era. */
+            decided_under: string;
+            /** @description Immutable closeout receipts. */
+            evidence: components["schemas"]["CloseoutEvidenceDto"];
+            /**
+             * Format: int32
+             * @description Era that recorded it.
+             */
+            generation: number;
+        };
         /** @description Exact compare-and-swap request for one consultation seat recovery. */
         RecoverConsultationSeatRequest: {
             /** @description Exact native predecessor shown by the Committee read. */
@@ -6649,6 +6752,13 @@ export interface components {
         RemediationRecordDto: {
             /** @description The two-authority approval. */
             authorization: components["schemas"]["RemediationAuthorizationDto"];
+            /** @description Exact completion definition used for the remediation, when recorded. */
+            decided_under?: string | null;
+            /**
+             * Format: int32
+             * @description Reopening era that produced the remediation.
+             */
+            generation: number;
             /** @description Integration result; `receipt` is a frozen content digest. */
             integration: components["schemas"]["IntegrationRecordDto"];
             /**
@@ -11923,6 +12033,51 @@ export interface operations {
             };
         };
     };
+    epic_ticket_conflicts: {
+        parameters: {
+            query?: {
+                /** @description Include already-closed conflicts */
+                include_resolved?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicConflictDto"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     preview_jira_materialization: {
         parameters: {
             query?: never;
@@ -11967,6 +12122,62 @@ export interface operations {
                 };
                 content?: never;
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolve_epic_ticket_conflict: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveConflictRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicConflictDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The conflict is already resolved, or the key was reused */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -412,6 +412,16 @@ objects keep their historical names and Team Definition pin until an explicit,
 identity-preserving `team-definition:upgrade-preview` / `:upgrade-apply`
 completes exact readback.
 
+Confirmed Jira tasks and epics are reconciled automatically by the resident
+daemon controller. It runs once after the startup barrier opens, after durable
+Kontor changes, and at a 30-second recovery backstop. Each subject must select
+one exact installed immutable workflow revision for its entity kind and frozen
+work profile; missing or mismatched configuration fails closed. Kontor records
+contradictory external state as a durable conflict for explicit resolution and
+does not spin on unchanged conflicts or failed Jira effects. See the
+configuration guide's [Jira reconciliation](docs/CONFIGURATION.md#jira-reconciliation)
+section.
+
 AgentsRoom is being replaced per project, per subject. Write authority for a
 project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a
 project created in Kontor is native and writable immediately, while a project
