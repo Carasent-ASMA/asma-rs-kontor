@@ -28,6 +28,16 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CREATE_FIELDS: usize = 64;
+const MAX_CREATE_FIELDS_BYTES: usize = 64 * 1024;
+const RESERVED_CREATE_FIELDS: [&str; 6] = [
+    "project",
+    "issuetype",
+    "summary",
+    "description",
+    "labels",
+    "parent",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +53,22 @@ pub struct JiraProjectConfig {
     pub endpoint: String,
     pub project_key: ExternalId,
     pub credential_alias: String,
+    #[serde(default)]
+    pub create_fields: JiraCreateFields,
+}
+
+/// Operator-owned Jira fields required when Kontor creates an issue.
+///
+/// Kontor still owns the structural fields in [`RESERVED_CREATE_FIELDS`]. A
+/// project may configure only additional fields required by its Jira screens,
+/// independently for epic and task creation.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JiraCreateFields {
+    #[serde(default)]
+    pub epic: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub task: BTreeMap<String, Value>,
 }
 
 /// The configured connector set, keyed only by Kontor project identity.
@@ -125,6 +151,7 @@ pub struct JiraConnector {
     endpoint: Url,
     project_key: ExternalId,
     credential_alias: String,
+    create_fields: JiraCreateFields,
     keychain: Arc<dyn KeychainBackend>,
     client: Client,
 }
@@ -193,6 +220,7 @@ impl JiraConnector {
                 "endpoint may not contain credentials, query, or fragment",
             ));
         }
+        validate_create_fields(&config.create_fields)?;
         endpoint.set_path("/");
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -204,6 +232,7 @@ impl JiraConnector {
             endpoint,
             project_key: config.project_key,
             credential_alias: config.credential_alias,
+            create_fields: config.create_fields,
             keychain,
             client,
         })
@@ -295,9 +324,7 @@ impl JiraConnector {
         if response.status() == StatusCode::NO_CONTENT {
             return Ok(Value::Null);
         }
-        if !response.status().is_success() {
-            return Err(transport("Jira returned a non-success status"));
-        }
+        let status = response.status();
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -312,6 +339,9 @@ impl JiraConnector {
                 return Err(oversized());
             }
             bytes.extend_from_slice(&chunk);
+        }
+        if !status.is_success() {
+            return Err(non_success(status, &bytes));
         }
         if bytes.is_empty() {
             return Ok(Value::Null);
@@ -611,7 +641,16 @@ impl JiraConnector {
 
     async fn create_issue(&self, plan: &JiraIssuePlan) -> Result<ExternalId, JiraError> {
         let issue_type = self.issue_type(plan.kind).await?;
-        let mut fields = Map::from_iter([
+        let configured = match plan.kind {
+            JiraIssueKind::Epic => &self.create_fields.epic,
+            JiraIssueKind::Task => &self.create_fields.task,
+        };
+        let mut fields = Map::from_iter(
+            configured
+                .iter()
+                .map(|(field, value)| (field.clone(), value.clone())),
+        );
+        fields.extend([
             (
                 "project".to_owned(),
                 json!({"key": self.project_key.as_str()}),
@@ -875,6 +914,81 @@ struct LiveIssue {
     fields: Map<String, Value>,
 }
 
+fn validate_create_fields(fields: &JiraCreateFields) -> Result<(), JiraError> {
+    for configured in [&fields.epic, &fields.task] {
+        if configured.len() > MAX_CREATE_FIELDS
+            || serde_json::to_vec(configured)
+                .map_or(true, |encoded| encoded.len() > MAX_CREATE_FIELDS_BYTES)
+        {
+            return Err(configuration(
+                "configured Jira create fields exceed the supported bound",
+            ));
+        }
+        for field in configured.keys() {
+            if field.is_empty()
+                || field.len() > 64
+                || !field
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(configuration(
+                    "a configured Jira create field id is invalid",
+                ));
+            }
+            if RESERVED_CREATE_FIELDS.contains(&field.as_str()) {
+                return Err(configuration(
+                    "configured Jira create fields may not override Kontor-owned fields",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn non_success(status: StatusCode, bytes: &[u8]) -> JiraError {
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        return JiraError::unavailable(
+            "transport",
+            UnavailableReason::Credential,
+            "Jira rejected the configured credential or its project permission",
+        );
+    }
+    if status == StatusCode::BAD_REQUEST {
+        let field_ids = serde_json::from_slice::<Value>(bytes)
+            .ok()
+            .and_then(|value| value.get("errors").and_then(Value::as_object).cloned())
+            .map(|errors| {
+                errors
+                    .into_iter()
+                    .map(|(field, _)| field)
+                    .filter(|field| {
+                        !field.is_empty()
+                            && field.len() <= 64
+                            && field
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    })
+                    .take(MAX_CREATE_FIELDS)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let detail = if field_ids.is_empty() {
+            "Jira rejected the request because its input is invalid".to_owned()
+        } else {
+            format!(
+                "Jira rejected invalid or missing fields: {}",
+                field_ids.join(", ")
+            )
+        };
+        return JiraError::unavailable("transport", UnavailableReason::SchemaMismatch, detail);
+    }
+    JiraError::unavailable(
+        "transport",
+        UnavailableReason::Transport,
+        format!("Jira returned non-success status {}", status.as_u16()),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JiraComment {
     pub external_comment_id: ExternalId,
@@ -1068,4 +1182,27 @@ fn oversized() -> JiraError {
         UnavailableReason::OversizedOutput,
         "Jira returned an oversized response",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jira_validation_failure_names_only_safe_field_ids() {
+        let error = non_success(
+            StatusCode::BAD_REQUEST,
+            br#"{"errors":{"customfield_10251":"secret operator-facing detail"}}"#,
+        );
+        let rendered = error.to_string();
+        assert!(rendered.contains("customfield_10251"));
+        assert!(!rendered.contains("secret operator-facing detail"));
+        assert!(matches!(
+            error,
+            JiraError::Unavailable {
+                reason: UnavailableReason::SchemaMismatch,
+                ..
+            }
+        ));
+    }
 }

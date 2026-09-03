@@ -148,8 +148,33 @@ authority.
   closed. The regression reconstructs the v80 legacy-only row, applies the v81
   canonical-ledger migration, confirms the pending materialization and proves
   that no duplicate link is created.
-- Resume checkpoint: merge and deploy the final ledger correction, replay the
-  same Kontor apply receipt, then read back all three new ASMA bindings and a
-  second effect-free replay before closing this gap.
-- Owner/status: final ledger correction passes all materialization and canonical
-  Jira-link suites plus strict clippy; promotion and recovery readback pending.
+- Fourth promotion: PR #161 merged as
+  `3705ba96aaedc1c98730baa6ce9cceca62a795e7`. The staged exact-tree verifier
+  passed every local code, Rust, schema, policy, frontend and dependency gate;
+  the final npm advisory request alone timed out after the immediately
+  preceding PR #160 archive verifier reported no production vulnerabilities.
+  The exact merge was deployed as daemon hash
+  `be248241ce784172e258601eb2ae5b18bb2dc72bb7f1ecd575241072000b8ee6`
+  with PID `33075`; its rollback unit is
+  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T223249Z-kon-op-22-3705ba9/`.
+- Live replay result: ordinals 0–18, including the epic and all historical
+  links, are confirmed. Ordinals 19–21 remain planned. The first Jira `Task`
+  create returned a non-success response, but the connector collapsed every
+  Jira rejection to a generic transport-unavailable error.
+- Bounded fallback: the Atlassian metadata connector returned HTTP 405. A
+  read-only request through Kontor's configured keychain credential then
+  inspected only ASMA create metadata and the ASMA-7869 children; it made no
+  Jira mutation and printed no credential. Jira's `Task` type is a valid
+  hierarchy-level-zero non-subtask, but its create screen requires Product
+  (`customfield_10251`) with no default. Every existing child of ASMA-7869 uses
+  Product `Both`, option `10459`.
+- Current correction: `jira.json` may declare bounded additional create fields
+  independently for epics and tasks. It cannot override Kontor-owned
+  structural fields. The ASMA operator configuration supplies Task Product
+  option `10459`; Jira 400 diagnostics retain only safe field identifiers and
+  discard Jira's prose.
+- Resume checkpoint: promote this create-contract correction, replay the same
+  Kontor apply receipt, read back all three bindings, then prove an exact
+  effect-free replay before closing the gap.
+- Owner/status: implementation, connector regression and strict clippy pass;
+  full local release verification, promotion and recovery readback pending.

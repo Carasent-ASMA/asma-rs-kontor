@@ -107,12 +107,36 @@ implementation in the runtime graph.
 ### Supported configuration
 
 Follow the existing state-root configuration pattern with one strict
-`jira.json`, keyed by Kontor project id. Each entry contains only:
+`jira.json`, keyed by Kontor project id. Each entry contains:
 
 - schema version;
 - HTTPS endpoint;
 - Jira project key; and
-- opaque keychain alias.
+- opaque keychain alias;
+- optional `create_fields.epic` and `create_fields.task` maps for additional
+  operator-owned fields required by that project's Jira create screens.
+
+Create-field defaults are configuration, never model-authored input. They may
+not override the structural fields Kontor owns: `project`, `issuetype`,
+`summary`, `description`, `labels`, or `parent`. The connector applies the
+configured map for the selected issue kind and then writes its structural
+fields. Missing Jira-required fields fail closed. Jira 400 responses expose
+only bounded, syntactically safe field identifiers in diagnostics; Jira's
+operator-facing error prose is not reflected through Kontor.
+
+For the ASMA project, Task creation requires Product and has no Jira default.
+The recommended local operator entry therefore includes:
+
+```json
+"create_fields": {
+  "task": {
+    "customfield_10251": { "id": "10459" }
+  }
+}
+```
+
+Option `10459` is ASMA's registered `Both` Product value. It is a project
+configuration fact, not a portable Kontor default.
 
 The fixed keychain service is owned by Kontor; the keychain value contains the
 connector's authentication material. Reject duplicate projects, unknown keys,
