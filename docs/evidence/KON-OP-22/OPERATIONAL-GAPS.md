@@ -43,3 +43,27 @@ authority.
 - Owner/status: closed for delivery. The final independent review is attached
   in `REVIEW-NOTES.md` and returned `APPROVE` with no P0/P1 blocker; no
   replacement topology or direct runtime mutation was needed.
+
+## GAP-3 — bundled epic workflow could not route the live ASMA draft
+
+- Subject: Kontor epic `01a0539a-51c9-7301-9bd7-26c09167b23e`, confirmed Jira
+  Epic `ASMA-8049`.
+- Intended operation: resident reconciliation of the active epic to Jira
+  `In Development (10214)` through the installed generic epic workflow.
+- Failure class: specification capability gap. Generic epic workflow revision 1
+  declared only one `reopen` staging status. Jira offered `DRAFT (10237)` →
+  `TO BE GROOMED (10236)`, so Kontor correctly recorded durable
+  `no_live_transition` conflict `01a06761-49a2-7832-a11c-2b91e491a9a4`
+  instead of guessing a multi-hop route.
+- Bounded fallback: none. Jira was inspected read-only. Current Epic transition
+  and changelog evidence verified the exact route `New (10227)` →
+  `DRAFT (10237)` → `TO BE GROOMED (10236)` → `Groomed (10233)` →
+  `READY FOR DEVELOPMENT (10213)` → `In Development (10214)`.
+- Effects: no direct Jira mutation and no replacement runtime topology. The
+  conflict remains durable while workflow revision 2 and its deterministic
+  route contract are implemented and promoted.
+- Resume checkpoint: install generic epic workflow revision 2, allow the
+  resident controller to confirm each hop from fresh readback, prove replay is
+  idempotent, then resolve the superseded revision-1 conflict explicitly.
+- Owner/status: KON-OP-22 delivery owner; open until live convergence and
+  conflict resolution are read back.

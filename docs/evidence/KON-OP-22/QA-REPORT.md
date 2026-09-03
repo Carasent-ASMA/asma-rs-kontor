@@ -2,7 +2,8 @@
 
 Date: 2026-09-03
 
-Status: committed-tree release gates passed; live verification pending.
+Status: deterministic epic-route correction independently approved and complete
+local release gate passed; committed-tree and live verification pending.
 
 ## Passed gates
 
@@ -22,6 +23,13 @@ Status: committed-tree release gates passed; live verification pending.
 - `pnpm audit --prod`: no known vulnerabilities.
 - `cargo audit`: no vulnerabilities; 19 repository-allowed warnings.
 - `cargo deny check`: advisories, bans, licenses and sources passed.
+
+The complete in-place verifier passed again after the epic-route correction:
+`python3 scripts/verify-tree.py --mode inplace`. The first full run exposed one
+stale daemon failure-path fixture that still offered the superseded direct epic
+transition. Correcting that fixture to offer the first configured route hop made
+the focused regression and the complete verifier pass. No production behavior
+was weakened to accommodate the test.
 
 The complete committed-tree archive verifier passed against code commit
 `1ea52d9` plus reproducible-lock commit `1793144`. It exported `HEAD` without a
@@ -45,6 +53,12 @@ and the production dependency audit.
   fail-closed non-Jira-only contract;
 - foreign TPM, foreign epic wake and mismatched replay refusal;
 - API/OpenAPI/MCP route, schema and authority parity.
+- exact validation of configured multi-hop routes, including duplicate-source,
+  cycle, wrong-target and non-terminating-route refusal;
+- exact full-selector route choice and per-hop intent/readback authority;
+- legacy epic workflow revision-1 deserialization and canonical-hash stability;
+- resident progression through every ASMA epic hop, followed by idempotent
+  replay with no duplicate effect or conflict.
 
 ## Independent release audit
 
@@ -57,3 +71,10 @@ approval:
 - Jira reconciliation selects the canonical Jira subset when unrelated links
   coexist, while a non-Jira-only task retains its typed
   `unsupported_capability` refusal.
+
+A follow-up independent audit of the multi-hop epic correction also returned
+`APPROVE` with no P0/P1 blocker. It verified exact selector matching, unique
+sources, cycle-free target termination, actual per-hop intent authority,
+revision-1 compatibility and revision-2 bundle selection. Repeated warning
+evidence from an unresolved historical revision-1 conflict is a non-blocking
+P2 observability improvement; it does not create duplicate effects or wakes.

@@ -19,6 +19,13 @@ found in the complete current-master reconstruction.
   remediation evidence remains generation-scoped and immutable.
 - API, OpenAPI and MCP operations and their Observer/Operator authority agree.
 - No credential material is present in the implementation or its evidence.
+- Configured Jira routes require exact full status selectors, unique sources,
+  no self edge or target-leaving edge, no cycle, and termination at the declared
+  milestone target.
+- Route selection records the actual next hop in durable intent authority and
+  requires exact matching live-transition and readback evidence at every hop.
+- The generic ASMA epic bundle selects revision 2 while historical revision 1
+  remains deserializable and canonical-hash stable.
 
 ## Findings resolved during review
 
@@ -28,6 +35,15 @@ found in the complete current-master reconstruction.
 2. Task reconciliation initially treated unrelated connector links as Jira
    ambiguity. It now reconciles the exact Jira subset when present. A task with
    only an unsupported connector still receives the existing typed refusal.
+3. Live promotion exposed that ASMA epics do not offer a direct transition from
+   `DRAFT` to `In Development`. Revision 2 now models the exact five-edge Jira
+   route and refuses absent or ambiguous hops. A daemon regression traverses
+   every edge and proves replay produces no duplicate effect or conflict.
+
+The follow-up independent audit returned `APPROVE` with no P0/P1 blocker. It
+classified repeated warning evidence while the historical revision-1 conflict
+remains unresolved as P2 observability noise, not a correctness or release
+blocker.
 
 ## Promotion conditions
 
@@ -35,9 +51,11 @@ found in the complete current-master reconstruction.
   LaunchAgent configuration as one coherent rollback unit.
 - Build and deploy `kontor`, `kontor-daemon` and `kontor-mcp` from the exact
   merge SHA, then require schema v83 and a clean foreign-key check.
-- Install and read back `connector.jira/asma/task@2` and
-  `connector.jira/asma/epic@1` using fresh project revisions.
+- Read back the already installed `connector.jira/asma/task@2`, then install and
+  read back `connector.jira/asma/epic@2` using a fresh project revision.
 - Prove confirmed Jira subjects `ASMA-8050`, `ASMA-8062` and epic `ASMA-8049`
-  by observe/apply/refetch and replay without duplicate effects.
+  by observe/apply/refetch and replay without duplicate effects. For the epic,
+  retain exact evidence for every revision-2 route hop and resolve the old
+  revision-1 conflict only after target readback.
 - Run the archive verifier against the committed tree. GitHub Actions remain
   intentionally disabled; local release gates are authoritative.

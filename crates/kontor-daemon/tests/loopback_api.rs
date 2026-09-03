@@ -34,7 +34,7 @@ mod harness;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -303,13 +303,24 @@ async fn completion_with_foreign_tpm_refuses_without_state_wake_or_receipt() {
 #[derive(Default)]
 struct JiraFixtureKeychain;
 
+const VERIFIED_EPIC_ROUTE: [(&str, &str); 6] = [
+    ("10227", "New"),
+    ("10237", "DRAFT"),
+    ("10236", "TO BE GROOMED"),
+    ("10233", "Groomed"),
+    ("10213", "READY FOR DEVELOPMENT"),
+    ("10214", "In Development"),
+];
+const VERIFIED_EPIC_TRANSITIONS: [&str; 5] = ["101", "102", "103", "104", "105"];
+
 #[derive(Clone)]
-struct StatefulEpicJira {
-    transitioned: Arc<AtomicBool>,
-    transition_posts: Arc<AtomicUsize>,
+struct MultiHopEpicJira {
+    route_index: Arc<AtomicUsize>,
+    transition_attempts: Arc<AtomicUsize>,
+    confirmed_effects: Arc<Mutex<Vec<String>>>,
 }
 
-impl Respond for StatefulEpicJira {
+impl Respond for MultiHopEpicJira {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let path = request.url.path();
         if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
@@ -317,40 +328,64 @@ impl Respond for StatefulEpicJira {
                 .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
         }
         if request.method.as_str() == "POST" && path.ends_with("/transitions") {
-            self.transitioned.store(true, Ordering::SeqCst);
-            self.transition_posts.fetch_add(1, Ordering::SeqCst);
+            self.transition_attempts.fetch_add(1, Ordering::SeqCst);
+            let index = self.route_index.load(Ordering::SeqCst);
+            let Some(expected_transition) = VERIFIED_EPIC_TRANSITIONS.get(index) else {
+                return ResponseTemplate::new(409);
+            };
+            let requested_transition = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body["transition"]["id"].as_str().map(str::to_owned));
+            if requested_transition.as_deref() != Some(*expected_transition) {
+                return ResponseTemplate::new(409);
+            }
+            if self
+                .route_index
+                .compare_exchange(index, index + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return ResponseTemplate::new(409);
+            }
+            self.confirmed_effects
+                .lock()
+                .expect("the effect ledger is not poisoned")
+                .push(VERIFIED_EPIC_ROUTE[index + 1].0.to_owned());
             return ResponseTemplate::new(204);
         }
         if request.method.as_str() == "GET" && path.ends_with("/transitions") {
-            let transitions = if self.transitioned.load(Ordering::SeqCst) {
-                Vec::new()
-            } else {
-                vec![serde_json::json!({
-                    "id": "21",
-                    "to": {
-                        "id": "10214",
-                        "name": "In Development",
-                        "statusCategory": {"name": "In Progress"}
-                    }
-                })]
-            };
+            let index = self.route_index.load(Ordering::SeqCst);
+            let transitions = VERIFIED_EPIC_TRANSITIONS
+                .get(index)
+                .map(|transition_id| {
+                    let destination = VERIFIED_EPIC_ROUTE[index + 1];
+                    vec![serde_json::json!({
+                        "id": transition_id,
+                        "to": {
+                            "id": destination.0,
+                            "name": destination.1,
+                            "statusCategory": {"name": "In Progress"}
+                        }
+                    })]
+                })
+                .unwrap_or_default();
             return ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"transitions": transitions}));
         }
         if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8201") {
-            let transitioned = self.transitioned.load(Ordering::SeqCst);
+            let index = self.route_index.load(Ordering::SeqCst);
+            let status = VERIFIED_EPIC_ROUTE[index];
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8201",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
-                        "id": if transitioned {"10214"} else {"10237"},
-                        "name": if transitioned {"In Development"} else {"DRAFT"},
-                        "statusCategory": {"name": if transitioned {"In Progress"} else {"To Do"}}
+                        "id": status.0,
+                        "name": status.1,
+                        "statusCategory": {"name": if index == 5 {"In Progress"} else {"To Do"}}
                     },
                     "issuetype": {"name": "Epic", "hierarchyLevel": 1},
                     "assignee": null,
-                    "updated": if transitioned {"2026-09-03T10:00:01.000+0000"} else {"2026-09-03T10:00:00.000+0000"}
+                    "updated": format!("2026-09-03T10:00:0{index}.000+0000")
                 }
             }));
         }
@@ -423,9 +458,9 @@ impl Respond for FailingEpicJira {
                 "transitions": [{
                     "id": "21",
                     "to": {
-                        "id": "10214",
-                        "name": "In Development",
-                        "statusCategory": {"name": "In Progress"}
+                        "id": "10236",
+                        "name": "TO BE GROOMED",
+                        "statusCategory": {"name": "To Do"}
                     }
                 }]
             }));
@@ -9492,14 +9527,16 @@ async fn an_admin_installs_the_exact_shipped_workflow_revision_under_project_cas
 }
 
 #[tokio::test]
-async fn resident_jira_controller_converges_a_confirmed_epic_and_replays_on_the_next_wake() {
+async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_without_effects() {
     let server = MockServer::start().await;
-    let transitioned = Arc::new(AtomicBool::new(false));
-    let transition_posts = Arc::new(AtomicUsize::new(0));
+    let route_index = Arc::new(AtomicUsize::new(0));
+    let transition_attempts = Arc::new(AtomicUsize::new(0));
+    let confirmed_effects = Arc::new(Mutex::new(Vec::new()));
     Mock::given(any())
-        .respond_with(StatefulEpicJira {
-            transitioned: Arc::clone(&transitioned),
-            transition_posts: Arc::clone(&transition_posts),
+        .respond_with(MultiHopEpicJira {
+            route_index: Arc::clone(&route_index),
+            transition_attempts: Arc::clone(&transition_attempts),
+            confirmed_effects: Arc::clone(&confirmed_effects),
         })
         .mount(&server)
         .await;
@@ -9580,34 +9617,74 @@ async fn resident_jira_controller_converges_a_confirmed_epic_and_replays_on_the_
         world.daemon.state().clone(),
     ));
     tokio::time::timeout(Duration::from_secs(5), async {
-        while transition_posts.load(Ordering::SeqCst) == 0 {
+        while route_index.load(Ordering::SeqCst) != VERIFIED_EPIC_ROUTE.len() - 1 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("the resident controller reacts on its startup pass");
+    .expect("the resident controller follows every configured epic route hop");
     world.daemon.state().signals().stop();
     controller
         .await
         .expect("the resident controller stops cleanly");
-    assert!(transitioned.load(Ordering::SeqCst));
-    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+    assert_eq!(route_index.load(Ordering::SeqCst), 5);
+    assert_eq!(transition_attempts.load(Ordering::SeqCst), 5);
+    assert_eq!(
+        *confirmed_effects
+            .lock()
+            .expect("the effect ledger is not poisoned"),
+        VERIFIED_EPIC_ROUTE[1..]
+            .iter()
+            .map(|status| status.0.to_owned())
+            .collect::<Vec<_>>(),
+        "each declared destination is applied exactly once and in order"
+    );
 
     let replay = world.daemon.reconcile_jira_once().await;
     assert_eq!(replay.epic_subjects, 1);
     assert_eq!(replay.converged, 1, "{replay:?}");
     assert_eq!(replay.applied, 0, "{replay:?}");
-    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+    assert_eq!(replay.blocked, 0, "{replay:?}");
+    assert_eq!(transition_attempts.load(Ordering::SeqCst), 5);
 
     world.daemon.state().with_store(|store| {
         let export = kontor_store::backup::export_realm(store, at("2026-09-03T10:02:00Z"))
             .expect("the transition evidence exports");
-        assert_eq!(export.records.epic_jira_transition_intents.len(), 1);
+        let intents = export
+            .records
+            .epic_jira_transition_intents
+            .iter()
+            .filter(|intent| intent.epic_id == epic_id.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(intents.len(), 5, "one durable intent exists for every hop");
+        let mut destinations = intents
+            .iter()
+            .map(|intent| intent.destination_status_id.as_str())
+            .collect::<Vec<_>>();
+        destinations.sort_unstable();
+        let mut expected_destinations = VERIFIED_EPIC_ROUTE[1..]
+            .iter()
+            .map(|status| status.0)
+            .collect::<Vec<_>>();
+        expected_destinations.sort_unstable();
+        assert_eq!(destinations, expected_destinations);
         assert!(
-            export.records.epic_jira_transition_intents[0]
-                .confirmed_at
-                .is_some(),
-            "the external effect is believed only after readback"
+            intents
+                .iter()
+                .all(|intent| intent.target_status_id == "10214"),
+            "the semantic target remains In Development across intermediate hops"
+        );
+        assert!(
+            intents.iter().all(|intent| intent.confirmed_at.is_some()
+                && intent.confirmation_payload_hash.is_some()),
+            "every external effect is believed only after confirmed readback"
+        );
+        assert!(
+            store
+                .list_epic_status_conflicts(project_id, epic_id)
+                .expect("epic conflicts read")
+                .is_empty(),
+            "neither the route nor its replay creates a manual conflict"
         );
     });
 }

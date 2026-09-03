@@ -27,9 +27,9 @@
 //! boundary read from the connector's own identity endpoint.
 //!
 //! A transition id is never configured and never remembered across calls. It is
-//! matched on its destination status id from the live routes of the observation
-//! the plan was computed from, so a workflow that drifted is detected instead of
-//! replayed.
+//! matched on its complete destination selector from the live routes of the
+//! observation the plan was computed from, so an id rewire or status rename is
+//! detected instead of replayed.
 
 use std::fmt;
 
@@ -66,7 +66,7 @@ const BUNDLED_FIELD_SPECS: [&str; 2] = [
 const BUNDLED_WORKFLOW_SPECS: [&str; 3] = [
     include_str!("../fixtures/external-workflow-asma.json"),
     include_str!("../fixtures/external-workflow-asma-high-stakes.json"),
-    include_str!("../fixtures/external-workflow-asma-epic.json"),
+    include_str!("../fixtures/external-workflow-asma-epic-v2.json"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -593,7 +593,7 @@ pub struct JiraRequest {
 pub struct WireObservation {
     /// The status's opaque id.
     pub status_id: ExternalId,
-    /// The status's display name, evidence only.
+    /// The status's display name; configured routes bind it together with the id.
     pub status_name: ExternalName,
     /// The status category the connector reports, evidence only.
     pub status_category: ExternalName,
@@ -661,9 +661,9 @@ fn normalize_issue_type(display: &str) -> DomainResult<ExternalIssueTypeKey> {
 pub struct WireTransition {
     /// The opaque transition id.
     pub transition_id: ExternalId,
-    /// The destination status id — the only thing matching is ever done on.
+    /// The destination status id.
     pub to_status_id: ExternalId,
-    /// The destination status name, evidence only.
+    /// The destination status name; configured routes match it with the id.
     pub to_status_name: ExternalName,
     /// The destination status category, evidence only.
     pub to_status_category: Option<ExternalName>,
@@ -952,12 +952,14 @@ impl JiraIssueDelegation<'_> {
         let after = Box::new(self.refetch().await?);
         let expected_holder = issue_planned_holder(before, plan);
         let status_arrived = plan.transition.is_none()
-            || after.observation.status_id == plan.destination().status_id;
+            || (after.observation.status_id == plan.destination().status_id
+                && after.observation.status_name == plan.destination().status_name);
         let holder_arrived = after.observation.assignee_account_id == expected_holder;
         if status_arrived && holder_arrived {
             return Ok(IssueAmbiguityVerdict::AlreadyConfirmed(after));
         }
         let unchanged = after.observation.status_id == before.observation.status_id
+            && after.observation.status_name == before.observation.status_name
             && after.observation.assignee_account_id == before.observation.assignee_account_id;
         if unchanged {
             return Ok(IssueAmbiguityVerdict::NoEffect(after));
@@ -986,7 +988,7 @@ impl JiraIssueDelegation<'_> {
             prior_status_id: &observed.observation.status_id,
             prior_assignee_account_id: observed.observation.assignee_account_id.as_ref(),
             milestone: &plan.milestone,
-            destination: &plan.target,
+            destination: plan.destination(),
             ownership_action: plan
                 .assignment
                 .as_ref()
@@ -1182,7 +1184,7 @@ fn prove_issue_live_route(
                 "the selected transition was not offered by this observation",
             )
         })?;
-    if offered.to.status_id != plan.destination().status_id {
+    if &offered.to != plan.destination() {
         return Err(AsmaError::refused(
             operation,
             "the selected transition no longer reaches the planned destination",
@@ -1378,13 +1380,12 @@ impl TicketDelegation<'_> {
         // milestone: demanding the milestone here would report a hop that landed
         // exactly as planned as contested state and invite a retry of a move Jira
         // has already made.
-        let status_arrived =
-            plan.transition.is_none() || now.status.status_id == plan.destination().status_id;
+        let status_arrived = plan.transition.is_none() || &now.status == plan.destination();
         let holder_arrived = now.assignee_account_id == expected_holder;
         if status_arrived && holder_arrived {
             return Ok(AmbiguityVerdict::AlreadyConfirmed(after));
         }
-        let unchanged = now.status.status_id == before.observation.status.status_id
+        let unchanged = now.status == before.observation.status
             && now.assignee_account_id == before.observation.assignee_account_id;
         if unchanged {
             return Ok(AmbiguityVerdict::NoEffect(after));
@@ -1423,7 +1424,7 @@ impl TicketDelegation<'_> {
             prior_status_id: &observed.observation.status.status_id,
             prior_assignee_account_id: observed.observation.assignee_account_id.as_ref(),
             milestone: &plan.milestone,
-            destination: &plan.target,
+            destination: plan.destination(),
             ownership_action: plan
                 .assignment
                 .as_ref()
@@ -1601,7 +1602,7 @@ impl TicketDelegation<'_> {
                     "the selected transition was not offered by this observation",
                 )
             })?;
-        if offered.to.status_id != plan.destination().status_id {
+        if &offered.to != plan.destination() {
             return Err(AsmaError::refused(
                 operation,
                 "the selected transition no longer reaches the planned destination",
