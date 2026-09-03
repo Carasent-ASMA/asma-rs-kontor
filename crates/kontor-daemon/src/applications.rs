@@ -2105,6 +2105,7 @@ impl Services {
         project_id: ProjectId,
         epic_id: MiniProjectId,
         request: &JiraMaterializationPreviewRequest,
+        allow_confirmed_create_replay: bool,
     ) -> Result<PreparedJiraMaterialization, ApiError> {
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
@@ -2169,7 +2170,9 @@ impl Services {
                     .iter()
                     .any(|link| &link.external_issue_key == key)
             });
-            if (intent.mode == JiraMaterializationModeDto::Create && !jira_links.is_empty())
+            if (intent.mode == JiraMaterializationModeDto::Create
+                && !jira_links.is_empty()
+                && !allow_confirmed_create_replay)
                 || (intent.mode == JiraMaterializationModeDto::Link
                     && !jira_links.is_empty()
                     && !existing_matches)
@@ -14906,7 +14909,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &JiraMaterializationPreviewRequest,
     ) -> Result<JiraMaterializationPreviewDto, ApiError> {
-        self.prepare_jira_materialization(project_id, epic_id, request)
+        self.prepare_jira_materialization(project_id, epic_id, request, false)
             .map(|prepared| prepared.preview)
     }
 
@@ -14918,8 +14921,23 @@ impl ApplicationOperations for Services {
         request: &JiraMaterializationApplyRequest,
     ) -> Result<JiraMaterializationAppliedDto, ApiError> {
         let state = self.state()?;
-        let prepared =
-            self.prepare_jira_materialization(project_id, epic_id, &request.materialization)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "jira_materialization_apply",
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replaying = self.replayed(key, &intent, Some(&target))?.is_some();
+        let prepared = self.prepare_jira_materialization(
+            project_id,
+            epic_id,
+            &request.materialization,
+            replaying,
+        )?;
         if prepared.epic.revision != request.expected_revision {
             return Err(self
                 .deny(
@@ -14935,16 +14953,6 @@ impl ApplicationOperations for Services {
             ));
         }
 
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "jira_materialization_apply",
-            "project_id": project_id.to_string(),
-            "epic_id": epic_id.to_string(),
-            "preview_hash": request.preview_hash.as_str(),
-        }))?;
         let receipt_id = self.record(
             key,
             project_id,
@@ -15023,50 +15031,49 @@ impl ApplicationOperations for Services {
                 marker: plan.marker.clone(),
             });
         }
-        let recovery = if planned
+        let recovery = planned
             .iter()
-            .all(|item| item.intent_kind == JiraIntentKind::Link)
-        {
-            Some(
-                planned
-                    .iter()
-                    .map(|item| {
-                        Ok(JiraMaterializationRecoveryItem {
-                            ordinal: item.ordinal,
-                            item_kind: item.item_kind,
-                            task_id: item.task_id,
-                            requested_key: item.requested_key.clone().ok_or_else(|| {
-                                self.deny(
-                                    ApiErrorCode::InvalidRequest,
-                                    "link recovery requires one exact Jira key per item",
-                                )
-                            })?,
-                            marker: item.marker.clone(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ApiError>>()?,
-            )
-        } else {
-            None
-        };
-        let recovered = match recovery {
-            Some(recovery) => state
-                .with_store(|store| {
-                    store.recover_pending_jira_materialization(
-                        project_id,
-                        epic_id,
-                        receipt_id,
-                        &request.preview_hash,
-                        &recovery,
-                        now,
-                    )
+            .map(|item| {
+                let requested_key = match item.intent_kind {
+                    JiraIntentKind::Link => item.requested_key.clone().ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::InvalidRequest,
+                            "link recovery requires one exact Jira key per item",
+                        )
+                    })?,
+                    // The immutable recovery ledger requires a value in its
+                    // requested-key column even though a create has no Jira key
+                    // before readback. The create marker is deterministic,
+                    // already scoped to this exact item, and remains
+                    // non-authoritative: the recovered stored item keeps
+                    // `requested_key = NULL` and only connector readback may
+                    // populate its confirmed Jira key.
+                    JiraIntentKind::Create => item.marker.clone(),
+                };
+                Ok(JiraMaterializationRecoveryItem {
+                    ordinal: item.ordinal,
+                    item_kind: item.item_kind,
+                    task_id: item.task_id,
+                    requested_key,
+                    marker: item.marker.clone(),
                 })
-                .map_err(|error| self.refuse(&error))?,
-            None => None,
-        };
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
+        let recovered = state
+            .with_store(|store| {
+                store.recover_pending_jira_materialization(
+                    project_id,
+                    epic_id,
+                    receipt_id,
+                    &request.preview_hash,
+                    &recovery,
+                    now,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
         let recovered_in_place = recovered.is_some();
-        let (batch_id, stored) = if let Some(recovered) = recovered {
-            (recovered.batch_id, recovered.items)
+        let (batch_id, batch_ids, stored) = if let Some(recovered) = recovered {
+            (recovered.batch_id, recovered.batch_ids, recovered.items)
         } else {
             state
                 .with_store(|store| {
@@ -15089,7 +15096,7 @@ impl ApplicationOperations for Services {
                     store.jira_materialization_items(project_id, &proposed_batch_id)
                 })
                 .map_err(|error| self.refuse(&error))?;
-            (proposed_batch_id, stored)
+            (proposed_batch_id.clone(), vec![proposed_batch_id], stored)
         };
 
         let connector = self.jira(project_id)?;
@@ -15127,11 +15134,16 @@ impl ApplicationOperations for Services {
                 JiraIssueKind::Task => JiraItemKind::Task,
             };
             let (expected_intent, expected_stored_key) = if recovered_in_place {
-                match item.intent_kind {
-                    JiraIntentKind::Create => (JiraIntentKind::Create, None),
-                    JiraIntentKind::Link => {
-                        (JiraIntentKind::Link, requested.requested_key.as_ref())
-                    }
+                match requested.mode {
+                    JiraMaterializationModeDto::Create => (JiraIntentKind::Create, None),
+                    JiraMaterializationModeDto::Link => match item.intent_kind {
+                        // A link-only recovery may safely adopt an earlier
+                        // create item after exact Jira identity is supplied.
+                        JiraIntentKind::Create => (JiraIntentKind::Create, None),
+                        JiraIntentKind::Link => {
+                            (JiraIntentKind::Link, requested.requested_key.as_ref())
+                        }
+                    },
                 }
             } else {
                 match requested.mode {
@@ -15220,11 +15232,17 @@ impl ApplicationOperations for Services {
                 })
                 .map_err(|error| self.refuse(&error))?;
         }
-        state
-            .with_store(|store| {
-                store.confirm_jira_materialization_batch(project_id, &batch_id, kontor_api::now())
-            })
-            .map_err(|error| self.refuse(&error))?;
+        for confirmed_batch_id in &batch_ids {
+            state
+                .with_store(|store| {
+                    store.confirm_jira_materialization_batch(
+                        project_id,
+                        confirmed_batch_id,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
 
         let activation_key = IdempotencyKey::parse(&format!(
             "activate:{}",
@@ -15256,9 +15274,16 @@ impl ApplicationOperations for Services {
                 )
             })
             .map_err(|error| self.refuse(&error))?;
-        let confirmed = state
-            .with_store(|store| store.jira_materialization_items(project_id, &batch_id))
-            .map_err(|error| self.refuse(&error))?;
+        let mut confirmed = Vec::with_capacity(prepared.preview.items.len());
+        for confirmed_batch_id in &batch_ids {
+            confirmed.extend(
+                state
+                    .with_store(|store| {
+                        store.jira_materialization_items(project_id, confirmed_batch_id)
+                    })
+                    .map_err(|error| self.refuse(&error))?,
+            );
+        }
         let confirmed_by_ordinal = confirmed
             .into_iter()
             .map(|item| (item.ordinal, item))

@@ -43,6 +43,12 @@ Status: delivered to `master` and verified live.
   attributed to its original generation.
 - Startup and resident completion scans discover returned work without an
   operator command.
+- Interrupted Jira materialization can resume an identical mixed Link/Create
+  request, not only a link-only request. When legacy attempts split the exact
+  ordinal set across several pending batches, recovery requires one complete,
+  non-overlapping cover and retains each original batch in the immutable
+  recovery ledger without rewriting item ownership. It never creates a
+  replacement Jira issue merely to escape durable local history.
 
 ## Schema
 
