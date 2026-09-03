@@ -2,8 +2,7 @@
 
 Date: 2026-09-03
 
-Status: deterministic epic-route correction independently approved and complete
-local release gate passed; committed-tree and live verification pending.
+Status: complete local, committed-tree and live release verification passed.
 
 ## Passed gates
 
@@ -37,6 +36,11 @@ The complete committed-tree archive verifier passed against code commit
 ran formatting, workspace Clippy, all locked Rust tests, `cargo audit`,
 `cargo deny check`, frozen pnpm installation, type checking, all console tests
 and the production dependency audit.
+
+The correction's clean-archive verifier independently passed the same complete
+gate set against merge commit
+`7c27f4d7a8e2aa37c1b1ddc576fe60387e95cf47`. It regenerated `Cargo.lock` in the
+export and byte-compared it as identical before running the locked suite.
 
 ## High-risk regressions exercised
 
@@ -78,3 +82,19 @@ sources, cycle-free target termination, actual per-hop intent authority,
 revision-1 compatibility and revision-2 bundle selection. Repeated warning
 evidence from an unresolved historical revision-1 conflict is a non-blocking
 P2 observability improvement; it does not create duplicate effects or wakes.
+
+## Live verification
+
+- Release hashes:
+  - `kontor`: `6d84ff729bd88d981eb011cca5647f7512f156812e76a776e546c2ba9c678ab4`;
+  - `kontor-daemon`: `e99dd2611918da098e6edf6ae298e140c37de2a6459b3a950f26ebd23eed1968`;
+  - `kontor-mcp`: `021fc79fa02a58fceabd8da6882bcb4ccbacc08c582bf30b6491d90e530716a0`.
+- Database: schema 83, integrity `ok`, no foreign-key violations.
+- Epic route evidence: four revision-2 intents, four confirmed, four distinct
+  destinations, target `In Development (10214)`, zero open conflicts.
+- Replay evidence: after the resident backstop, counts remained four intents,
+  four confirmations and zero open conflicts.
+- Task evidence: supported reconcile plans for `ASMA-8050` and `ASMA-8062`
+  returned `converged: true` and empty diffs.
+- GitHub Actions were intentionally not run; Kontor's documented local release
+  gates are authoritative.

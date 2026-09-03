@@ -2,8 +2,7 @@
 
 Date: 2026-09-03
 
-Status: deterministic epic-route correction independently approved and complete
-local gate passed; PR, merge, deployment and live receipts pending.
+Status: merged, deployed and verified live.
 
 Candidate commits:
 
@@ -12,6 +11,7 @@ Candidate commits:
 
 Those commits were merged through PR #155 as `3d391d0`. This follow-up release
 corrects the remaining live ASMA epic-route divergence found during promotion.
+The correction commit `1951cac` was merged through PR #156 as `7c27f4d`.
 
 ## Operator-visible outcome
 
@@ -36,21 +36,29 @@ only along this validated route:
 `Groomed (10233)` -> `READY FOR DEVELOPMENT (10213)` ->
 `In Development (10214)`.
 
-## Live promotion plan
+## Live promotion receipt
 
-1. Merge the independently reviewed commit to `master` without GitHub Actions;
-   the recorded local gates are the release authority for Kontor.
-2. Build `kontor`, `kontor-daemon` and `kontor-mcp` from the exact merge SHA.
-3. Back up the serving database, binaries and launch configuration.
-4. Replace the fleet, restart `com.asma.kontor.daemon`, and require schema v83,
-   a healthy loopback listener and an open reconciliation barrier.
-5. Install and read back generic epic workflow revision 2 under a fresh project
-   CAS revision; task workflow revision 2 is already installed.
-6. Verify `ASMA-8049` traverses each remaining route hop through resident
-   observe/apply/refetch, reaches `In Development`, and replays without a
-   duplicate effect.
-7. Resolve the superseded revision-1 `no_live_transition` conflict only after
-   the revision-2 convergence is confirmed.
+1. PR #156 merged to `master` as
+   `7c27f4d7a8e2aa37c1b1ddc576fe60387e95cf47`; there were no GitHub Actions,
+   by the explicit Kontor local-gate policy.
+2. The complete clean-archive verifier passed, and all three release binaries
+   were built from that exact merge.
+3. The coherent rollback unit is
+   `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T143337Z-kon-op-22-7c27f4d/`.
+   It includes the previous fleet, LaunchAgent, runtime configuration, and
+   verified snapshot
+   `kontor-01a00649-9ee6-73e0-ba1b-6a6c35cfd065-20260903T143417410639Z.db`.
+4. The fleet was atomically replaced and restarted. PID `18681` serves the
+   healthy loopback realm on schema v83 with clean integrity and foreign keys.
+5. Epic workflow revision 2 installed and read back at project revision 5 with
+   receipt `01a067cf-beda-72c2-ac30-6042125a1f89`.
+6. The resident controller confirmed these exact `ASMA-8049` destinations:
+   `TO BE GROOMED (10236)`, `Groomed (10233)`,
+   `READY FOR DEVELOPMENT (10213)`, and `In Development (10214)`.
+7. The post-backstop ledger remained exactly four confirmed revision-2 intents
+   and zero open conflicts. The superseded revision-1 conflict was then closed
+   by receipt `01a067d0-6c17-7d02-a46d-602f57b1e5f3`.
+8. `ASMA-8050` and `ASMA-8062` both read back as converged with empty diffs.
 
 Rollback is by restoring the pre-deploy database and matching binary fleet as
 one unit. A pre-v83 binary cannot serve a v83 database.

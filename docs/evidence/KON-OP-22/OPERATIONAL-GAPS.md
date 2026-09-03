@@ -23,8 +23,9 @@ authority.
   of backlog authority.
 - Resume checkpoint: implementation and local verification in the existing
   worktree.
-- Owner/status: KON-OP-22 delivery owner; open until the branch is merged and
-  the reused worktree is removed.
+- Owner/status: branch fallback closed by PR #156 and merge commit `7c27f4d`.
+  Worktree cleanup is the final delivery housekeeping action; untracked
+  unrelated evidence is preserved outside the worktree before removal.
 
 ## GAP-2 — architect role retry was unavailable
 
@@ -60,10 +61,12 @@ authority.
   `DRAFT (10237)` → `TO BE GROOMED (10236)` → `Groomed (10233)` →
   `READY FOR DEVELOPMENT (10213)` → `In Development (10214)`.
 - Effects: no direct Jira mutation and no replacement runtime topology. The
-  conflict remains durable while workflow revision 2 and its deterministic
-  route contract are implemented and promoted.
-- Resume checkpoint: install generic epic workflow revision 2, allow the
-  resident controller to confirm each hop from fresh readback, prove replay is
-  idempotent, then resolve the superseded revision-1 conflict explicitly.
-- Owner/status: KON-OP-22 delivery owner; open until live convergence and
-  conflict resolution are read back.
+  conflict remained durable while workflow revision 2 and its deterministic
+  route contract were implemented and promoted.
+- Resume checkpoint completed: revision 2 installed with receipt
+  `01a067cf-beda-72c2-ac30-6042125a1f89`; the resident controller confirmed all
+  four remaining hops to `In Development`; the backstop added no duplicate;
+  the superseded conflict was resolved by receipt
+  `01a067d0-6c17-7d02-a46d-602f57b1e5f3`.
+- Owner/status: closed. Live convergence and conflict resolution were read back
+  with four confirmed revision-2 intents and zero open conflicts.

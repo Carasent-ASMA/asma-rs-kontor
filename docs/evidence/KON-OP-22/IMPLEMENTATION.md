@@ -2,8 +2,7 @@
 
 Date: 2026-09-03
 
-Status: deterministic epic-route correction implemented, independently
-approved and fully locally verified; merge and live promotion pending.
+Status: delivered to `master` and verified live.
 
 ## Delivered behavior
 
@@ -54,6 +53,30 @@ approved and fully locally verified; merge and live promotion pending.
 
 All migrations are append-only and covered by empty-database, deployed-lineage,
 direct-SQL constraint, restart, export and preservation tests.
+
+## Delivery receipt
+
+- Implementation commit: `1951cac3102197ef46b5547be4f41088a1d42572`.
+- PR: `https://github.com/Carasent-ASMA/asma-rs-kontor/pull/156`.
+- Merge commit: `7c27f4d7a8e2aa37c1b1ddc576fe60387e95cf47`.
+- The complete clean-archive verifier passed against the merge commit, including
+  a byte-identical regenerated `Cargo.lock`.
+- The live `kontor`, `kontor-daemon` and `kontor-mcp` hashes match the release
+  build. LaunchAgent `com.asma.kontor.daemon` restarted as PID `18681` on
+  `127.0.0.1:7717`; schema v83, `PRAGMA integrity_check = ok` and an empty
+  foreign-key check were read back.
+- Generic ASMA epic workflow revision 2 installed with receipt
+  `01a067cf-beda-72c2-ac30-6042125a1f89`, project revision 5 and definition hash
+  `21b1a100d832d688fbf99c4140f63aac8c8f7d9980aa1e7174288a3c2cf0c40e`.
+- The resident controller moved `ASMA-8049` from `DRAFT` through the four
+  remaining configured hops to `In Development`. All four distinct revision-2
+  intents carry exact confirmed readback; a later backstop created no duplicate
+  intent or conflict.
+- `ASMA-8050` and `ASMA-8062` each return `converged: true` with an empty diff
+  through the supported Kontor reconciliation plan.
+- Historical revision-1 conflict
+  `01a06761-49a2-7832-a11c-2b91e491a9a4` was resolved only after target
+  confirmation, by receipt `01a067d0-6c17-7d02-a46d-602f57b1e5f3`.
 
 ## Explicit adjacent scope decision
 
