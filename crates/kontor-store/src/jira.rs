@@ -1069,41 +1069,39 @@ impl SqliteStore {
                         "stored without a link identity",
                     )
                 })?;
-                let existing_for_key: Option<(String, String)> = transaction
+                let canonical_for_task: Option<(String, String)> = transaction
                     .query_row(
-                        "SELECT id, task_id FROM jira_links
-                         WHERE project_id = ?1 AND connector = 'connector.jira'
-                           AND external_issue_key = ?2",
-                        params![item.project_id.to_string(), key.as_str()],
+                        "SELECT external_issue_key, link_id
+                         FROM canonical_jira_task_links
+                         WHERE project_id = ?1 AND task_id = ?2",
+                        params![item.project_id.to_string(), task_id.to_string()],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
                     .map_err(backend)?;
-                let jira_links_for_task: i64 = transaction
+                let canonical_task_for_key: Option<String> = transaction
                     .query_row(
-                        "SELECT COUNT(*) FROM jira_links
-                         WHERE project_id = ?1 AND task_id = ?2
-                           AND connector = 'connector.jira'",
-                        params![item.project_id.to_string(), task_id.to_string()],
+                        "SELECT task_id FROM canonical_jira_task_links
+                         WHERE project_id = ?1 AND external_issue_key = ?2",
+                        params![item.project_id.to_string(), key.as_str()],
                         |row| row.get(0),
                     )
+                    .optional()
                     .map_err(backend)?;
-                let effective_link_id = match existing_for_key {
-                    Some((link_id, linked_task_id))
-                        if linked_task_id == task_id.to_string() && jira_links_for_task == 1 =>
-                    {
+                let effective_link_id = match canonical_for_task {
+                    Some((external_issue_key, link_id)) if external_issue_key == key.as_str() => {
                         link_id
                     }
                     Some(_) => {
                         return Err(RepositoryError::Conflict {
                             subject: "Jira task binding",
-                            rule: "the confirmed Jira issue is bound ambiguously or to another task",
+                            rule: "the task already has another Jira binding",
                         });
                     }
-                    None if jira_links_for_task > 0 => {
+                    None if canonical_task_for_key.is_some() => {
                         return Err(RepositoryError::Conflict {
                             subject: "Jira task binding",
-                            rule: "the task already has another Jira binding",
+                            rule: "the confirmed Jira issue is bound to another task",
                         });
                     }
                     None => {

@@ -132,8 +132,24 @@ authority.
   project-specific type name. New creates and recovered `Create` intents remain
   strict to the literal Jira `Task` type Kontor chose, exact parent, content and
   immutable marker.
-- Resume checkpoint: merge and deploy the final verified correction, replay the
+- Third promotion: PR #160 merged as
+  `162d80710045cb37662d976a64217153f9f65132`, passed both the staged and clean
+  archive verifiers, and was deployed as daemon hash
+  `f1592ef87a42616345ffd6def9a6d2489cd263536a1eef2f9462c7cb2fc5cbbd`
+  with PID `90200`. Its rollback unit is
+  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T213548Z-kon-op-22-162d807/`.
+  The replay accepted Jira hierarchy readback and was then refused before any
+  Jira create because confirmation searched only the new `connector.jira`
+  spelling while the immutable canonical ledger selected a preserved legacy
+  `jira` row.
+- Final ledger correction: materialization confirmation now consults the
+  canonical Jira task-link ledger directly. An exact migrated legacy binding
+  supplies its existing stable link id; a different task or issue still fails
+  closed. The regression reconstructs the v80 legacy-only row, applies the v81
+  canonical-ledger migration, confirms the pending materialization and proves
+  that no duplicate link is created.
+- Resume checkpoint: merge and deploy the final ledger correction, replay the
   same Kontor apply receipt, then read back all three new ASMA bindings and a
   second effect-free replay before closing this gap.
-- Owner/status: final hierarchy-level correction verified by the complete native
-  connector suite and strict clippy; promotion and recovery readback pending.
+- Owner/status: final ledger correction passes all materialization and canonical
+  Jira-link suites plus strict clippy; promotion and recovery readback pending.

@@ -3272,6 +3272,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-stronghold",
+ "tinyvec",
 ]
 
 [[package]]
