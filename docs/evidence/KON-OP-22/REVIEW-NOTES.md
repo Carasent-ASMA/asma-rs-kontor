@@ -59,3 +59,11 @@ blocker.
   revision-1 conflict only after target readback.
 - Run the archive verifier against the committed tree. GitHub Actions remain
   intentionally disabled; local release gates are authoritative.
+
+All promotion conditions were satisfied on 2026-09-03. PR #156 merged as
+`7c27f4d`; the clean-archive verifier passed; the serving fleet matches the
+release hashes; schema v83 and database checks are clean; both linked tasks are
+converged; and `ASMA-8049` reached `In Development` through four exact,
+confirmed revision-2 route intents. The historical revision-1 conflict was
+resolved after target readback, and the later resident backstop created no
+duplicate effect or conflict.
