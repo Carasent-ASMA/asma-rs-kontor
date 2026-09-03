@@ -2,7 +2,7 @@
 
 Date: 2026-09-03
 
-Status: local release gates passed; live verification pending.
+Status: committed-tree release gates passed; live verification pending.
 
 ## Passed gates
 
@@ -23,8 +23,12 @@ Status: local release gates passed; live verification pending.
 - `cargo audit`: no vulnerabilities; 19 repository-allowed warnings.
 - `cargo deny check`: advisories, bans, licenses and sources passed.
 
-The committed-tree archive verifier is intentionally deferred until a commit
-exists; it validates `HEAD`, not an uncommitted working tree.
+The complete committed-tree archive verifier passed against code commit
+`1ea52d9` plus reproducible-lock commit `1793144`. It exported `HEAD` without a
+`.git` directory, regenerated and byte-compared `Cargo.lock`, then independently
+ran formatting, workspace Clippy, all locked Rust tests, `cargo audit`,
+`cargo deny check`, frozen pnpm installation, type checking, all console tests
+and the production dependency audit.
 
 ## High-risk regressions exercised
 

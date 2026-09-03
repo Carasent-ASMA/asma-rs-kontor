@@ -2,8 +2,13 @@
 
 Date: 2026-09-03
 
-Status: candidate locally verified; PR, merge, deployment and live receipts
-pending.
+Status: candidate independently approved and committed-tree verified; PR,
+merge, deployment and live receipts pending.
+
+Candidate commits:
+
+- `1ea52d9` — resident deterministic Jira convergence and completion recovery;
+- `1793144` — reproducible `Cargo.lock` refresh required by the archive gate.
 
 ## Operator-visible outcome
 
