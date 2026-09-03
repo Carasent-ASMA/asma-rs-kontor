@@ -49,6 +49,13 @@ Status: delivered to `master` and verified live.
   non-overlapping cover and retains each original batch in the immutable
   recovery ledger without rewriting item ownership. It never creates a
   replacement Jira issue merely to escape durable local history.
+- Jira issue creation includes bounded, project-configured additional fields
+  per issue kind while preserving Kontor's exclusive ownership of project,
+  type, summary, description, marker labels and parent. This lets ASMA supply
+  its required Product option without embedding an ASMA custom-field id in the
+  generic connector.
+- Jira 400 validation failures are classified as schema mismatch and report
+  only safe rejected field identifiers. Jira error prose is never reflected.
 
 ## Schema
 

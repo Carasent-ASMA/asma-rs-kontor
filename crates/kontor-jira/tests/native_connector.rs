@@ -27,7 +27,7 @@ use kontor_jira::{
     WireTimestamp,
 };
 use secrecy::SecretString;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_json, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 #[derive(Default)]
@@ -747,6 +747,127 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
     assert_eq!(first, replay);
     assert_eq!(searches.load(Ordering::SeqCst), 2);
     assert_eq!(keychain.reads.load(Ordering::SeqCst), 6);
+}
+
+#[tokio::test]
+async fn task_create_includes_project_configured_required_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search/jql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"issues": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/createmeta/ASMA/issuetypes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issueTypes": [{"id": "10136", "name": "Task", "hierarchyLevel": 0}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .and(body_json(serde_json::json!({
+            "fields": {
+                "customfield_10251": {"id": "10459"},
+                "project": {"key": "ASMA"},
+                "issuetype": {"id": "10136"},
+                "summary": "KON-OP-22: Complete Jira convergence",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Created by Kontor"}]
+                }]},
+                "labels": ["kontor-task-create-fixture"],
+                "parent": {"key": "ASMA-7869"}
+            }
+        })))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({"key": "ASMA-8100"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8100",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Task", "hierarchyLevel": 0, "subtask": false},
+                "parent": {"key": "ASMA-7869"},
+                "summary": "KON-OP-22: Complete Jira convergence",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Created by Kontor"}]
+                }]},
+                "labels": ["kontor-task-create-fixture"]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work",
+                "create_fields": {
+                    "task": {"customfield_10251": {"id": "10459"}}
+                }
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connector =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    let plan = JiraIssuePlan {
+        kind: JiraIssueKind::Task,
+        requested_key: None,
+        marker: ExternalId::parse("kontor-task-create-fixture").expect("marker"),
+        require_marker: false,
+        summary: "KON-OP-22: Complete Jira convergence".to_owned(),
+        description: "Created by Kontor".to_owned(),
+        parent_key: Some(ExternalId::parse("ASMA-7869").expect("parent key")),
+    };
+
+    let created = connector
+        .for_project(project_id)
+        .expect("project is configured")
+        .materialize(&plan)
+        .await
+        .expect("the configured Product field satisfies Jira's create contract");
+    assert_eq!(created.issue_key.as_str(), "ASMA-8100");
+}
+
+#[test]
+fn create_field_configuration_cannot_override_kontor_owned_fields() {
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": "https://example.test",
+                "project_key": "ASMA",
+                "credential_alias": "work",
+                "create_fields": {"task": {"summary": "operator override"}}
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+
+    let error =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect_err("Kontor-owned create fields remain authoritative");
+    assert!(error.to_string().contains("may not override"), "{error}");
 }
 
 #[tokio::test]
