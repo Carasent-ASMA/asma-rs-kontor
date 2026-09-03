@@ -96,12 +96,20 @@ authority.
   Original batches and item ownership are never rewritten. Missing or
   overlapping coverage still fails closed, and replay reuses the same recovery
   set without a duplicate Jira effect.
-- Effects before promotion: regression coverage is green for the fragmented
-  store recovery, mixed daemon recovery, old link-only recovery and effect-free
-  replay. No live Jira or control-plane state has yet been changed by the
-  correction.
+- First promotion: PR #158 merged as `2b544ac5692c5c239b2bfd3fc435572206831322`,
+  passed the complete clean-archive verifier and was deployed as daemon hash
+  `847d49120977a6d4762e9ff7136d9c8f5ada3ea06177a07822b2139acaa0ec1d`.
+  The exact persisted apply then failed closed with HTTP 409 before any new
+  Jira issue or binding was committed. Recovery had incorrectly strengthened
+  every historical `Link` item to require Kontor's creation marker, although
+  those pre-existing issues were never created by Kontor.
+- Follow-up correction: marker proof is now selected per recovered item.
+  Historical `Link` items are proven by exact key, project, issue type and
+  parent; only a recovered `Create` requires its immutable marker. Both mixed
+  recovery tests now use an ordinary linked epic with no marker and deliberately
+  different Jira prose, while the adopted `Create` remains marker-checked.
 - Resume checkpoint: merge and deploy the verified correction, replay the same
   Kontor apply receipt, then read back all three new ASMA bindings and a second
   effect-free replay before closing this gap.
-- Owner/status: correction verified locally; live promotion and recovery
-  readback pending.
+- Owner/status: follow-up correction verified locally; final promotion and
+  recovery readback pending.

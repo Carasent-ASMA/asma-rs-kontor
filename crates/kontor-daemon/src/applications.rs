@@ -15182,7 +15182,11 @@ impl ApplicationOperations for Services {
                 continue;
             }
             let mut plan = base_plan.clone();
-            plan.require_marker = recovered_in_place;
+            // Recovery strengthens proof only for an item whose durable
+            // historical intent was Create. An ordinary Link predates
+            // Kontor's marker and remains authoritative by exact key,
+            // project, kind and parent readback.
+            plan.require_marker = recovered_in_place && item.intent_kind == JiraIntentKind::Create;
             let readback = connector
                 .materialize(&plan)
                 .await
@@ -15207,7 +15211,10 @@ impl ApplicationOperations for Services {
                 continue;
             }
             let mut plan = base_plan.clone();
-            plan.require_marker = recovered_in_place;
+            // A Link item must not be retroactively required to carry the
+            // creation marker. Require it only when an explicit key is being
+            // used to adopt a previously planned Create in place.
+            plan.require_marker = recovered_in_place && item.intent_kind == JiraIntentKind::Create;
             plan.parent_key = Some(epic_key.clone().ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::Unavailable,

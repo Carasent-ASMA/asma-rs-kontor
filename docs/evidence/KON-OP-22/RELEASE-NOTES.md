@@ -73,3 +73,9 @@ retains original batches and item ownership, records the exact recovery set in
 the immutable ledger and proves replay creates no duplicate external effect.
 Promotion must replay the already persisted Kontor command; direct Jira and
 database writes remain prohibited.
+
+The first promotion of that correction (PR #158, merge `2b544ac`) exposed one
+narrow proof-scope defect without committing a Jira effect: ordinary historical
+`Link` items were incorrectly required to carry a Kontor creation marker. The
+follow-up scopes marker proof to recovered `Create` items only; exact linked
+identity, project, issue type and parent remain mandatory for every `Link`.
