@@ -79,3 +79,14 @@ narrow proof-scope defect without committing a Jira effect: ordinary historical
 `Link` items were incorrectly required to carry a Kontor creation marker. The
 follow-up scopes marker proof to recovered `Create` items only; exact linked
 identity, project, issue type and parent remain mandatory for every `Link`.
+
+PR #159 merged that proof-scope correction as `eba40aa` and deployed daemon
+hash `73e36142d743e965bf7dc58a239837c77b061877dcbfaef564c305fa263e700a`.
+The persisted replay then confirmed `ASMA-7869` and exposed the final legacy
+compatibility error before creating any new Jira issue: Kontor treated its
+internal task hierarchy role as a requirement for Jira's literal `Task` type.
+All 18 existing children are correctly parented hierarchy-level-zero Jira work
+items, but their project-defined types are 16 `User Story` and two `Tech tasks`.
+Ordinary explicit links now accept that standard Jira hierarchy role without
+claiming the project-specific type name. Creates and recovered creates remain
+literal-`Task`, marker, content and parent strict.
