@@ -108,8 +108,32 @@ authority.
   parent; only a recovered `Create` requires its immutable marker. Both mixed
   recovery tests now use an ordinary linked epic with no marker and deliberately
   different Jira prose, while the adopted `Create` remains marker-checked.
-- Resume checkpoint: merge and deploy the verified correction, replay the same
-  Kontor apply receipt, then read back all three new ASMA bindings and a second
-  effect-free replay before closing this gap.
-- Owner/status: follow-up correction verified locally; final promotion and
-  recovery readback pending.
+- Second promotion: PR #159 merged as
+  `eba40aacc3b0dcfe935c17f56b4901203a46ec2d`, passed both staged and clean
+  archive verification, and was deployed as daemon hash
+  `73e36142d743e965bf7dc58a239837c77b061877dcbfaef564c305fa263e700a`
+  with PID `77742`. Its rollback unit is
+  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T201428Z-kon-op-22-eba40aa/`.
+  The replay correctly confirmed the legacy Epic `ASMA-7869`, then failed
+  closed at ordinal 1 before creating a new Jira issue.
+- Remaining failure class: Kontor's internal item kind `task` was incorrectly
+  compared with Jira's literal issue-type name `Task`. The 18 historical links
+  are valid Jira hierarchy-level-zero children of `ASMA-7869`: 16 are
+  `User Story` and two are `Tech tasks`.
+- Bounded fallback: after Kontor exposed only the typed conflict and its normal
+  ticket reconciliation reported the first task converged, read-only Atlassian
+  inspection was limited to the exact 18 `ASMA` keys in this materialization.
+  It established issue type, hierarchy and parent only. No Jira or database
+  mutation was made. This inspection was necessary because the current Kontor
+  read surface does not expose a materialization item's observed Jira type and
+  parent in its refusal.
+- Final correction: an ordinary explicit `Link` for a Kontor task accepts a
+  non-subtask Jira work item at hierarchy level zero, independent of Jira's
+  project-specific type name. New creates and recovered `Create` intents remain
+  strict to the literal Jira `Task` type Kontor chose, exact parent, content and
+  immutable marker.
+- Resume checkpoint: merge and deploy the final verified correction, replay the
+  same Kontor apply receipt, then read back all three new ASMA bindings and a
+  second effect-free replay before closing this gap.
+- Owner/status: final hierarchy-level correction verified by the complete native
+  connector suite and strict clippy; promotion and recovery readback pending.

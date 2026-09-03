@@ -65,6 +65,7 @@ impl Respond for ExistingLinkedTask {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
         let call = self.0.fetch_add(1, Ordering::SeqCst);
         let parent = if call < 4 { "ASMA-8049" } else { "ASMA-9999" };
+        let issue_type = if call == 0 { "User Story" } else { "Task" };
         let labels = if call >= 2 {
             serde_json::json!(["kontor-task-link-fixture"])
         } else {
@@ -85,7 +86,7 @@ impl Respond for ExistingLinkedTask {
             "key": "ASMA-8050",
             "fields": {
                 "project": {"key": "ASMA"},
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                "issuetype": {"name": issue_type, "hierarchyLevel": 0, "subtask": false},
                 "parent": {"key": parent},
                 "summary": summary,
                 "description": {"type":"doc","version":1,"content":[{
@@ -749,7 +750,7 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
 }
 
 #[tokio::test]
-async fn explicit_link_confirms_existing_identity_without_claiming_summary_or_description() {
+async fn explicit_link_confirms_level_zero_without_claiming_type_or_content() {
     let server = MockServer::start().await;
     let readbacks = Arc::new(AtomicUsize::new(0));
     Mock::given(method("GET"))

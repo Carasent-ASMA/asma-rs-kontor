@@ -708,6 +708,20 @@ impl JiraConnector {
                 value_at(&value, &["fields", "issuetype", "hierarchyLevel"]).and_then(Value::as_i64)
                     == Some(1)
             }
+            // Kontor's task is a hierarchy role, not a claim that a linked
+            // legacy Jira issue has the literal type name `Task`. Jira's
+            // standard work-item types (for example User Story and Tech tasks)
+            // all live at hierarchy level zero and may be linked without being
+            // rewritten. A newly created item, or an explicit-key recovery of
+            // a previously planned Create, remains strict because Kontor itself
+            // chose Jira's Task type for that durable creation intent.
+            JiraIssueKind::Task if explicit_link && !plan.require_marker => {
+                value_at(&value, &["fields", "issuetype", "hierarchyLevel"]).and_then(Value::as_i64)
+                    == Some(0)
+                    && value_at(&value, &["fields", "issuetype", "subtask"])
+                        .and_then(Value::as_bool)
+                        != Some(true)
+            }
             JiraIssueKind::Task => text_at(&value, &["fields", "issuetype", "name"])
                 .is_ok_and(|name| normalize(name) == "task"),
         };
