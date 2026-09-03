@@ -66,6 +66,9 @@ export and byte-compared it as identical before running the locked suite.
 - identical mixed Link/Create materialization recovery, plus exact
   non-overlapping adoption of legacy pending-batch fragments with original
   batch ownership retained and effect-free replay.
+- project-configured Jira create fields are included only for their declared
+  issue kind, cannot override Kontor-owned structural fields, and preserve
+  safe diagnostics by exposing field identifiers rather than Jira prose.
 
 ## Independent release audit
 
@@ -90,7 +93,7 @@ P2 observability improvement; it does not create duplicate effects or wakes.
 
 - Release hashes:
   - `kontor`: `6d84ff729bd88d981eb011cca5647f7512f156812e76a776e546c2ba9c678ab4`;
-  - `kontor-daemon`: `e99dd2611918da098e6edf6ae298e140c37de2a6459b3a950f26ebd23eed1968`;
+  - `kontor-daemon`: `248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`;
   - `kontor-mcp`: `021fc79fa02a58fceabd8da6882bcb4ccbacc08c582bf30b6491d90e530716a0`.
 - Database: schema 83, integrity `ok`, no foreign-key violations.
 - Epic route evidence: four revision-2 intents, four confirmed, four distinct
@@ -99,5 +102,13 @@ P2 observability improvement; it does not create duplicate effects or wakes.
   four confirmations and zero open conflicts.
 - Task evidence: supported reconcile plans for `ASMA-8050` and `ASMA-8062`
   returned `converged: true` and empty diffs.
+- Final materialization evidence: PR #162 merged as
+  `d224b153bd6430f1df37e6c9a96a59cec9ab17b0`; the exact merge runs as PID
+  `43055`. Original receipt `01a0683f-7579-7d82-90b7-00781902f8b3` and
+  activation `01a06994-ff6e-7501-82d5-1199259eea08` created `ASMA-8088`,
+  `ASMA-8089` and `ASMA-8090`; identical replay returned the same identities.
+- Whole-epic Jira audit: all 21 task plans returned `converged: true` with
+  empty diffs. The three new tasks and Epic `ASMA-7869` read back at
+  `In Development`; the epic conflict list is empty.
 - GitHub Actions were intentionally not run; Kontor's documented local release
   gates are authoritative.

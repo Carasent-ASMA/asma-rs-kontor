@@ -90,6 +90,21 @@ direct-SQL constraint, restart, export and preservation tests.
 - Historical revision-1 conflict
   `01a06761-49a2-7832-a11c-2b91e491a9a4` was resolved only after target
   confirmation, by receipt `01a067d0-6c17-7d02-a46d-602f57b1e5f3`.
+- Final Jira create-contract commit
+  `7d13379999fe6f9aa45ba7fd00a85bbc7311741d` merged through PR #162 as
+  `d224b153bd6430f1df37e6c9a96a59cec9ab17b0`. Its complete local release
+  verifier passed; the merge tree was identical to the verified head.
+- The exact merge daemon hash
+  `248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`
+  runs as PID `43055`. Its rollback unit is
+  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`.
+- The recovered materialization created `ASMA-8088`, `ASMA-8089` and
+  `ASMA-8090` once. Exact replay returned receipt
+  `01a0683f-7579-7d82-90b7-00781902f8b3` and activation
+  `01a06994-ff6e-7501-82d5-1199259eea08` unchanged.
+- All 21 task Jira reconciliation plans for `ASMA-7869` are converged with
+  empty diffs. The epic and three new tasks are `In Development`; the epic has
+  no unresolved Jira conflict.
 
 ## Explicit adjacent scope decision
 
