@@ -20,9 +20,9 @@ use std::collections::BTreeSet;
 
 use kontor_core::DomainError;
 use kontor_core::id::{
-    AggregateRevision, BoundedText, ContentHash, ExternalId, ExternalName, GateKey, IdempotencyKey,
-    MiniProjectId, SemanticMilestoneKey, SpecVersion, TaskId, TicketLinkId, TicketObservationId,
-    TicketProjectionId, Timestamp, parse_utc_timestamp,
+    AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName,
+    GateKey, IdempotencyKey, MiniProjectId, SemanticMilestoneKey, SpecVersion, TaskId,
+    TicketLinkId, TicketObservationId, TicketProjectionId, Timestamp, parse_utc_timestamp,
 };
 use kontor_core::state::{Freshness, GateState, TaskState, TerminalOutcome};
 use kontor_core::ticket::{
@@ -33,7 +33,8 @@ use kontor_core::ticket::{
     LiveTransition, OwnershipAction, OwnershipMismatchBehavior, ProjectedField,
     ReconciliationInput, ReconciliationOutcome, SelectedTransition, SemanticStatusClass,
     StatusConflictKind, StatusSelector, TicketFieldKey, TicketFieldMapping, TicketFieldSpec,
-    TicketPrincipal, TicketSyncProjection, TransitionPlan, reconcile, reconcile_epic,
+    TicketPrincipal, TicketSyncProjection, TransitionPlan, TransitionRouteStep, reconcile,
+    reconcile_epic,
 };
 
 const WORKFLOW_ONE: &str = include_str!("fixtures/external_workflow_asma.json");
@@ -581,6 +582,21 @@ fn both_workflow_fixtures_validate_and_use_different_spellings() {
 }
 
 #[test]
+fn an_absent_route_keeps_the_v1_canonical_document_and_hash() {
+    let value: serde_json::Value = serde_json::from_str(WORKFLOW_ONE).expect("fixture JSON");
+    let original = CanonicalDocument::from_value(&value).expect("original canonical document");
+    let spec: ExternalWorkflowSpec =
+        serde_json::from_value(value).expect("v1 workflow remains readable");
+
+    assert!(spec.milestones.iter().all(|rule| rule.route.is_empty()));
+    assert_eq!(
+        spec.canonicalize().expect("typed canonical document"),
+        original,
+        "the defaulted empty route must not alter installed v1 bytes or their hash"
+    );
+}
+
+#[test]
 fn a_workflow_specification_is_checked_structurally() {
     let mut spec = workflows().remove(0);
     spec.statuses.clear();
@@ -607,6 +623,135 @@ fn a_workflow_specification_is_checked_structurally() {
         spec.validate().is_err(),
         "an empty predicate group is neither true nor false"
     );
+}
+
+#[test]
+fn milestone_routes_are_closed_deterministic_chains_to_the_target() {
+    let base = workflows().remove(0);
+    let target = base.milestones[0].target.clone();
+    let source = base.inbound_compatible[0].clone();
+    let intermediate = base
+        .inbound_compatible
+        .iter()
+        .find(|selector| {
+            selector.status_id != source.status_id && selector.status_id != target.status_id
+        })
+        .cloned()
+        .expect("fixture has an intermediate inbound status");
+
+    let invalid_routes = [
+        (
+            "undeclared selector",
+            vec![TransitionRouteStep {
+                from: source.clone(),
+                to: StatusSelector {
+                    status_id: external("not-declared"),
+                    status_name: name("Not declared"),
+                },
+            }],
+        ),
+        (
+            "duplicate source",
+            vec![
+                TransitionRouteStep {
+                    from: source.clone(),
+                    to: intermediate.clone(),
+                },
+                TransitionRouteStep {
+                    from: source.clone(),
+                    to: target.clone(),
+                },
+            ],
+        ),
+        (
+            "self edge",
+            vec![TransitionRouteStep {
+                from: source.clone(),
+                to: source.clone(),
+            }],
+        ),
+        (
+            "cycle",
+            vec![
+                TransitionRouteStep {
+                    from: source.clone(),
+                    to: intermediate.clone(),
+                },
+                TransitionRouteStep {
+                    from: intermediate.clone(),
+                    to: source.clone(),
+                },
+            ],
+        ),
+        (
+            "chain not terminating at target",
+            vec![TransitionRouteStep {
+                from: source.clone(),
+                to: intermediate.clone(),
+            }],
+        ),
+    ];
+
+    for (case, route) in invalid_routes {
+        let mut spec = base.clone();
+        spec.milestones[0].route = route;
+        assert!(spec.validate().is_err(), "{case} must be refused");
+    }
+
+    let mut non_inbound = base.clone();
+    non_inbound.milestones[0].route = vec![TransitionRouteStep {
+        from: non_inbound.hold.clone().expect("declared hold status"),
+        to: target.clone(),
+    }];
+    assert!(
+        non_inbound.validate().is_err(),
+        "a route source must be inbound compatible"
+    );
+
+    let mut terminal_intermediate = base.clone();
+    let terminal = terminal_status(&terminal_intermediate);
+    terminal_intermediate
+        .inbound_compatible
+        .push(terminal.clone());
+    terminal_intermediate.milestones[0].route = vec![
+        TransitionRouteStep {
+            from: source.clone(),
+            to: terminal.clone(),
+        },
+        TransitionRouteStep {
+            from: terminal,
+            to: target.clone(),
+        },
+    ];
+    assert!(
+        terminal_intermediate.validate().is_err(),
+        "a route must not stop at a terminal status before its target"
+    );
+
+    let mut terminal_source = base.clone();
+    let terminal = terminal_status(&terminal_source);
+    terminal_source.inbound_compatible.push(terminal.clone());
+    terminal_source.milestones[0].route = vec![TransitionRouteStep {
+        from: terminal,
+        to: target.clone(),
+    }];
+    assert!(
+        terminal_source.validate().is_err(),
+        "a route must not leave a terminal source"
+    );
+
+    let mut valid = base;
+    valid.milestones[0].route = vec![
+        TransitionRouteStep {
+            from: source,
+            to: intermediate.clone(),
+        },
+        TransitionRouteStep {
+            from: intermediate,
+            to: target,
+        },
+    ];
+    valid.validate().expect("every source reaches the target");
 }
 
 #[test]
@@ -720,6 +865,140 @@ fn an_epic_closes_only_from_completion_and_child_evidence() {
         }),
         ReconciliationOutcome::Transition(_)
     ));
+}
+
+#[test]
+fn an_epic_route_selects_only_the_configured_next_hop() {
+    let mut spec = workflows().remove(0);
+    let target = spec.milestones[0].target.clone();
+    let source = spec.statuses[0].selector.clone();
+    let next = spec
+        .statuses
+        .iter()
+        .map(|status| status.selector.clone())
+        .find(|selector| {
+            selector.status_id != source.status_id && selector.status_id != target.status_id
+        })
+        .expect("fixture has an intermediate status");
+    spec.milestones[0].predicate = InternalPredicate::EpicCompletionIs {
+        state: EpicCompletionEvidence::Active,
+    };
+    spec.milestones[0].route = vec![
+        TransitionRouteStep {
+            from: source.clone(),
+            to: next.clone(),
+        },
+        TransitionRouteStep {
+            from: next.clone(),
+            to: target.clone(),
+        },
+    ];
+    spec.validate().expect("route is a closed chain");
+
+    let observation = ExternalEpicObservation {
+        status: source,
+        assignee_account_id: Some(external("acct-kontor")),
+        external_version: Some(external("1")),
+        observed_at: at("2026-08-09T10:00:00Z"),
+        payload_hash: ContentHash::of(b"epic-route-observation"),
+    };
+    let facts = InternalEpicFacts {
+        epic_id: MiniProjectId::generate(),
+        epic_revision: AggregateRevision::INITIAL,
+        completion: EpicCompletionEvidence::Active,
+        all_child_tasks_terminal: false,
+    };
+    let principal = principal();
+    let live = [
+        route("direct-must-not-skip", &target),
+        route("configured-next", &next),
+    ];
+
+    let outcome = reconcile_epic(&EpicReconciliationInput {
+        spec: &spec,
+        observation: &observation,
+        freshness: Freshness::Fresh,
+        facts: &facts,
+        live_transitions: &live,
+        principal: &principal,
+    });
+    let ReconciliationOutcome::Transition(plan) = outcome else {
+        panic!("configured next hop must be selected: {outcome:?}");
+    };
+    assert_eq!(plan.target, target);
+    assert_eq!(plan.destination(), &next);
+    assert_eq!(
+        plan.transition.expect("status transition").transition_id,
+        external("configured-next")
+    );
+
+    let duplicate_live = [route("configured-a", &next), route("configured-b", &next)];
+    assert_eq!(
+        reconcile_epic(&EpicReconciliationInput {
+            spec: &spec,
+            observation: &observation,
+            freshness: Freshness::Fresh,
+            facts: &facts,
+            live_transitions: &duplicate_live,
+            principal: &principal,
+        }),
+        ReconciliationOutcome::Conflict(StatusConflictKind::MultipleLiveTransitions),
+        "one configured destination still requires exactly one live transition"
+    );
+
+    let only_direct = [route("direct-must-not-skip", &target)];
+    assert_eq!(
+        reconcile_epic(&EpicReconciliationInput {
+            spec: &spec,
+            observation: &observation,
+            freshness: Freshness::Fresh,
+            facts: &facts,
+            live_transitions: &only_direct,
+            principal: &principal,
+        }),
+        ReconciliationOutcome::Conflict(StatusConflictKind::NoLiveTransition),
+        "a live shortcut cannot replace the configured next hop"
+    );
+
+    let renamed_observation = ExternalEpicObservation {
+        status: StatusSelector {
+            status_id: observation.status.status_id.clone(),
+            status_name: name("Renamed source"),
+        },
+        ..observation.clone()
+    };
+    assert_eq!(
+        reconcile_epic(&EpicReconciliationInput {
+            spec: &spec,
+            observation: &renamed_observation,
+            freshness: Freshness::Fresh,
+            facts: &facts,
+            live_transitions: &live,
+            principal: &principal,
+        }),
+        ReconciliationOutcome::Conflict(StatusConflictKind::UnknownTransitionPath),
+        "a route source rename requires a new immutable spec revision"
+    );
+
+    let renamed_destination = [route(
+        "configured-next",
+        &StatusSelector {
+            status_id: next.status_id.clone(),
+            status_name: name("Renamed destination"),
+        },
+    )];
+    assert_eq!(
+        reconcile_epic(&EpicReconciliationInput {
+            spec: &spec,
+            observation: &observation,
+            freshness: Freshness::Fresh,
+            facts: &facts,
+            live_transitions: &renamed_destination,
+            principal: &principal,
+        }),
+        ReconciliationOutcome::Conflict(StatusConflictKind::NoLiveTransition),
+        "a live destination rename requires a new immutable spec revision"
+    );
 }
 
 // ---------------------------------------------------------------------------

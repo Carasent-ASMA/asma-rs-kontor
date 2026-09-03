@@ -599,7 +599,8 @@ impl SemanticStatusClass {
 pub struct StatusSelector {
     /// The status's opaque external id.
     pub status_id: ExternalId,
-    /// Its display name, kept for evidence only. Never matched on.
+    /// Its display name. A configured route matches the complete selector so a
+    /// Jira rename fails closed until a new immutable spec revision names it.
     pub status_name: ExternalName,
 }
 
@@ -752,6 +753,15 @@ impl InternalPredicate {
     }
 }
 
+/// One explicitly authorized edge in a milestone's external status route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitionRouteStep {
+    /// The exact observed status from which this step applies.
+    pub from: StatusSelector,
+    /// The exact status this step must reach.
+    pub to: StatusSelector,
+}
+
 /// One semantic milestone and the external status it converges to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MilestoneRule {
@@ -761,6 +771,13 @@ pub struct MilestoneRule {
     pub predicate: InternalPredicate,
     /// The external status it converges to.
     pub target: StatusSelector,
+    /// The declared multi-hop route to the target, when direct convergence is
+    /// not permitted by the external workflow.
+    ///
+    /// Empty is the v1 behavior and is omitted from canonical serialization so
+    /// installed v1 documents retain their exact bytes and hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route: Vec<TransitionRouteStep>,
 }
 
 /// What Kontor does about the ticket's assignee at a terminal status.
@@ -887,12 +904,17 @@ impl ExternalWorkflowSpec {
                 ));
             }
             rule.predicate.validate()?;
-            if !status_ids.contains(&rule.target.status_id) {
+            if !self
+                .statuses
+                .iter()
+                .any(|status| status.selector == rule.target)
+            {
                 return Err(DomainError::invalid(
                     "ExternalWorkflowSpec",
                     "a milestone targets an undeclared status",
                 ));
             }
+            self.validate_route(rule)?;
         }
         if !milestones.contains(&self.ownership_milestone) {
             return Err(DomainError::invalid(
@@ -911,6 +933,93 @@ impl ExternalWorkflowSpec {
                     "ExternalWorkflowSpec",
                     "references an undeclared status",
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_route(&self, rule: &MilestoneRule) -> DomainResult<()> {
+        let declared = |selector: &StatusSelector| {
+            self.statuses
+                .iter()
+                .any(|status| status.selector == *selector)
+        };
+        let mut sources = BTreeSet::new();
+        for step in &rule.route {
+            if !declared(&step.from) || !declared(&step.to) {
+                return Err(DomainError::invalid(
+                    "ExternalWorkflowSpec",
+                    "a milestone route references an undeclared status selector",
+                ));
+            }
+            if step.from.status_id == step.to.status_id {
+                return Err(DomainError::invalid(
+                    "ExternalWorkflowSpec",
+                    "a milestone route contains a self edge",
+                ));
+            }
+            if step.from.status_id == rule.target.status_id {
+                return Err(DomainError::invalid(
+                    "ExternalWorkflowSpec",
+                    "a milestone route may not leave its target",
+                ));
+            }
+            for selector in [&step.from, &step.to] {
+                if selector != &rule.target
+                    && !self
+                        .inbound_compatible
+                        .iter()
+                        .any(|inbound| inbound == selector)
+                {
+                    return Err(DomainError::invalid(
+                        "ExternalWorkflowSpec",
+                        "every route source and intermediate must be inbound compatible",
+                    ));
+                }
+                if selector != &rule.target
+                    && self
+                        .class_of(&selector.status_id)
+                        .is_some_and(SemanticStatusClass::is_terminal)
+                {
+                    return Err(DomainError::invalid(
+                        "ExternalWorkflowSpec",
+                        "a milestone route may not use a terminal source or intermediate",
+                    ));
+                }
+            }
+            if !sources.insert(step.from.status_id.clone()) {
+                return Err(DomainError::invalid(
+                    "ExternalWorkflowSpec",
+                    "a milestone route declares a duplicate source",
+                ));
+            }
+        }
+
+        for source in &sources {
+            let mut cursor = rule
+                .route
+                .iter()
+                .find(|step| &step.from.status_id == source)
+                .map(|step| &step.from)
+                .expect("each collected source came from one route step");
+            let mut visited = BTreeSet::new();
+            loop {
+                if cursor == &rule.target {
+                    break;
+                }
+                if !visited.insert(cursor.status_id.clone()) {
+                    return Err(DomainError::invalid(
+                        "ExternalWorkflowSpec",
+                        "a milestone route contains a cycle",
+                    ));
+                }
+                let Some(step) = rule.route.iter().find(|step| &step.from == cursor) else {
+                    return Err(DomainError::invalid(
+                        "ExternalWorkflowSpec",
+                        "every milestone route chain must terminate at its target",
+                    ));
+                };
+                cursor = &step.to;
             }
         }
         Ok(())
@@ -1357,6 +1466,32 @@ fn staged_epic_hop<'live>(
     Ok(Some(selected))
 }
 
+/// Select the one live transition to the route destination declared for the
+/// observed source. An empty route is signalled with `Ok(None)` so callers can
+/// preserve the v1 direct/reopen policy unchanged.
+fn configured_route_hop<'live>(
+    rule: &MilestoneRule,
+    observed_status: &StatusSelector,
+    live_transitions: &'live [LiveTransition],
+) -> Result<Option<&'live LiveTransition>, StatusConflictKind> {
+    if rule.route.is_empty() {
+        return Ok(None);
+    }
+    let Some(step) = rule.route.iter().find(|step| &step.from == observed_status) else {
+        return Err(StatusConflictKind::UnknownTransitionPath);
+    };
+    let mut matching = live_transitions
+        .iter()
+        .filter(|transition| transition.to == step.to);
+    let Some(selected) = matching.next() else {
+        return Err(StatusConflictKind::NoLiveTransition);
+    };
+    if matching.next().is_some() {
+        return Err(StatusConflictKind::MultipleLiveTransitions);
+    }
+    Ok(Some(selected))
+}
+
 /// Reconcile one Jira epic from epic-completion and child-task evidence.
 ///
 /// The algorithm deliberately mirrors [`reconcile`] while consuming only
@@ -1428,19 +1563,27 @@ pub fn reconcile_epic(input: &EpicReconciliationInput<'_>) -> ReconciliationOutc
         return Conflict(StatusConflictKind::IncompatibleHumanMove);
     }
 
-    let mut matching = input
-        .live_transitions
-        .iter()
-        .filter(|transition| transition.to.status_id == rule.target.status_id);
-    let selected = if let Some(direct) = matching.next() {
-        if matching.next().is_some() {
-            return Conflict(StatusConflictKind::MultipleLiveTransitions);
+    let selected = if rule.route.is_empty() {
+        let mut matching = input
+            .live_transitions
+            .iter()
+            .filter(|transition| transition.to.status_id == rule.target.status_id);
+        if let Some(direct) = matching.next() {
+            if matching.next().is_some() {
+                return Conflict(StatusConflictKind::MultipleLiveTransitions);
+            }
+            direct
+        } else {
+            match staged_epic_hop(input, &rule.target) {
+                Ok(Some(hop)) => hop,
+                Ok(None) => return Conflict(StatusConflictKind::NoLiveTransition),
+                Err(kind) => return Conflict(kind),
+            }
         }
-        direct
     } else {
-        match staged_epic_hop(input, &rule.target) {
+        match configured_route_hop(rule, &input.observation.status, input.live_transitions) {
             Ok(Some(hop)) => hop,
-            Ok(None) => return Conflict(StatusConflictKind::NoLiveTransition),
+            Ok(None) => unreachable!("a non-empty route always selects or refuses"),
             Err(kind) => return Conflict(kind),
         }
     };
@@ -1553,23 +1696,31 @@ pub fn reconcile(input: &ReconciliationInput<'_>) -> ReconciliationOutcome {
         return Conflict(StatusConflictKind::IncompatibleHumanMove);
     }
 
-    let mut matching = input
-        .live_transitions
-        .iter()
-        .filter(|t| t.to.status_id == rule.target.status_id);
-    let selected = if let Some(direct) = matching.next() {
-        if matching.next().is_some() {
-            return Conflict(StatusConflictKind::MultipleLiveTransitions);
+    let selected = if rule.route.is_empty() {
+        let mut matching = input
+            .live_transitions
+            .iter()
+            .filter(|t| t.to.status_id == rule.target.status_id);
+        if let Some(direct) = matching.next() {
+            if matching.next().is_some() {
+                return Conflict(StatusConflictKind::MultipleLiveTransitions);
+            }
+            direct
+        } else {
+            // The target is not reachable in one move. A real Jira workflow routinely
+            // refuses `DRAFT -> In Development` while offering
+            // `DRAFT -> Ready for Development`, and the honest answer is neither to
+            // force the move nor to call an unconverged ticket converged.
+            match staged_hop(input, &rule.target) {
+                Ok(Some(hop)) => hop,
+                Ok(None) => return Conflict(StatusConflictKind::NoLiveTransition),
+                Err(kind) => return Conflict(kind),
+            }
         }
-        direct
     } else {
-        // The target is not reachable in one move. A real Jira workflow routinely
-        // refuses `DRAFT -> In Development` while offering
-        // `DRAFT -> Ready for Development`, and the honest answer is neither to
-        // force the move nor to call an unconverged ticket converged.
-        match staged_hop(input, &rule.target) {
+        match configured_route_hop(rule, &input.observation.status, input.live_transitions) {
             Ok(Some(hop)) => hop,
-            Ok(None) => return Conflict(StatusConflictKind::NoLiveTransition),
+            Ok(None) => unreachable!("a non-empty route always selects or refuses"),
             Err(kind) => return Conflict(kind),
         }
     };

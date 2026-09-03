@@ -469,9 +469,14 @@ impl JiraConnector {
             }
         };
         if let Some(transition) = request.transition.as_ref() {
+            let destination = request.destination.as_ref().ok_or_else(|| {
+                JiraError::refused("apply", "a transition requires its exact destination")
+            })?;
             let offered = before.live_transitions.iter().any(|candidate| {
                 candidate.transition_id == transition.transition_id
-                    && candidate.to_status_id == transition.to_status_id
+                    && candidate.to_status_id == destination.status_id
+                    && candidate.to_status_name == destination.status_name
+                    && transition.to_status_id == destination.status_id
             });
             if !offered {
                 return Err(JiraError::Conflict {
@@ -512,10 +517,15 @@ impl JiraConnector {
         {
             return Err(transport("Jira readback did not confirm the assignee"));
         }
-        if let Some(transition) = request.transition.as_ref()
-            && after.observation.status_id != transition.to_status_id
-        {
-            return Err(transport("Jira readback did not confirm the transition"));
+        if request.transition.is_some() {
+            let destination = request.destination.as_ref().ok_or_else(|| {
+                JiraError::refused("apply", "a transition requires its exact destination")
+            })?;
+            if after.observation.status_id != destination.status_id
+                || after.observation.status_name != destination.status_name
+            {
+                return Err(transport("Jira readback did not confirm the transition"));
+            }
         }
         Ok(())
     }

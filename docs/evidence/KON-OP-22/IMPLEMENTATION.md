@@ -2,8 +2,8 @@
 
 Date: 2026-09-03
 
-Status: implementation and local verification complete; merge and live
-promotion pending.
+Status: deterministic epic-route correction implemented, independently
+approved and fully locally verified; merge and live promotion pending.
 
 ## Delivered behavior
 
@@ -24,6 +24,17 @@ promotion pending.
   references, and one-shot resolution.
 - Replayed conflicts and failed external applies do not create an immediate
   self-wake loop; the bounded backstop owns retry.
+- Jira milestone rules may declare an exact, acyclic status route. Kontor
+  selects a hop only when the observed status matches one route source exactly,
+  persists the actual hop destination in the intent, and requires exact
+  destination readback before confirming it. Missing, ambiguous, cyclic or
+  non-terminating routes fail closed.
+- The generic ASMA epic workflow is revision 2. It owns the verified Jira route
+  `New (10227)` -> `DRAFT (10237)` -> `TO BE GROOMED (10236)` ->
+  `Groomed (10233)` -> `READY FOR DEVELOPMENT (10213)` ->
+  `In Development (10214)`. Revision 1 remains readable and hash-stable for
+  historical installations, but is no longer bundled as the current epic
+  workflow.
 - Completion creation or advancement, any derived forward profile, all TPM
   wake intents and the local command receipt commit atomically.
 - Ticket work added or reopened after an epic leaves the ticket phase,

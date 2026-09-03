@@ -174,6 +174,26 @@ the intent only from that readback. Ambiguous or contradictory evidence is
 never guessed. Conflicts are append-only, de-duplicated by subject and kind,
 and stay open until an authorized explicit resolution records its receipt.
 
+A milestone may declare an ordered `route` of exact `from` and `to` status
+selectors when the external workflow cannot reach its final target in one
+transition. Routes are configuration, not graph search: from the freshly
+observed status Kontor selects only the one declared next destination, requires
+exactly one currently offered transition to it, confirms that intermediate
+destination, and then reconciles the next hop from a new observation. Every
+declared status must exist in the same immutable workflow revision, every
+source is unique, and each chain must terminate at that milestone's final
+target without a self-edge or cycle. An undeclared, unavailable or ambiguous
+step fails closed as a typed conflict; Kontor never chooses a plausible Jira
+path from names or whichever transitions happen to be live.
+
+The bundled ASMA generic epic workflow revision 2 declares the observed Jira
+route for an active epic explicitly: `New (10227)` → `DRAFT (10237)` →
+`TO BE GROOMED (10236)` → `Groomed (10233)` →
+`READY FOR DEVELOPMENT (10213)` → `In Development (10214)`. This route was
+verified from current ASMA Epic transitions and Epic changelog evidence; it is
+not inferred from status wording. Installed revision 1 remains immutable for
+historical readback, but new selection and installation use revision 2.
+
 Completion continually re-evaluates child work after it leaves the ticket gate.
 A task added or reopened during integration, Committee review, closeout or a
 finished era returns the epic to its ticket gate under a new attributed era;

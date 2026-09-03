@@ -14,13 +14,13 @@ use kontor_core::id::{
     SCHEMA_VERSION, SemanticMilestoneKey, SpecVersion, WorkProfileKey, parse_utc_timestamp,
 };
 use kontor_core::ticket::{
-    EpicCompletionEvidence, InternalPredicate, OwnershipAction, SelectedTransition, StatusSelector,
-    TransitionPlan,
+    EpicCompletionEvidence, InternalPredicate, LiveTransition, OwnershipAction, SelectedTransition,
+    StatusSelector, TransitionPlan,
 };
 use kontor_jira::jira::{
-    ApplyAuthority, FieldSpecKey, JiraExchange, JiraIssueDelegation, JiraOperation, JiraOutcome,
-    JiraRequest, JiraResponse, PinnedProfile, RequestedTransition, SpecCatalog, WireConfirmation,
-    WireEffects, WireObservation, WireTransition, WorkflowSpecKey,
+    ApplyAuthority, FieldSpecKey, IssueAmbiguityVerdict, JiraExchange, JiraIssueDelegation,
+    JiraOperation, JiraOutcome, JiraRequest, JiraResponse, PinnedProfile, RequestedTransition,
+    SpecCatalog, WireConfirmation, WireEffects, WireObservation, WireTransition, WorkflowSpecKey,
 };
 use kontor_jira::{
     JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan, SelectionConflict, UnavailableReason,
@@ -286,14 +286,14 @@ fn bundled_epic_specs_are_generic_and_entity_specific() {
     let connector = ConnectorKey::parse("connector.jira").expect("connector");
     let project = ExternalProjectKey::parse("asma").expect("project");
     let epic = ExternalIssueTypeKey::parse("epic").expect("issue type");
-    let version = SpecVersion::parse(1).expect("spec revision");
+    let field_version = SpecVersion::parse(1).expect("field spec revision");
 
     let field = catalog
         .select_field_spec(&FieldSpecKey {
             connector: connector.clone(),
             project: project.clone(),
             issue_type: epic.clone(),
-            version,
+            version: field_version,
         })
         .expect("the epic field mapping is selectable");
     assert_eq!(field.spec().issue_type.as_str(), "epic");
@@ -303,7 +303,7 @@ fn bundled_epic_specs_are_generic_and_entity_specific() {
             connector,
             project,
             issue_type: epic,
-            version,
+            version: SpecVersion::parse(2).expect("workflow spec revision"),
             work_profile: None,
         })
         .expect("the generic epic workflow is selectable");
@@ -312,6 +312,16 @@ fn bundled_epic_specs_are_generic_and_entity_specific() {
     assert_eq!(
         workflow.spec().ownership_milestone.as_str(),
         "terminal_done"
+    );
+    assert_eq!(workflow.document().schema_version(), SCHEMA_VERSION);
+    assert_eq!(
+        workflow.spec().version,
+        SpecVersion::parse(2).expect("workflow spec revision")
+    );
+    assert_eq!(
+        workflow.hash(),
+        &ContentHash::parse("21b1a100d832d688fbf99c4140f63aac8c8f7d9980aa1e7174288a3c2cf0c40e")
+            .expect("pinned epic v2 canonical hash")
     );
 
     let terminal = workflow
@@ -345,6 +355,28 @@ fn bundled_epic_specs_are_generic_and_entity_specific() {
             state: EpicCompletionEvidence::NeedsHuman
         }
     ));
+    let active = workflow
+        .spec()
+        .milestones
+        .iter()
+        .find(|rule| rule.milestone.as_str() == "epic_active")
+        .expect("active milestone");
+    let route: Vec<(&str, &str)> = active
+        .route
+        .iter()
+        .map(|step| (step.from.status_id.as_str(), step.to.status_id.as_str()))
+        .collect();
+    assert_eq!(
+        route,
+        vec![
+            ("10227", "10237"),
+            ("10237", "10236"),
+            ("10236", "10233"),
+            ("10233", "10213"),
+            ("10213", "10214"),
+        ],
+        "the bundled route is the verified ASMA Epic workflow, in order"
+    );
     assert!(workflow.spec().milestones.iter().all(|rule| {
         !matches!(
             rule.predicate,
@@ -357,19 +389,47 @@ fn bundled_epic_specs_are_generic_and_entity_specific() {
     }));
 }
 
+#[test]
+fn an_installed_v1_epic_workflow_remains_selectable_and_hash_stable() {
+    let source = include_str!("../fixtures/external-workflow-asma-epic.json");
+    let source_value: serde_json::Value = serde_json::from_str(source).expect("v1 fixture JSON");
+    let expected = kontor_core::id::CanonicalDocument::from_value(&source_value)
+        .expect("v1 canonical document");
+    let mut catalog = SpecCatalog::empty();
+    catalog
+        .load_workflow_spec(source)
+        .expect("an installed v1 workflow remains compatible");
+    let selected = catalog
+        .select_workflow_spec(&WorkflowSpecKey {
+            connector: ConnectorKey::parse("connector.jira").expect("connector"),
+            project: ExternalProjectKey::parse("asma").expect("project"),
+            issue_type: ExternalIssueTypeKey::parse("epic").expect("issue type"),
+            version: SpecVersion::parse(1).expect("v1 workflow revision"),
+            work_profile: None,
+        })
+        .expect("installed v1 workflow is selectable");
+    assert_eq!(selected.document(), &expected);
+    assert!(
+        selected
+            .spec()
+            .milestones
+            .iter()
+            .all(|rule| rule.route.is_empty())
+    );
+}
+
 #[tokio::test]
 async fn entity_neutral_delegation_binds_apply_to_observation_route_and_readback() {
     let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
     let connector = ConnectorKey::parse("connector.jira").expect("connector");
     let project = ExternalProjectKey::parse("asma").expect("project");
     let epic = ExternalIssueTypeKey::parse("epic").expect("issue type");
-    let version = SpecVersion::parse(1).expect("spec revision");
     let field_spec = catalog
         .select_field_spec(&FieldSpecKey {
             connector: connector.clone(),
             project: project.clone(),
             issue_type: epic.clone(),
-            version,
+            version: SpecVersion::parse(1).expect("field spec revision"),
         })
         .expect("epic field specification");
     let workflow_spec = catalog
@@ -377,7 +437,7 @@ async fn entity_neutral_delegation_binds_apply_to_observation_route_and_readback
             connector,
             project,
             issue_type: epic,
-            version,
+            version: SpecVersion::parse(2).expect("workflow spec revision"),
             work_profile: None,
         })
         .expect("epic workflow specification");
@@ -442,6 +502,64 @@ async fn entity_neutral_delegation_binds_apply_to_observation_route_and_readback
         assignment_prerequisite: false,
     };
 
+    let intermediate = StatusSelector {
+        status_id: ExternalId::parse("10236").expect("intermediate id"),
+        status_name: ExternalName::parse("TO BE GROOMED").expect("intermediate name"),
+    };
+    let intent_observation = kontor_jira::jira::ObservedIssue {
+        live_transitions: vec![
+            LiveTransition {
+                transition_id: ExternalId::parse("31").expect("direct transition id"),
+                to: plan.target.clone(),
+            },
+            LiveTransition {
+                transition_id: ExternalId::parse("32").expect("hop transition id"),
+                to: intermediate.clone(),
+            },
+        ],
+        ..observed.clone()
+    };
+    let staged_plan = TransitionPlan {
+        transition: Some(SelectedTransition {
+            transition_id: ExternalId::parse("32").expect("hop transition id"),
+            to: intermediate.clone(),
+        }),
+        ..plan.clone()
+    };
+    let direct_intent = delegation
+        .intent(&intent_observation, &plan)
+        .expect("direct intent");
+    let staged_intent = delegation
+        .intent(&intent_observation, &staged_plan)
+        .expect("staged intent");
+    assert_ne!(
+        direct_intent.hash(),
+        staged_intent.hash(),
+        "authority must distinguish a direct transition from an intermediate hop"
+    );
+    let staged_json: serde_json::Value =
+        serde_json::from_str(staged_intent.json()).expect("canonical intent JSON");
+    assert_eq!(
+        staged_json["destination"],
+        serde_json::to_value(&intermediate).expect("selector JSON"),
+        "canonical authority names this attempt's actual destination"
+    );
+
+    let renamed_route = kontor_jira::jira::ObservedIssue {
+        live_transitions: vec![LiveTransition {
+            transition_id: ExternalId::parse("31").expect("transition id"),
+            to: StatusSelector {
+                status_id: ExternalId::parse("10214").expect("destination id"),
+                status_name: ExternalName::parse("Renamed destination").expect("destination name"),
+            },
+        }],
+        ..observed.clone()
+    };
+    assert!(matches!(
+        delegation.dry_run(&renamed_route, &plan).await,
+        Err(JiraError::Refused { .. })
+    ));
+
     delegation
         .dry_run(&observed, &plan)
         .await
@@ -482,8 +600,27 @@ async fn entity_neutral_delegation_binds_apply_to_observation_route_and_readback
         }
     ));
 
+    let renamed_after = wire_observation("10214", "Renamed destination", "v3");
+    exchange
+        .responses
+        .lock()
+        .expect("response script")
+        .push_back(wire_response(
+            JiraOperation::Refetch,
+            JiraOutcome::Observed,
+            renamed_after,
+            None,
+        ));
+    assert!(matches!(
+        delegation
+            .reconcile_after_ambiguity(&observed, &plan)
+            .await
+            .expect("refetch is interpreted"),
+        IssueAmbiguityVerdict::Contradictory(_)
+    ));
+
     let requests = exchange.requests.lock().expect("request ledger");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     let dry_run = &requests[1];
     let apply = &requests[2];
     assert_eq!(
