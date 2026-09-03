@@ -804,6 +804,9 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         .expect("record counts are an object")
         .remove("profile_selection_outcomes");
     for field in [
+        "canonical_jira_task_links",
+        "epic_status_conflicts",
+        "epic_jira_transition_intents",
         "team_definitions",
         "project_team_definition_defaults",
         "mini_project_team_definition_snapshots",
@@ -877,9 +880,9 @@ fn profile_selection_outcomes_round_trip_as_exact_non_executable_lineage() {
     let [first, second] = seed_profile_selection_outcomes(&source);
     let export = export_realm(&source.store, at("2026-08-10T10:00:00Z"))
         .expect("the outcome-bearing export");
-    // Generation 4 adds the Team Definition surfaces; generation 3 was the
+    // Later generations add other continuity surfaces; generation 3 was the
     // profile-selection-outcome generation this test is otherwise about.
-    assert_eq!(export.schema_version, 4);
+    assert_eq!(export.schema_version, EXPORT_SCHEMA_VERSION);
     assert_eq!(export.records.profile_selection_outcomes.len(), 2);
     assert_eq!(
         export

@@ -2143,6 +2143,53 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "The unresolved external-status conflicts one task's links hold.",
     },
     ToolSpec {
+        name: "kontor_epic_ticket_conflicts_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            opt(
+                "include_resolved",
+                Place::Query,
+                ArgType::Bool,
+                "Include already-closed conflicts. Open ones only by default.",
+            ),
+        ],
+        about: "The external-status conflicts one epic's own Jira issue holds.",
+    },
+    ToolSpec {
+        name: "kontor_epic_ticket_conflict_resolve",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "conflict_id",
+                Place::Body,
+                ArgType::Text,
+                "The conflict to close.",
+            ),
+        ],
+        about: "Resolve one detected external-status conflict on an epic.",
+    },
+    ToolSpec {
         name: "kontor_ticket_conflict_resolve",
         tier: CallerTier::Operator,
         method: Method::Post,

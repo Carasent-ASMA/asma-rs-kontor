@@ -74,8 +74,9 @@ pub use graph::{
     StoredWaiver, TeamTemplateSource, TurnDispatch,
 };
 pub use jira::{
-    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
-    NewJiraMaterializationItem, RecoveredJiraMaterialization, StoredJiraMaterializationItem,
+    ConflictClose, JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem,
+    NewJiraMaterializationBatch, NewJiraMaterializationItem, RecoveredJiraMaterialization,
+    StoredJiraMaterializationItem,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use policy::{

@@ -56,7 +56,7 @@ closed_enum! {
         /// [`CommandKind::ApproveScheduleOverride`]: if one kind covered both,
         /// an approval receipt could be replayed as its own revocation.
         RevokeScheduleOverride => "revoke_schedule_override",
-        /// Resolve a detected status conflict on a ticket link.
+        /// Resolve a detected status conflict on a ticket link or Jira epic.
         ResolveStatusConflict => "resolve_status_conflict",
         /// Assign a calendar to a project.
         AssignWorkCalendar => "assign_work_calendar",
@@ -453,8 +453,13 @@ impl CommandKind {
             Self::ApproveIntake => witness(matches!(target, A::Project | A::MiniProject | A::Task)),
             Self::SyncTicket
             | Self::AssignTicket
-            | Self::TransitionTicket
-            | Self::ResolveStatusConflict => witness(matches!(target, A::TicketLink)),
+            | Self::TransitionTicket => witness(matches!(target, A::TicketLink)),
+            // Status conflicts can stand against either one task link or the
+            // epic's own Jira issue. The same witnessed command closes both;
+            // the target keeps their authority scopes distinct.
+            Self::ResolveStatusConflict => {
+                witness(matches!(target, A::TicketLink | A::MiniProject))
+            }
             // A capability or an override is granted over a work scope, and a
             // work scope is exactly one of these three aggregates.
             Self::AuthorizeExecution

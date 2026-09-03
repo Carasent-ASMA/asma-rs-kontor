@@ -690,6 +690,17 @@ pub struct StoredCompletionProfile {
     pub published_at: Timestamp,
 }
 
+/// What an atomic completion commit does to the run row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionWrite {
+    /// Create the run already carrying its first transition.
+    Create,
+    /// Advance the run standing at this revision.
+    Advance(AggregateRevision),
+    /// Verify exact state and record only a replay receipt.
+    Unchanged,
+}
+
 /// One epic's durable completion run.
 ///
 /// The pinned profile identity is stored as columns beside the state document,
@@ -729,6 +740,8 @@ pub struct StoredRemediationProposal {
     pub project_id: ProjectId,
     /// The epic.
     pub mini_project_id: MiniProjectId,
+    /// Reopening era whose failed round this proposal answers.
+    pub completion_generation: u32,
     /// The failed round this answers.
     pub round: u8,
     /// That round's evidence digest, as the proposer read it.

@@ -57,8 +57,9 @@ use crate::authority::{
 };
 use crate::query::column_text;
 use crate::repository::{
-    TASK_COLUMNS, backend, conflict, from_json, read_project, read_scope, read_task,
-    read_timestamp, read_version, revision_of, text, to_json, version_column,
+    TASK_COLUMNS, backend, canonical_jira_connector, conflict, from_json, is_jira_connector,
+    read_project, read_scope, read_task, read_timestamp, read_version, revision_of, text, to_json,
+    version_column,
 };
 
 // ---------------------------------------------------------------------------
@@ -930,6 +931,24 @@ impl SqliteStore {
             .transpose()
     }
 
+    /// List every epic in one project in stable identity order.
+    ///
+    /// The resident Jira controller uses the project graph itself as its
+    /// durable queue, including epics that currently have no child tasks.
+    pub fn list_mini_projects(&self, project_id: ProjectId) -> RepositoryResult<Vec<MiniProject>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, project_id, name, revision, created_at
+                 FROM mini_projects WHERE project_id = ?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map([project_id.to_string()], |row| Ok(read_mini_project(row)))
+            .map_err(backend)?;
+        rows.map(|row| row.map_err(backend)?).collect()
+    }
+
     /// Read one epic's durable runtime-facing identity.
     ///
     /// # Errors
@@ -1050,7 +1069,17 @@ impl SqliteStore {
             .connection
             .prepare(
                 "SELECT id, project_id, task_id, connector, external_issue_key, revision, created_at
-                 FROM jira_links WHERE project_id = ?1 AND task_id = ?2
+                 FROM jira_links AS link
+                 WHERE project_id = ?1 AND task_id = ?2
+                   AND (
+                       connector NOT IN ('jira', 'connector.jira')
+                       OR EXISTS (
+                           SELECT 1
+                           FROM canonical_jira_task_links AS ledger
+                           WHERE ledger.project_id = link.project_id
+                             AND ledger.link_id = link.id
+                       )
+                   )
                  ORDER BY created_at, id",
             )
             .map_err(backend)?;
@@ -1929,11 +1958,16 @@ fn read_mini_project(row: &rusqlite::Row<'_>) -> RepositoryResult<MiniProject> {
 }
 
 fn read_ticket_link(row: &rusqlite::Row<'_>) -> RepositoryResult<TicketLink> {
+    let connector = row.get::<_, String>(3).map_err(backend)?;
     Ok(TicketLink {
         id: TicketLinkId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
         project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
         task_id: TaskId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
-        connector: ConnectorKey::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+        connector: ConnectorKey::parse(if connector == "jira" {
+            "connector.jira"
+        } else {
+            &connector
+        })?,
         external_issue_key: ExternalId::parse(&row.get::<_, String>(4).map_err(backend)?)?,
         revision: revision_of(row.get::<_, i64>(5).map_err(backend)?)?,
         created_at: read_timestamp(&row.get::<_, String>(6).map_err(backend)?)?,
@@ -3044,11 +3078,61 @@ fn ensure_links(
     let mut applied = Vec::with_capacity(plan.ticket_links.len());
     let mut stated = BTreeSet::new();
     for link in &plan.ticket_links {
-        if !stated.insert((&link.connector, &link.external_issue_key)) {
+        let connector = if is_jira_connector(&link.connector) {
+            canonical_jira_connector()
+        } else {
+            link.connector.clone()
+        };
+        if !stated.insert((connector.clone(), link.external_issue_key.clone())) {
             return Err(conflict(
                 "ticket link",
                 "the same external issue is linked twice to one task",
             ));
+        }
+        if is_jira_connector(&connector) {
+            let existing_for_task: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT link_id, external_issue_key
+                     FROM canonical_jira_task_links
+                     WHERE project_id = ?1 AND task_id = ?2",
+                    params![request.project_id.to_string(), task_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(backend)?;
+            if let Some((id, issue_key)) = existing_for_task {
+                if issue_key != link.external_issue_key.as_str() {
+                    return Err(conflict(
+                        "Jira task link",
+                        "one task cannot be linked to more than one Jira issue",
+                    ));
+                }
+                applied.push(AppliedLink {
+                    id: TicketLinkId::parse(&id)?,
+                    connector,
+                    external_issue_key: link.external_issue_key.clone(),
+                    applied: Applied::Unchanged,
+                });
+                continue;
+            }
+            let owner_for_key: Option<String> = transaction
+                .query_row(
+                    "SELECT task_id FROM canonical_jira_task_links
+                     WHERE project_id = ?1 AND external_issue_key = ?2",
+                    params![
+                        request.project_id.to_string(),
+                        link.external_issue_key.as_str()
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            if owner_for_key.is_some() {
+                return Err(conflict(
+                    "Jira task link",
+                    "one Jira issue cannot be linked to more than one task",
+                ));
+            }
         }
         // A link is unique per `(project, connector, issue)`, so a second task
         // claiming the same issue is refused — including one in another epic.
@@ -3058,7 +3142,7 @@ fn ensure_links(
                  WHERE project_id = ?1 AND connector = ?2 AND external_issue_key = ?3",
                 params![
                     request.project_id.to_string(),
-                    link.connector.as_str(),
+                    connector.as_str(),
                     link.external_issue_key.as_str()
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -3074,7 +3158,7 @@ fn ensure_links(
             }
             applied.push(AppliedLink {
                 id: TicketLinkId::parse(&id)?,
-                connector: link.connector.clone(),
+                connector,
                 external_issue_key: link.external_issue_key.clone(),
                 applied: Applied::Unchanged,
             });
@@ -3090,15 +3174,30 @@ fn ensure_links(
                     id.to_string(),
                     request.project_id.to_string(),
                     task_id.to_string(),
-                    link.connector.as_str(),
+                    connector.as_str(),
                     link.external_issue_key.as_str(),
                     text(request.applied_at)
                 ],
             )
             .map_err(backend)?;
+        if is_jira_connector(&connector) {
+            transaction
+                .execute(
+                    "INSERT INTO canonical_jira_task_links
+                         (project_id, task_id, external_issue_key, link_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        request.project_id.to_string(),
+                        task_id.to_string(),
+                        link.external_issue_key.as_str(),
+                        id.to_string(),
+                    ],
+                )
+                .map_err(backend)?;
+        }
         applied.push(AppliedLink {
             id,
-            connector: link.connector.clone(),
+            connector,
             external_issue_key: link.external_issue_key.clone(),
             applied: Applied::Created,
         });

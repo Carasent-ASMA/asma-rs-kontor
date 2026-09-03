@@ -22,7 +22,8 @@ use clap::{Parser, Subcommand};
 use kontor_api::state::BarrierState;
 use kontor_core::id::{ProjectId, Timestamp};
 use kontor_daemon::{
-    DEFAULT_PORT, Daemon, DaemonConfig, endpoint, logging, recovery, runtimes, usage,
+    COMPLETION_SCAN_INTERVAL, DEFAULT_PORT, Daemon, DaemonConfig, endpoint, jira_sync, logging,
+    recovery, runtimes, usage,
 };
 use tracing::{error, info, warn};
 
@@ -253,6 +254,11 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
         daemon.usage_poller(),
         daemon.state(),
     ));
+    tokio::spawn(jira_sync::poll_until_stopped(
+        daemon.jira_reconciler(),
+        daemon.state(),
+    ));
+    let _completion_scanner = daemon.spawn_completion_scanner(COMPLETION_SCAN_INTERVAL);
 
     let bind: SocketAddr = daemon.config().bind;
     let listener = match tokio::net::TcpListener::bind(bind).await {

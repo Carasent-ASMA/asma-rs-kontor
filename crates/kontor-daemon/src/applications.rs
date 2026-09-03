@@ -71,10 +71,10 @@ use kontor_api::applications::{
     IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
     ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
     ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
-    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecoverConsultationSeatRequest,
-    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
-    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
-    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecordedCloseoutDto,
+    RecoverConsultationSeatRequest, RemediateCompletionRequest, RemediationActionDto,
+    RemediationAuthorityDto, RemediationAuthorizationDto, RemediationRecordDto,
+    RepositoryOutcomeDto, RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
     RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
@@ -97,12 +97,13 @@ use kontor_api::applications::{
     TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
 };
 use kontor_api::applications::{
-    AttestLateHandoffRequest, ConnectorSpecDto, IntakeReceiptDto, LateHandoffAttestationDto,
-    ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto, ProfilePhaseDto, ProfileValidationDto,
-    RegisterPackRequest, ReplaceSeatRequest, ReplacedSeatDto, ResolveConflictRequest,
-    RoleSlotWaiverDto, RuntimeModelRouteRequest, SettleTurnRequest, SettledTurnDto,
-    SubmitIntakeRequest, TicketClaimDto, TicketCommentDto, TicketCommentPullDto, TicketConflictDto,
-    TriggerSpecDto, TurnFollowUpDto, WaiveRoleSlotRequest, WorkProfileDetailDto,
+    AttestLateHandoffRequest, ConnectorSpecDto, EpicConflictDto, IntakeReceiptDto,
+    LateHandoffAttestationDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
+    ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ReplaceSeatRequest,
+    ReplacedSeatDto, ResolveConflictRequest, RoleSlotWaiverDto, RuntimeModelRouteRequest,
+    SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto, TicketCommentDto,
+    TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto, WaiveRoleSlotRequest,
+    WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     CodeHelpProjectionDto, DraftTopologySpecRequest, PublishTeamDefinitionRequest,
@@ -145,24 +146,25 @@ use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
-    CommandRepository, CredentialReference, CredentialReferenceKind, IntakeOutcome,
-    IntakeRepository, MigrationObjectKind, MiniProject, MiniProjectTeamDefinitionSnapshot,
-    MiniProjectTopologySnapshot, NativePlacement, NewAccountProfile, NewAdaptiveAdmissionState,
-    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
-    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
-    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
-    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
-    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
-    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
-    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, TaskTransitionRequest, TaskWorkflow,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
-    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
+    IntakeOutcome, IntakeRepository, MigrationObjectKind, MiniProject,
+    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
+    NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
+    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
+    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
+    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
+    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
+    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -174,17 +176,19 @@ use kontor_core::spec::{
     TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    DerivedRunState, GateVerdict, ImportedTaskState, ObservedContainerKind, RuntimeContact,
-    SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource,
-    TerminalOutcome, TopologyLifecycle,
+    DerivedRunState, Freshness, GateVerdict, ImportedTaskState, ObservedContainerKind,
+    RuntimeContact, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
+    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::ticket::{
-    CommentPolicy, ExternalCommentRevision, InternalTaskFacts, OwnershipAction,
-    ReconciliationOutcome, StatusConflictKind, TicketSyncProjection, TransitionPlan,
+    CommentPolicy, EpicCompletionEvidence, EpicReconciliationInput, EpicStatusConflict,
+    EpicStatusTransitionIntent, ExternalCommentRevision, ExternalEpicObservation,
+    InternalEpicFacts, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflict,
+    StatusConflictKind, StatusSelector, TicketSyncProjection, TransitionPlan, reconcile_epic,
 };
 use kontor_jira::jira::{
-    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldSpecKey, JiraOutcome, Observed,
-    PinnedProfile, SpecCatalog, TicketDelegation, WorkflowSpecKey,
+    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, IssueAmbiguityVerdict,
+    JiraIssueDelegation, JiraOutcome, Observed, PinnedProfile, SpecCatalog, TicketDelegation,
 };
 use kontor_jira::{JiraConnector, JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan};
 use kontor_policy::{
@@ -364,6 +368,11 @@ struct PreparedTicket {
     facts: InternalTaskFacts,
     observed: Observed,
     transition: Option<TransitionPlan>,
+    conflict: Option<(
+        StatusConflictKind,
+        Option<kontor_core::id::SemanticMilestoneKey>,
+    )>,
+    workflow_spec_version: SpecVersion,
 }
 
 /// The complete, externally observed plan one reconcile response names.
@@ -372,6 +381,32 @@ struct PreparedTicketPlan {
     diff: Vec<TicketFieldDiffDto>,
     hash: String,
     tickets: Vec<PreparedTicket>,
+}
+
+/// One bounded automatic Jira convergence pass.
+///
+/// Counts are deliberately subject counts rather than request counts: a task
+/// with several legacy links is one broken subject, not several successful
+/// synchronizations.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JiraReconcileReport {
+    /// Linked tasks inspected in this pass.
+    pub task_subjects: usize,
+    /// Linked epics inspected in this pass.
+    pub epic_subjects: usize,
+    /// Subjects already converged when observed.
+    pub converged: usize,
+    /// Subjects whose planned effects were applied and confirmed.
+    pub applied: usize,
+    /// Subjects refused or unavailable; the next pass retries from durable state.
+    pub blocked: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JiraSubjectOutcome {
+    Converged,
+    Applied,
+    Blocked,
 }
 
 struct PreparedJiraMaterialization {
@@ -529,6 +564,14 @@ pub struct Services {
     provider_probe_guard: tokio::sync::Mutex<()>,
 }
 
+struct CompletionCommit<'a> {
+    reason: &'static str,
+    now: Timestamp,
+    write: CompletionWrite,
+    derived_profile: Option<&'a StoredCompletionProfile>,
+    command: &'a NewLocalCommand,
+}
+
 impl std::fmt::Debug for Services {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -664,11 +707,14 @@ impl Services {
             .with_store(|store| store.list_task_ticket_links(project_id, task.id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .filter(|link| link.connector.as_str() == "jira")
+            .filter(|link| link.connector.as_str() == "connector.jira")
             .map(|link| link.external_issue_key);
-        let external_issue_key = jira.next().unwrap_or(
-            ExternalId::parse(&task.id.to_string()).map_err(|error| self.refuse_domain(&error))?,
-        );
+        let external_issue_key = jira.next().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task has no confirmed Jira link for its runtime execution scope; link a Jira ticket before materialization or retitle",
+            )
+        })?;
         if jira.next().is_some() {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -2192,39 +2238,62 @@ impl Services {
         })
     }
 
-    /// Select the exact bundled mapping pinned by one task's frozen profile.
-    fn jira_specs(
+    /// Select one exact bundled field mapping and installed workflow policy.
+    ///
+    /// Entity kind and frozen work-profile revision are both selection keys.
+    /// Falling back to the first bundled specification is forbidden: that was
+    /// the divergence that made high-stakes tickets silently use `code@1`.
+    fn jira_specs_for(
         &self,
-        workflow: &kontor_core::repository::TaskWorkflow,
+        project_id: ProjectId,
+        issue_type: &str,
+        work_profile: Option<PinnedProfile>,
     ) -> Result<(CompiledFieldSpec, CompiledWorkflowSpec), ApiError> {
         let catalog = self.connector_catalog()?;
-        let seed_field = catalog.field_specs().first().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "this build ships no Jira ticket-field specification",
-            )
-        })?;
-        let field = catalog
-            .select_field_spec(&FieldSpecKey {
-                connector: seed_field.spec().connector.clone(),
-                project: seed_field.spec().project.clone(),
-                issue_type: seed_field.spec().issue_type.clone(),
-                version: seed_field.spec().version,
+        let workflows: Vec<&CompiledWorkflowSpec> = catalog
+            .workflow_specs()
+            .iter()
+            .filter(|compiled| {
+                let spec = compiled.spec();
+                spec.connector.as_str() == "connector.jira"
+                    && spec.project.as_str() == "asma"
+                    && spec.issue_type.as_str() == issue_type
+                    && spec.work_profile.as_ref()
+                        == work_profile.as_ref().map(|profile| &profile.key)
+                    && spec.work_profile_version
+                        == work_profile.as_ref().map(|profile| profile.version)
             })
-            .map_err(|error| self.refuse_jira(&error))?
-            .clone();
-        let seed_workflow = catalog.workflow_specs().first().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "this build ships no Jira external-workflow specification",
-            )
-        })?;
+            .collect();
+        if workflows.len() != 1 {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "this build does not contain exactly one Jira workflow specification for the entity kind and frozen profile",
+            ));
+        }
+        let external = workflows[0].clone();
+        let fields: Vec<&CompiledFieldSpec> = catalog
+            .field_specs()
+            .iter()
+            .filter(|compiled| {
+                let spec = compiled.spec();
+                spec.connector == external.spec().connector
+                    && spec.project == external.spec().project
+                    && spec.issue_type == external.spec().issue_type
+            })
+            .collect();
+        if fields.len() != 1 {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "this build does not contain exactly one Jira field specification for the selected entity kind",
+            ));
+        }
+        let field = fields[0].clone();
         let selector = kontor_core::repository::ConnectorSpecSelector {
-            project_id: workflow.project_id,
-            connector: seed_workflow.spec().connector.clone(),
-            project: seed_workflow.spec().project.clone(),
-            issue_type: seed_workflow.spec().issue_type.clone(),
-            version: seed_workflow.spec().version,
+            project_id,
+            connector: external.spec().connector.clone(),
+            project: external.spec().project.clone(),
+            issue_type: external.spec().issue_type.clone(),
+            version: external.spec().version,
         };
         let installed = self
             .state()?
@@ -2233,33 +2302,285 @@ impl Services {
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::UnsupportedCapability,
-                    "install the canonical connector.jira external-workflow revision before reconciling Jira links",
+                    "install the exact connector.jira external-workflow revision selected by this entity and profile before reconciliation",
                 )
             })?;
-        let installed_json = serde_json::to_string(&installed).map_err(|_| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the installed external-workflow specification could not be compiled",
-            )
-        })?;
-        let mut installed_catalog = SpecCatalog::empty();
-        installed_catalog
-            .load_workflow_spec(&installed_json)
+        if &installed != external.spec() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the installed Jira workflow revision differs from the bundled immutable specification",
+            ));
+        }
+        Ok((field.clone(), external.clone()))
+    }
+
+    /// Select the exact Jira mapping pinned by one task's frozen profile.
+    fn jira_specs(
+        &self,
+        workflow: &kontor_core::repository::TaskWorkflow,
+    ) -> Result<(CompiledFieldSpec, CompiledWorkflowSpec), ApiError> {
+        self.jira_specs_for(
+            workflow.project_id,
+            "task",
+            Some(PinnedProfile {
+                key: workflow.snapshot.definition.id.clone(),
+                version: workflow.snapshot.definition.version,
+            }),
+        )
+    }
+
+    /// Select the generic epic Jira mapping. Epic completion has no task work
+    /// profile and therefore never borrows a task profile as a synthetic pin.
+    fn jira_epic_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<(CompiledFieldSpec, CompiledWorkflowSpec), ApiError> {
+        self.jira_specs_for(project_id, "epic", None)
+    }
+
+    /// Compile the only epic facts the external workflow is allowed to read.
+    fn epic_jira_facts(
+        &self,
+        project_id: ProjectId,
+        epic: &MiniProject,
+    ) -> Result<InternalEpicFacts, ApiError> {
+        let state = self.state()?;
+        let completion = state
+            .with_store(|store| store.get_epic_completion(project_id, epic.id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|stored| self.completion_state(&stored))
+            .transpose()?
+            .map_or(
+                EpicCompletionEvidence::Active,
+                |completion| match completion.phase {
+                    CompletionPhase::Done => EpicCompletionEvidence::Done,
+                    CompletionPhase::NeedsHuman => EpicCompletionEvidence::NeedsHuman,
+                    _ => EpicCompletionEvidence::Active,
+                },
+            );
+        let tasks = state
+            .with_store(|store| store.list_epic_tasks(project_id, epic.id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(InternalEpicFacts {
+            epic_id: epic.id,
+            epic_revision: epic.revision,
+            completion,
+            all_child_tasks_terminal: tasks.iter().all(|task| task.state.is_terminal()),
+        })
+    }
+
+    /// Converge one confirmed Jira epic from epic-scoped facts only.
+    async fn reconcile_jira_epic(
+        &self,
+        project_id: ProjectId,
+        epic: &MiniProject,
+        issue_key: &ExternalId,
+    ) -> Result<JiraSubjectOutcome, ApiError> {
+        let state = self.state()?;
+        let (field_spec, workflow_spec) = self.jira_epic_specs(project_id)?;
+        let facts = self.epic_jira_facts(project_id, epic)?;
+        let observe_key = IdempotencyKey::parse(&format!(
+            "jira-auto-epic-observe:{}:{}",
+            epic.id,
+            epic.revision.get()
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let empty_fields = Vec::new();
+        let observe_delegation = JiraIssueDelegation {
+            exchange: self.jira(project_id)?,
+            field_spec: &field_spec,
+            workflow_spec: &workflow_spec,
+            issue_key,
+            projection_revision: epic.revision,
+            field_writes: &empty_fields,
+            idempotency_key: &observe_key,
+        };
+        let observed = observe_delegation
+            .observe()
+            .await
             .map_err(|error| self.refuse_jira(&error))?;
-        let external = installed_catalog
-            .select_workflow_spec(&WorkflowSpecKey {
-                connector: selector.connector,
-                project: selector.project,
-                issue_type: selector.issue_type,
-                version: selector.version,
-                work_profile: Some(PinnedProfile {
-                    key: workflow.snapshot.definition.id.clone(),
-                    version: workflow.snapshot.definition.version,
-                }),
+        if !observed
+            .observation
+            .issue_type
+            .as_str()
+            .eq_ignore_ascii_case("epic")
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the confirmed Jira epic binding resolves to a non-epic issue",
+            ));
+        }
+        let observed_at = observed.response.completed_at.get();
+        let observation = ExternalEpicObservation {
+            status: StatusSelector {
+                status_id: observed.observation.status_id.clone(),
+                status_name: observed.observation.status_name.clone(),
+            },
+            assignee_account_id: observed.observation.assignee_account_id.clone(),
+            external_version: observed.observation.update_token.clone(),
+            observed_at,
+            payload_hash: observed.observation.observation_hash.clone(),
+        };
+        let outcome = reconcile_epic(&EpicReconciliationInput {
+            spec: workflow_spec.spec(),
+            observation: &observation,
+            freshness: Freshness::Fresh,
+            facts: &facts,
+            live_transitions: &observed.live_transitions,
+            principal: &observed.principal,
+        });
+        let plan = match outcome {
+            ReconciliationOutcome::NoOp => {
+                state
+                    .with_store(|store| {
+                        store.confirm_matching_epic_transition_intents(
+                            project_id,
+                            epic.id,
+                            issue_key,
+                            &observation.status.status_id,
+                            &observation.payload_hash,
+                            observation.observed_at,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                return Ok(JiraSubjectOutcome::Converged);
+            }
+            ReconciliationOutcome::Conflict(kind) => {
+                let inserted = state
+                    .with_store(|store| {
+                        store.insert_epic_status_conflict(
+                            project_id,
+                            &EpicStatusConflict {
+                                id: StatusConflictId::generate(),
+                                epic_id: epic.id,
+                                kind,
+                                external_issue_key: issue_key.clone(),
+                                observed_status: observation.status.clone(),
+                                observed_at: observation.observed_at,
+                                payload_hash: observation.payload_hash.clone(),
+                                epic_revision: epic.revision,
+                                spec_version: workflow_spec.spec().version,
+                                milestone: None,
+                                detected_at: kontor_api::now(),
+                                resolved_at: None,
+                                resolution_receipt_id: None,
+                            },
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                if inserted {
+                    state.signals().appended();
+                }
+                return Ok(JiraSubjectOutcome::Blocked);
+            }
+            ReconciliationOutcome::Transition(plan) => *plan,
+        };
+
+        let provisional_intent = observe_delegation
+            .intent(&observed, &plan)
+            .map_err(|error| self.refuse_jira(&error))?;
+        let apply_key = IdempotencyKey::parse(&format!(
+            "jira-auto-epic:{}:{}",
+            epic.id,
+            provisional_intent.hash().as_str()
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let delegation = JiraIssueDelegation {
+            idempotency_key: &apply_key,
+            ..observe_delegation
+        };
+        let intent = delegation
+            .intent(&observed, &plan)
+            .map_err(|error| self.refuse_jira(&error))?;
+        let dry_run = delegation
+            .dry_run(&observed, &plan)
+            .await
+            .map_err(|error| self.refuse_jira(&error))?;
+        if !matches!(dry_run.outcome, JiraOutcome::Planned | JiraOutcome::NoOp) {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the Jira boundary did not validate the epic transition",
+            ));
+        }
+        let authority = state
+            .with_store(|store| {
+                store.insert_epic_transition_intent(
+                    project_id,
+                    &EpicStatusTransitionIntent {
+                        id: CommandReceiptId::generate(),
+                        epic_id: epic.id,
+                        external_issue_key: issue_key.clone(),
+                        idempotency_key: apply_key.clone(),
+                        intent_hash: intent.hash().clone(),
+                        epic_revision: epic.revision,
+                        spec_version: workflow_spec.spec().version,
+                        milestone: plan.milestone.clone(),
+                        target: plan.target.clone(),
+                        destination: plan.destination().clone(),
+                        prior_payload_hash: observation.payload_hash.clone(),
+                        planned_at: kontor_api::now(),
+                        confirmed_at: None,
+                        confirmation_payload_hash: None,
+                    },
+                )
             })
-            .map_err(|error| self.refuse_jira(&error))?
-            .clone();
-        Ok((field, external))
+            .map_err(|error| self.refuse(&error))?;
+        // This controller already owns the transition it just planned. Waking
+        // itself before the external apply would turn a persistent Jira outage
+        // into an unbounded retry loop; the bounded timer retries an ambiguous
+        // or failed effect, while successful confirmation below emits the
+        // ordinary append signal.
+        let response = delegation
+            .apply(
+                &observed,
+                &plan,
+                ApplyAuthority {
+                    authorized_by: authority,
+                },
+            )
+            .await
+            .map_err(|error| self.refuse_jira(&error))?;
+        let (confirmation_hash, confirmed_at) = if let Some(confirmation) = response.confirmation {
+            (
+                confirmation.observation.observation_hash,
+                confirmation.confirmed_at.get(),
+            )
+        } else {
+            match delegation
+                .reconcile_after_ambiguity(&observed, &plan)
+                .await
+                .map_err(|error| self.refuse_jira(&error))?
+            {
+                IssueAmbiguityVerdict::AlreadyConfirmed(after) => (
+                    after.observation.observation_hash,
+                    after.response.completed_at.get(),
+                ),
+                IssueAmbiguityVerdict::NoEffect(_) => {
+                    return Err(self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Jira epic transition has no confirmed effect and remains retryable",
+                    ));
+                }
+                IssueAmbiguityVerdict::Contradictory(_) => {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "fresh Jira evidence contradicts the pending epic transition",
+                    ));
+                }
+            }
+        };
+        state
+            .with_store(|store| {
+                store.confirm_epic_transition_intent(
+                    project_id,
+                    authority,
+                    &confirmation_hash,
+                    confirmed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(JiraSubjectOutcome::Applied)
     }
 
     /// Compile the internal facts the pure Jira policy is allowed to inspect.
@@ -2336,14 +2657,25 @@ impl Services {
     ) -> Result<PreparedTicketPlan, ApiError> {
         let state = self.state()?;
         let task = self.task_row(project_id, task_id)?;
-        let links = state
+        let all_links = state
             .with_store(|store| store.list_task_ticket_links(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
+        let links = all_links
+            .iter()
+            .filter(|link| matches!(link.connector.as_str(), "jira" | "connector.jira"))
+            .cloned()
+            .collect::<Vec<_>>();
         let workflow = state
             .with_store(|store| store.get_active_task_workflow(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
 
         if links.is_empty() {
+            if !all_links.is_empty() {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "this build cannot reconcile the linked ticket's connector",
+                ));
+            }
             let document = self.intent(&serde_json::json!({
                 "schema_version": 1,
                 "task_id": task_id.to_string(),
@@ -2369,12 +2701,6 @@ impl Services {
         let mut diff = Vec::new();
         let mut tickets = Vec::new();
         for link in links {
-            if !matches!(link.connector.as_str(), "jira" | "connector.jira") {
-                return Err(self.deny(
-                    ApiErrorCode::UnsupportedCapability,
-                    "this build cannot reconcile the linked ticket's connector",
-                ));
-            }
             let facts = self.ticket_facts(project_id, &task, &workflow, link.revision)?;
             let wire_key_text = format!("{}:{}", idempotency_key.as_str(), link.id);
             let wire_key = IdempotencyKey::parse(&wire_key_text)
@@ -2407,8 +2733,8 @@ impl Services {
                 .observe()
                 .await
                 .map_err(|error| self.refuse_jira(&error))?;
-            let transition = match delegation.plan(&observed) {
-                ReconciliationOutcome::NoOp => None,
+            let (transition, conflict) = match delegation.plan(&observed) {
+                ReconciliationOutcome::NoOp => (None, None),
                 ReconciliationOutcome::Transition(plan) => {
                     let dry_run = delegation
                         .dry_run(&observed, &plan)
@@ -2425,14 +2751,9 @@ impl Services {
                         kontor: plan.target.status_name.as_str().to_owned(),
                         external: Some(observed.observation.status.status_name.as_str().to_owned()),
                     });
-                    Some(*plan)
+                    (Some(*plan), None)
                 }
-                ReconciliationOutcome::Conflict(_) => {
-                    return Err(self.deny(
-                        ApiErrorCode::RevisionConflict,
-                        "fresh Jira evidence conflicts with the pinned external-workflow policy",
-                    ));
-                }
+                ReconciliationOutcome::Conflict(kind) => (None, Some((kind, None))),
             };
             tickets.push(PreparedTicket {
                 link,
@@ -2441,6 +2762,8 @@ impl Services {
                 facts,
                 observed,
                 transition,
+                conflict,
+                workflow_spec_version: workflow_spec.spec().version,
             });
         }
 
@@ -2455,6 +2778,10 @@ impl Services {
                 "observation_hash": ticket.observed.observation.payload_hash.as_str(),
                 "milestone": ticket.transition.as_ref().map(|plan| plan.milestone.as_str()),
                 "destination": ticket.transition.as_ref().map(|plan| plan.target.status_id.as_str()),
+                "conflict": ticket.conflict.as_ref().map(|(kind, milestone)| serde_json::json!({
+                    "kind": kind.as_str(),
+                    "milestone": milestone.as_ref().map(kontor_core::id::SemanticMilestoneKey::as_str),
+                })),
             })).collect::<Vec<_>>(),
         }))?;
         Ok(PreparedTicketPlan {
@@ -2463,6 +2790,67 @@ impl Services {
             hash: document.hash().as_str().to_owned(),
             tickets,
         })
+    }
+
+    /// Persist fresh evidence for every policy conflict in a prepared task plan.
+    ///
+    /// Planning stays read-only. The resident controller and the explicit apply
+    /// path call this only after they have decided to act on that exact plan.
+    /// The store de-duplicates an unresolved `(link, kind)` conflict so repeated
+    /// wakeups keep one operator decision open instead of manufacturing alerts.
+    fn record_ticket_conflicts(
+        &self,
+        project_id: ProjectId,
+        plan: &PreparedTicketPlan,
+    ) -> Result<usize, ApiError> {
+        let state = self.state()?;
+        let mut recorded = 0usize;
+        let existing = state
+            .with_store(|store| {
+                plan.tickets.first().map_or(Ok(Vec::new()), |ticket| {
+                    store.list_task_ticket_conflicts(project_id, ticket.facts.task_id)
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        for ticket in &plan.tickets {
+            let Some((kind, milestone)) = &ticket.conflict else {
+                continue;
+            };
+            if existing.iter().any(|conflict| {
+                conflict.link_id == ticket.link.id
+                    && conflict.kind == *kind
+                    && conflict.resolved_at.is_none()
+            }) {
+                continue;
+            }
+            state
+                .with_store(|store| {
+                    store.append_observation(project_id, &ticket.observed.observation)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.insert_conflict(
+                        project_id,
+                        &StatusConflict {
+                            id: StatusConflictId::generate(),
+                            link_id: ticket.link.id,
+                            kind: *kind,
+                            observation_id: ticket.observed.observation.id,
+                            task_revision: ticket.facts.task_revision,
+                            spec_version: ticket.workflow_spec_version,
+                            milestone: milestone.clone(),
+                            detected_at: ticket.observed.observation.observed_at,
+                        },
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            recorded = recorded.saturating_add(1);
+        }
+        if recorded > 0 {
+            state.signals().appended();
+        }
+        Ok(recorded)
     }
 
     /// Hold a runtime's frozen snapshot in this process *and* durably.
@@ -3529,7 +3917,7 @@ impl Services {
                 continue;
             };
             let (authorization, blocked_by) =
-                covering_authority(&active, &revoked, Some(epic_id), task.id);
+                covering_authority(&active, &revoked, Some(epic_id), task.id, now);
             let worktree = state
                 .with_store(|store| store.task_worktree(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?
@@ -11046,10 +11434,20 @@ impl Services {
                 "the completion has no matching post-remediation evidence freeze",
             ));
         }
+        if provenance.completion_generation != completion_state.generation {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the re-review provenance names a different completion era",
+            ));
+        }
         let failed_round = completion_state
             .rounds
             .iter()
-            .find(|round| round.round == provenance.completion_round)
+            .find(|round| {
+                round.round == provenance.completion_round
+                    && kontor_scheduler::recorded_era(&round.decided_in)
+                        == provenance.completion_generation
+            })
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::InvalidRequest,
@@ -11068,7 +11466,11 @@ impl Services {
         let remediation = completion_state
             .remediations
             .iter()
-            .find(|remediation| remediation.round == provenance.completion_round)
+            .find(|remediation| {
+                remediation.round == provenance.completion_round
+                    && kontor_scheduler::recorded_era(&remediation.decided_in)
+                        == provenance.completion_generation
+            })
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::InvalidRequest,
@@ -11461,6 +11863,11 @@ impl Services {
                         needs_human_recovery: remediation.authorization.needs_human_recovery,
                     },
                     integration: integration_dto(&remediation.integration),
+                    generation: kontor_scheduler::recorded_era(&remediation.decided_in),
+                    decided_under: remediation
+                        .decided_in
+                        .as_ref()
+                        .map(|stamp| stamp.definition_hash.clone()),
                 })
                 .collect(),
             closeout: closeout_dto(&state.closeout),
@@ -11475,6 +11882,16 @@ impl Services {
                 })
                 .collect(),
             needs_human: state.needs_human.as_ref().map(needs_human_dto),
+            closeout_history: state
+                .closeout_history
+                .iter()
+                .map(|record| RecordedCloseoutDto {
+                    generation: record.generation,
+                    decided_under: record.definition_hash.clone(),
+                    evidence: closeout_dto(&record.evidence),
+                })
+                .collect(),
+            generation: state.generation,
             revision: state.revision,
             snapshot_cursor: self.cursor()?,
         })
@@ -11536,9 +11953,6 @@ impl Services {
             revision: state.revision,
             updated_at: now,
         };
-        self.state()?
-            .with_store(|store| store.create_epic_completion(&stored))
-            .map_err(|error| self.refuse(&error))?;
         Ok((stored, compiled))
     }
 
@@ -11596,6 +12010,7 @@ impl Services {
         Ok(IntegrationRecord {
             receipt: canonical.hash().clone(),
             repositories: outcomes,
+            decided_in: None,
         })
     }
 
@@ -11689,7 +12104,11 @@ impl Services {
                     let failed_round = state
                         .rounds
                         .iter()
-                        .find(|candidate| candidate.round == round - 1)
+                        .find(|candidate| {
+                            candidate.round == round - 1
+                                && kontor_scheduler::recorded_era(&candidate.decided_in)
+                                    == state.generation
+                        })
                         .ok_or_else(|| {
                             self.deny(
                                 ApiErrorCode::Unavailable,
@@ -11699,7 +12118,11 @@ impl Services {
                     let remediation = state
                         .remediations
                         .iter()
-                        .find(|candidate| candidate.round == round - 1)
+                        .find(|candidate| {
+                            candidate.round == round - 1
+                                && kontor_scheduler::recorded_era(&candidate.decided_in)
+                                    == state.generation
+                        })
                         .ok_or_else(|| {
                             self.deny(
                                 ApiErrorCode::Unavailable,
@@ -11707,6 +12130,7 @@ impl Services {
                             )
                         })?;
                     Some(CommitteeReReviewProvenance {
+                        completion_generation: state.generation,
                         completion_round: round - 1,
                         completion_revision: state.revision,
                         failed_committee_run_id: failed_round.committee_run_id.ok_or_else(
@@ -11944,20 +12368,230 @@ impl Services {
         }
     }
 
+    /// Freeze the definition a reopened era will be judged under.
+    ///
+    /// The predecessor remains the base and only its Committee pin advances.
+    /// Reconciliation may choose only when exactly one revision in the same
+    /// family is currently structurally valid and routable.
+    fn derive_forward_completion(
+        &self,
+        project_id: ProjectId,
+        predecessor: &CompiledCompletion,
+    ) -> Result<StoredCompletionProfile, ApiError> {
+        let pinned = normalize_committee_reference(predecessor.profile.verdict_committee.as_str());
+        let revisions =
+            self.stored_consultation_profiles(project_id, ConsultationFamily::Committee)?;
+        let reference = |revision: &StoredConsultationProfileRevision| {
+            normalize_committee_reference(&format!(
+                "{}@{}",
+                revision.name.as_str(),
+                revision.version.get()
+            ))
+        };
+        let current = revisions
+            .iter()
+            .find(|revision| reference(revision) == pinned)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee revision this completion pinned is no longer readable",
+                )
+            })?;
+        let family = current.profile_id.clone();
+        let selectable = revisions
+            .iter()
+            .filter(|revision| revision.profile_id == family)
+            .filter(|revision| {
+                serde_json::from_str::<CommitteeTemplateSpec>(&revision.definition).is_ok_and(
+                    |spec| {
+                        spec.validate().is_ok()
+                            && spec
+                                .slots
+                                .iter()
+                                .all(|slot| slot.models.rungs.iter().all(model_route_is_catalogued))
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let successor = match selectable.as_slice() {
+            [only] => *only,
+            [] => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this epic's Committee has no currently selectable revision to reopen under",
+                ));
+            }
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this epic's Committee has more than one currently selectable revision",
+                ));
+            }
+        };
+
+        let mut profile = predecessor.profile.clone();
+        profile.verdict_committee = ExternalName::parse(&format!(
+            "{}@{}",
+            successor.name.as_str(),
+            successor.version.get()
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let identity = ContentHash::of(
+            format!(
+                "completion-forward:{}:{}:{}",
+                predecessor.definition_hash.as_str(),
+                successor.definition_hash.as_str(),
+                successor.version.get()
+            )
+            .as_bytes(),
+        );
+        profile.id = ExternalName::parse(&format!("derived_{}", identity.as_str()))
+            .map_err(|error| self.refuse_domain(&error))?;
+        profile.version = SpecVersion::FIRST;
+        let definition = serde_json::to_value(&profile).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the derived Completion Profile does not serialize",
+            )
+        })?;
+        let name = profile.name.clone();
+        let id = profile.id.clone();
+        let version = profile.version;
+        let compiled =
+            kontor_scheduler::compile(profile).map_err(|error| self.refuse_domain(&error))?;
+        Ok(StoredCompletionProfile {
+            project_id,
+            id,
+            version,
+            name,
+            definition,
+            definition_hash: compiled.definition_hash,
+            published_at: kontor_api::now(),
+        })
+    }
+
+    /// Reopen one run whose ticket work has returned after the ticket gate.
+    fn reopen_if_ticket_work_returned(
+        &self,
+        stored: &StoredEpicCompletion,
+    ) -> Result<bool, ApiError> {
+        let current = self.completion_state(stored)?;
+        if current.phase == CompletionPhase::Tickets {
+            return Ok(false);
+        }
+        let requirements =
+            self.epic_ticket_requirements(stored.project_id, stored.mini_project_id)?;
+        if requirements.is_empty() {
+            return Ok(false);
+        }
+        let evidence = self.epic_ticket_evidence(stored.project_id, &requirements)?;
+        let mut probe = current.clone();
+        probe.ticket_requirements.clone_from(&requirements);
+        probe.ticket_evidence = evidence;
+        let outstanding =
+            kontor_scheduler::blockers(&probe).map_err(|error| self.refuse_domain(&error))?;
+        if !matches!(outstanding.first(), Some(CompletionBlocker::Ticket(_))) {
+            return Ok(false);
+        }
+
+        let epic = self.epic_row(stored.project_id, stored.mini_project_id)?;
+        let predecessor = self.pinned_completion(stored)?;
+        let derived = self.derive_forward_completion(stored.project_id, &predecessor)?;
+        let compiled = self.compile_completion_definition(&derived.definition)?;
+        let now = kontor_api::now();
+        let key = IdempotencyKey::parse(&format!(
+            "completion-reopen-{}-{}",
+            stored.mini_project_id, current.generation
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "completion_reopen",
+            "epic": stored.mini_project_id.to_string(),
+            "generation": current.generation,
+        }))?;
+        let signal = CompletionSignal {
+            id: intent.hash().clone(),
+            expected_revision: current.revision,
+            delivery: SignalDelivery::Callback,
+            observation: CompletionObservation::TicketWorkReopened { requirements },
+        };
+        let transition = kontor_scheduler::advance(&compiled, &current, &signal)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let command = NewLocalCommand {
+            project_id: stored.project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key,
+            kind: CommandKind::AdvanceCompletion,
+            target: AggregateRef::MiniProject {
+                mini_project_id: stored.mini_project_id,
+            },
+            target_revision: epic.revision,
+            intent,
+            created_at: now,
+        };
+        self.commit_completion(
+            stored,
+            &transition,
+            CompletionCommit {
+                reason: "completion_reopened",
+                now,
+                write: CompletionWrite::Advance(stored.revision),
+                derived_profile: Some(&derived),
+                command: &command,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// Reconsider one bounded, stable page of completion runs.
+    pub(crate) fn reopen_completed_epics(
+        &self,
+        after: Option<(ProjectId, MiniProjectId)>,
+        limit: u32,
+    ) -> Result<(usize, Option<(ProjectId, MiniProjectId)>), ApiError> {
+        let runs = self
+            .state()?
+            .with_store(|store| store.list_epic_completions_after(after, limit))
+            .map_err(|error| self.refuse(&error))?;
+        let resume = (runs.len() as u32 == limit)
+            .then(|| {
+                runs.last()
+                    .map(|last| (last.project_id, last.mini_project_id))
+            })
+            .flatten();
+        let mut reopened = 0usize;
+        for stored in runs {
+            match self.reopen_if_ticket_work_returned(&stored) {
+                Ok(true) => reopened = reopened.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    project_id = %stored.project_id,
+                    epic_id = %stored.mini_project_id,
+                    detail = %error.code.as_str(),
+                    "an epic completion could not be reconsidered for reopening"
+                ),
+            }
+        }
+        Ok((reopened, resume))
+    }
+
     /// Commit one transition and append the wake intents its commands ask for.
     ///
-    /// The state is stored first and the wake intents with it, in that order, so
-    /// a crash between them cannot leave an effect that no durable record asked
-    /// for. Every intent is keyed by the revision it reports, so replaying the
-    /// same observation re-appends nothing.
+    /// The next state, every derived wake and the command receipt commit in one
+    /// transaction, so neither a crash nor a refused wake can strand only part
+    /// of the effect. Every intent is keyed by the revision it reports, so
+    /// replaying the same observation re-appends nothing.
     fn commit_completion(
         &self,
         stored: &StoredEpicCompletion,
         transition: &CompletionTransition,
-        reason: &str,
-        now: Timestamp,
-    ) -> Result<StoredEpicCompletion, ApiError> {
+        commit: CompletionCommit<'_>,
+    ) -> Result<(StoredEpicCompletion, CommandReceiptId), ApiError> {
         let next = StoredEpicCompletion {
+            profile_id: transition.state.profile.id.clone(),
+            profile_version: transition.state.profile.version,
+            definition_hash: transition.state.profile.definition_hash.clone(),
             state: serde_json::to_value(&transition.state).map_err(|_| {
                 self.deny(
                     ApiErrorCode::Unavailable,
@@ -11965,16 +12599,12 @@ impl Services {
                 )
             })?,
             revision: transition.state.revision,
-            updated_at: now,
+            updated_at: commit.now,
             ..stored.clone()
         };
-        if !transition.replayed {
-            self.state()?
-                .with_store(|store| store.update_epic_completion(&next, stored.revision))
-                .map_err(|error| self.refuse(&error))?;
-        }
-        for command in &transition.commands {
-            if let CompletionCommand::WakeTpm { seat_binding_id } = command {
+        let mut wakes = Vec::new();
+        for effect in &transition.commands {
+            if let CompletionCommand::WakeTpm { seat_binding_id } = effect {
                 // The seat is re-resolved rather than trusted from the state: a
                 // seat that was replaced or retired since the run started must
                 // refuse here, which is the reconciliation the wake owes.
@@ -11989,23 +12619,32 @@ impl Services {
                         "this epic's TPM seat was replaced since completion started",
                     ));
                 }
-                let wake = StoredCompletionWake {
+                wakes.push(StoredCompletionWake {
                     project_id: next.project_id,
                     mini_project_id: next.mini_project_id,
                     completion_revision: next.revision,
-                    reason: ExternalName::parse(reason)
+                    reason: ExternalName::parse(commit.reason)
                         .map_err(|error| self.refuse_domain(&error))?,
                     seat_binding_id: *seat_binding_id,
                     receipt: next.definition_hash.clone(),
-                    appended_at: now,
+                    appended_at: commit.now,
                     acknowledged_at: None,
-                };
-                self.state()?
-                    .with_store(|store| store.append_completion_wake(&wake))
-                    .map_err(|error| self.refuse(&error))?;
+                });
             }
         }
-        Ok(next)
+        let receipt_id = self
+            .state()?
+            .with_store(|store| {
+                store.commit_epic_completion_with_profile(
+                    &next,
+                    commit.write,
+                    commit.derived_profile,
+                    &wakes,
+                    commit.command,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok((next, receipt_id))
     }
 
     /// Deliver the newest Completion projection to the exact native currently
@@ -12314,6 +12953,11 @@ fn completion_round_dto(round: &kontor_scheduler::CompletionRound) -> Completion
         result_hash: round.result_hash.clone(),
         remediation_hash: round.remediation_hash.clone(),
         deliberation: round.deliberation.iter().map(deliberation_dto).collect(),
+        generation: kontor_scheduler::recorded_era(&round.decided_in),
+        decided_under: round
+            .decided_in
+            .as_ref()
+            .map(|stamp| stamp.definition_hash.clone()),
     }
 }
 
@@ -12331,6 +12975,11 @@ fn integration_dto(record: &kontor_scheduler::IntegrationRecord) -> IntegrationR
                 root_pointer_revision: outcome.root_pointer_revision.clone(),
             })
             .collect(),
+        generation: kontor_scheduler::recorded_era(&record.decided_in),
+        decided_under: record
+            .decided_in
+            .as_ref()
+            .map(|stamp| stamp.definition_hash.clone()),
     }
 }
 
@@ -14506,26 +15155,22 @@ impl ApplicationOperations for Services {
                 ));
             }
         }
-        let mut epic_key = stored_by_ordinal
-            .get(&0)
+        let mut epic_key = stored
+            .iter()
+            .find(|item| item.item_kind == JiraItemKind::Epic)
             .and_then(|item| item.confirmed_key.clone());
+        // A task can never be created under an inferred or merely planned
+        // parent. Confirm the epic first, independently of stored item order or
+        // restart position, and use only that readback for every task.
         for (ordinal, base_plan) in &prepared.plans {
             let item = stored_by_ordinal
                 .get(ordinal)
                 .expect("the complete ordinal map was validated above");
-            if item.confirmed_key.is_some() {
+            if item.item_kind != JiraItemKind::Epic || item.confirmed_key.is_some() {
                 continue;
             }
             let mut plan = base_plan.clone();
             plan.require_marker = recovered_in_place;
-            if item.item_kind == JiraItemKind::Task {
-                plan.parent_key = Some(epic_key.clone().ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the Jira epic was not confirmed before its tasks",
-                    )
-                })?);
-            }
             let readback = connector
                 .materialize(&plan)
                 .await
@@ -14540,9 +15185,40 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
-            if item.item_kind == JiraItemKind::Epic {
-                epic_key = Some(readback.issue_key);
+            epic_key = Some(readback.issue_key);
+        }
+        for (ordinal, base_plan) in &prepared.plans {
+            let item = stored_by_ordinal
+                .get(ordinal)
+                .expect("the complete ordinal map was validated above");
+            if item.confirmed_key.is_some() || item.item_kind == JiraItemKind::Epic {
+                continue;
             }
+            let mut plan = base_plan.clone();
+            plan.require_marker = recovered_in_place;
+            plan.parent_key = Some(epic_key.clone().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this materialization batch carries no confirmed Jira epic item, so its tasks have no parent to be created under",
+                )
+                .advising(
+                    "preview the epic's Jira materialization again and apply that fresh preview; nothing was changed",
+                )
+            })?);
+            let readback = connector
+                .materialize(&plan)
+                .await
+                .map_err(|error| self.refuse_jira(&error))?;
+            state
+                .with_store(|store| {
+                    store.confirm_jira_materialization_item(
+                        item,
+                        &readback.issue_key,
+                        &readback.readback_hash,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
         }
         state
             .with_store(|store| {
@@ -19771,6 +20447,7 @@ impl ApplicationOperations for Services {
             "operation": "completion_advance",
             "epic": epic_id.to_string(),
             "from_revision": request.expected_revision.get(),
+            "evidence": request.evidence,
         }))?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
@@ -19852,6 +20529,7 @@ impl ApplicationOperations for Services {
         // deterministic initialization of the epic's own declared contract, it is
         // re-derived identically on the next call, and the command receipt still
         // covers only the transition that actually committed.
+        let creating = existing.is_none();
         let (stored, compiled) = match existing {
             Some(stored) => {
                 let compiled = self.pinned_completion(&stored)?;
@@ -19872,14 +20550,32 @@ impl ApplicationOperations for Services {
         };
         let transition = kontor_scheduler::advance(&compiled, &current, &signal)
             .map_err(|error| self.refuse_domain(&error))?;
-        let next = self.commit_completion(&stored, &transition, "completion_advanced", now)?;
-        let receipt_id = self.record(
-            key,
+        let command = NewLocalCommand {
             project_id,
-            CommandKind::AdvanceCompletion,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::AdvanceCompletion,
             target,
-            epic.revision,
-            &intent,
+            target_revision: epic.revision,
+            intent: intent.clone(),
+            created_at: now,
+        };
+        let (next, receipt_id) = self.commit_completion(
+            &stored,
+            &transition,
+            CompletionCommit {
+                reason: "completion_advanced",
+                now,
+                write: if creating {
+                    CompletionWrite::Create
+                } else if transition.replayed {
+                    CompletionWrite::Unchanged
+                } else {
+                    CompletionWrite::Advance(stored.revision)
+                },
+                derived_profile: None,
+                command: &command,
+            },
         )?;
         self.try_drain_completion_wake(project_id, epic_id).await;
         Ok(CompletionOutcomeDto {
@@ -19941,6 +20637,7 @@ impl ApplicationOperations for Services {
                 "schema_version": 1,
                 "operation": "completion_remediate_propose",
                 "epic": epic_id.to_string(),
+                "completion_generation": current.generation,
                 "round": round,
                 "failed_round_evidence": failed_round_evidence.as_str(),
                 "proposal": proposal.as_str(),
@@ -19951,6 +20648,7 @@ impl ApplicationOperations for Services {
                 "schema_version": 1,
                 "operation": "completion_remediate_route",
                 "epic": epic_id.to_string(),
+                "completion_generation": current.generation,
                 "round": round,
                 "route": route.as_str(),
                 "actor_seat_binding_id": actor.seat_binding_id,
@@ -19991,6 +20689,7 @@ impl ApplicationOperations for Services {
                             &command,
                             project_id,
                             epic_id,
+                            current.generation,
                             *round,
                             request.expected_revision,
                         )
@@ -20005,7 +20704,11 @@ impl ApplicationOperations for Services {
                 let failed = current
                     .rounds
                     .iter()
-                    .find(|recorded| recorded.round == *round)
+                    .find(|recorded| {
+                        recorded.round == *round
+                            && kontor_scheduler::recorded_era(&recorded.decided_in)
+                                == current.generation
+                    })
                     .ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::InvalidRequest,
@@ -20032,6 +20735,7 @@ impl ApplicationOperations for Services {
                             &StoredRemediationProposal {
                                 project_id,
                                 mini_project_id: epic_id,
+                                completion_generation: current.generation,
                                 round: *round,
                                 failed_round_evidence: failed_round_evidence.clone(),
                                 proposal: proposal.clone(),
@@ -20066,7 +20770,14 @@ impl ApplicationOperations for Services {
             RemediationActionDto::TpmRoute { round, route } => {
                 let proposal = self
                     .state()?
-                    .with_store(|store| store.get_remediation_proposal(project_id, epic_id, *round))
+                    .with_store(|store| {
+                        store.get_remediation_proposal(
+                            project_id,
+                            epic_id,
+                            current.generation,
+                            *round,
+                        )
+                    })
                     .map_err(|error| self.refuse(&error))?
                     .ok_or_else(|| {
                         self.deny(
@@ -20115,7 +20826,10 @@ impl ApplicationOperations for Services {
                     && current.revision >= effect_revision
                     && (current.pending_remediation.as_ref() == Some(&authorization)
                         || current.remediations.iter().any(|record| {
-                            record.round == *round && record.authorization == authorization
+                            record.round == *round
+                                && kontor_scheduler::recorded_era(&record.decided_in)
+                                    == current.generation
+                                && record.authorization == authorization
                         }));
                 let route_phase_matches = (current.phase
                     == CompletionPhase::AwaitRemediation(*round)
@@ -20182,6 +20896,7 @@ impl ApplicationOperations for Services {
                     .with_store(|store| {
                         store.commit_remediation_route(
                             &command,
+                            current.generation,
                             *round,
                             &next,
                             request.expected_revision,
@@ -22197,6 +22912,13 @@ impl ApplicationOperations for Services {
         let plan = self
             .prepare_ticket_plan(project_id, task_id, &plan_key)
             .await?;
+        if let Some((kind, _)) = plan
+            .tickets
+            .iter()
+            .find_map(|ticket| ticket.conflict.as_ref())
+        {
+            return Err(self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind)));
+        }
         Ok(TicketReconcilePlanDto {
             realm_id: state.realm_id(),
             task_id,
@@ -22249,6 +22971,14 @@ impl ApplicationOperations for Services {
                 ApiErrorCode::RevisionConflict,
                 "the named reconciliation plan no longer describes this realm",
             ));
+        }
+        if let Some((kind, _)) = plan
+            .tickets
+            .iter()
+            .find_map(|ticket| ticket.conflict.as_ref())
+        {
+            self.record_ticket_conflicts(project_id, &plan)?;
+            return Err(self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind)));
         }
         let receipt = if let Some(existing) = replayed {
             existing.id
@@ -24440,33 +25170,121 @@ impl ApplicationOperations for Services {
         let target = AggregateRef::TicketLink {
             link_id: conflict.link_id,
         };
-        // The key is judged before the already-resolved short-circuit, so a
-        // changed request under a used key is a conflict rather than a replay
-        // wearing the previous answer's clothes.
-        let replay = self.replayed(key, &intent, Some(&target))?;
-        if conflict.resolved_at.is_some() {
-            return Ok(conflict_dto(conflict));
-        }
-        let receipt = if let Some(existing) = replay {
-            existing.id
-        } else {
-            self.record(
-                key,
-                project_id,
-                CommandKind::ResolveStatusConflict,
-                target,
-                conflict.task_revision,
-                &intent,
-            )?
-        };
+        self.replayed(key, &intent, Some(&target))?;
         let resolved_at = kontor_api::now();
-        state
-            .with_store(|store| store.resolve_conflict(project_id, id, receipt, resolved_at))
+        let command = NewLocalCommand {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::ResolveStatusConflict,
+            target,
+            target_revision: conflict.task_revision,
+            intent,
+            created_at: resolved_at,
+        };
+        let outcome = state
+            .with_store(|store| {
+                store.resolve_task_jira_conflict_atomically(project_id, id, &command, resolved_at)
+            })
             .map_err(|error| self.refuse(&error))?;
-        Ok(TicketConflictDto {
-            resolved_at: Some(resolved_at),
-            ..conflict_dto(conflict)
-        })
+        if outcome.is_fresh() {
+            state.signals().appended();
+        }
+        let stored = state
+            .with_store(|store| store.list_task_ticket_conflicts(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|candidate| candidate.id == id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the resolved conflict did not read back",
+                )
+            })?;
+        Ok(conflict_dto(&stored))
+    }
+
+    fn epic_ticket_conflicts(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        include_resolved: bool,
+    ) -> Result<Vec<EpicConflictDto>, ApiError> {
+        let state = self.state()?;
+        self.epic_row(project_id, epic_id)?;
+        let conflicts = state
+            .with_store(|store| store.list_epic_status_conflicts(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(conflicts
+            .iter()
+            .filter(|conflict| include_resolved || conflict.resolved_at.is_none())
+            .map(epic_conflict_dto)
+            .collect())
+    }
+
+    async fn resolve_epic_ticket_conflict(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &ResolveConflictRequest,
+    ) -> Result<EpicConflictDto, ApiError> {
+        let state = self.state()?;
+        self.epic_row(project_id, epic_id)?;
+        let id = StatusConflictId::parse(&request.conflict_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let conflicts = state
+            .with_store(|store| store.list_epic_status_conflicts(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        let conflict = conflicts
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such conflict is recorded against this epic's Jira issue",
+                )
+            })?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "resolve_epic_ticket_conflict",
+            "conflict_id": conflict.id.to_string(),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        self.replayed(key, &intent, Some(&target))?;
+        let resolved_at = kontor_api::now();
+        let command = NewLocalCommand {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::ResolveStatusConflict,
+            target,
+            target_revision: conflict.epic_revision,
+            intent,
+            created_at: resolved_at,
+        };
+        let outcome = state
+            .with_store(|store| {
+                store.resolve_epic_jira_conflict_atomically(project_id, id, &command, resolved_at)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        if outcome.is_fresh() {
+            state.signals().appended();
+        }
+        let stored = state
+            .with_store(|store| store.list_epic_status_conflicts(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|candidate| candidate.id == id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the resolved epic conflict did not read back",
+                )
+            })?;
+        Ok(epic_conflict_dto(&stored))
     }
 
     async fn pull_ticket_comments(
@@ -24652,6 +25470,176 @@ impl ApplicationOperations for Services {
 }
 
 impl Services {
+    /// Reconcile every Jira-bound subject once from durable Kontor truth.
+    ///
+    /// This is the controller seam used by both the startup pass and the
+    /// resident wake/backstop loop. The backlog itself is the durable queue:
+    /// after a crash the same linked subjects are enumerated again, the plan
+    /// hash produces the same idempotency key, and connector readback decides
+    /// whether an effect is still needed. No in-memory notification is relied
+    /// upon for correctness.
+    pub async fn reconcile_jira_once(&self) -> JiraReconcileReport {
+        let mut report = JiraReconcileReport::default();
+        let Ok(state) = self.state() else {
+            report.blocked = 1;
+            return report;
+        };
+        let projects = match state.with_store(SqliteStore::list_projects) {
+            Ok(projects) => projects,
+            Err(_) => {
+                report.blocked = 1;
+                return report;
+            }
+        };
+
+        for project in projects {
+            let epics = match state.with_store(|store| store.list_mini_projects(project.project_id))
+            {
+                Ok(epics) => epics,
+                Err(_) => {
+                    report.blocked = report.blocked.saturating_add(1);
+                    continue;
+                }
+            };
+            for epic in &epics {
+                let issue_key = match state
+                    .with_store(|store| store.confirmed_jira_epic_key(project.project_id, epic.id))
+                {
+                    Ok(Some(key)) => key,
+                    Ok(None) => continue,
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                report.epic_subjects = report.epic_subjects.saturating_add(1);
+                match self
+                    .reconcile_jira_epic(project.project_id, epic, &issue_key)
+                    .await
+                {
+                    Ok(JiraSubjectOutcome::Converged) => {
+                        report.converged = report.converged.saturating_add(1);
+                    }
+                    Ok(JiraSubjectOutcome::Applied) => {
+                        report.applied = report.applied.saturating_add(1);
+                    }
+                    Ok(JiraSubjectOutcome::Blocked) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            project_id = %project.project_id,
+                            epic_id = %epic.id,
+                            jira_issue = %issue_key,
+                            detail = %error,
+                            "automatic Jira epic reconciliation is blocked"
+                        );
+                        report.blocked = report.blocked.saturating_add(1);
+                    }
+                }
+            }
+            let tasks = match state.with_store(|store| store.list_tasks(project.project_id)) {
+                Ok(tasks) => tasks,
+                Err(_) => {
+                    report.blocked = report.blocked.saturating_add(1);
+                    continue;
+                }
+            };
+            for task in tasks {
+                let confirmed_key = match state
+                    .with_store(|store| store.confirmed_jira_task_key(project.project_id, task.id))
+                {
+                    Ok(Some(key)) => key,
+                    Ok(None) => continue,
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                let jira_links = match state
+                    .with_store(|store| store.list_task_ticket_links(project.project_id, task.id))
+                {
+                    Ok(links) => links
+                        .into_iter()
+                        .filter(|link| matches!(link.connector.as_str(), "jira" | "connector.jira"))
+                        .collect::<Vec<_>>(),
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                if jira_links.is_empty() {
+                    continue;
+                }
+                if jira_links.len() != 1 || jira_links[0].external_issue_key != confirmed_key {
+                    report.blocked = report.blocked.saturating_add(1);
+                    continue;
+                }
+                report.task_subjects = report.task_subjects.saturating_add(1);
+
+                let plan_key = match IdempotencyKey::parse(&format!(
+                    "jira-auto-plan:{}:{}",
+                    task.id,
+                    task.revision.get()
+                )) {
+                    Ok(key) => key,
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                let plan = match self
+                    .prepare_ticket_plan(project.project_id, task.id, &plan_key)
+                    .await
+                {
+                    Ok(plan) => plan,
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                if plan.tickets.iter().any(|ticket| ticket.conflict.is_some()) {
+                    if let Err(error) = self.record_ticket_conflicts(project.project_id, &plan) {
+                        tracing::warn!(
+                            project_id = %project.project_id,
+                            task_id = %task.id,
+                            detail = %error,
+                            "automatic Jira reconciliation could not persist a task conflict"
+                        );
+                    }
+                    report.blocked = report.blocked.saturating_add(1);
+                    continue;
+                }
+                if plan.diff.is_empty() {
+                    report.converged = report.converged.saturating_add(1);
+                    continue;
+                }
+
+                let apply_key = match IdempotencyKey::parse(&format!(
+                    "jira-auto-task:{}:{}",
+                    task.id, plan.hash
+                )) {
+                    Ok(key) => key,
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                let request = TicketReconcileApplyRequest {
+                    projection_hash: plan.hash,
+                };
+                match self
+                    .ticket_reconcile_apply(&apply_key, project.project_id, task.id, &request)
+                    .await
+                {
+                    Ok(_) => report.applied = report.applied.saturating_add(1),
+                    Err(_) => report.blocked = report.blocked.saturating_add(1),
+                }
+            }
+        }
+        report
+    }
+
     /// Retire one still-bound predecessor under the Admin replacement command
     /// and persist the runtime's fresh archive readback as its cancellation.
     ///
@@ -28217,6 +29205,22 @@ fn conflict_dto(conflict: &StoredConflict) -> TicketConflictDto {
         kind: conflict.kind.as_str().to_owned(),
         observation_id: conflict.observation_id.to_string(),
         task_revision: conflict.task_revision,
+        spec_version: conflict.spec_version,
+        detected_at: conflict.detected_at,
+        resolved_at: conflict.resolved_at,
+    }
+}
+
+fn epic_conflict_dto(conflict: &EpicStatusConflict) -> EpicConflictDto {
+    EpicConflictDto {
+        conflict_id: conflict.id.to_string(),
+        epic_id: conflict.epic_id.to_string(),
+        kind: conflict.kind.as_str().to_owned(),
+        external_issue_key: conflict.external_issue_key.as_str().to_owned(),
+        observed_status_id: conflict.observed_status.status_id.as_str().to_owned(),
+        observed_status_name: conflict.observed_status.status_name.as_str().to_owned(),
+        observed_at: conflict.observed_at,
+        epic_revision: conflict.epic_revision,
         spec_version: conflict.spec_version,
         detected_at: conflict.detected_at,
         resolved_at: conflict.resolved_at,

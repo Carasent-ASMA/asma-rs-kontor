@@ -44,6 +44,7 @@
 pub mod applications;
 pub mod credentials;
 pub mod endpoint;
+pub mod jira_sync;
 pub mod lock;
 pub mod logging;
 pub mod recovery;
@@ -54,6 +55,8 @@ pub mod usage;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use kontor_api::state::{
     ApiParts, ApiState, BarrierState, RuntimeRegistry, SchedulingBarrier, SessionRegistry,
@@ -78,6 +81,12 @@ pub const DEFAULT_PORT: u16 = 7717;
 
 /// How old a confirmation may be and still count as fresh, in seconds.
 pub const DEFAULT_EVIDENCE_WINDOW_SECONDS: i64 = 60;
+
+/// Maximum completion runs reconsidered in one resident scan.
+pub const COMPLETION_SCAN_PAGE: u32 = 64;
+
+/// Period between bounded completion reopening scans.
+pub const COMPLETION_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How many simultaneous runs a Realm admits before the planner refuses.
 ///
@@ -283,6 +292,7 @@ impl DaemonConfig {
 /// dropping the daemon is what releases it.
 pub struct Daemon {
     state: ApiState,
+    applications: Arc<applications::Services>,
     config: DaemonConfig,
     supervision: Option<SupervisionPolicy>,
     usage_poller: usage::UsagePoller,
@@ -398,6 +408,7 @@ impl Daemon {
         );
         Ok(Self {
             state,
+            applications,
             config,
             supervision,
             usage_poller,
@@ -446,6 +457,20 @@ impl Daemon {
         self.state.clone()
     }
 
+    /// Run one bounded automatic Jira convergence pass.
+    ///
+    /// Exposed for deterministic startup and black-box verification; the
+    /// resident process also invokes the same seam from its wake/backstop loop.
+    pub async fn reconcile_jira_once(&self) -> applications::JiraReconcileReport {
+        self.applications.reconcile_jira_once().await
+    }
+
+    /// The concrete Jira reconciliation services owned by this daemon.
+    #[must_use]
+    pub fn jira_reconciler(&self) -> Arc<applications::Services> {
+        Arc::clone(&self.applications)
+    }
+
     /// The configuration this daemon started with.
     #[must_use]
     pub const fn config(&self) -> &DaemonConfig {
@@ -476,6 +501,46 @@ impl Daemon {
     /// The HTTP surface of this Realm.
     pub fn router(&self) -> axum::Router {
         kontor_api::router(self.state())
+    }
+
+    /// Run the bounded completion reopening scan until this Realm stops.
+    #[must_use]
+    pub fn spawn_completion_scanner(&self, period: Duration) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        let applications = Arc::clone(&self.applications);
+        let realm_id = self.realm_id();
+        tokio::spawn(async move {
+            let mut stopping = state.signals().stops();
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            let mut cursor = None;
+            loop {
+                tokio::select! {
+                    result = stopping.changed() => {
+                        if result.is_err() || *stopping.borrow() {
+                            break;
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        match applications.reopen_completed_epics(cursor, COMPLETION_SCAN_PAGE) {
+                            Ok((reopened, resume)) => {
+                                cursor = resume;
+                                if reopened > 0 {
+                                    info!(realm_id = %realm_id, reopened,
+                                        "epic completions reopened because ticket work returned");
+                                }
+                            }
+                            Err(error) => warn!(
+                                realm_id = %realm_id,
+                                detail = %error.code.as_str(),
+                                "a completion reopening scan could not complete"
+                            ),
+                        }
+                    }
+                }
+            }
+        })
     }
 
     /// Take the inventory a restart owes, then open the scheduling barrier.
@@ -595,6 +660,22 @@ impl Daemon {
                     realm_id = %realm_id,
                     detail = %error.code.as_str(),
                     "follow-ups derived before the restart could not be handed over"
+                ),
+            }
+            match self
+                .applications
+                .reopen_completed_epics(None, COMPLETION_SCAN_PAGE)
+            {
+                Ok((0, _)) => {}
+                Ok((reopened, _)) => info!(
+                    realm_id = %realm_id,
+                    reopened,
+                    "epic completions reopened because ticket work returned"
+                ),
+                Err(error) => warn!(
+                    realm_id = %realm_id,
+                    detail = %error.code.as_str(),
+                    "epic completions could not be reconsidered for reopening"
                 ),
             }
             match self.state.applications().retry_completion_wakes().await {

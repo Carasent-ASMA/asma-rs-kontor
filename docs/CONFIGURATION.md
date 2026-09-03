@@ -133,6 +133,54 @@ hashing, continuity comparison and serialization; a genuine generation-3
 export therefore verifies byte-for-byte without being rewritten into a false
 generation-4 shape.
 
+## Jira reconciliation
+
+Kontor is authoritative for desired orchestration state; Jira remains the
+external workflow system. The daemon automatically converges every task and
+epic that has an exact confirmed Jira binding. No operator-triggered `jira
+sync` command is required for ordinary lifecycle, gate, completion or backlog
+changes.
+
+The resident controller waits for the startup reconciliation barrier, performs
+an immediate pass, reacts to committed control-plane append signals, and runs a
+30-second backstop for missed notifications and restart recovery. Durable
+Kontor state is the queue; there is no second in-memory desired-state ledger.
+An unchanged conflict or a failed external effect waits for the bounded
+backstop instead of waking an immediate retry loop.
+
+Selection is exact and fail-closed:
+
+- task reconciliation selects by `connector.jira`, external project, issue
+  type, frozen work-profile id and frozen work-profile revision;
+- epic reconciliation selects the generic epic policy and reads only epic
+  completion plus child-task evidence;
+- the selected bundled workflow must have an identical installed immutable
+  revision in the project before any Jira write;
+- task identity comes from the canonical task-to-Jira ledger, while epic
+  identity comes from its confirmed epic binding; display item codes and
+  native names are never reverse-parsed into Jira keys.
+
+Install each required workflow revision through
+`connectors/{connector}/workflow-specs:install` (or the matching Kontor MCP
+tool), using a fresh project revision and a stable idempotency key. A project
+with high-stakes tasks and a Jira epic normally needs both the high-stakes task
+revision and the generic epic revision installed. Read the workflow catalog
+back and require `installed: true` for each exact selected revision.
+
+Every external transition is derived from a fresh issue observation and the
+currently offered destination transitions. Epic writes first persist immutable
+transition authority, then apply the Jira effect, refetch the issue, and confirm
+the intent only from that readback. Ambiguous or contradictory evidence is
+never guessed. Conflicts are append-only, de-duplicated by subject and kind,
+and stay open until an authorized explicit resolution records its receipt.
+
+Completion continually re-evaluates child work after it leaves the ticket gate.
+A task added or reopened during integration, Committee review, closeout or a
+finished era returns the epic to its ticket gate under a new attributed era;
+prior integration, verdict, remediation and closeout evidence remains immutable
+history. Jira therefore cannot stay successfully closed over newly unfinished
+child work.
+
 ## Seat supervision
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)

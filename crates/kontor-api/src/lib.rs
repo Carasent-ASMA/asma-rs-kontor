@@ -890,6 +890,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::resolve_ticket_conflict),
             )
             .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts",
+                get(applications::epic_ticket_conflicts),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict",
+                post(applications::resolve_epic_ticket_conflict),
+            )
+            .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
                 post(applications::pull_ticket_comments),
             )

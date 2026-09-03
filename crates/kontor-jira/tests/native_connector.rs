@@ -1,14 +1,31 @@
 //! Native Jira transport and configuration contract.
 
+use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget};
-use kontor_core::id::{ExternalId, IdempotencyKey, ProjectId, SCHEMA_VERSION};
-use kontor_core::ticket::OwnershipAction;
-use kontor_jira::jira::{JiraExchange, JiraOperation, JiraOutcome, JiraRequest};
-use kontor_jira::{JiraConnectors, JiraIssueKind, JiraIssuePlan};
+use kontor_core::id::{
+    AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash, ExternalId,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey, ProjectId,
+    SCHEMA_VERSION, SemanticMilestoneKey, SpecVersion, WorkProfileKey, parse_utc_timestamp,
+};
+use kontor_core::ticket::{
+    EpicCompletionEvidence, InternalPredicate, OwnershipAction, SelectedTransition, StatusSelector,
+    TransitionPlan,
+};
+use kontor_jira::jira::{
+    ApplyAuthority, FieldSpecKey, JiraExchange, JiraIssueDelegation, JiraOperation, JiraOutcome,
+    JiraRequest, JiraResponse, PinnedProfile, RequestedTransition, SpecCatalog, WireConfirmation,
+    WireEffects, WireObservation, WireTransition, WorkflowSpecKey,
+};
+use kontor_jira::{
+    JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan, SelectionConflict, UnavailableReason,
+    WireTimestamp,
+};
 use secrecy::SecretString;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -78,6 +95,430 @@ impl Respond for ExistingLinkedTask {
             }
         }))
     }
+}
+
+struct RecordedExchange {
+    requests: Mutex<Vec<JiraRequest>>,
+    responses: Mutex<VecDeque<JiraResponse>>,
+}
+
+#[async_trait::async_trait]
+impl JiraExchange for RecordedExchange {
+    async fn execute(
+        &self,
+        _operation: &'static str,
+        request: &JiraRequest,
+    ) -> Result<JiraResponse, JiraError> {
+        self.requests
+            .lock()
+            .expect("request ledger")
+            .push(request.clone());
+        Ok(self
+            .responses
+            .lock()
+            .expect("response script")
+            .pop_front()
+            .expect("one scripted response per request"))
+    }
+}
+
+fn wire_observation(status_id: &str, status_name: &str, token: &str) -> WireObservation {
+    WireObservation {
+        status_id: ExternalId::parse(status_id).expect("status id"),
+        status_name: ExternalName::parse(status_name).expect("status name"),
+        status_category: ExternalName::parse("In Progress").expect("status category"),
+        issue_type: ExternalName::parse("Epic").expect("issue type"),
+        assignee_account_id: None,
+        assignee_display: None,
+        update_token: Some(ExternalId::parse(token).expect("update token")),
+        observation_hash: ContentHash::of(format!("{status_id}:{token}").as_bytes()),
+    }
+}
+
+fn wire_response(
+    operation: JiraOperation,
+    outcome: JiraOutcome,
+    observation: WireObservation,
+    confirmation: Option<WireObservation>,
+) -> JiraResponse {
+    JiraResponse {
+        schema_version: SCHEMA_VERSION,
+        operation,
+        effective_operation: operation,
+        issue_key: ExternalId::parse("ASMA-9").expect("issue key"),
+        idempotency_key: IdempotencyKey::parse("epic-sync-1").expect("idempotency key"),
+        intent_hash: None,
+        requested_at: WireTimestamp::new(
+            parse_utc_timestamp("2026-09-03T10:00:00Z").expect("request time"),
+        ),
+        completed_at: WireTimestamp::new(
+            parse_utc_timestamp("2026-09-03T10:00:01Z").expect("completion time"),
+        ),
+        outcome,
+        observation: Some(observation),
+        principal_account_id: Some(ExternalId::parse("acct-1").expect("principal")),
+        live_transitions: vec![WireTransition {
+            transition_id: ExternalId::parse("31").expect("transition id"),
+            to_status_id: ExternalId::parse("10214").expect("destination id"),
+            to_status_name: ExternalName::parse("In Development").expect("destination name"),
+            to_status_category: Some(
+                ExternalName::parse("In Progress").expect("destination category"),
+            ),
+        }],
+        effects: WireEffects {
+            field_ids: Vec::new(),
+            assignment: None,
+            transition: matches!(operation, JiraOperation::DryRun | JiraOperation::Apply).then(
+                || RequestedTransition {
+                    transition_id: ExternalId::parse("31").expect("transition id"),
+                    to_status_id: ExternalId::parse("10214").expect("destination id"),
+                },
+            ),
+        },
+        confirmation: confirmation.map(|observation| WireConfirmation {
+            observation,
+            confirmed_at: WireTimestamp::new(
+                parse_utc_timestamp("2026-09-03T10:00:02Z").expect("confirmation time"),
+            ),
+        }),
+        conflict: None,
+        unavailable: None,
+        notes: Vec::new(),
+    }
+}
+
+fn collect_gate_keys(predicate: &InternalPredicate, keys: &mut BTreeSet<String>) {
+    match predicate {
+        InternalPredicate::GateStateIs { gate, .. } => {
+            keys.insert(gate.as_str().to_owned());
+        }
+        InternalPredicate::All { of } | InternalPredicate::Any { of } => {
+            for nested in of {
+                collect_gate_keys(nested, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn bundled_high_stakes_workflow_is_pinned_to_its_actual_gates() {
+    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let workflow = catalog
+        .select_workflow_spec(&WorkflowSpecKey {
+            connector: ConnectorKey::parse("connector.jira").expect("connector"),
+            project: ExternalProjectKey::parse("asma").expect("project"),
+            issue_type: ExternalIssueTypeKey::parse("task").expect("issue type"),
+            version: SpecVersion::parse(2).expect("workflow revision"),
+            work_profile: Some(PinnedProfile {
+                key: WorkProfileKey::parse("asma-high-stakes-primary-20260829")
+                    .expect("work profile"),
+                version: SpecVersion::parse(1).expect("profile revision"),
+            }),
+        })
+        .expect("the exact high-stakes mapping is selectable");
+
+    let mut gates = BTreeSet::new();
+    for rule in &workflow.spec().milestones {
+        collect_gate_keys(&rule.predicate, &mut gates);
+    }
+    assert_eq!(
+        gates,
+        BTreeSet::from([
+            "high-audit-gate".to_owned(),
+            "high-verification-gate".to_owned(),
+        ])
+    );
+}
+
+#[test]
+fn bundled_task_workflows_never_cross_profile_pins() {
+    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let task = ExternalIssueTypeKey::parse("task").expect("issue type");
+    let connector = ConnectorKey::parse("connector.jira").expect("connector");
+    let project = ExternalProjectKey::parse("asma").expect("project");
+
+    let selected = catalog
+        .select_workflow_spec(&WorkflowSpecKey {
+            connector: connector.clone(),
+            project: project.clone(),
+            issue_type: task.clone(),
+            version: SpecVersion::parse(1).expect("workflow revision"),
+            work_profile: Some(PinnedProfile {
+                key: WorkProfileKey::parse("code").expect("work profile"),
+                version: SpecVersion::parse(1).expect("profile revision"),
+            }),
+        })
+        .expect("code@1 has its exact task mapping");
+    assert_eq!(
+        selected
+            .spec()
+            .work_profile
+            .as_ref()
+            .map(WorkProfileKey::as_str),
+        Some("code")
+    );
+
+    let wrong_profile = catalog
+        .select_workflow_spec(&WorkflowSpecKey {
+            connector,
+            project,
+            issue_type: task,
+            version: SpecVersion::parse(2).expect("workflow revision"),
+            work_profile: Some(PinnedProfile {
+                key: WorkProfileKey::parse("code").expect("work profile"),
+                version: SpecVersion::parse(1).expect("profile revision"),
+            }),
+        })
+        .expect_err("code@1 never borrows the high-stakes mapping");
+    assert!(matches!(
+        wrong_profile,
+        JiraError::Selection {
+            conflict: SelectionConflict::ProfileRevisionMismatch,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn bundled_epic_specs_are_generic_and_entity_specific() {
+    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let connector = ConnectorKey::parse("connector.jira").expect("connector");
+    let project = ExternalProjectKey::parse("asma").expect("project");
+    let epic = ExternalIssueTypeKey::parse("epic").expect("issue type");
+    let version = SpecVersion::parse(1).expect("spec revision");
+
+    let field = catalog
+        .select_field_spec(&FieldSpecKey {
+            connector: connector.clone(),
+            project: project.clone(),
+            issue_type: epic.clone(),
+            version,
+        })
+        .expect("the epic field mapping is selectable");
+    assert_eq!(field.spec().issue_type.as_str(), "epic");
+
+    let workflow = catalog
+        .select_workflow_spec(&WorkflowSpecKey {
+            connector,
+            project,
+            issue_type: epic,
+            version,
+            work_profile: None,
+        })
+        .expect("the generic epic workflow is selectable");
+    assert!(workflow.spec().work_profile.is_none());
+    assert!(workflow.spec().work_profile_version.is_none());
+    assert_eq!(
+        workflow.spec().ownership_milestone.as_str(),
+        "terminal_done"
+    );
+
+    let terminal = workflow
+        .spec()
+        .milestones
+        .iter()
+        .find(|rule| rule.milestone.as_str() == "terminal_done")
+        .expect("terminal milestone");
+    assert!(matches!(
+        &terminal.predicate,
+        InternalPredicate::All { of }
+            if of.iter().any(|predicate| matches!(
+                predicate,
+                InternalPredicate::EpicCompletionIs {
+                    state: EpicCompletionEvidence::Done
+                }
+            )) && of.iter().any(|predicate| matches!(
+                predicate,
+                InternalPredicate::AllChildTasksTerminal
+            ))
+    ));
+    let hold = workflow
+        .spec()
+        .milestones
+        .iter()
+        .find(|rule| rule.milestone.as_str() == "terminal_hold")
+        .expect("hold milestone");
+    assert!(matches!(
+        hold.predicate,
+        InternalPredicate::EpicCompletionIs {
+            state: EpicCompletionEvidence::NeedsHuman
+        }
+    ));
+    assert!(workflow.spec().milestones.iter().all(|rule| {
+        !matches!(
+            rule.predicate,
+            InternalPredicate::TaskStateIs { .. }
+                | InternalPredicate::PhaseCompleted { .. }
+                | InternalPredicate::GateStateIs { .. }
+                | InternalPredicate::AllRequiredGatesPassed
+                | InternalPredicate::RunTerminal { .. }
+        )
+    }));
+}
+
+#[tokio::test]
+async fn entity_neutral_delegation_binds_apply_to_observation_route_and_readback() {
+    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let connector = ConnectorKey::parse("connector.jira").expect("connector");
+    let project = ExternalProjectKey::parse("asma").expect("project");
+    let epic = ExternalIssueTypeKey::parse("epic").expect("issue type");
+    let version = SpecVersion::parse(1).expect("spec revision");
+    let field_spec = catalog
+        .select_field_spec(&FieldSpecKey {
+            connector: connector.clone(),
+            project: project.clone(),
+            issue_type: epic.clone(),
+            version,
+        })
+        .expect("epic field specification");
+    let workflow_spec = catalog
+        .select_workflow_spec(&WorkflowSpecKey {
+            connector,
+            project,
+            issue_type: epic,
+            version,
+            work_profile: None,
+        })
+        .expect("epic workflow specification");
+
+    let before = wire_observation("10237", "DRAFT", "v1");
+    let after = wire_observation("10214", "In Development", "v2");
+    let exchange = RecordedExchange {
+        requests: Mutex::new(Vec::new()),
+        responses: Mutex::new(VecDeque::from([
+            wire_response(
+                JiraOperation::Observe,
+                JiraOutcome::Observed,
+                before.clone(),
+                None,
+            ),
+            wire_response(
+                JiraOperation::DryRun,
+                JiraOutcome::Planned,
+                before.clone(),
+                None,
+            ),
+            wire_response(
+                JiraOperation::Apply,
+                JiraOutcome::Applied,
+                before.clone(),
+                Some(after.clone()),
+            ),
+            wire_response(
+                JiraOperation::Apply,
+                JiraOutcome::Applied,
+                before.clone(),
+                None,
+            ),
+        ])),
+    };
+    let issue_key = ExternalId::parse("ASMA-9").expect("issue key");
+    let idempotency_key = IdempotencyKey::parse("epic-sync-1").expect("idempotency key");
+    let delegation = JiraIssueDelegation {
+        exchange: &exchange,
+        field_spec,
+        workflow_spec,
+        issue_key: &issue_key,
+        projection_revision: AggregateRevision::INITIAL,
+        field_writes: &[],
+        idempotency_key: &idempotency_key,
+    };
+
+    let observed = delegation.observe().await.expect("epic observation");
+    assert_eq!(observed.observation, before);
+    let target = StatusSelector {
+        status_id: ExternalId::parse("10214").expect("target id"),
+        status_name: ExternalName::parse("In Development").expect("target name"),
+    };
+    let plan = TransitionPlan {
+        milestone: SemanticMilestoneKey::parse("epic_active").expect("milestone"),
+        target: target.clone(),
+        transition: Some(SelectedTransition {
+            transition_id: ExternalId::parse("31").expect("transition id"),
+            to: target,
+        }),
+        assignment: None,
+        assignment_prerequisite: false,
+    };
+
+    delegation
+        .dry_run(&observed, &plan)
+        .await
+        .expect("the exact apply document validates");
+    let applied = delegation
+        .apply(
+            &observed,
+            &plan,
+            ApplyAuthority {
+                authorized_by: CommandReceiptId::generate(),
+            },
+        )
+        .await
+        .expect("the authorized transition is confirmed");
+    assert_eq!(
+        applied
+            .confirmation
+            .as_ref()
+            .expect("confirmed refetch")
+            .observation,
+        after
+    );
+    let unconfirmed = delegation
+        .apply(
+            &observed,
+            &plan,
+            ApplyAuthority {
+                authorized_by: CommandReceiptId::generate(),
+            },
+        )
+        .await
+        .expect_err("an applied effect without refetch confirmation is refused");
+    assert!(matches!(
+        unconfirmed,
+        JiraError::Unavailable {
+            reason: UnavailableReason::MalformedResponse,
+            ..
+        }
+    ));
+
+    let requests = exchange.requests.lock().expect("request ledger");
+    assert_eq!(requests.len(), 4);
+    let dry_run = &requests[1];
+    let apply = &requests[2];
+    assert_eq!(
+        dry_run
+            .expected
+            .as_ref()
+            .expect("expected status")
+            .status_id
+            .as_str(),
+        "10237"
+    );
+    assert_eq!(
+        dry_run
+            .expected
+            .as_ref()
+            .and_then(|expected| expected.update_token.as_ref())
+            .map(ExternalId::as_str),
+        Some("v1")
+    );
+    assert_eq!(dry_run.field_spec_hash.as_ref(), Some(field_spec.hash()));
+    assert_eq!(
+        dry_run.workflow_spec_hash.as_ref(),
+        Some(workflow_spec.hash())
+    );
+    assert_eq!(
+        dry_run
+            .transition
+            .as_ref()
+            .map(|transition| transition.transition_id.as_str()),
+        Some("31")
+    );
+    assert!(!dry_run.authorized_apply);
+    assert_eq!(apply.intent_hash, dry_run.intent_hash);
+    assert_eq!(apply.expected, dry_run.expected);
+    assert!(apply.authorized_apply);
 }
 
 #[tokio::test]
@@ -404,6 +845,88 @@ async fn native_requests_time_out_without_holding_the_daemon_open() {
     .await
     .expect("the connector owns the request timeout");
     assert!(result.is_err());
+}
+
+struct BlockingKeychain {
+    entered: std::sync::mpsc::Sender<()>,
+    release: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl KeychainBackend for BlockingKeychain {
+    fn secret(&self, _target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
+        let _ = self.entered.send(());
+        let _ = self.release.lock().expect("the release lock").recv();
+        Ok(SecretString::from(
+            r#"{"email":"operator@example.test","api_token":"secret"}"#.to_owned(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_blocking_keychain_read_is_bounded_by_the_credential_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"fields": {}})))
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        Arc::new(BlockingKeychain {
+            entered,
+            release: Arc::new(std::sync::Mutex::new(release_rx)),
+        }),
+    )
+    .expect("configuration loads");
+    let request = JiraRequest {
+        schema_version: SCHEMA_VERSION,
+        operation: JiraOperation::Observe,
+        issue_key: ExternalId::parse("ASMA-9").expect("issue key"),
+        idempotency_key: IdempotencyKey::parse("blocked-keychain-observe").expect("key"),
+        intent_hash: None,
+        field_spec_hash: None,
+        workflow_spec_hash: None,
+        expected: None,
+        field_writes: Vec::new(),
+        destination: None,
+        ownership_action: OwnershipAction::Preserve,
+        transition: None,
+        authorized_apply: false,
+    };
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(11),
+        connector
+            .for_project(project_id)
+            .expect("project is configured")
+            .execute("observe", &request),
+    )
+    .await
+    .expect("the connector owns the credential timeout");
+    started.recv().expect("the keychain read began");
+    let error = result.expect_err("a blocked keychain read must time out");
+    assert!(error.to_string().contains("exceeded its bound"), "{error}");
+    let _ = release_tx.send(());
 }
 
 #[test]

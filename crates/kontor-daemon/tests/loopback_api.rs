@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -88,8 +88,8 @@ use kontor_store::{
 };
 use kontor_teams::spec::TeamTemplateSpec;
 use secrecy::SecretString;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{any, method, path};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -102,8 +102,403 @@ struct ScriptedUsageReporter {
     delay: Duration,
 }
 
+/// Build an epic with unfinished ticket work and a materialized TPM seat.
+async fn reopened_completion_fixture(slug: &'static str) -> (World, Bootstrapped, SeatBindingId) {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, slug).await;
+    let project_read = Call::get(format!("/v1/projects/{}", seed.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let project_revision = project_read.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    adopt_session_base(&world, &seed.project, project_revision).await;
+    publish_core_team(
+        &world,
+        &seed.project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let materialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-completion-materialize"))
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let tpm = SeatBindingId::parse(
+        materialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a seat id"),
+    )
+    .expect("a valid seat id");
+
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("presets load");
+    let base = presets.committee_templates[0].clone();
+    for version in 1_u32..=4 {
+        let mut template = base.clone();
+        if version != 4
+            && let Some(rung) = template
+                .slots
+                .first_mut()
+                .and_then(|slot| slot.models.rungs.first_mut())
+        {
+            rung.model = ModelRef("retired-model".to_owned());
+        }
+        template.version = SpecVersion::parse(version).expect("a version");
+        let document = template.canonicalize().expect("template canonicalizes");
+        world.daemon.state().with_store(|store| {
+            store
+                .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                    project_id: ProjectId::parse(&seed.project).expect("a project id"),
+                    family: ConsultationFamily::Committee,
+                    profile_id: template.template_id.to_string(),
+                    version: template.version,
+                    name: template.name.clone(),
+                    definition: document.json().to_owned(),
+                    definition_hash: document.hash().clone(),
+                    published_at: kontor_api::now(),
+                })
+                .expect("Committee revision publishes");
+        });
+    }
+    (world, seed, tpm)
+}
+
+fn seed_completion_phase(
+    world: &World,
+    seed: &Bootstrapped,
+    tpm: SeatBindingId,
+    phase: kontor_scheduler::CompletionPhase,
+) -> AggregateRevision {
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let mut state = kontor_scheduler::start(&compiled, tpm, Vec::new()).expect("a run starts");
+    state.phase = phase;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id: ProjectId::parse(&seed.project).expect("a project id"),
+                mini_project_id: MiniProjectId::parse(&seed.epic).expect("an epic id"),
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("state serializes"),
+                revision: state.revision,
+                updated_at: at("2026-09-03T09:00:00Z"),
+            })
+            .expect("the completion seeds");
+    });
+    state.revision
+}
+
+#[tokio::test]
+async fn startup_reconciliation_reopens_done_completion_with_returned_work() {
+    let (world, seed, tpm) = reopened_completion_fixture("completion-startup-reopen").await;
+    seed_completion_phase(&world, &seed, tpm, kontor_scheduler::CompletionPhase::Done);
+
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let read = Call::get(format!(
+        "/v1/projects/{}/epics/{}/completion",
+        seed.project, seed.epic
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(read.json()["phase"]["phase"], "ticket_gate");
+    assert_eq!(read.json()["generation"], 2);
+    assert_eq!(read.json()["wakes"].as_array().expect("wakes").len(), 1);
+}
+
+#[tokio::test]
+async fn periodic_scanner_reopens_done_completion_after_startup() {
+    let (world, seed, tpm) = reopened_completion_fixture("completion-periodic-reopen").await;
+    seed_completion_phase(&world, &seed, tpm, kontor_scheduler::CompletionPhase::Done);
+    let scanner = world
+        .daemon
+        .spawn_completion_scanner(std::time::Duration::from_millis(5));
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let read = Call::get(format!(
+        "/v1/projects/{}/epics/{}/completion",
+        seed.project, seed.epic
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(read.json()["phase"]["phase"], "ticket_gate");
+    assert_eq!(read.json()["generation"], 2);
+    assert_eq!(read.json()["wakes"].as_array().expect("wakes").len(), 1);
+    world.daemon.state().signals().stop();
+    scanner.await.expect("scanner stops cleanly");
+}
+
+#[tokio::test]
+async fn completion_with_foreign_tpm_refuses_without_state_wake_or_receipt() {
+    let (world, seed, _tpm) = reopened_completion_fixture("completion-foreign-tpm").await;
+    let standing = seed_completion_phase(
+        &world,
+        &seed,
+        SeatBindingId::generate(),
+        kontor_scheduler::CompletionPhase::Tickets,
+    );
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-foreign-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(refused.code(), "stale_binding", "{}", refused.body);
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(
+                ProjectId::parse(&seed.project).expect("project"),
+                MiniProjectId::parse(&seed.epic).expect("epic"),
+            )
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    assert_eq!(stored.revision, standing);
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_completion_wakes(stored.project_id, stored.mini_project_id)
+                .expect("wakes read")
+                .is_empty()
+        );
+        assert!(
+            store
+                .get_receipt_by_key(
+                    &IdempotencyKey::parse("completion-foreign-tpm-advance").expect("key")
+                )
+                .expect("receipt reads")
+                .is_none()
+        );
+    });
+}
+
 #[derive(Default)]
 struct JiraFixtureKeychain;
+
+#[derive(Clone)]
+struct StatefulEpicJira {
+    transitioned: Arc<AtomicBool>,
+    transition_posts: Arc<AtomicUsize>,
+}
+
+impl Respond for StatefulEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if request.method.as_str() == "POST" && path.ends_with("/transitions") {
+            self.transitioned.store(true, Ordering::SeqCst);
+            self.transition_posts.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(204);
+        }
+        if request.method.as_str() == "GET" && path.ends_with("/transitions") {
+            let transitions = if self.transitioned.load(Ordering::SeqCst) {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({
+                    "id": "21",
+                    "to": {
+                        "id": "10214",
+                        "name": "In Development",
+                        "statusCategory": {"name": "In Progress"}
+                    }
+                })]
+            };
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": transitions}));
+        }
+        if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8201") {
+            let transitioned = self.transitioned.load(Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8201",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": if transitioned {"10214"} else {"10237"},
+                        "name": if transitioned {"In Development"} else {"DRAFT"},
+                        "statusCategory": {"name": if transitioned {"In Progress"} else {"To Do"}}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "updated": if transitioned {"2026-09-03T10:00:01.000+0000"} else {"2026-09-03T10:00:00.000+0000"}
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+#[derive(Clone)]
+struct StatefulTaskJira {
+    transitioned: Arc<AtomicBool>,
+    transition_posts: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct ClosedEpicJira {
+    issue_reads: Arc<AtomicUsize>,
+}
+
+impl Respond for ClosedEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if request.method.as_str() == "GET" && path.ends_with("/transitions") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": []}));
+        }
+        if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8203") {
+            self.issue_reads.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8203",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10228",
+                        "name": "Closed",
+                        "statusCategory": {"name": "Done"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "updated": "2026-09-03T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+#[derive(Clone)]
+struct FailingEpicJira {
+    issue_reads: Arc<AtomicUsize>,
+    transition_posts: Arc<AtomicUsize>,
+}
+
+impl Respond for FailingEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if request.method.as_str() == "POST" && path.ends_with("/transitions") {
+            self.transition_posts.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(503);
+        }
+        if request.method.as_str() == "GET" && path.ends_with("/transitions") {
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [{
+                    "id": "21",
+                    "to": {
+                        "id": "10214",
+                        "name": "In Development",
+                        "statusCategory": {"name": "In Progress"}
+                    }
+                }]
+            }));
+        }
+        if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8204") {
+            self.issue_reads.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8204",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10237",
+                        "name": "DRAFT",
+                        "statusCategory": {"name": "To Do"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "updated": "2026-09-03T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+impl Respond for StatefulTaskJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if request.method.as_str() == "POST" && path.ends_with("/transitions") {
+            self.transitioned.store(true, Ordering::SeqCst);
+            self.transition_posts.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(204);
+        }
+        if request.method.as_str() == "GET" && path.ends_with("/transitions") {
+            let transitions = if self.transitioned.load(Ordering::SeqCst) {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({
+                    "id": "31",
+                    "to": {
+                        "id": "10228",
+                        "name": "Closed",
+                        "statusCategory": {"name": "Done"}
+                    }
+                })]
+            };
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": transitions}));
+        }
+        if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8202") {
+            let transitioned = self.transitioned.load(Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8202",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": if transitioned {"10228"} else {"10214"},
+                        "name": if transitioned {"Closed"} else {"In Development"},
+                        "statusCategory": {"name": if transitioned {"Done"} else {"In Progress"}}
+                    },
+                    "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                    "assignee": {"accountId": "acct-kontor", "displayName": "Kontor"},
+                    "updated": if transitioned {"2026-09-03T10:00:01.000+0000"} else {"2026-09-03T10:00:00.000+0000"}
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
 
 impl KeychainBackend for JiraFixtureKeychain {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
@@ -3737,17 +4132,26 @@ async fn an_identical_manifest_reapplies_over_a_task_that_natively_progressed() 
 
     // The same manifest the epic was created from — task state omitted, so the
     // compatibility default — plus one task the caller has since added.
+    let mut reapply_body = epic_body(
+        revision,
+        "Control epic",
+        &category,
+        serde_json::json!([
+            {"title": "The task"},
+            {"title": "A later task", "depends_on": ["The task"]}
+        ]),
+    );
+    for task in reapply_body["tasks"]
+        .as_array_mut()
+        .expect("the tasks are an array")
+    {
+        task.as_object_mut()
+            .expect("a task is an object")
+            .remove("ticket_links");
+    }
     let reapplied = Call::post(
         format!("/v1/projects/{}/epics:apply", seed.project),
-        &epic_body(
-            revision,
-            "Control epic",
-            &category,
-            serde_json::json!([
-                {"title": "The task"},
-                {"title": "A later task", "depends_on": ["The task"]}
-            ]),
-        ),
+        &reapply_body,
     )
     .signed_as(&world, "admin")
     .with_key("progressed-reapply")
@@ -5034,6 +5438,8 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
         "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+        "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts",
+        "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
@@ -7289,6 +7695,28 @@ async fn ticket_reconciliation_is_a_typed_dry_run_that_names_its_plan() {
         applied.json()["projection_hash"],
         plan.json()["projection_hash"]
     );
+
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_ticket_link(&NewTicketLink {
+                id: TicketLinkId::generate(),
+                project_id,
+                task_id,
+                connector: ConnectorKey::parse("connector.github")
+                    .expect("a non-Jira connector key"),
+                external_issue_key: ExternalId::parse("GH-42").expect("a non-Jira issue key"),
+                created_at: at("2026-08-19T10:00:00Z"),
+            })
+            .expect("the unrelated ticket link is created");
+    });
+    let unsupported = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(unsupported.status, 422, "{}", unsupported.body);
+    assert_eq!(unsupported.code(), "unsupported_capability");
 }
 
 #[tokio::test]
@@ -9064,6 +9492,606 @@ async fn an_admin_installs_the_exact_shipped_workflow_revision_under_project_cas
 }
 
 #[tokio::test]
+async fn resident_jira_controller_converges_a_confirmed_epic_and_replays_on_the_next_wake() {
+    let server = MockServer::start().await;
+    let transitioned = Arc::new(AtomicBool::new(false));
+    let transition_posts = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(StatefulEpicJira {
+            transitioned: Arc::clone(&transitioned),
+            transition_posts: Arc::clone(&transition_posts),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Resident Jira controller"),
+                root_path: name("/tmp/kontor-resident-jira-controller"),
+                created_at: at("2026-09-03T10:00:00Z"),
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Automatically synchronized epic"),
+                created_at: at("2026-09-03T10:01:00Z"),
+            })
+            .expect("the epic is created");
+    });
+    confirm_promoted_epic_identity(
+        &world,
+        &project_id.to_string(),
+        &epic_id.to_string(),
+        "AUTO",
+        "ASMA-8201",
+    );
+    world.daemon.state().with_store(|store| {
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "epic"
+                    && compiled.spec().work_profile.is_none()
+            })
+            .expect("the generic epic workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the exact epic workflow is installed");
+    });
+
+    let controller = tokio::spawn(kontor_daemon::jira_sync::poll_until_stopped(
+        world.daemon.jira_reconciler(),
+        world.daemon.state().clone(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while transition_posts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the resident controller reacts on its startup pass");
+    world.daemon.state().signals().stop();
+    controller
+        .await
+        .expect("the resident controller stops cleanly");
+    assert!(transitioned.load(Ordering::SeqCst));
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+
+    let replay = world.daemon.reconcile_jira_once().await;
+    assert_eq!(replay.epic_subjects, 1);
+    assert_eq!(replay.converged, 1, "{replay:?}");
+    assert_eq!(replay.applied, 0, "{replay:?}");
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+
+    world.daemon.state().with_store(|store| {
+        let export = kontor_store::backup::export_realm(store, at("2026-09-03T10:02:00Z"))
+            .expect("the transition evidence exports");
+        assert_eq!(export.records.epic_jira_transition_intents.len(), 1);
+        assert!(
+            export.records.epic_jira_transition_intents[0]
+                .confirmed_at
+                .is_some(),
+            "the external effect is believed only after readback"
+        );
+    });
+}
+
+#[tokio::test]
+async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
+    let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(ClosedEpicJira {
+            issue_reads: Arc::clone(&issue_reads),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Resident Jira conflict"),
+                root_path: name("/tmp/kontor-resident-jira-conflict"),
+                created_at: at("2026-09-03T10:00:00Z"),
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Conflicting Jira epic"),
+                created_at: at("2026-09-03T10:01:00Z"),
+            })
+            .expect("the epic is created");
+    });
+    confirm_promoted_epic_identity(
+        &world,
+        &project_id.to_string(),
+        &epic_id.to_string(),
+        "AUTO",
+        "ASMA-8203",
+    );
+    world.daemon.state().with_store(|store| {
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "epic"
+                    && compiled.spec().work_profile.is_none()
+            })
+            .expect("the generic epic workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the exact epic workflow is installed");
+    });
+
+    let append_signals = world.daemon.state().signals().appends();
+    let first = world.daemon.reconcile_jira_once().await;
+    assert_eq!(first.blocked, 1, "the first pass persists the conflict");
+    let first_signal = *append_signals.borrow();
+    let replay = world.daemon.reconcile_jira_once().await;
+    assert_eq!(replay.blocked, 1, "the replay remains blocked");
+    assert_eq!(
+        *append_signals.borrow(),
+        first_signal,
+        "a deduplicated conflict must not publish another append signal"
+    );
+
+    let controller = tokio::spawn(kontor_daemon::jira_sync::poll_until_stopped(
+        world.daemon.jira_reconciler(),
+        world.daemon.state().clone(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while issue_reads.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the resident controller performs its initial pass");
+    let settled = issue_reads.load(Ordering::SeqCst);
+    let settled_signal = *append_signals.borrow();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        settled,
+        "an unchanged durable conflict must wait for the bounded backstop"
+    );
+    assert_eq!(*append_signals.borrow(), settled_signal);
+    world.daemon.state().signals().stop();
+    controller
+        .await
+        .expect("the resident controller stops cleanly");
+    let conflicts = world.daemon.state().with_store(|store| {
+        store
+            .list_epic_status_conflicts(project_id, epic_id)
+            .expect("the conflict reads")
+    });
+    assert_eq!(conflicts.len(), 1, "the repeated observation deduplicates");
+}
+
+#[tokio::test]
+async fn resident_failed_epic_apply_emits_no_immediate_replay_wake() {
+    let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
+    let transition_posts = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(FailingEpicJira {
+            issue_reads: Arc::clone(&issue_reads),
+            transition_posts: Arc::clone(&transition_posts),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Resident Jira failed effect"),
+                root_path: name("/tmp/kontor-resident-jira-failed-effect"),
+                created_at: at("2026-09-03T10:00:00Z"),
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Retryable Jira epic"),
+                created_at: at("2026-09-03T10:01:00Z"),
+            })
+            .expect("the epic is created");
+    });
+    confirm_promoted_epic_identity(
+        &world,
+        &project_id.to_string(),
+        &epic_id.to_string(),
+        "AUTO",
+        "ASMA-8204",
+    );
+    world.daemon.state().with_store(|store| {
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "epic"
+                    && compiled.spec().work_profile.is_none()
+            })
+            .expect("the generic epic workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the exact epic workflow is installed");
+    });
+
+    let controller = tokio::spawn(kontor_daemon::jira_sync::poll_until_stopped(
+        world.daemon.jira_reconciler(),
+        world.daemon.state().clone(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while transition_posts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the resident controller attempts the effect once");
+    let settled_reads = issue_reads.load(Ordering::SeqCst);
+    let settled_posts = transition_posts.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(issue_reads.load(Ordering::SeqCst), settled_reads);
+    assert_eq!(
+        transition_posts.load(Ordering::SeqCst),
+        settled_posts,
+        "a failed effect waits for the bounded backstop instead of self-waking"
+    );
+    world.daemon.state().signals().stop();
+    controller
+        .await
+        .expect("the resident controller stops cleanly");
+    let intents = world.daemon.state().with_store(|store| {
+        kontor_store::backup::export_realm(store, at("2026-09-03T10:02:00Z"))
+            .expect("the planned authority exports")
+            .records
+            .epic_jira_transition_intents
+    });
+    assert_eq!(intents.len(), 1);
+    assert!(intents[0].confirmed_at.is_none());
+}
+
+#[tokio::test]
+async fn request_and_resident_jira_reconciliation_ignore_an_unrelated_connector_link() {
+    let server = MockServer::start().await;
+    let transitioned = Arc::new(AtomicBool::new(false));
+    let transition_posts = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(StatefulTaskJira {
+            transitioned: Arc::clone(&transitioned),
+            transition_posts: Arc::clone(&transition_posts),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let task_id = TaskId::generate();
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-09-03T11:00:00Z");
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Resident Jira task controller"),
+                root_path: name("/tmp/kontor-resident-jira-task-controller"),
+                created_at: now,
+            })
+            .expect("the project is created");
+    });
+    let ensured = ensure_project_raw(
+        &world,
+        "resident-jira-task-project",
+        "Resident Jira task controller",
+        "/tmp/kontor-resident-jira-task-controller",
+    )
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    assert_eq!(ensured.json()["project_id"], project_id.to_string());
+    let category = first_category(&world).await;
+    let mut bootstrap_body = epic_body(
+        ensured.json()["revision"].as_u64().expect("a revision"),
+        "Profile bootstrap",
+        &category,
+        serde_json::json!([{"title": "Unlinked bootstrap task"}]),
+    );
+    bootstrap_body["tasks"][0]
+        .as_object_mut()
+        .expect("the task is an object")
+        .remove("ticket_links");
+    let profile_bootstrap = Call::post(
+        format!("/v1/projects/{project_id}/epics:apply"),
+        &bootstrap_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("resident-jira-task-profile-bootstrap")
+    .send(&world)
+    .await;
+    assert_eq!(profile_bootstrap.status, 200, "{}", profile_bootstrap.body);
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-09-03T11:00:00Z");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Task synchronization epic"),
+                created_at: now,
+            })
+            .expect("the epic is created");
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                title: name("Already completed task"),
+                module: None,
+                state: kontor_core::state::TaskState::Done,
+                created_at: now,
+            })
+            .expect("the task is created");
+        let pack = kontor_profiles::seeds::bundled_pack().expect("the profile pack loads");
+        let entry = pack
+            .manifest
+            .iter()
+            .find(|entry| {
+                entry.availability == kontor_profiles::pack::PackAvailability::Seeded
+                    && entry.category.as_str() == "code"
+            })
+            .expect("the code profile is seeded");
+        let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, now)
+            .expect("the code profile resolves");
+        let current_phase = bundle.profile.definition.entry_phase.clone();
+        store
+            .create_task_workflow(&NewTaskWorkflow {
+                id: TaskWorkflowId::generate(),
+                project_id,
+                task_id,
+                snapshot: bundle.profile,
+                current_phase,
+                created_at: now,
+            })
+            .expect("the task workflow is created");
+
+        let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("a batch id");
+        let link_id = TicketLinkId::generate();
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: "resident-task-confirmation".to_owned(),
+                    preview_hash: ContentHash::of(b"resident task confirmation"),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &[NewJiraMaterializationItem {
+                    id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
+                    batch_id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(task_id),
+                    link_id: Some(link_id),
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Link,
+                    requested_key: Some(ExternalId::parse("ASMA-8202").expect("a Jira key")),
+                    marker: ExternalId::parse("kontor-resident-task").expect("a marker"),
+                }],
+            )
+            .expect("the task Jira plan is durable");
+        let item = store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("the item reads")
+            .into_iter()
+            .next()
+            .expect("the task item exists");
+        store
+            .confirm_jira_materialization_item(
+                &item,
+                &ExternalId::parse("ASMA-8202").expect("a Jira key"),
+                &ContentHash::of(b"task binding readback"),
+                now,
+            )
+            .expect("the task Jira identity is confirmed");
+        store
+            .confirm_jira_materialization_batch(project_id, &batch_id, now)
+            .expect("the task-only batch confirms");
+        store
+            .create_ticket_link(&NewTicketLink {
+                id: TicketLinkId::generate(),
+                project_id,
+                task_id,
+                connector: ConnectorKey::parse("connector.github")
+                    .expect("a non-Jira connector key"),
+                external_issue_key: ExternalId::parse("GH-42").expect("a non-Jira issue key"),
+                created_at: now,
+            })
+            .expect("the unrelated ticket link is created");
+
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "task"
+                    && compiled
+                        .spec()
+                        .work_profile
+                        .as_ref()
+                        .is_some_and(|profile| profile.as_str() == "code")
+            })
+            .expect("the code task workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the code Jira workflow is installed");
+    });
+
+    let requested = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(requested.status, 200, "{}", requested.body);
+    assert_eq!(
+        requested.json()["diff"]
+            .as_array()
+            .expect("a Jira reconciliation diff")
+            .len(),
+        1,
+        "the unrelated connector must not suppress the confirmed Jira plan: {}",
+        requested.body
+    );
+
+    let first = world.daemon.reconcile_jira_once().await;
+    assert_eq!(first.task_subjects, 1, "{first:?}");
+    assert_eq!(first.applied, 1, "{first:?}");
+    assert_eq!(first.blocked, 0, "{first:?}");
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+
+    let replay = world.daemon.reconcile_jira_once().await;
+    assert_eq!(replay.task_subjects, 1, "{replay:?}");
+    assert_eq!(replay.converged, 1, "{replay:?}");
+    assert_eq!(replay.applied, 0, "{replay:?}");
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn conflicts_comments_and_claims_are_task_scoped_and_disclose_no_content() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
@@ -9080,6 +10108,16 @@ async fn conflicts_comments_and_claims_are_task_scoped_and_disclose_no_content()
     .await;
     assert_eq!(conflicts.status, 200, "{}", conflicts.body);
     assert_eq!(conflicts.json().as_array().expect("a list").len(), 0);
+
+    let epic_conflicts = Call::get(format!(
+        "/v1/projects/{}/epics/{}/jira:conflicts",
+        seed.project, seed.epic
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(epic_conflicts.status, 200, "{}", epic_conflicts.body);
+    assert_eq!(epic_conflicts.json().as_array().expect("a list").len(), 0);
 
     let comments = Call::get(format!(
         "/v1/projects/{}/tasks/{}/ticket:comments",
@@ -9105,6 +10143,19 @@ async fn conflicts_comments_and_claims_are_task_scoped_and_disclose_no_content()
     .send(&world)
     .await;
     assert_eq!(phantom.status, 404, "{}", phantom.body);
+
+    let phantom_epic = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/jira:resolve-conflict",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"conflict_id": "0199a0a0-0000-7000-8000-000000000001"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("epic-conflicts-resolve-1")
+    .send(&world)
+    .await;
+    assert_eq!(phantom_epic.status, 404, "{}", phantom_epic.body);
 
     // A task with no links has nothing to pull, and that is a legitimate zero
     // rather than a claim about an external system nothing contacted.
@@ -19465,6 +20516,58 @@ async fn compose_realm(root: &str) -> Composed {
     }
 }
 
+#[tokio::test]
+async fn a_task_with_no_jira_link_refuses_naming_instead_of_substituting_a_uuid() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let created =
+        ensure_project(&world, "no-jira-link", "Kontor", "/tmp/kontor-no-jira-link").await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("the project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("the revision");
+    let category = first_category(&world).await;
+    let mut body = epic_body(
+        project_revision,
+        "No Jira link epic",
+        &category,
+        serde_json::json!([{"title": "The task"}]),
+    );
+    body["tasks"][0]
+        .as_object_mut()
+        .expect("the task request is an object")
+        .remove("ticket_links");
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("no-jira-link-epic")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the task id")
+        .to_owned();
+
+    let calls_before_refusal = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("no-jira-link-refuses-uuid")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert!(refused.body.contains("no confirmed Jira link"));
+    assert_eq!(world.fake.calls().len(), calls_before_refusal);
+}
+
 /// A legacy import has no typed execution-scope row, so admission must recover
 /// names from the durable Jira-linked epic/task metadata. This is the live QNR
 /// shape that previously produced a raw epic UUID, an unresolved ECP template,
@@ -22251,7 +23354,7 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(refused.code(), "placement_blocked");
     assert!(
-        refused.body.contains("confirmed Jira binding"),
+        refused.body.contains("confirmed Jira link"),
         "{}",
         refused.body
     );
@@ -25846,19 +26949,36 @@ async fn a_refused_first_advance_creates_no_completion_run_and_no_receipt() {
         "the initial revision must pass the guard: {}",
         corrected.body
     );
-    // And it is *this* call — the first one to get past the revision guard —
-    // that brings the run into existence. Which is the whole property: before it
-    // the read was an absence, and the refused call is not what ended that. What
-    // the advance then reports about the ticket gate is a different question,
-    // asked of a run that now exists.
-    let present = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+    // Passing the revision guard is not the same as creating the run. This
+    // epic's only task is unfinished, so the transition refuses at the ticket
+    // gate. Creation, transition, wakes and receipt are one transaction; the
+    // refusal must therefore leave nothing durable.
+    assert_eq!(
+        corrected.status, 400,
+        "the first transition refuses at the ticket gate: {}",
+        corrected.body
+    );
+    let absent = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
     assert_eq!(
-        present.status, 200,
-        "the advance that passed the guard is the one that created the run: {}",
-        present.body
+        absent.status, 404,
+        "a refused first transition leaves no run standing: {}",
+        absent.body
+    );
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join("kontor.db")).expect("opens");
+    let receipts: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = 'op06-first-advance'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipt count reads");
+    assert_eq!(
+        receipts, 0,
+        "and no receipt stands for a completion that was never created"
     );
 }
 
@@ -26055,6 +27175,30 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     assert_eq!(replay_delivery.len(), 1);
     assert!(replay_delivery[0].acknowledged_at.is_some());
 
+    // The idempotency identity covers the complete request, including optional
+    // evidence. The same key cannot be reused for a materially different
+    // assertion even though the original transition already committed.
+    let changed_evidence = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "evidence": {
+                "phase": "integration",
+                "repositories": [{
+                    "repository": "asma-rs-kontor",
+                    "pull_request": "PR-CHANGED",
+                    "module_revision": "changed",
+                }]
+            }
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op06-advance-once")
+    .send(world)
+    .await;
+    assert_eq!(changed_evidence.status, 409, "{}", changed_evidence.body);
+    assert_eq!(changed_evidence.code(), "idempotency_conflict");
+
     // A *different* key presenting that now-stale revision is a genuine conflict.
     let stale = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
@@ -26071,6 +27215,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     // ---- `:remediate` over a run whose first round failed ----
     let integration = kontor_scheduler::IntegrationRecord {
         receipt: ContentHash::of(b"integration-1"),
+        decided_in: None,
         repositories: vec![kontor_scheduler::RepositoryOutcome {
             repository: name("asma-rs-kontor"),
             pull_request: name("PR-1"),
@@ -26436,6 +27581,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     .state;
     let remediation_integration = kontor_scheduler::IntegrationRecord {
         receipt: ContentHash::of(b"integration-2"),
+        decided_in: None,
         repositories: vec![kontor_scheduler::RepositoryOutcome {
             repository: name("asma-rs-kontor"),
             pull_request: name("PR-2"),
@@ -26987,6 +28133,7 @@ async fn the_closeout_receipts_carry_an_epic_to_done() {
         kontor_scheduler::CompletionObservation::IntegrationCompleted(
             kontor_scheduler::IntegrationRecord {
                 receipt: ContentHash::of(b"integration"),
+                decided_in: None,
                 repositories: vec![kontor_scheduler::RepositoryOutcome {
                     repository: name("asma-rs-kontor"),
                     pull_request: name("PR-91"),

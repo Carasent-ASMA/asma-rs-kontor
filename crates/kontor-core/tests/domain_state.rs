@@ -1633,6 +1633,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("assign_ticket", "ticket_link", "witness", None),
     ("transition_ticket", "ticket_link", "witness", None),
     ("resolve_status_conflict", "ticket_link", "witness", None),
+    ("resolve_status_conflict", "mini_project", "witness", None),
     ("authorize_execution", "project", "witness", None),
     ("authorize_execution", "mini_project", "witness", None),
     ("authorize_execution", "task", "witness", None),

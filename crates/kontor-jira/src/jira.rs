@@ -56,11 +56,18 @@ use crate::{
     ensure_wire_schema,
 };
 
-/// The ASMA field specification this build ships, as data.
-const BUNDLED_FIELD_SPEC: &str = include_str!("../fixtures/ticket-fields-asma.json");
+/// The ASMA field specifications this build ships, as data.
+const BUNDLED_FIELD_SPECS: [&str; 2] = [
+    include_str!("../fixtures/ticket-fields-asma.json"),
+    include_str!("../fixtures/ticket-fields-asma-epic.json"),
+];
 
-/// The ASMA workflow specification this build ships, as data.
-const BUNDLED_WORKFLOW_SPEC: &str = include_str!("../fixtures/external-workflow-asma.json");
+/// The ASMA workflow specifications this build ships, as data.
+const BUNDLED_WORKFLOW_SPECS: [&str; 3] = [
+    include_str!("../fixtures/external-workflow-asma.json"),
+    include_str!("../fixtures/external-workflow-asma-high-stakes.json"),
+    include_str!("../fixtures/external-workflow-asma-epic.json"),
+];
 
 // ---------------------------------------------------------------------------
 // Specification selection
@@ -187,8 +194,12 @@ impl SpecCatalog {
     /// condition.
     pub fn bundled() -> Result<Self, AsmaError> {
         let mut catalog = Self::empty();
-        catalog.load_field_spec(BUNDLED_FIELD_SPEC)?;
-        catalog.load_workflow_spec(BUNDLED_WORKFLOW_SPEC)?;
+        for specification in BUNDLED_FIELD_SPECS {
+            catalog.load_field_spec(specification)?;
+        }
+        for specification in BUNDLED_WORKFLOW_SPECS {
+            catalog.load_workflow_spec(specification)?;
+        }
         Ok(catalog)
     }
 
@@ -802,6 +813,392 @@ pub enum AmbiguityVerdict {
     /// The issue is in neither the old state nor the intended one. Somebody else
     /// acted, or the effects landed partially: a human decides.
     Contradictory(Box<Observed>),
+}
+
+/// One Jira issue observation without a task or ticket-link identity.
+///
+/// The connector evidence is kept in its wire form because the domain ticket
+/// observation requires a [`TicketLinkId`]. Epic callers persist the evidence
+/// against their own binding instead of manufacturing that task-scoped id.
+#[derive(Debug, Clone)]
+pub struct ObservedIssue {
+    /// The whole connector answer, kept as evidence.
+    pub response: JiraResponse,
+    /// The observed issue state.
+    pub observation: WireObservation,
+    /// The transitions the connector offered with this observation.
+    pub live_transitions: Vec<LiveTransition>,
+    /// The authenticated principal Kontor may act as.
+    pub principal: TicketPrincipal,
+}
+
+/// What a refetch proves about an entity-neutral apply whose result was lost.
+#[derive(Debug, Clone)]
+pub enum IssueAmbiguityVerdict {
+    /// The intended status and ownership effects are already present.
+    AlreadyConfirmed(Box<ObservedIssue>),
+    /// The issue is byte-for-byte unchanged in the decision-relevant fields.
+    NoEffect(Box<ObservedIssue>),
+    /// The issue is in neither the old nor intended state.
+    Contradictory(Box<ObservedIssue>),
+}
+
+/// The safe transport boundary shared by task and epic convergence.
+///
+/// Policy stays outside this type. Its caller supplies a typed
+/// [`TransitionPlan`], while this boundary proves the plan against the exact
+/// observation and live route, hashes the exact pinned specifications and
+/// intent, requires explicit apply authority, and believes an applied effect
+/// only with connector-confirmed refetch evidence.
+#[derive(Clone, Copy)]
+pub struct JiraIssueDelegation<'a> {
+    /// The configured connector transport.
+    pub exchange: &'a dyn JiraExchange,
+    /// The exact field specification selected for this entity kind.
+    pub field_spec: &'a CompiledFieldSpec,
+    /// The exact workflow specification selected for this entity and profile.
+    pub workflow_spec: &'a CompiledWorkflowSpec,
+    /// The external issue being converged.
+    pub issue_key: &'a ExternalId,
+    /// The internal projection revision represented by this attempt.
+    pub projection_revision: AggregateRevision,
+    /// Already-validated, non-null field writes for this entity.
+    pub field_writes: &'a [FieldWrite],
+    /// The caller's durable idempotency key.
+    pub idempotency_key: &'a IdempotencyKey,
+}
+
+impl JiraIssueDelegation<'_> {
+    /// Read the live issue, routes and authenticated principal.
+    pub async fn observe(&self) -> Result<ObservedIssue, AsmaError> {
+        self.read("jira observe", JiraOperation::Observe).await
+    }
+
+    /// Re-read the live issue for confirmation or ambiguity recovery.
+    pub async fn refetch(&self) -> Result<ObservedIssue, AsmaError> {
+        self.read("jira refetch", JiraOperation::Refetch).await
+    }
+
+    async fn read(
+        &self,
+        operation: &'static str,
+        wire_operation: JiraOperation,
+    ) -> Result<ObservedIssue, AsmaError> {
+        let request = JiraRequest {
+            schema_version: WIRE_SCHEMA_VERSION,
+            operation: wire_operation,
+            issue_key: self.issue_key.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            intent_hash: None,
+            field_spec_hash: Some(self.field_spec.hash().clone()),
+            workflow_spec_hash: Some(self.workflow_spec.hash().clone()),
+            expected: None,
+            field_writes: Vec::new(),
+            destination: None,
+            ownership_action: OwnershipAction::Preserve,
+            transition: None,
+            authorized_apply: false,
+        };
+        let response = self.exchange(operation, &request).await?;
+        self.interpret(operation, response)
+    }
+
+    /// Validate the exact request an apply would send without writing.
+    pub async fn dry_run(
+        &self,
+        observed: &ObservedIssue,
+        plan: &TransitionPlan,
+    ) -> Result<JiraResponse, AsmaError> {
+        let request = self.build_write_request("jira dry-run", observed, plan, None)?;
+        self.exchange("jira dry-run", &request).await
+    }
+
+    /// Apply a plan under explicit authority and require confirmed readback.
+    pub async fn apply(
+        &self,
+        observed: &ObservedIssue,
+        plan: &TransitionPlan,
+        authority: ApplyAuthority,
+    ) -> Result<JiraResponse, AsmaError> {
+        let request = self.build_write_request("jira apply", observed, plan, Some(authority))?;
+        let response = self.exchange("jira apply", &request).await?;
+        if response.effective_operation != JiraOperation::Apply {
+            return Err(AsmaError::unavailable(
+                "jira apply",
+                crate::UnavailableReason::MalformedResponse,
+                format!(
+                    "an authorized apply ran as {}",
+                    response.effective_operation.as_str()
+                ),
+            ));
+        }
+        if response.outcome == JiraOutcome::Applied && response.confirmation.is_none() {
+            return Err(AsmaError::unavailable(
+                "jira apply",
+                crate::UnavailableReason::MalformedResponse,
+                "reported applied without a refetched observation",
+            ));
+        }
+        self.raise_reported_failure("jira apply", &response)?;
+        Ok(response)
+    }
+
+    /// Re-read an apply with an unknown result before authorizing any retry.
+    pub async fn reconcile_after_ambiguity(
+        &self,
+        before: &ObservedIssue,
+        plan: &TransitionPlan,
+    ) -> Result<IssueAmbiguityVerdict, AsmaError> {
+        let after = Box::new(self.refetch().await?);
+        let expected_holder = issue_planned_holder(before, plan);
+        let status_arrived = plan.transition.is_none()
+            || after.observation.status_id == plan.destination().status_id;
+        let holder_arrived = after.observation.assignee_account_id == expected_holder;
+        if status_arrived && holder_arrived {
+            return Ok(IssueAmbiguityVerdict::AlreadyConfirmed(after));
+        }
+        let unchanged = after.observation.status_id == before.observation.status_id
+            && after.observation.assignee_account_id == before.observation.assignee_account_id;
+        if unchanged {
+            return Ok(IssueAmbiguityVerdict::NoEffect(after));
+        }
+        Ok(IssueAmbiguityVerdict::Contradictory(after))
+    }
+
+    /// Canonical, retry-stable intent for this issue attempt.
+    pub fn intent(
+        &self,
+        observed: &ObservedIssue,
+        plan: &TransitionPlan,
+    ) -> Result<CanonicalDocument, AsmaError> {
+        let intent = DelegationIntent {
+            schema_version: WIRE_SCHEMA_VERSION,
+            connector: &self.workflow_spec.spec().connector,
+            project: &self.workflow_spec.spec().project,
+            issue_type: &self.workflow_spec.spec().issue_type,
+            external_issue_key: self.issue_key,
+            field_spec_version: self.field_spec.spec().version,
+            field_spec_hash: self.field_spec.hash(),
+            workflow_spec_version: self.workflow_spec.spec().version,
+            workflow_spec_hash: self.workflow_spec.hash(),
+            projection_revision: self.projection_revision,
+            prior_observation_hash: &observed.observation.observation_hash,
+            prior_status_id: &observed.observation.status_id,
+            prior_assignee_account_id: observed.observation.assignee_account_id.as_ref(),
+            milestone: &plan.milestone,
+            destination: &plan.target,
+            ownership_action: plan
+                .assignment
+                .as_ref()
+                .map_or(OwnershipAction::Preserve, |assignment| assignment.action),
+            field_writes: self.field_writes,
+            live_routes: observed
+                .live_transitions
+                .iter()
+                .map(|transition| RequestedTransition {
+                    transition_id: transition.transition_id.clone(),
+                    to_status_id: transition.to.status_id.clone(),
+                })
+                .collect(),
+        };
+        Ok(CanonicalDocument::from_serializable(&intent)?)
+    }
+
+    fn build_write_request(
+        &self,
+        operation: &'static str,
+        observed: &ObservedIssue,
+        plan: &TransitionPlan,
+        authority: Option<ApplyAuthority>,
+    ) -> Result<JiraRequest, AsmaError> {
+        let ownership_action = issue_ownership_action(operation, observed, plan)?;
+        let transition = plan
+            .transition
+            .as_ref()
+            .map(|selected| prove_issue_live_route(operation, observed, plan, selected))
+            .transpose()?;
+        let intent = self.intent(observed, plan)?;
+        Ok(JiraRequest {
+            schema_version: WIRE_SCHEMA_VERSION,
+            operation: if authority.is_some() {
+                JiraOperation::Apply
+            } else {
+                JiraOperation::DryRun
+            },
+            issue_key: self.issue_key.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            intent_hash: Some(intent.hash().clone()),
+            field_spec_hash: Some(self.field_spec.hash().clone()),
+            workflow_spec_hash: Some(self.workflow_spec.hash().clone()),
+            expected: Some(ExpectedObservation {
+                status_id: observed.observation.status_id.clone(),
+                assignee_account_id: observed.observation.assignee_account_id.clone(),
+                update_token: observed.observation.update_token.clone(),
+                observation_hash: Some(observed.observation.observation_hash.clone()),
+            }),
+            field_writes: self.field_writes.to_vec(),
+            destination: Some(plan.destination().clone()),
+            ownership_action,
+            transition,
+            authorized_apply: authority.is_some(),
+        })
+    }
+
+    async fn exchange(
+        &self,
+        operation: &'static str,
+        request: &JiraRequest,
+    ) -> Result<JiraResponse, AsmaError> {
+        let response = self.exchange.execute(operation, request).await?;
+        ensure_wire_schema(operation, response.schema_version)?;
+        if response.issue_key != request.issue_key
+            || response.idempotency_key != request.idempotency_key
+        {
+            return Err(AsmaError::unavailable(
+                operation,
+                crate::UnavailableReason::MalformedResponse,
+                "answered about a different issue or idempotency key",
+            ));
+        }
+        if !request.authorized_apply && response.effective_operation == JiraOperation::Apply {
+            return Err(AsmaError::refused(
+                operation,
+                "the boundary applied an unauthorized request",
+            ));
+        }
+        Ok(response)
+    }
+
+    fn raise_reported_failure(
+        &self,
+        operation: &'static str,
+        response: &JiraResponse,
+    ) -> Result<(), AsmaError> {
+        match response.outcome {
+            JiraOutcome::Conflict => {
+                let reason = response
+                    .conflict
+                    .as_ref()
+                    .map_or("", |failure| failure.reason.as_str());
+                Err(AsmaError::Conflict {
+                    operation,
+                    kind: StatusConflictKind::parse(reason)
+                        .unwrap_or(StatusConflictKind::IncompatibleHumanMove),
+                })
+            }
+            JiraOutcome::Unavailable => Err(AsmaError::unavailable(
+                operation,
+                crate::UnavailableReason::Transport,
+                response
+                    .unavailable
+                    .as_ref()
+                    .map_or("no reason given", |failure| failure.detail.as_str()),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn interpret(
+        &self,
+        operation: &'static str,
+        response: JiraResponse,
+    ) -> Result<ObservedIssue, AsmaError> {
+        self.raise_reported_failure(operation, &response)?;
+        let observation = response.observation.clone().ok_or_else(|| {
+            AsmaError::unavailable(
+                operation,
+                crate::UnavailableReason::MalformedResponse,
+                "answered without an observation",
+            )
+        })?;
+        let account_id = response
+            .principal_account_id
+            .clone()
+            .ok_or(AsmaError::Conflict {
+                operation,
+                kind: StatusConflictKind::OwnershipUnresolved,
+            })?;
+        let live_transitions = response
+            .live_transitions
+            .iter()
+            .map(WireTransition::to_core)
+            .collect();
+        Ok(ObservedIssue {
+            response,
+            observation,
+            live_transitions,
+            principal: TicketPrincipal { account_id },
+        })
+    }
+}
+
+fn issue_ownership_action(
+    operation: &'static str,
+    observed: &ObservedIssue,
+    plan: &TransitionPlan,
+) -> Result<OwnershipAction, AsmaError> {
+    match plan.assignment.as_ref() {
+        None => Ok(OwnershipAction::Preserve),
+        Some(assignment) => {
+            if assignment.action == OwnershipAction::Preserve {
+                return Err(AsmaError::refused(
+                    operation,
+                    "a preserve action may not carry an assignee mutation",
+                ));
+            }
+            if assignment.action == OwnershipAction::Unassign {
+                return Err(AsmaError::refused(
+                    operation,
+                    "the asma boundary never clears an assignee; \
+                     a workflow specification for it must use preserve",
+                ));
+            }
+            if let Some(account_id) = assignment.assign_to.as_ref()
+                && account_id != &observed.principal.account_id
+            {
+                return Err(AsmaError::refused(
+                    operation,
+                    "an assignee value may only be the authenticated principal's account id",
+                ));
+            }
+            Ok(assignment.action)
+        }
+    }
+}
+
+fn prove_issue_live_route(
+    operation: &'static str,
+    observed: &ObservedIssue,
+    plan: &TransitionPlan,
+    selected: &SelectedTransition,
+) -> Result<RequestedTransition, AsmaError> {
+    let offered = observed
+        .live_transitions
+        .iter()
+        .find(|live| live.transition_id == selected.transition_id)
+        .ok_or_else(|| {
+            AsmaError::refused(
+                operation,
+                "the selected transition was not offered by this observation",
+            )
+        })?;
+    if offered.to.status_id != plan.destination().status_id {
+        return Err(AsmaError::refused(
+            operation,
+            "the selected transition no longer reaches the planned destination",
+        ));
+    }
+    Ok(RequestedTransition {
+        transition_id: offered.transition_id.clone(),
+        to_status_id: offered.to.status_id.clone(),
+    })
+}
+
+fn issue_planned_holder(before: &ObservedIssue, plan: &TransitionPlan) -> Option<ExternalId> {
+    match plan.assignment.as_ref() {
+        Some(assignment) => assignment.assign_to.clone(),
+        None => before.observation.assignee_account_id.clone(),
+    }
 }
 
 /// Everything one ticket's convergence needs, in one place.

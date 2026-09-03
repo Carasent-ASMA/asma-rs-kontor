@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "connector": "connector.jira",
+  "project": "asma",
+  "issue_type": "epic",
+  "version": 1,
+  "mappings": [
+    {
+      "key": "summary",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "summary",
+        "field_type": "text",
+        "encoding": "plain_text",
+        "options": []
+      },
+      "required": false
+    },
+    {
+      "key": "description",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "description",
+        "field_type": "rich_text",
+        "encoding": "structured_document",
+        "options": []
+      },
+      "required": false
+    },
+    {
+      "key": "product",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10251",
+        "field_type": "single_select",
+        "encoding": "plain_text",
+        "options": [
+          { "id": "10330", "name": "Samhandling" },
+          { "id": "10331", "name": "Ad Opus Web" },
+          { "id": "10459", "name": "Both" }
+        ]
+      },
+      "required": false
+    },
+    {
+      "key": "agent_status",
+      "owner": "kontor",
+      "direction": "outbound",
+      "external": {
+        "field_id": "customfield_10328",
+        "field_type": "rich_text",
+        "encoding": "structured_document",
+        "options": []
+      },
+      "required": false
+    }
+  ]
+}
