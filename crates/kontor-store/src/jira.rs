@@ -3,8 +3,8 @@
 #![allow(missing_docs)]
 
 use kontor_core::id::{
-    AggregateRevision, CommandReceiptId, ContentHash, ExternalId, MiniProjectId, ProjectId, TaskId,
-    TicketLinkId, Timestamp, format_utc_timestamp, parse_utc_timestamp,
+    AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, MiniProjectId,
+    ProjectId, TaskId, TicketLinkId, Timestamp, format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{NewLocalCommand, RepositoryError, RepositoryResult};
@@ -138,10 +138,13 @@ pub struct JiraMaterializationRecoveryItem {
     pub marker: ExternalId,
 }
 
-/// The original pending batch selected by a durable non-creating recovery.
+/// The exact pending batch set selected by a durable recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredJiraMaterialization {
+    /// The oldest selected batch, retained as the stable response identity.
     pub batch_id: ExternalId,
+    /// Every original batch in deterministic creation order.
+    pub batch_ids: Vec<ExternalId>,
     pub items: Vec<StoredJiraMaterializationItem>,
 }
 
@@ -501,11 +504,13 @@ impl SqliteStore {
         Ok(items)
     }
 
-    /// Adopt one exact pending create batch for a link-only recovery.
+    /// Adopt one exact pending create plan for a recovery.
     ///
-    /// Every original item must still have the same ordinal, kind, task scope
-    /// and marker. The requested Jira keys are appended to an immutable ledger
-    /// before the connector is contacted; the create plan itself is unchanged.
+    /// The plan may be one batch or an exact, non-overlapping union of legacy
+    /// batch fragments. Every original item must still have the same ordinal,
+    /// kind, task scope and marker. Requested Jira keys are appended to the
+    /// immutable recovery ledger before the connector is contacted. Original
+    /// batch and item ownership is never rewritten.
     pub fn recover_pending_jira_materialization(
         &self,
         project_id: ProjectId,
@@ -528,19 +533,55 @@ impl SqliteStore {
             .into());
         }
         let transaction = self.begin()?;
-        let receipt_scope: Option<(String, String)> = transaction
+        let project_text = project_id.to_string();
+        let epic_text = epic_id.to_string();
+        let expected_intent = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "jira_materialization_apply",
+            "project_id": project_text.as_str(),
+            "epic_id": epic_text.as_str(),
+            "preview_hash": preview_hash.as_str(),
+        }))?;
+        let receipt_scope: Option<(String, String, String, Option<String>, String)> = transaction
             .query_row(
-                "SELECT project_id, kind FROM command_receipts WHERE id = ?1",
+                "SELECT receipt.project_id, receipt.kind, target.target_kind,
+                        target.target_mini_project_id, receipt.intent_hash
+                 FROM command_receipts AS receipt
+                 JOIN command_targets AS target
+                   ON target.project_id = receipt.project_id
+                  AND target.receipt_id = receipt.id
+                 WHERE receipt.id = ?1",
                 [recovery_receipt_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
             .map_err(backend)?;
-        let project_text = project_id.to_string();
         if receipt_scope
             .as_ref()
-            .map(|(project, kind)| (project.as_str(), kind.as_str()))
-            != Some((project_text.as_str(), "materialize_jira"))
+            .map(|(project, kind, target_kind, target_epic, intent_hash)| {
+                (
+                    project.as_str(),
+                    kind.as_str(),
+                    target_kind.as_str(),
+                    target_epic.as_deref(),
+                    intent_hash.as_str(),
+                )
+            })
+            != Some((
+                project_text.as_str(),
+                "materialize_jira",
+                "mini_project",
+                Some(epic_text.as_str()),
+                expected_intent.hash().as_str(),
+            ))
         {
             return Err(RepositoryError::Conflict {
                 subject: "Jira materialization recovery",
@@ -550,7 +591,7 @@ impl SqliteStore {
 
         let mut prior_statement = transaction
             .prepare(
-                "SELECT batch_id, ordinal, requested_key, marker
+                "SELECT batch_id, item_id, ordinal, requested_key, marker, preview_hash
                  FROM jira_materialization_recoveries
                  WHERE project_id = ?1 AND recovery_receipt_id = ?2
                  ORDER BY ordinal",
@@ -562,9 +603,11 @@ impl SqliteStore {
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 },
             )
@@ -573,14 +616,13 @@ impl SqliteStore {
             .map_err(backend)?;
         drop(prior_statement);
         if !prior.is_empty() {
-            let batch_id = ExternalId::parse(&prior[0].0)?;
             let exact = prior.len() == recovery.len()
                 && prior.iter().zip(recovery).all(
-                    |((stored_batch, ordinal, requested_key, marker), requested)| {
-                        stored_batch == batch_id.as_str()
-                            && u32::try_from(*ordinal).ok() == Some(requested.ordinal)
+                    |((_, _, ordinal, requested_key, marker, stored_preview), requested)| {
+                        u32::try_from(*ordinal).ok() == Some(requested.ordinal)
                             && requested_key == requested.requested_key.as_str()
                             && marker == requested.marker.as_str()
+                            && stored_preview == preview_hash.as_str()
                     },
                 );
             if !exact {
@@ -589,8 +631,44 @@ impl SqliteStore {
                     rule: "the recovery receipt already names another exact item set",
                 });
             }
+            let mut batch_ids = Vec::new();
+            for (original_batch_id, item_id, ..) in &prior {
+                let current_batch_id: Option<String> = transaction
+                    .query_row(
+                        "SELECT batch_id FROM jira_materialization_items
+                         WHERE project_id = ?1 AND id = ?2",
+                        params![project_text, item_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(backend)?;
+                if current_batch_id.as_deref() != Some(original_batch_id.as_str()) {
+                    return Err(RepositoryError::Conflict {
+                        subject: "Jira materialization recovery",
+                        rule: "a recovered item no longer belongs to its original batch",
+                    });
+                }
+                if !batch_ids.contains(original_batch_id) {
+                    batch_ids.push(original_batch_id.clone());
+                }
+            }
+            let batch_ids = batch_ids
+                .iter()
+                .map(|batch_id| ExternalId::parse(batch_id).map_err(RepositoryError::from))
+                .collect::<RepositoryResult<Vec<_>>>()?;
+            let batch_id = batch_ids
+                .first()
+                .cloned()
+                .ok_or(RepositoryError::Conflict {
+                    subject: "Jira materialization recovery",
+                    rule: "the recovered item set has no batch",
+                })?;
             transaction.commit().map_err(backend)?;
-            let items = self.jira_materialization_items(project_id, &batch_id)?;
+            let mut items = Vec::with_capacity(recovery.len());
+            for recovered_batch_id in &batch_ids {
+                items.extend(self.jira_materialization_items(project_id, recovered_batch_id)?);
+            }
+            items.sort_by_key(|item| item.ordinal);
             let scope_matches = items.len() == recovery.len()
                 && items.iter().zip(recovery).all(|(stored, requested)| {
                     stored.ordinal == requested.ordinal
@@ -604,18 +682,17 @@ impl SqliteStore {
                     rule: "the recovered batch no longer matches its immutable recovery ledger",
                 });
             }
-            return Ok(Some(RecoveredJiraMaterialization { batch_id, items }));
+            return Ok(Some(RecoveredJiraMaterialization {
+                batch_id,
+                batch_ids,
+                items,
+            }));
         }
 
         let mut batches = transaction
             .prepare(
                 "SELECT id FROM jira_materialization_batches
                  WHERE project_id = ?1 AND epic_id = ?2 AND status = 'planned'
-                   AND EXISTS (
-                       SELECT 1 FROM jira_materialization_items AS item
-                       WHERE item.batch_id = jira_materialization_batches.id
-                         AND item.intent_kind = 'create'
-                   )
                  ORDER BY created_at, id",
             )
             .map_err(backend)?;
@@ -629,12 +706,22 @@ impl SqliteStore {
             .map_err(backend)?;
         drop(batches);
 
-        let mut matched = Vec::<String>::new();
+        type CandidateItem = (
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        );
+        let mut matched = Vec::<(String, Vec<CandidateItem>)>::new();
         for batch_id in &batch_ids {
             let mut statement = transaction
                 .prepare(
-                    "SELECT ordinal, item_kind, task_id, intent_kind, requested_key,
-                            marker, confirmed_key
+                    "SELECT id, ordinal, item_kind, task_id, intent_kind,
+                            requested_key, marker, confirmed_key
                      FROM jira_materialization_items
                      WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
                 )
@@ -642,33 +729,38 @@ impl SqliteStore {
             let stored = statement
                 .query_map(params![project_id.to_string(), batch_id], |row| {
                     Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 })
                 .map_err(backend)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(backend)?;
             drop(statement);
-            let exact = stored.len() == recovery.len()
-                && stored.iter().zip(recovery).all(
+            let exact_fragment = !stored.is_empty()
+                && stored.iter().all(
                     |(
-                        (
-                            ordinal,
-                            kind,
-                            task_id,
-                            intent,
-                            stored_requested_key,
-                            marker,
-                            confirmed_key,
-                        ),
-                        requested,
+                        _,
+                        ordinal,
+                        kind,
+                        task_id,
+                        intent,
+                        stored_requested_key,
+                        marker,
+                        confirmed_key,
                     )| {
+                        let Some(requested) = u32::try_from(*ordinal)
+                            .ok()
+                            .and_then(|ordinal| recovery.get(ordinal as usize))
+                        else {
+                            return false;
+                        };
                         let intent_matches = match JiraIntentKind::parse(intent).ok() {
                             Some(JiraIntentKind::Create) => stored_requested_key.is_none(),
                             Some(JiraIntentKind::Link) => {
@@ -688,8 +780,8 @@ impl SqliteStore {
                                 .is_none_or(|key| key == requested.requested_key.as_str())
                     },
                 );
-            if exact {
-                matched.push(batch_id.clone());
+            if exact_fragment {
+                matched.push((batch_id.clone(), stored));
             }
         }
         let batch_id = match matched.as_slice() {
@@ -700,93 +792,124 @@ impl SqliteStore {
             [] => {
                 return Err(RepositoryError::Conflict {
                     subject: "Jira materialization recovery",
-                    rule: "the pending create batch does not exactly match the recovery scope and markers",
+                    rule: "the pending batch set does not exactly match the recovery scope and markers",
                 });
             }
-            [batch_id] => ExternalId::parse(batch_id)?,
-            _ => {
-                return Err(RepositoryError::Conflict {
-                    subject: "Jira materialization recovery",
-                    rule: "more than one pending create batch matches the recovery scope",
-                });
-            }
+            [(batch_id, _)] => ExternalId::parse(batch_id)?,
+            [(batch_id, _), ..] => ExternalId::parse(batch_id)?,
         };
+        let batch_ids = matched
+            .iter()
+            .map(|(batch_id, _)| ExternalId::parse(batch_id).map_err(RepositoryError::from))
+            .collect::<RepositoryResult<Vec<_>>>()?;
 
-        let mut item_ids = transaction
-            .prepare(
-                "SELECT id, ordinal FROM jira_materialization_items
-                 WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
-            )
-            .map_err(backend)?;
-        let stored_ids = item_ids
-            .query_map(params![project_id.to_string(), batch_id.as_str()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(backend)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(backend)?;
-        drop(item_ids);
-        if stored_ids.len() != recovery.len() {
+        let mut ordinal_coverage = vec![0_u8; recovery.len()];
+        for (_, items) in &matched {
+            for (_, ordinal, ..) in items {
+                let Some(count) = u32::try_from(*ordinal)
+                    .ok()
+                    .and_then(|ordinal| ordinal_coverage.get_mut(ordinal as usize))
+                else {
+                    return Err(RepositoryError::Conflict {
+                        subject: "Jira materialization recovery",
+                        rule: "a pending fragment carries an ordinal outside the recovery scope",
+                    });
+                };
+                *count = count.saturating_add(1);
+            }
+        }
+        if ordinal_coverage.iter().any(|count| *count != 1) {
             return Err(RepositoryError::Conflict {
                 subject: "Jira materialization recovery",
-                rule: "the selected batch item set changed before recovery was recorded",
+                rule: "pending fragments do not form one exact non-overlapping recovery scope",
             });
         }
-        for ((item_id, ordinal), requested) in stored_ids.iter().zip(recovery) {
-            transaction
-                .execute(
-                    "INSERT OR IGNORE INTO jira_materialization_recoveries
-                         (project_id, batch_id, item_id, recovery_receipt_id,
-                          preview_hash, ordinal, requested_key, marker, recovered_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        project_id.to_string(),
-                        batch_id.as_str(),
-                        item_id,
+
+        for (original_batch_id, items) in &matched {
+            for (item_id, ordinal, ..) in items {
+                let requested = &recovery[usize::try_from(*ordinal).map_err(|_| {
+                    kontor_core::DomainError::invalid(
+                        "Jira materialization recovery",
+                        "stored a negative item ordinal",
+                    )
+                })?];
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO jira_materialization_recoveries
+                             (project_id, batch_id, item_id, recovery_receipt_id,
+                              preview_hash, ordinal, requested_key, marker, recovered_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            project_id.to_string(),
+                            original_batch_id,
+                            item_id,
+                            recovery_receipt_id.to_string(),
+                            preview_hash.as_str(),
+                            ordinal,
+                            requested.requested_key.as_str(),
+                            requested.marker.as_str(),
+                            format_utc_timestamp(recovered_at),
+                        ],
+                    )
+                    .map_err(backend)?;
+                let stored: (String, String, i64, String, String) = transaction
+                    .query_row(
+                        "SELECT recovery_receipt_id, preview_hash, ordinal, requested_key, marker
+                         FROM jira_materialization_recoveries
+                         WHERE project_id = ?1 AND batch_id = ?2 AND item_id = ?3",
+                        params![project_id.to_string(), original_batch_id, item_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )
+                    .map_err(backend)?;
+                if stored
+                    != (
                         recovery_receipt_id.to_string(),
-                        preview_hash.as_str(),
-                        ordinal,
-                        requested.requested_key.as_str(),
-                        requested.marker.as_str(),
-                        format_utc_timestamp(recovered_at),
-                    ],
-                )
-                .map_err(backend)?;
-            let stored: (String, String, i64, String, String) = transaction
-                .query_row(
-                    "SELECT recovery_receipt_id, preview_hash, ordinal, requested_key, marker
-                     FROM jira_materialization_recoveries
-                     WHERE project_id = ?1 AND batch_id = ?2 AND item_id = ?3",
-                    params![project_id.to_string(), batch_id.as_str(), item_id],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                        ))
-                    },
-                )
-                .map_err(backend)?;
-            if stored
-                != (
-                    recovery_receipt_id.to_string(),
-                    preview_hash.as_str().to_owned(),
-                    i64::from(requested.ordinal),
-                    requested.requested_key.as_str().to_owned(),
-                    requested.marker.as_str().to_owned(),
-                )
-            {
-                return Err(RepositoryError::Conflict {
-                    subject: "Jira materialization recovery",
-                    rule: "the pending create item already names another recovery",
-                });
+                        preview_hash.as_str().to_owned(),
+                        i64::from(requested.ordinal),
+                        requested.requested_key.as_str().to_owned(),
+                        requested.marker.as_str().to_owned(),
+                    )
+                {
+                    return Err(RepositoryError::Conflict {
+                        subject: "Jira materialization recovery",
+                        rule: "the pending create item already names another recovery",
+                    });
+                }
             }
         }
+
         transaction.commit().map_err(backend)?;
-        let items = self.jira_materialization_items(project_id, &batch_id)?;
-        Ok(Some(RecoveredJiraMaterialization { batch_id, items }))
+        let mut items = Vec::with_capacity(recovery.len());
+        for recovered_batch_id in &batch_ids {
+            items.extend(self.jira_materialization_items(project_id, recovered_batch_id)?);
+        }
+        items.sort_by_key(|item| item.ordinal);
+        let scope_matches = items.len() == recovery.len()
+            && items.iter().zip(recovery).all(|(stored, requested)| {
+                stored.ordinal == requested.ordinal
+                    && stored.item_kind == requested.item_kind
+                    && stored.task_id == requested.task_id
+                    && stored.marker == requested.marker
+            });
+        if !scope_matches {
+            return Err(RepositoryError::Conflict {
+                subject: "Jira materialization recovery",
+                rule: "the recovered batch set does not match its immutable recovery ledger",
+            });
+        }
+        Ok(Some(RecoveredJiraMaterialization {
+            batch_id,
+            batch_ids,
+            items,
+        }))
     }
 
     /// Return the externally read-back Jira epic key, never an imported or

@@ -514,6 +514,8 @@ fn link_recovery_adopts_the_original_pending_create_batch_in_place() {
             intent: CanonicalDocument::from_value(&serde_json::json!({
                 "schema_version": 1,
                 "operation": "jira_materialization_apply",
+                "project_id": project_id.to_string(),
+                "epic_id": epic_id.to_string(),
                 "preview_hash": recovery_preview_hash.as_str(),
             }))
             .expect("recovery intent"),
@@ -536,6 +538,59 @@ fn link_recovery_adopts_the_original_pending_create_batch_in_place() {
             marker: task_marker.clone(),
         },
     ];
+    let foreign_epic_id = MiniProjectId::generate();
+    store
+        .create_mini_project(&NewMiniProject {
+            id: foreign_epic_id,
+            project_id,
+            name: kontor_core::id::ExternalName::parse("Foreign epic").expect("name"),
+            created_at: now,
+        })
+        .expect("foreign epic");
+    let foreign_receipt_id = CommandReceiptId::generate();
+    store
+        .record_local_command(&NewLocalCommand {
+            project_id,
+            receipt_id: foreign_receipt_id,
+            idempotency_key: IdempotencyKey::parse("foreign-epic-jira-recovery")
+                .expect("foreign key"),
+            kind: CommandKind::MaterializeJira,
+            target: AggregateRef::MiniProject {
+                mini_project_id: foreign_epic_id,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "jira_materialization_apply",
+                "project_id": project_id.to_string(),
+                "epic_id": epic_id.to_string(),
+                "preview_hash": recovery_preview_hash.as_str(),
+            }))
+            .expect("foreign recovery intent"),
+            created_at: now,
+        })
+        .expect("foreign recovery command");
+    assert!(
+        store
+            .recover_pending_jira_materialization(
+                project_id,
+                epic_id,
+                foreign_receipt_id,
+                &recovery_preview_hash,
+                &recovery_items,
+                now,
+            )
+            .is_err(),
+        "a same-project receipt for another epic has no recovery authority"
+    );
+    assert_eq!(
+        store
+            .jira_materialization_items(project_id, &original_batch_id)
+            .expect("original batch remains")
+            .len(),
+        2,
+        "foreign authority refusal must not mutate the pending batch"
+    );
     let mut wrong_marker = recovery_items.clone();
     wrong_marker[1].marker = external("kontor-task-another-scope");
     assert!(
@@ -600,8 +655,316 @@ fn link_recovery_adopts_the_original_pending_create_batch_in_place() {
             |row| row.get(0),
         )
         .expect("recovery count");
+    let foreign_recoveries: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_recoveries
+             WHERE recovery_receipt_id = ?1",
+            [foreign_receipt_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("foreign recovery count");
     assert_eq!(batches, 1, "recovery creates no replacement batch");
     assert_eq!(recoveries, 2, "every adopted item is durably ledgered");
+    assert_eq!(
+        foreign_recoveries, 0,
+        "foreign authority wrote no ledger row"
+    );
+}
+
+#[test]
+fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewriting_them() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, first_task_id, now) = seed_graph(&store);
+    let second_task_id = TaskId::generate();
+    store
+        .create_task(&NewTask {
+            id: second_task_id,
+            project_id,
+            mini_project_id: Some(epic_id),
+            title: kontor_core::id::ExternalName::parse("Second task").expect("title"),
+            module: None,
+            state: TaskState::Ready,
+            created_at: now,
+        })
+        .expect("second task");
+
+    let canonical_batch_id = external(uuid::Uuid::now_v7().to_string());
+    let fragment_batch_id = external(uuid::Uuid::now_v7().to_string());
+    let canonical_created_at: Timestamp =
+        "2026-08-31T00:00:00Z".parse().expect("canonical instant");
+    let epic_marker = external("kontor-epic-fragment-recovery");
+    let first_task_marker = external("kontor-task-first-fragment");
+    let second_task_marker = external("kontor-task-second-fragment");
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: canonical_batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "fragment-recovery-canonical".to_owned(),
+                preview_hash: ContentHash::of(b"fragment-recovery-canonical"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: canonical_created_at,
+            },
+            &[NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: canonical_batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: None,
+                link_id: None,
+                ordinal: 0,
+                item_kind: JiraItemKind::Epic,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(external("ASMA-8049")),
+                marker: epic_marker.clone(),
+            }],
+        )
+        .expect("first legacy fragment");
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: fragment_batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "fragment-recovery-tail".to_owned(),
+                preview_hash: ContentHash::of(b"fragment-recovery-tail"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: "2026-08-31T00:00:01Z".parse().expect("later instant"),
+            },
+            &[
+                NewJiraMaterializationItem {
+                    id: external(uuid::Uuid::now_v7().to_string()),
+                    batch_id: fragment_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(first_task_id),
+                    link_id: Some(TicketLinkId::generate()),
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Create,
+                    requested_key: None,
+                    marker: first_task_marker.clone(),
+                },
+                NewJiraMaterializationItem {
+                    id: external(uuid::Uuid::now_v7().to_string()),
+                    batch_id: fragment_batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(second_task_id),
+                    link_id: Some(TicketLinkId::generate()),
+                    ordinal: 1,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Create,
+                    requested_key: None,
+                    marker: second_task_marker.clone(),
+                },
+            ],
+        )
+        .expect("second legacy fragment");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).expect("legacy database opens");
+    connection
+        .execute(
+            "UPDATE jira_materialization_items SET ordinal = ordinal + 10 WHERE batch_id = ?1",
+            [fragment_batch_id.as_str()],
+        )
+        .and_then(|_| {
+            connection.execute(
+                "UPDATE jira_materialization_items SET ordinal = ordinal - 9 WHERE batch_id = ?1",
+                [fragment_batch_id.as_str()],
+            )
+        })
+        .expect("fixture reproduces a legacy tail fragment");
+    let duplicate_epic_item_id = external(uuid::Uuid::now_v7().to_string());
+    connection
+        .execute(
+            "INSERT INTO jira_materialization_items
+                 (id, batch_id, project_id, epic_id, task_id, link_id, ordinal,
+                  item_kind, intent_kind, requested_key, marker, status)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0,
+                     'epic', 'link', 'ASMA-8049', ?5, 'planned')",
+            rusqlite::params![
+                duplicate_epic_item_id.as_str(),
+                fragment_batch_id.as_str(),
+                project_id.to_string(),
+                epic_id.to_string(),
+                epic_marker.as_str(),
+            ],
+        )
+        .expect("fixture adds an overlapping link fragment");
+    drop(connection);
+
+    let store = SqliteStore::open(&path).expect("store reopens");
+    let recovery_receipt_id = CommandReceiptId::generate();
+    let recovery_preview_hash = ContentHash::of(b"complete-fragment-recovery-preview");
+    store
+        .record_local_command(&NewLocalCommand {
+            project_id,
+            receipt_id: recovery_receipt_id,
+            idempotency_key: IdempotencyKey::parse("fragment-recovery-command")
+                .expect("recovery key"),
+            kind: CommandKind::MaterializeJira,
+            target: AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "jira_materialization_apply",
+                "project_id": project_id.to_string(),
+                "epic_id": epic_id.to_string(),
+                "preview_hash": recovery_preview_hash.as_str(),
+            }))
+            .expect("recovery intent"),
+            created_at: now,
+        })
+        .expect("recovery command");
+    let recovery = vec![
+        JiraMaterializationRecoveryItem {
+            ordinal: 0,
+            item_kind: JiraItemKind::Epic,
+            task_id: None,
+            requested_key: external("ASMA-8049"),
+            marker: epic_marker,
+        },
+        JiraMaterializationRecoveryItem {
+            ordinal: 1,
+            item_kind: JiraItemKind::Task,
+            task_id: Some(first_task_id),
+            requested_key: first_task_marker.clone(),
+            marker: first_task_marker,
+        },
+        JiraMaterializationRecoveryItem {
+            ordinal: 2,
+            item_kind: JiraItemKind::Task,
+            task_id: Some(second_task_id),
+            requested_key: second_task_marker.clone(),
+            marker: second_task_marker,
+        },
+    ];
+    assert!(
+        store
+            .recover_pending_jira_materialization(
+                project_id,
+                epic_id,
+                recovery_receipt_id,
+                &recovery_preview_hash,
+                &recovery,
+                now,
+            )
+            .is_err(),
+        "overlapping fragments must fail closed"
+    );
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).expect("refusal readback");
+    let recovery_rows: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_recoveries
+             WHERE recovery_receipt_id = ?1",
+            [recovery_receipt_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("recovery row count");
+    let unchanged_batches: (i64, i64) = connection
+        .query_row(
+            "SELECT
+                 (SELECT count(*) FROM jira_materialization_items WHERE batch_id = ?1),
+                 (SELECT count(*) FROM jira_materialization_items WHERE batch_id = ?2)",
+            rusqlite::params![canonical_batch_id.as_str(), fragment_batch_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("unchanged batch ownership");
+    assert_eq!(
+        recovery_rows, 0,
+        "refusal persists no partial recovery ledger"
+    );
+    assert_eq!(unchanged_batches, (1, 3));
+    connection
+        .execute(
+            "DELETE FROM jira_materialization_items WHERE id = ?1",
+            [duplicate_epic_item_id.as_str()],
+        )
+        .expect("fixture removes the deliberate overlap");
+    drop(connection);
+
+    let store = SqliteStore::open(&path).expect("store reopens after fixture correction");
+    let recovered = store
+        .recover_pending_jira_materialization(
+            project_id,
+            epic_id,
+            recovery_receipt_id,
+            &recovery_preview_hash,
+            &recovery,
+            now,
+        )
+        .expect("fragment recovery succeeds")
+        .expect("the exact fragments are found");
+    assert_eq!(recovered.batch_id, canonical_batch_id);
+    assert_eq!(
+        recovered.batch_ids,
+        vec![canonical_batch_id.clone(), fragment_batch_id.clone()]
+    );
+    assert_eq!(
+        recovered
+            .items
+            .iter()
+            .map(|item| item.ordinal)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    let replayed = store
+        .recover_pending_jira_materialization(
+            project_id,
+            epic_id,
+            recovery_receipt_id,
+            &recovery_preview_hash,
+            &recovery,
+            now,
+        )
+        .expect("fragment recovery replays")
+        .expect("the canonical batch remains recoverable");
+    assert_eq!(replayed, recovered);
+    drop(store);
+
+    let connection = rusqlite::Connection::open(path).expect("recovery readback");
+    let canonical_items: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_items WHERE batch_id = ?1",
+            [canonical_batch_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("canonical item count");
+    let fragment: (String, i64) = connection
+        .query_row(
+            "SELECT status,
+                    (SELECT count(*) FROM jira_materialization_items WHERE batch_id = ?1)
+             FROM jira_materialization_batches WHERE id = ?1",
+            [fragment_batch_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("fragment history");
+    let provenance_batches: i64 = connection
+        .query_row(
+            "SELECT count(DISTINCT batch_id) FROM jira_materialization_recoveries
+             WHERE recovery_receipt_id = ?1",
+            [recovery_receipt_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("recovery provenance");
+    assert_eq!(canonical_items, 1);
+    assert_eq!(
+        fragment,
+        ("planned".to_owned(), 2),
+        "recovery must not rewrite or discard the original fragment"
+    );
+    assert_eq!(
+        provenance_batches, 2,
+        "the immutable recovery ledger retains both original batch identities"
+    );
 }
 
 #[test]

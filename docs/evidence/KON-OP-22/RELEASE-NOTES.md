@@ -62,3 +62,14 @@ only along this validated route:
 
 Rollback is by restoring the pre-deploy database and matching binary fleet as
 one unit. A pre-v83 binary cannot serve a v83 database.
+
+## Pending post-release recovery correction
+
+Closeout exposed one further fail-closed recovery case: the exact ASMA-7869
+materialization is split across two legacy pending batches. The correction
+recovers identical mixed Link/Create requests and accepts several legacy
+fragments only when they form one exact, non-overlapping ordinal cover. It
+retains original batches and item ownership, records the exact recovery set in
+the immutable ledger and proves replay creates no duplicate external effect.
+Promotion must replay the already persisted Kontor command; direct Jira and
+database writes remain prohibited.

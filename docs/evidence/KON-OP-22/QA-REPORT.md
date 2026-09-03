@@ -63,6 +63,9 @@ export and byte-compared it as identical before running the locked suite.
 - legacy epic workflow revision-1 deserialization and canonical-hash stability;
 - resident progression through every ASMA epic hop, followed by idempotent
   replay with no duplicate effect or conflict.
+- identical mixed Link/Create materialization recovery, plus exact
+  non-overlapping adoption of legacy pending-batch fragments with original
+  batch ownership retained and effect-free replay.
 
 ## Independent release audit
 

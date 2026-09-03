@@ -70,3 +70,38 @@ authority.
   `01a067d0-6c17-7d02-a46d-602f57b1e5f3`.
 - Owner/status: closed. Live convergence and conflict resolution were read back
   with four confirmed revision-2 intents and zero open conflicts.
+
+## GAP-4 — exact Jira recovery was split across legacy pending batches
+
+- Owning project: `01a0064a-e056-7603-9968-ef64fdaacb75`.
+- Owning epic: `01a0074f-6719-7570-adf7-95ee3ec69875` (`ASMA-7869`).
+- Owning task: `01a030c2-1c65-79b1-ac84-7bc8baae8977` (`KON-OP-22`).
+- Intended operation: apply preview
+  `c59b9fbb3e27a3020b31b9b50710d3af19d3b21a7ad8bfebc79200fb43eb8029`
+  through Kontor, linking the confirmed epic and 18 confirmed children while
+  creating Jira children for `KON-OP-20`, `KON-OP-21` and `KON-OP-22`.
+- Failure class: durable materialization-recovery gap. Kontor returned HTTP 503
+  after recording command receipt `01a0683f-7579-7d82-90b7-00781902f8b3`.
+  Read-only diagnostics proved that one legacy planned batch owns ordinals
+  0–20 and another owns ordinal 21. The create-marker fence correctly refused
+  a third batch, but recovery could only adopt one complete batch and therefore
+  could not resume the exact union.
+- Bounded fallback: read-only SQLite inspection was used only after the
+  supported Kontor API repeated the same 503 across a managed daemon restart.
+  No database row was edited, no direct Jira mutation was made and no Paseo
+  topology was created or replaced.
+- Correction: mixed link/create applies now participate in recovery. The store
+  accepts only one complete, non-overlapping union of pending legacy fragments
+  and records every original item and batch in the immutable recovery ledger.
+  Original batches and item ownership are never rewritten. Missing or
+  overlapping coverage still fails closed, and replay reuses the same recovery
+  set without a duplicate Jira effect.
+- Effects before promotion: regression coverage is green for the fragmented
+  store recovery, mixed daemon recovery, old link-only recovery and effect-free
+  replay. No live Jira or control-plane state has yet been changed by the
+  correction.
+- Resume checkpoint: merge and deploy the verified correction, replay the same
+  Kontor apply receipt, then read back all three new ASMA bindings and a second
+  effect-free replay before closing this gap.
+- Owner/status: correction verified locally; live promotion and recovery
+  readback pending.
