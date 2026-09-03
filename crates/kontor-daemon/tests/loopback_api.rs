@@ -8031,9 +8031,7 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
     let task_id = TaskId::generate();
-    let epic_marker = format!("kontor-epic-{epic_id}");
     let task_marker = format!("kontor-task-{task_id}");
-    let epic_description = format!("Kontor epic {epic_id}: Kontor recovery epic");
     let task_description = format!("Kontor task {task_id}: Recover original Jira batch");
 
     Mock::given(method("GET"))
@@ -8044,11 +8042,11 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Epic", "hierarchyLevel": 1},
                 "parent": null,
-                "summary": "Kontor recovery epic",
+                "summary": "Existing linked Jira epic",
                 "description": {"type":"doc","version":1,"content":[{
-                    "type":"paragraph","content":[{"type":"text","text":epic_description}]
+                    "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
                 }]},
-                "labels": [epic_marker]
+                "labels": []
             }
         })))
         .expect(1)
@@ -8243,9 +8241,7 @@ async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
     let task_id = TaskId::generate();
-    let epic_marker = format!("kontor-epic-{epic_id}");
     let task_marker = format!("kontor-task-{task_id}");
-    let epic_description = format!("Kontor epic {epic_id}: Mixed recovery epic");
     let task_description = format!("Kontor task {task_id}: Resume pending create");
 
     Mock::given(method("GET"))
@@ -8256,11 +8252,11 @@ async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Epic", "hierarchyLevel": 1},
                 "parent": null,
-                "summary": "Mixed recovery epic",
+                "summary": "Existing linked Jira epic",
                 "description": {"type":"doc","version":1,"content":[{
-                    "type":"paragraph","content":[{"type":"text","text":epic_description}]
+                    "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
                 }]},
-                "labels": [epic_marker]
+                "labels": []
             }
         })))
         .expect(1)
