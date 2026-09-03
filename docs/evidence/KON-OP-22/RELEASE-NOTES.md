@@ -90,3 +90,29 @@ items, but their project-defined types are 16 `User Story` and two `Tech tasks`.
 Ordinary explicit links now accept that standard Jira hierarchy role without
 claiming the project-specific type name. Creates and recovered creates remain
 literal-`Task`, marker, content and parent strict.
+
+PR #160 merged the hierarchy correction as `162d807`, passed staged and clean
+archive release verification, and was deployed as daemon hash
+`f1592ef87a42616345ffd6def9a6d2489cd263536a1eef2f9462c7cb2fc5cbbd`.
+The next replay accepted the Jira issue-type readback and exposed one final
+legacy-ledger mismatch before creating any Jira issue: the preserved historical
+link uses connector alias `jira`, while the confirmation query searched only
+`connector.jira`. The immutable v81 ledger already selects that row as the
+canonical identity. Confirmation now adopts the ledger's exact stable link id
+instead of attempting a duplicate raw link; conflicts remain fail-closed.
+
+During the final exact-tree gate, crates.io published `tinyvec 1.13.0`; a fresh
+lock selected it, but it does not compile through Stronghold's no-std
+`unicode-normalization` feature path. The desktop manifest therefore carries an
+exact `tinyvec 1.12.0` compatibility pin, matching Kontor's exact-direct-pin
+policy and keeping clean lockfile regeneration reproducible.
+
+The final staged-tree verifier passed lockfile regeneration, formatting,
+workspace clippy, all Rust tests, Cargo advisory/license/source checks,
+frontend typecheck and all 296 frontend tests. Its last `pnpm audit --prod`
+request timed out at the npm advisory endpoint after all retries, and the exact
+standalone retry timed out identically. The immediately preceding clean-archive
+gate reported no known production vulnerabilities. The compatibility pin adds
+no package or version to that audited lock; it makes the already-transitive
+`tinyvec 1.12.0` dependency direct so fresh resolution cannot select the broken
+`1.13.0` release.

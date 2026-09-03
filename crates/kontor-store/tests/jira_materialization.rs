@@ -287,6 +287,113 @@ fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery()
 }
 
 #[test]
+fn confirmation_adopts_a_migrated_legacy_jira_alias_binding() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let legacy_link_id = TicketLinkId::generate();
+
+    let mut connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    connection
+        .execute_batch(
+            "DROP INDEX ux_status_conflicts_one_open_kind;
+             DROP TRIGGER canonical_jira_task_links_permanent;
+             DROP TRIGGER canonical_jira_task_links_immutable;
+             DROP TRIGGER jira_links_require_canonical_jira_update;
+             DROP TRIGGER jira_links_require_canonical_jira_insert;
+             DROP TABLE canonical_jira_task_links;
+             PRAGMA user_version = 80;",
+        )
+        .expect("the fixture is reduced to its legacy shape");
+    connection
+        .execute(
+            "INSERT INTO jira_links
+                 (id, project_id, task_id, connector, external_issue_key, revision, created_at)
+             VALUES (?1, ?2, ?3, 'jira', 'ASMA-8051', 1, ?4)",
+            rusqlite::params![
+                legacy_link_id.to_string(),
+                project_id.to_string(),
+                task_id.to_string(),
+                now.to_string(),
+            ],
+        )
+        .expect("the historical alias binding is planted");
+    let migration = connection
+        .transaction()
+        .expect("the migration transaction starts");
+    migration
+        .execute_batch(include_str!(
+            "../migrations/0081_canonical_jira_task_link_ledger.sql"
+        ))
+        .expect("the legacy alias is selected by the canonical ledger");
+    migration.commit().expect("the migration commits");
+    drop(connection);
+
+    let batch_id = external(uuid::Uuid::now_v7().to_string());
+    let planned_link_id = TicketLinkId::generate();
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "materialize-legacy-alias-recovery".to_owned(),
+                preview_hash: ContentHash::of(b"legacy-alias-recovery-preview"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: Some(task_id),
+                link_id: Some(planned_link_id),
+                ordinal: 0,
+                item_kind: JiraItemKind::Task,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(external("ASMA-8051")),
+                marker: external("kontor-task-legacy-alias-fixture"),
+            }],
+        )
+        .expect("the recovery plan is durable");
+
+    let planned = store
+        .jira_materialization_items(project_id, &batch_id)
+        .expect("planned item")
+        .into_iter()
+        .next()
+        .expect("task item");
+    store
+        .confirm_jira_materialization_item(
+            &planned,
+            &external("ASMA-8051"),
+            &ContentHash::of(b"ASMA-8051-readback"),
+            now,
+        )
+        .expect("the migrated legacy binding is adopted");
+
+    let confirmed = store
+        .jira_materialization_items(project_id, &batch_id)
+        .expect("confirmed item")
+        .into_iter()
+        .next()
+        .expect("task item");
+    assert_eq!(confirmed.link_id, Some(legacy_link_id));
+    assert_eq!(
+        confirmed.confirmed_key.as_ref().map(ExternalId::as_str),
+        Some("ASMA-8051")
+    );
+    let links = store
+        .list_task_ticket_links(project_id, task_id)
+        .expect("task links");
+    assert_eq!(links.len(), 1, "recovery creates no duplicate link");
+    assert_eq!(links[0].id, legacy_link_id);
+    assert_eq!(links[0].connector.as_str(), "connector.jira");
+}
+
+#[test]
 fn a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch() {
     let root = tempfile::tempdir().expect("state root");
     let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");

@@ -105,3 +105,6 @@ wiremock = "=0.6.5"
 tauri = "=2.11.5"
 tauri-build = "=2.6.3"
 tauri-plugin-stronghold = "=2.3.1"
+# tinyvec 1.13.0 fails to compile without std through Stronghold's
+# unicode-normalization path. Keep the last verified transitive release exact.
+tinyvec = "=1.12.0"
