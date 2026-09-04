@@ -1,0 +1,152 @@
+{
+  "tool": "kontor_epic_get",
+  "status": 200,
+  "body": {
+    "authorizations": [],
+    "epic_backlog_code": "KCADR",
+    "epic_id": "01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+    "execution_scope": {
+      "ai_short_name": "Compatibility Recovery",
+      "external_epic_key": "ASMA-8098",
+      "kontor_backlog_code": "KCADR",
+      "short_title": "Compatibility recovery"
+    },
+    "name": "Kontor compatibility and documentation recovery",
+    "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+    "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+    "revision": 1,
+    "scheduling_open": true,
+    "snapshot_cursor": 1792,
+    "tasks": [
+      {
+        "ai_short_name": "Runtime Compatibility",
+        "current_phase": "high-scope",
+        "depends_on": [],
+        "gates": [
+          {
+            "evaluator_roles": [
+              "fleet-verifier"
+            ],
+            "gate": "high-verification-gate",
+            "phase": "high-verification",
+            "required_evidence": [
+              "high-change",
+              "high-verification-report"
+            ],
+            "state": "not_ready",
+            "waiver_allowed": false,
+            "waiver_roles": []
+          },
+          {
+            "evaluator_roles": [
+              "fleet-spec-auditor"
+            ],
+            "gate": "high-audit-gate",
+            "phase": "high-audit",
+            "required_evidence": [
+              "high-scope-record",
+              "high-change",
+              "high-verification-report",
+              "high-audit-report"
+            ],
+            "state": "not_ready",
+            "waiver_allowed": false,
+            "waiver_roles": []
+          }
+        ],
+        "links": [
+          {
+            "applied": "unchanged",
+            "connector": "connector.jira",
+            "external_issue_key": "ASMA-8099",
+            "link_id": "01a06e1b-aa20-73b2-be50-5ec281002746"
+          }
+        ],
+        "module": "_tools/asma-rs-kontor",
+        "required_artifacts": [
+          "high-audit-report",
+          "high-change",
+          "high-scope-record",
+          "high-verification-report"
+        ],
+        "revision": 1,
+        "short_code": "COMPAT-01",
+        "state": "ready",
+        "task_id": "01a06e13-878b-77e1-885e-7187ffc97b6d",
+        "team_runs": [],
+        "title": "Complete Paseo permission and timeline compatibility",
+        "workflow_revision": 1,
+        "worktree": "/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor"
+      },
+      {
+        "ai_short_name": "Documentation Recovery",
+        "current_phase": "authoring",
+        "depends_on": [
+          "01a06e13-878b-77e1-885e-7187ffc97b6d"
+        ],
+        "gates": [
+          {
+            "evaluator_roles": [
+              "inspector"
+            ],
+            "gate": "technical-review-gate",
+            "phase": "technical-review",
+            "required_evidence": [
+              "draft",
+              "technical-review-notes"
+            ],
+            "state": "not_ready",
+            "waiver_allowed": false,
+            "waiver_roles": []
+          },
+          {
+            "evaluator_roles": [
+              "architect"
+            ],
+            "gate": "docs-final-gate",
+            "phase": "final-review",
+            "required_evidence": [
+              "docs-final-notes"
+            ],
+            "state": "not_ready",
+            "waiver_allowed": false,
+            "waiver_roles": []
+          }
+        ],
+        "links": [
+          {
+            "applied": "unchanged",
+            "connector": "connector.jira",
+            "external_issue_key": "ASMA-8100",
+            "link_id": "01a06e1b-aa20-73b2-be50-5ed4e12a2e18"
+          }
+        ],
+        "module": "asma-modules",
+        "modules": [
+          "_tools/asma-rs-kontor"
+        ],
+        "required_artifacts": [
+          "docs-final-notes",
+          "draft",
+          "technical-review-notes"
+        ],
+        "revision": 1,
+        "short_code": "COMPAT-02",
+        "state": "ready",
+        "task_id": "01a06e13-878c-7080-9801-d984bfe0eb04",
+        "team_runs": [],
+        "title": "Recover Kontor governance and compatibility documentation",
+        "workflow_revision": 1,
+        "worktree": "/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-docs"
+      }
+    ],
+    "team_template": {
+      "id": "01936f5a-0000-7000-8000-000000000102",
+      "version": 1
+    },
+    "work_profile": {
+      "id": "asma-high-stakes-primary-20260829",
+      "version": 1
+    }
+  }
+}

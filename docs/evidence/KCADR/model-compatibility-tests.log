@@ -1,0 +1,149 @@
+    Blocking waiting for file lock on build directory
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling log v0.4.34
+   Compiling equivalent v1.0.2
+   Compiling tracing-core v0.1.36
+   Compiling foldhash v0.2.0
+   Compiling hashbrown v0.17.1
+   Compiling slab v0.4.12
+   Compiling tracing v0.1.44
+   Compiling futures-util v0.3.34
+   Compiling indexmap v2.14.1
+   Compiling uuid v1.24.0
+   Compiling jiff v0.2.35
+   Compiling tokio-util v0.7.19
+   Compiling fnv v1.0.7
+   Compiling h2 v0.4.19
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling form_urlencoded v1.2.2
+   Compiling httpdate v1.0.3
+   Compiling hyper v1.11.1
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling autocfg v1.5.1
+   Compiling hyper-util v0.1.20
+   Compiling num-traits v0.2.19
+   Compiling url v2.5.8
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling tower v0.5.3
+   Compiling iana-time-zone v0.1.65
+   Compiling crc32fast v1.5.1
+   Compiling strsim v0.11.1
+   Compiling smallvec v1.16.0
+   Compiling icu_normalizer v2.3.0
+   Compiling chrono v0.4.45
+   Compiling hyper-rustls v0.27.9
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling tower-http v0.6.11
+   Compiling futures-executor v0.3.34
+   Compiling unicase v2.9.0
+   Compiling mime v0.3.17
+   Compiling mime_guess v2.0.5
+   Compiling futures v0.3.33
+   Compiling reqwest v0.13.4
+   Compiling idna_adapter v1.2.2
+   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling nom v8.0.0
+   Compiling ryu v1.0.23
+   Compiling percent-encoding v2.3.2
+   Compiling simd-adler32 v0.3.10
+   Compiling same-file v1.0.6
+   Compiling zlib-rs v0.6.7
+   Compiling bumpalo v3.20.3
+   Compiling ident_case v1.0.1
+   Compiling vcpkg v0.2.15
+   Compiling libsqlite3-sys v0.38.2
+   Compiling darling_core v0.24.1
+   Compiling zopfli v0.8.3
+   Compiling flate2 v1.1.10
+   Compiling walkdir v2.5.0
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling idna v1.1.0
+   Compiling regex-automata v0.4.18
+   Compiling ref-cast v1.0.27
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v1.0.0
+   Compiling regex v1.13.1
+   Compiling rust-embed-utils v8.12.0
+   Compiling zip v3.0.0
+   Compiling darling_macro v0.24.1
+   Compiling iso8601 v0.6.5
+   Compiling nom-language v0.1.0
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
+   Compiling serde_derive_internals v0.30.0
+   Compiling ref-cast-impl v1.0.27
+   Compiling colorchoice v1.0.5
+   Compiling lazy_static v1.5.0
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle v1.0.14
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstream v1.0.0
+   Compiling schemars_derive v1.2.2
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling icalendar v0.17.13
+   Compiling darling v0.24.1
+   Compiling utoipa-swagger-ui v9.0.2
+   Compiling rust-embed-impl v8.12.0
+   Compiling hashlink v0.12.1
+   Compiling utoipa-gen v5.5.0
+   Compiling fallible-iterator v0.3.0
+   Compiling heck v0.5.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling rmcp v3.1.2
+   Compiling clap_lex v1.1.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling dyn-clone v1.0.20
+   Compiling schemars v1.2.2
+   Compiling serde_yaml_ng v0.10.0
+   Compiling utoipa v5.5.0
+   Compiling tungstenite v0.30.0
+   Compiling clap_builder v4.6.6
+   Compiling rusqlite v0.40.2
+   Compiling clap_derive v4.6.4
+   Compiling rust-embed v8.12.0
+   Compiling rmcp-macros v3.2.0
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+   Compiling serde_urlencoded v0.7.1
+   Compiling axum-core v0.5.6
+   Compiling serde_path_to_error v0.1.20
+   Compiling num_cpus v1.17.0
+   Compiling base64 v0.23.1
+   Compiling pastey v0.2.3
+   Compiling option-ext v0.2.0
+   Compiling deadpool-runtime v0.1.4
+   Compiling matchit v0.8.4
+   Compiling deadpool v0.12.3
+   Compiling axum v0.8.9
+   Compiling dirs-sys v0.5.0
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling clap v4.6.6
+   Compiling tokio-tungstenite v0.30.0
+   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-accounts)
+   Compiling sharded-slab v0.1.7
+   Compiling matchers v0.2.0
+   Compiling tower-http v0.7.0
+   Compiling assert-json-diff v2.0.2
+   Compiling tracing-log v0.2.0
+   Compiling tokio-stream v0.1.19
+   Compiling thread_local v1.1.10
+   Compiling nu-ansi-term v0.50.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
+   Compiling wiremock v0.6.5
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-mcp)
+   Compiling directories v6.0.0
+   Compiling fs4 v1.1.0
+   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 35s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-bf3067545e149fde)
+
+running 1 test
+test runtimes::tests::fable_upgrade_preserves_frozen_routes_and_accepts_the_current_release ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.01s
+
