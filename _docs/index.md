@@ -6,9 +6,15 @@
 
 This documentation covers implementation-local knowledge for the `asma-rs-kontor` workspace. Platform-wide Kontor product principles, architecture, decisions and implementation plans remain in the [AI orchestration documentation](../../../_docs/ai-orchestration/index.md); this router contains audits, contracts and other documents whose scope is the Kontor repository implementation itself.
 
-**Start here for *why*:** [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. The repository-local restatement, readable without the parent checkout, is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+**Start here for *why*:** [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. They define thin as a narrow authority boundary, require a rich mission-control projection, prefer reuse over duplication and make human escalation a prepared last resort. The repository-local restatement, readable without the parent checkout, is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Documents by Category
+
+### Reference (`reference/`)
+
+| Document | Summary | Status | When to Load |
+| --- | --- | --- | --- |
+| [Recommended teams and seats](reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md) | Role responsibilities, fleet-design recommendations and explicit implementation limits | Recommendation | Designing teams or evaluating models for roles |
 
 ### Plans (`plans/`)
 
