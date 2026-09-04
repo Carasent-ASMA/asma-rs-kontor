@@ -50,6 +50,7 @@ pub mod logging;
 pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
+pub mod succession;
 pub mod supervision;
 pub mod usage;
 
