@@ -807,6 +807,16 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// The posture seats on this runtime get when their role slot declares none.
+    ///
+    /// A plane-wide operator default, subordinate to the role slot: a template
+    /// that already declared a seat's autonomy has made that decision, and this
+    /// must not overrule it. `None` — the default, and what every runtime that
+    /// has no such concept returns — leaves the resolution at supervised.
+    fn declared_autonomy(&self) -> Option<kontor_core::spec::SeatAutonomy> {
+        None
+    }
+
     /// Whether an operator-declared provider route is currently eligible.
     /// Runtimes with no provider concept accept every route.
     fn provider_available(&self, _provider: &str) -> bool {

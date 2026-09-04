@@ -192,6 +192,7 @@ pub struct RecordedPaseo {
     calls: Mutex<Vec<String>>,
     mutating_routes: Mutex<BTreeSet<String>>,
     titles: Mutex<Vec<(String, String)>>,
+    sent: Mutex<Vec<(String, serde_json::Value)>>,
 }
 
 impl Default for RecordedPaseo {
@@ -206,6 +207,7 @@ impl RecordedPaseo {
     pub fn new() -> Self {
         Self {
             identity: Mutex::new(Self::baseline_identity()),
+            sent: Mutex::new(Vec::new()),
             cli: Mutex::new(BTreeMap::new()),
             cli_sticky: Mutex::new(BTreeMap::new()),
             rpc: Mutex::new(BTreeMap::new()),
@@ -453,6 +455,22 @@ impl RecordedPaseo {
             .count()
     }
 
+    /// The message every request of `request_type` carried, in order.
+    ///
+    /// Kept apart from the call ledger: the ledger answers "did this happen",
+    /// this answers "what did it say". A contract that can only count calls
+    /// cannot state that a create carried its permission block.
+    #[must_use]
+    pub fn sent_messages(&self, request_type: &str) -> Vec<serde_json::Value> {
+        self.sent
+            .lock()
+            .expect("the fixture lock is intact")
+            .iter()
+            .filter(|(kind, _)| kind == request_type)
+            .map(|(_, message)| message.clone())
+            .collect()
+    }
+
     /// Every title `route` was asked to give something, in order.
     ///
     /// Kept apart from the call ledger because a title is not a ledger key —
@@ -684,6 +702,13 @@ impl PaseoTransport for RecordedPaseo {
     async fn request(&self, request: &PaseoRpc) -> RuntimeResult<PaseoFrame> {
         let route = request.route();
         self.record(route, request.mutates);
+        // The message as sent, so a contract can state what a request actually
+        // carried rather than only that it was made. Recorded before the answer
+        // is decided, like the call itself.
+        self.sent
+            .lock()
+            .expect("the fixture lock is intact")
+            .push((request.request_type.to_owned(), request.message.clone()));
 
         let queued = self
             .rpc

@@ -17,7 +17,7 @@ system behaviour instead of instructions somebody has to remember.
 | Location | Holds |
 | --- | --- |
 | `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence |
-| `<state-root>/runtimes.json` | Runtime family, plane endpoint and per-account provider aliases. Schema generation `4`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
+| `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases and the plane's default seat posture. Schema generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
 | `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
@@ -226,6 +226,173 @@ provider behavior; no adapter is dispatched from this policy today.
 > nothing currently acts on a configured watchdog. Absent configuration correctly
 > invents no behaviour; present configuration also does nothing until
 > `KON-OP-21` wires it. This is recorded rather than implied.
+
+## Seat permission posture
+
+What a seat may do before it has to ask a human is declared, not inherited from
+whatever the machine's harness config happens to carry. Operators write one of
+three words; Kontor maps each to one internal `SeatAutonomy`.
+
+| Written in `runtimes.json` | Means | Internally |
+| --- | --- | --- |
+| `autonomous` | Act within what Kontor already authorized, without asking again per tool call | `Bounded` |
+| `ask` | Ask a human before each guarded action — the default, and what every seat did before this field existed | `Supervised` |
+| `plan` | Read and propose, never act | `Advisory` |
+
+`permission_posture` on a Paseo plane is a **default**, and it is resolved
+most-specific-first:
+
+1. the role slot's own `autonomy`, when the frozen team template declared one;
+2. the plane's `permission_posture`;
+3. `ask`.
+
+A template that already decided keeps deciding, even when the plane default is
+the wider one. A realm that declares nothing at either level behaves exactly as
+it did before the field existed, which is why a generation-4 document can be read
+without migrating it: absence resolves to `ask` and never widens a seat.
+
+### How each provider is told
+
+Posture is translated once, by a single renderer shared between the launch and
+the readback that verifies it, so what a seat is spawned under and what Kontor
+later checks cannot drift apart.
+
+| Provider | `autonomous` | `ask` | `plan` |
+| --- | --- | --- | --- |
+| `claude` | `bypassPermissions` | `auto` | `plan` |
+| `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
+| `opencode` | `build` + applied block | `build` + applied block | `plan` + applied block |
+| `cursor` | `agent` | *refused* | *refused* |
+
+Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
+names. Its ACP runtime permits shell writes in `plan`, and shell *and* file
+writes in `ask` — the same measured finding that keeps cursor out of
+consultation. A mode label is not a permission boundary, and a posture Kontor
+cannot enforce is refused before launch rather than reported as held. `agent`
+means what `autonomous` means, so that one stays.
+
+OpenCode carries its posture in a permission block rather than in a mode —
+`build` says nothing about what a seat may do, and `plan` is behavioural guidance
+whose canary showed shell writes proceeding. It launches only when the daemon
+both *can* apply that block and *says it did* for the exact agent.
+
+### How an OpenCode seat is launched
+
+**One `create_agent_request`, carrying everything:**
+
+- `config.providerOptions.permission` — the rendered block;
+- `config.mcpServers` — the typed seat MCP surface;
+- `initialPrompt` — the first turn, a **top-level sibling of `config`**;
+- `clientMessageId` — likewise top-level, derived from the launch rather than
+  generated, so a retry asks about the same turn;
+- `labels`, also top-level, carrying a launch-intent digest over the whole
+  outgoing message *and* the prompt.
+
+The envelope is not a guess. `CreateAgentRequestMessageSchema`
+(`packages/protocol/src/messages.ts`) declares `initialPrompt`, `clientMessageId`
+and `labels` as siblings of `config`; `handleCreateAgentRequest`
+(`packages/server/src/server/session.ts`) destructures both from the message and
+passes them to `createAgentCommand`; and the answer is a `status` frame carrying
+`agent_created`, the `requestId` and the agent payload built from the live
+snapshot. Read from `paseo-op20-v0.6.1-backport`, deploy pin `a07ed03e0`.
+
+There is no second stage. An earlier design created the seat empty and sent the
+first turn separately so acceptance could stand as proof; with the daemon now
+reporting application on the agent itself, that turn proves nothing the snapshot
+does not already say, and two effects to reconcile instead of one is pure hazard.
+
+**Two gates, and the difference between them matters.** Before any native call,
+the daemon must advertise `providerOptionsApplied`. After the create, the
+returned agent must report `providerOptionsApplied: true`. The feature says the
+daemon *can*; the per-agent flag says it *did*. A launch binds on the second.
+Missing and `false` are both refusals.
+
+The gate is deliberately **not** a version. Kontor shipped a version-gated path
+once whose permission the daemon validated, persisted, and dropped before it
+reached the provider: the v2 SDK's `promptAsync` allow-lists its body keys, and
+OpenCode's own prompt route reads only `t.tools`. The version was right and the
+policy never applied.
+
+**The seat is judged from the create's own snapshot** — placement, route, and the
+acknowledgement — with no follow-up fetch, because a later read answers a
+question about a later moment.
+
+### When the answer is ambiguous
+
+A create whose answer is lost may still have landed, so it is never sent again.
+Reconciliation is an exact-label paginated census on the launch intent:
+
+| The census finds | What happens |
+| --- | --- |
+| one match, unbound, **and its first turn proved** | adopted — it is this launch's own effect |
+| one match, unbound, first turn not provable | refused; it was created and never told anything |
+| one match, already bound to a run | refused; one session may not have two owners |
+| none, on a complete enumeration | `DeliveryConfirmationUnknown` — **the seat claim is kept** |
+| several, or an enumeration that did not finish | quarantined: no adoption, no create, no release |
+
+Labels prove a create happened; they do not prove the turn did. The create sends
+the prompt *after* the agent exists, so an agent can carry this launch's exact
+intent and never have been prompted — adopting it would seat a run on a session
+that sits idle forever while the launch reports success. Recovery therefore
+requires the launch's `clientMessageId` on the agent's **canonical** timeline,
+scanned backward from the tail with bounded pages under one fixed epoch. An
+absent id, an unfinished scan, a renumbering mid-scan, or a daemon-reported gap
+all refuse.
+
+Keeping the claim is the point, and **nothing releases it on an ambiguous
+outcome** — not `agent_create_failed`, not the typed `agent_create_unresolved`,
+not an unrecognised status. Releasing would let the next attempt take the slot
+and create a *second* agent for a run that may already have one.
+
+The deploy carrier (`a07ed03e0` on exact v0.6.1; `661536df9` on main) does
+distinguish those two words: it records the native id before sending the initial
+prompt, attempts an exact-agent archive if the create then fails, and reports
+`agent_create_failed` only once that compensation is **confirmed** —
+`agent_create_unresolved`, naming the agent, when it is not. The revision before
+it (`a878145`) could not: the id was captured after the prompt, so a throwing
+prompt left it null and a create failure was reported while the agent ran.
+
+Kontor does not branch on the difference, and does not adopt the agent the
+carrier names. Branching would make correctness depend on which build answered,
+and a daemon can be rolled back under a running plane. One path — census, then
+first-turn proof — serves both.
+
+A created seat that fails any check is archived over the same socket and read
+back terminal. The archive *acknowledgement* is not the cleanup: it can be lost
+after the daemon has already acted, so the readback runs whether or not the send
+was acknowledged, and only a fresh reading of that exact agent as terminal
+counts. Live, unfetchable, or an answer about a different agent all refuse
+recoverably and keep the claim. A durable bind failure
+returns confirmation-unknown too: the intent label is on the agent, so
+reconciliation adopts that very seat instead of stranding or duplicating it.
+
+### Why the policy is not a file or an environment variable
+
+OpenCode merges configuration rather than replacing it, and the layers resolve as
+
+```text
+global -> OPENCODE_CONFIG -> project -> OPENCODE_CONFIG_DIR
+       -> OPENCODE_CONFIG_CONTENT -> active-org remote config
+       -> managed config/preferences -> OPENCODE_PERMISSION
+```
+
+so nothing Kontor writes is the last word. Merging is per key and per nested key,
+and a rule the block does not name — from an auth-backed active-org config or a
+system managed profile, both of which sort late — survives and, because
+permissions resolve by last match, beats the destructive floor. The create
+sidesteps all of it, and the per-agent acknowledgement is what makes that
+claimable rather than assumed.
+
+> **Operational note.** A machine-global config — such as the 2026-08-22 stopgap
+> some operator hosts still carry — cannot reach a Kontor-launched OpenCode seat:
+> the policy is applied to the session by the daemon, not resolved from files. It
+> still governs any OpenCode process started outside Kontor.
+
+> **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
+> Kontor derives the intended value alongside the mode, but nothing sets it:
+> verified against Paseo 0.6.1, neither `paseo agent run` nor `paseo agent update`
+> exposes a flag for it, and Kontor drives the CLI rather than the MCP surface
+> where it is settable. Recorded rather than implied.
 
 ## Seat MCP surface
 

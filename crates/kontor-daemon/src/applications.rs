@@ -10001,17 +10001,28 @@ async fn freeze_seat_context_policy(
 ///
 /// Read from the team run's *own frozen* template for the same reason the
 /// context policy and the model rung are: a later edit to a template must not
-/// change the authority a running seat was launched under. A seat that declares
-/// nothing is [`SeatAutonomy::standard`] — supervised — so a template written
-/// before this policy existed keeps behaving exactly as it did.
+/// change the authority a running seat was launched under.
+///
+/// Three sources, most specific first:
+///
+/// 1. the role slot, when the frozen template declared one;
+/// 2. `plane_default`, the runtime's own `permission_posture`;
+/// 3. [`SeatAutonomy::standard`] — supervised.
+///
+/// The order is what makes a plane-wide default safe to introduce: a template
+/// that already said what a seat may do keeps saying it, and a realm that
+/// declares nothing at either level behaves exactly as it did before either
+/// existed. A `runtimes.json` still at generation 4 can only reach step 3.
 fn freeze_seat_autonomy(
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
+    plane_default: Option<SeatAutonomy>,
 ) -> kontor_core::DomainResult<SeatAutonomy> {
     Ok(
         kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
             .slot(slot)
             .and_then(|seat| seat.autonomy)
+            .or(plane_default)
             .unwrap_or_else(SeatAutonomy::standard),
     )
 }
@@ -24401,7 +24412,7 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse_domain(&error))?,
             model_rung,
             context_policy: context_policy.clone(),
-            autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot)
+            autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
         };
@@ -26767,7 +26778,7 @@ impl Services {
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
+            let autonomy = freeze_seat_autonomy(&team_snapshot, &slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?;
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
@@ -29223,7 +29234,7 @@ impl Services {
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
+        let autonomy = freeze_seat_autonomy(&team_snapshot, slot, adapter.declared_autonomy())
             .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
@@ -29781,7 +29792,7 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 mod tests {
     use super::{
         FrozenCommitteeRoute, QuotaOutlook, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
         re_review_remediation_identity, render_legacy_container_name, seat_block,
         select_committee_allocation, slot_prompt,
     };
@@ -29790,7 +29801,7 @@ mod tests {
         AccountProfileId, ContentHash, ExternalId, ExternalName, MiniProjectId, RealmId, TaskId,
         Timestamp,
     };
-    use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
+    use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
     use kontor_core::state::TaskState;
     use kontor_runtime::adapter::RuntimeError;
     use kontor_runtime::scope::{EpicScope, ExecutionScope};
@@ -30115,5 +30126,60 @@ mod tests {
         team.handoffs.clear();
         let roots = eligible_roots(&team);
         assert_eq!(roots.len(), team.slots.len(), "every slot leads");
+    }
+
+    /// A frozen run snapshot whose first slot declares `autonomy`, or does not.
+    fn snapshot_declaring(
+        autonomy: Option<SeatAutonomy>,
+    ) -> (
+        kontor_core::spec::TeamRunSnapshot,
+        kontor_core::id::RoleSlotId,
+    ) {
+        let mut template = kontor_teams::spec::bundled_teams()
+            .expect("the bundled team pack loads")
+            .teams
+            .into_iter()
+            .next()
+            .expect("the bundled pack declares a template");
+        let slot = template.slots[0].id.clone();
+        template.slots[0].autonomy = autonomy;
+        let revision = template.to_revision().expect("the template canonicalizes");
+        (
+            kontor_core::spec::TeamRunSnapshot::from_revision(&revision, super::SCHEMA_VERSION),
+            slot,
+        )
+    }
+
+    /// The three sources resolve most-specific-first, and a realm that declares
+    /// nothing at either level still gets exactly what it had before the plane
+    /// default existed.
+    #[test]
+    fn seat_autonomy_resolves_slot_then_plane_then_supervised() {
+        let (undeclared, slot) = snapshot_declaring(None);
+
+        assert_eq!(
+            freeze_seat_autonomy(&undeclared, &slot, None).expect("resolves"),
+            SeatAutonomy::Supervised,
+            "declaring nothing anywhere is the behaviour every seat already had"
+        );
+        assert_eq!(
+            freeze_seat_autonomy(&undeclared, &slot, Some(SeatAutonomy::Bounded))
+                .expect("resolves"),
+            SeatAutonomy::Bounded,
+            "a plane default reaches a slot that declared nothing"
+        );
+
+        // The slot is the more specific statement and is not overruled by a
+        // plane-wide default — including when the default is the wider one.
+        let (declared, slot) = snapshot_declaring(Some(SeatAutonomy::Advisory));
+        assert_eq!(
+            freeze_seat_autonomy(&declared, &slot, Some(SeatAutonomy::Bounded)).expect("resolves"),
+            SeatAutonomy::Advisory,
+            "a template that already decided keeps deciding"
+        );
+        assert_eq!(
+            freeze_seat_autonomy(&declared, &slot, None).expect("resolves"),
+            SeatAutonomy::Advisory,
+        );
     }
 }

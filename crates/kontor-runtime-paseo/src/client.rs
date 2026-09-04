@@ -103,6 +103,7 @@ pub(crate) fn paseo_mode(
             "claude" => Ok(Some("bypassPermissions")),
             "codex" => Ok(Some("full-access")),
             "copilot" => Ok(Some("allow-all")),
+            "cursor" => Ok(Some("agent")),
             "opencode" => Ok(Some("build")),
             "pi" => Ok(None),
             "omp" => Ok(Some("full")),
@@ -111,6 +112,11 @@ pub(crate) fn paseo_mode(
             }),
         },
         SeatAutonomy::Advisory => match built_in_provider(provider) {
+            // Cursor is deliberately absent: `consultation_permission_mode`
+            // refuses it on measured behaviour — its ACP runtime permits shell
+            // writes in `plan` and shell *and* file writes in `ask`. A mode
+            // label is not a permission boundary, and delivery must not claim
+            // the containment consultation already refuses to claim.
             "claude" | "opencode" => Ok(Some("plan")),
             "copilot" => Ok(Some(
                 "https://agentclientprotocol.com/protocol/session-modes#plan",
@@ -135,6 +141,11 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
         "copilot" => Ok(Some(
             "https://agentclientprotocol.com/protocol/session-modes#agent",
         )),
+        // Cursor has an `ask` mode and it is *not* an asking posture: the same
+        // measured finding that keeps cursor out of consultation records file
+        // and shell writes proceeding under it. Refused until Paseo exposes an
+        // attested permission boundary for cursor, rather than mapped to a
+        // label that would report a guarantee nothing enforces.
         "opencode" => Ok(Some("build")),
         "pi" => Ok(None),
         "omp" => Ok(Some("full")),
@@ -208,7 +219,9 @@ pub(crate) fn consultation_route_permission_mode(
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
 pub(crate) fn built_in_provider(provider: &str) -> &str {
-    const BUILT_INS: [&str; 6] = ["claude", "codex", "copilot", "opencode", "pi", "omp"];
+    const BUILT_INS: [&str; 7] = [
+        "claude", "codex", "copilot", "cursor", "opencode", "pi", "omp",
+    ];
     for built_in in BUILT_INS {
         if provider == built_in {
             return built_in;
@@ -225,6 +238,58 @@ pub(crate) fn built_in_provider(provider: &str) -> &str {
 // ---------------------------------------------------------------------------
 // CLI commands
 // ---------------------------------------------------------------------------
+
+/// Everything one delivery `create_agent_request` is built from.
+///
+/// A struct rather than fourteen positional arguments, because the digest below
+/// covers all of them and a call site that silently passed the wrong one for the
+/// right type is precisely what that digest exists to catch.
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveryCreate<'a> {
+    /// The correlation id for this attempt. Deliberately outside the digest: it
+    /// differs per attempt, and a retry must still recognise the agent the first
+    /// attempt may have created.
+    pub request_id: &'a str,
+    /// The native place the seat is created in.
+    pub workspace_id: &'a str,
+    /// The seat's canonical worktree.
+    pub canonical_cwd: &'a str,
+    /// The frozen route.
+    pub model_rung: &'a ModelRung,
+    /// The declared posture.
+    pub autonomy: SeatAutonomy,
+    /// The visible seat title.
+    pub title: &'a str,
+    /// The seat labels, before the launch-intent digest is added.
+    pub labels: &'a BTreeMap<String, String>,
+    /// The ticket's declared floor relaxations.
+    pub allowances: &'a [crate::posture::PermissionAllowance],
+    /// The seat's MCP surface, when the daemon composes one.
+    pub seat_mcp: Option<&'a crate::seat_mcp::SeatMcp>,
+    /// The serve profile that surface runs under.
+    pub serve_profile: &'a str,
+    /// The Kontor session binding.
+    pub binding_id: &'a str,
+    /// The agent run.
+    pub agent_run_id: &'a str,
+    /// The role slot.
+    pub role_slot_id: &'a str,
+    /// The first turn, carried on the create itself.
+    pub prompt: &'a str,
+}
+
+/// One built delivery create, with the labels a census must match.
+#[derive(Debug, Clone)]
+pub struct DeliveryCreateRequest {
+    /// The request to send.
+    pub rpc: PaseoRpc,
+    /// The exact labels the created agent will carry, digest included.
+    pub labels: BTreeMap<String, String>,
+    /// The launch-intent digest, for the reconciliation claim.
+    pub intent_digest: String,
+    /// The deterministic client message id the first turn carries.
+    pub client_message_id: String,
+}
 
 /// One Paseo CLI invocation, as an argv array.
 ///
@@ -256,12 +321,30 @@ pub struct PaseoCommand {
 }
 
 impl std::fmt::Debug for PaseoCommand {
+    /// `--env` values are redacted, and that is the whole reason this is written
+    /// out rather than derived: those arguments carry a seat's entire rendered
+    /// configuration, and a derived `Debug` would put it in the first `{:?}`
+    /// anybody reaches for. The flag itself stays visible — the shape of a
+    /// command is useful in a diagnostic; its payload is not.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut argv = Vec::with_capacity(self.argv.len());
+        let mut redact_next = false;
+        for part in &self.argv {
+            if std::mem::take(&mut redact_next) {
+                argv.push("<redacted>".to_owned());
+                continue;
+            }
+            if part == "--env" {
+                redact_next = true;
+            }
+            argv.push(part.clone());
+        }
+        let values = &self.values;
         formatter
             .debug_struct("PaseoCommand")
-            .field("argv", &self.argv)
+            .field("argv", &argv)
             .field("trailing", &self.trailing)
-            .field("values", &self.values)
+            .field("values", &values)
             .field("route", &self.route)
             .field(
                 "env_names",
@@ -891,6 +974,105 @@ impl PaseoRpc {
         )
     }
 
+    /// One `create_agent_request` that is the whole delivery launch.
+    ///
+    /// # Why one stage and not two
+    ///
+    /// An earlier design created the seat with no prompt, then sent the first
+    /// turn separately so that acceptance of that turn could be the proof the
+    /// posture applied. That proof was never real — the permission was dropped
+    /// before it reached the provider — and with the daemon now reporting
+    /// `providerOptionsApplied` on the agent itself, the turn proves nothing the
+    /// snapshot does not already say. Two effects to reconcile instead of one is
+    /// then pure hazard: a create that lands and a prompt that does not leaves a
+    /// seat that exists, is bound to nothing, and has no instructions.
+    ///
+    /// So the create carries the permission, the MCP surface, the prompt and its
+    /// deterministic message id together. It either happened or it did not, and
+    /// the launch-intent digest says which.
+    ///
+    /// # Errors
+    /// Propagates the renderer's own refusal when the provider cannot express
+    /// the declared posture. The posture is rendered *here*, once, so no caller
+    /// can supply a mode and a permission block that disagree.
+    pub fn delivery_agent_create(
+        parts: DeliveryCreate<'_>,
+    ) -> RuntimeResult<DeliveryCreateRequest> {
+        let provider = parts.model_rung.provider.0.as_str();
+        let posture = crate::posture::render_posture(provider, parts.autonomy, parts.allowances)?;
+
+        // Derived from the launch, never generated: a retry must ask about the
+        // same message the first attempt sent.
+        let client_message_id = format!(
+            "kontor-first-turn-{}-{}",
+            parts.agent_run_id, parts.binding_id
+        );
+
+        // The envelope is the one `PaseoRpc::agent_create` already uses against
+        // the live daemon: `initialPrompt` and `labels` are siblings of `config`,
+        // not fields inside it, and the answer arrives as a `status` frame. The
+        // session config carries what belongs to the session — route, title,
+        // mode, provider options, MCP surface.
+        let mut config = serde_json::json!({
+            "provider": parts.model_rung.provider.0,
+            "cwd": parts.canonical_cwd,
+            "model": parts.model_rung.model.0,
+            "title": parts.title,
+        });
+        if let Some(mode) = posture.mode {
+            config["modeId"] = serde_json::json!(mode);
+        }
+        if let Some(effort) = parts.model_rung.effort {
+            config["thinkingOptionId"] = serde_json::json!(effort.as_str());
+        }
+        if let Some(permission) = posture.permission.clone() {
+            config["providerOptions"] = serde_json::json!({ "permission": permission });
+        }
+        if let Some(seat) = parts.seat_mcp {
+            config["mcpServers"] = seat.server_config(parts.serve_profile);
+        }
+
+        // The digest covers the message about to be sent, not a subset of it, so
+        // a field added to the create is covered the day it is added. The
+        // correlation id is written by the constructor afterwards and is
+        // deliberately outside: it differs per attempt, and a retry has to
+        // recognise the agent the first attempt made.
+        let mut message = serde_json::json!({
+            "workspaceId": parts.workspace_id,
+            "config": config,
+            "initialPrompt": parts.prompt,
+            "clientMessageId": client_message_id,
+        });
+
+        let digest = crate::posture::LaunchIntent {
+            binding_id: parts.binding_id,
+            agent_run_id: parts.agent_run_id,
+            workspace_id: parts.workspace_id,
+            role_slot_id: parts.role_slot_id,
+            config: &message,
+            prompt: parts.prompt,
+            client_message_id: &client_message_id,
+        }
+        .digest()
+        .to_string();
+
+        let mut labels = parts.labels.clone();
+        labels.insert(crate::wire::label::LAUNCH_INTENT.to_owned(), digest.clone());
+        message["labels"] = serde_json::json!(labels);
+
+        Ok(DeliveryCreateRequest {
+            rpc: Self::mutate(
+                "create_agent_request",
+                "status",
+                parts.request_id.to_owned(),
+                message,
+            ),
+            labels,
+            intent_digest: digest,
+            client_message_id,
+        })
+    }
+
     /// `fetch_agents_request`, narrowed by exact labels and one bounded page.
     #[must_use]
     pub fn agent_list(
@@ -1075,6 +1257,21 @@ impl PaseoRpc {
             "agent.timeline.set_subscription.response",
             request_id,
             serde_json::json!({ "agentIds": agent_ids }),
+        )
+    }
+
+    /// `archive_agent_request` for one exact agent.
+    ///
+    /// Compensation for a seat that was created and could not be proved. Sent
+    /// over the same socket as the create so the archive is correlated the same
+    /// way, rather than reaching for a second surface mid-failure.
+    #[must_use]
+    pub fn agent_archive(request_id: String, agent_id: &str) -> Self {
+        Self::mutate(
+            "archive_agent_request",
+            "status",
+            request_id,
+            serde_json::json!({ "agentId": agent_id }),
         )
     }
 
@@ -1781,6 +1978,7 @@ pub fn ensure_frame_bounded(raw: &serde_json::Value) -> RuntimeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use kontor_core::id::ContentHash;
     use kontor_core::spec::{EffortLevel, ModelRef, ProviderRef};
     use kontor_runtime::adapter::{ConsultationFallbackDisposition, ConsultationRouteSource};
@@ -2686,11 +2884,83 @@ mod tests {
             .is_some()
         );
     }
-}
 
-#[cfg(test)]
-mod stdout_tests {
-    use super::*;
+    /// The delivery create speaks the envelope the live daemon already answers.
+    ///
+    /// No fixture can catch this. The recorded transport builds its reply from
+    /// whatever `response_type` the request declared, so a create that declared
+    /// the wrong one passes every test here and fails correlation against the
+    /// real daemon — the same shape of blind spot as a permission field that is
+    /// accepted and never applied. So it is pinned against
+    /// [`PaseoRpc::hosted_seat_agent_create`], which is evidenced in production.
+    #[test]
+    fn the_delivery_create_matches_the_evidenced_create_envelope() {
+        let rung = route("opencode", "deepseek/deepseek-v4-flash", None);
+        let labels: BTreeMap<String, String> =
+            [("kontor.role".to_owned(), "implement-a".to_owned())]
+                .into_iter()
+                .collect();
+        let evidenced = PaseoRpc::hosted_seat_agent_create(
+            "req-1".to_owned(),
+            "wks_1",
+            "/w/task-1",
+            &route("claude", "claude-opus-5", None),
+            "Lead",
+            &labels,
+            "go",
+            "secret",
+        )
+        .expect("the evidenced create builds");
+
+        let delivery = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            request_id: "req-1",
+            workspace_id: "wks_1",
+            canonical_cwd: "/w/task-1",
+            model_rung: &rung,
+            autonomy: SeatAutonomy::Bounded,
+            title: "Implement",
+            labels: &labels,
+            allowances: &[],
+            seat_mcp: None,
+            serve_profile: "worker",
+            binding_id: "bind-1",
+            agent_run_id: "run-1",
+            role_slot_id: "implement-a",
+            prompt: "go",
+        })
+        .expect("the delivery create builds");
+
+        assert_eq!(
+            delivery.rpc.request_type, evidenced.request_type,
+            "same request type"
+        );
+        assert_eq!(
+            delivery.rpc.response_type, evidenced.response_type,
+            "and the same answer is expected: a create that declares a response \
+             type the daemon never sends fails correlation on every launch"
+        );
+
+        // The fields the daemon reads from the top level, not from `config`.
+        for key in ["workspaceId", "config", "initialPrompt", "labels"] {
+            assert!(
+                evidenced.message.get(key).is_some(),
+                "the evidenced create carries `{key}` at the top level"
+            );
+            assert!(
+                delivery.rpc.message.get(key).is_some(),
+                "so the delivery create must too: `{key}`"
+            );
+        }
+        assert_eq!(delivery.rpc.message["initialPrompt"], "go");
+        assert_eq!(
+            delivery.rpc.message["clientMessageId"], "kontor-first-turn-run-1-bind-1",
+            "derived from the launch, so a retry asks about the same turn"
+        );
+        assert!(
+            delivery.rpc.message["config"]["providerOptions"]["permission"].is_object(),
+            "and the posture rides in the session config"
+        );
+    }
 
     #[test]
     fn a_leading_operator_notice_does_not_stop_the_json_being_read() {
