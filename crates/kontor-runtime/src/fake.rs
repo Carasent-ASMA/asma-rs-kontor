@@ -1576,6 +1576,7 @@ impl ScriptedFakeRuntime {
                 "source": source,
             }))?,
             source,
+            refusal: None,
         })
     }
 }

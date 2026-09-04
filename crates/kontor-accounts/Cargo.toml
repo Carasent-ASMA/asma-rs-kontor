@@ -24,6 +24,9 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 kontor-scheduler = { path = "../kontor-scheduler", version = "=0.2.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The quota-signals document is YAML for the same reason `supervision.yml`
+# is: an operator edits it by hand. Already a workspace dependency.
+serde_yaml_ng = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 jiff = { workspace = true }

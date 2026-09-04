@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 84;
+pub const SCHEMA_VERSION: i64 = 85;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -327,6 +327,9 @@ const MIGRATIONS: &[&str] = &[
     // backlog code and for a stale topology-container identity. Both retain
     // exact before/after evidence under their own command authority.
     include_str!("../migrations/0084_legacy_naming_recovery.sql"),
+    // Schema v85. Provenance for a runtime-observed quota decision: which exact
+    // item, on which run, under which immutable signal revision.
+    include_str!("../migrations/0085_quota_observation_provenance.sql"),
 ];
 
 const _: () = assert!(

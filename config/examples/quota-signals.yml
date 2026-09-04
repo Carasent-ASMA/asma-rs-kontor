@@ -1,0 +1,165 @@
+# Vendor exhaustion wording, as data.
+#
+# Install at <state-root>/quota-signals.yml. An absent document is valid and
+# leaves reactive classification inert: the 300-second usage poll stays the sole
+# source of truth, exactly as it was before this file existed. A *present* but
+# invalid document is refused, because it states an intent that cannot be
+# honoured.
+#
+# ---------------------------------------------------------------------------
+# `id` is identity; `provider` is routing
+# ---------------------------------------------------------------------------
+#
+# Every signal carries a stable logical `id`, unique within this document, and a
+# positive `version` that increments whenever its wording or parsing changes.
+# The alias is *not* identity: two logins of one vendor carry the same sentence
+# under the same family, so a record naming only `claude-work` could not say
+# which fingerprint actually authorized a retirement. That is why the two Claude
+# entries below have distinct ids even though their wording matches exactly.
+#
+# A signal's complete definition -- id, version, provider, basis, the markers in
+# order, the reset prefix and the zone -- is digested, and that digest is what
+# durable provenance cites. Changing any of it under an unchanged id and version
+# yields a different digest, which immutable history is entitled to refuse.
+#
+# ---------------------------------------------------------------------------
+# `provider` is an exact catalog alias, never a vendor family
+# ---------------------------------------------------------------------------
+#
+# A deployment addresses one login per alias -- `codex-work` and
+# `codex-personal` are two accounts of the same vendor, and each account's
+# routing document declares exactly which aliases it may select. A quota state
+# is keyed by `(account, provider)`, so a signal naming the bare family `codex`
+# matches no account that routes `codex-work`, and classification for that
+# account is silently inert.
+#
+# So one vendor's wording appears once **per alias**, and the identical sentence
+# repeating across two entries is correct rather than redundant.
+#
+# Duplicate wording is safe because eligibility is applied *before*
+# classification: the daemon filters this sequence to the aliases the seat's own
+# account may select and only then reads the text, so `codex-work`'s entry can
+# never stand in front of `codex-personal`'s for a seat running on the personal
+# login. Order still decides between two entries that are *both* eligible for
+# one account, which is why the more specific vendor precedes the more general
+# one below.
+
+schema_version: 1
+
+signals:
+  # ---- Claude, one entry per login ---------------------------------------
+  #
+  # Captured verbatim 2026-08-30, repeated to all three ASMA-7869 builders when
+  # the `claude-work` allowance was spent:
+  #
+  #   You've hit your individual spend limit · ask your admin to raise it at
+  #   claude.ai/settings/usage?from=cc_cli_limit_message · your session limit
+  #   resets 10:40pm (Europe/Chisinau)
+  #
+  # All three markers must appear together. The middle one is the whole reason
+  # this is safe to act on: an assistant *discussing* spend limits will never
+  # emit that exact query string, and this configuration can archive a live
+  # seat.
+  #
+  # The reset is a bare time of day and the prefix has no "at" -- it reads
+  # "resets 10:40pm", not "will reset at". It is parsed as the next such
+  # instant from the provider item's own timestamp, never from when Kontor
+  # looked.
+  #
+  # The message states its own zone in trailing parentheses. That annotation is
+  # never read as part of the clock, and it is **compared** against the declared
+  # zone below rather than skipped: *every* parenthesized token in the message
+  # is checked, and any that names a zone the tzdb knows must agree. A
+  # disagreement anywhere -- including one hidden behind an earlier
+  # unrecognised annotation such as `(EEST)` -- yields no instant at all, so the
+  # account blocks as `unknown` instead of blocking until an hour-wrong time.
+  # An annotation that is not an IANA name cannot be compared and is left alone.
+  #
+  # Keep the two in agreement: the captured message and this field both say
+  # Europe/Chisinau, and 22:40 there in August is EEST, three hours ahead of
+  # UTC -- which is the 2026-08-30T19:40:00Z reset the control plane recorded.
+  - id: claude-individual-spend-limit-work
+    version: 1
+    provider: claude-work
+    basis: plan_allowance
+    markers:
+      - individual spend limit
+      - claude.ai/settings/usage?from=cc_cli_limit_message
+      - your session limit resets
+    reset_prefix: 'your session limit resets '
+    reset_zone: Europe/Chisinau
+
+  - id: claude-individual-spend-limit-personal
+    version: 1
+    provider: claude-personal
+    basis: plan_allowance
+    markers:
+      - individual spend limit
+      - claude.ai/settings/usage?from=cc_cli_limit_message
+      - your session limit resets
+    reset_prefix: 'your session limit resets '
+    reset_zone: Europe/Chisinau
+
+  # ---- Codex, one entry per login --------------------------------------
+  #
+  # Verified against the message Codex produced on 2026-08-21:
+  #   "[System Error] You've hit your usage limit. Visit
+  #    https://chatgpt.com/codex/settings/usage to purchase more credits or try
+  #    again at Aug 23rd, 2026 9:35 AM."
+  # Codex prints the seat's local wall clock and names no zone, so the zone is
+  # supplied here. Reading it as UTC would move the reset by the offset.
+  #
+  # Why Europe/Oslo, and why it is not read from the host:
+  #
+  # `Europe/Oslo` is the provenance of *this captured message*, not a property
+  # of whatever machine happens to run the daemon. The 2026-08-21/23 incident
+  # records and deploy reports are authored in Europe/Oslo, and PR #96's report
+  # reads the same "Aug 23rd, 2026 9:35 AM" as the personal-account incident.
+  # A host that later sits in another zone -- Europe/Chisinau, say -- is a fact
+  # about now and must not reinterpret a historical wall clock; doing so would
+  # silently move every reset derived from this fingerprint.
+  #
+  # So the zone is stated as data beside the wording it belongs to, and is never
+  # inferred from the daemon's own clock. A deployment whose Codex seats print a
+  # different local zone states that zone here, against its own captured
+  # message.
+  - id: codex-usage-limit-work
+    version: 1
+    provider: codex-work
+    basis: plan_allowance
+    # The *whole* distinctive fingerprint, not the phrase alone. "usage limit"
+    # by itself appears in any assistant message that merely discusses limit
+    # handling, and this signal has the authority to archive a live seat -- so
+    # it demands the system-error framing, the settings URL and the retry
+    # wording together. All markers must appear.
+    markers:
+      - '[system error]'
+      - usage limit
+      - chatgpt.com/codex/settings/usage
+      - try again at
+    reset_prefix: 'try again at '
+    reset_zone: Europe/Oslo
+
+  - id: codex-usage-limit-personal
+    version: 1
+    provider: codex-personal
+    basis: plan_allowance
+    markers:
+      - '[system error]'
+      - usage limit
+      - chatgpt.com/codex/settings/usage
+      - try again at
+    reset_prefix: 'try again at '
+    reset_zone: Europe/Oslo
+
+  # ---- Prepaid balances -------------------------------------------------
+  #
+  # A credit balance is not a plan allowance: no clock lifts it, so it records
+  # as drained rather than exhausted and carries no reset instant.
+  - id: opencode-insufficient-credits
+    version: 1
+    provider: opencode
+    basis: credit_balance
+    markers:
+      - insufficient
+      - credits

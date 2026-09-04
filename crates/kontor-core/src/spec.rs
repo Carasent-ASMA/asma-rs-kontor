@@ -164,6 +164,19 @@ impl ProviderQuotaKind {
 }
 
 crate::closed_enum! {
+    /// What kind of evidence a quota decision rests on.
+    ///
+    /// One variant today, and it is still an enum rather than an implied
+    /// constant: the poller's structured report and an operator's assertion are
+    /// different bases that will want recording here too, and a column that
+    /// cannot express them would have to be migrated rather than extended.
+    QuotaDecisionBasis, "QuotaDecisionBasis" {
+        /// A provider's own refusal text, matched against a configured signal.
+        RuntimeRefusal => "runtime_refusal",
+    }
+}
+
+crate::closed_enum! {
     /// Who concluded a provider quota state.
     ///
     /// A parsed runtime message and an operator's assertion are different

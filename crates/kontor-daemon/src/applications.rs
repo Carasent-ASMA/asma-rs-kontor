@@ -40,11 +40,11 @@ use kontor_api::applications::{
     EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction,
     LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
     ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
-    PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
-    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
-    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto,
+    ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, StartRequest, StartedSeatDto,
+    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
+    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -572,6 +572,15 @@ pub struct Services {
     /// Serializes explicit provider probes so concurrent first use of one
     /// global idempotency key cannot contact the vendor twice.
     provider_probe_guard: tokio::sync::Mutex<()>,
+    /// Vendor exhaustion wording, read once from the Realm's state root.
+    ///
+    /// Empty means the Realm configured no `quota-signals.yml`, and reactive
+    /// classification is inert: the usage poller stays the sole source of
+    /// truth, exactly as before the document existed. Read at construction for
+    /// the same reason `capacity` is — an observation path must not do
+    /// filesystem I/O, and a document that changed mid-flight would classify
+    /// two observations of one refusal differently.
+    quota_signals: Vec<kontor_accounts::QuotaSignal>,
 }
 
 struct CompletionCommit<'a> {
@@ -615,6 +624,7 @@ impl Services {
         jira: JiraConnectors,
         runtime_roots: PathBuf,
         usage_poller: crate::usage::UsagePoller,
+        quota_signals: Vec<kontor_accounts::QuotaSignal>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -627,6 +637,7 @@ impl Services {
             runtime_roots,
             usage_poller,
             provider_probe_guard: tokio::sync::Mutex::new(()),
+            quota_signals,
         }))
     }
 
@@ -3792,6 +3803,46 @@ impl Services {
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        // Decide here, write in the observation's own transaction below. A
+        // quota row whose citing observation was never durable is a block an
+        // operator cannot explain, so the two land together or not at all.
+        let decision = match (observation.refusal.as_ref(), run.account_profile_id) {
+            (Some(refusal), Some(account_profile_id)) => crate::quota_observation::decide(
+                state,
+                project_id,
+                account_profile_id,
+                &self.quota_signals,
+                refusal,
+                now,
+            )
+            .map_err(|error| {
+                // The error carries structure only -- never the refusal text --
+                // so it is safe to log while the refusal itself is not.
+                tracing::warn!(
+                    account = %account_profile_id,
+                    detail = %error,
+                    "the observed provider limit could not be recorded",
+                );
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the observed provider limit could not be recorded",
+                )
+            })?,
+            _ => None,
+        };
+        // Structured provenance deliberately does *not* go into this payload.
+        //
+        // The durable control-plane log is a closed vocabulary of flat scalar
+        // fields (`ensure_control_metadata`), and that is load-bearing: it is
+        // the one place a transcript could accumulate, and the flat-scalar rule
+        // exists so a known field name cannot become a lid on an arbitrary
+        // subtree. A nested `quota_classification` object violated both halves,
+        // and the log was right to refuse it.
+        //
+        // What the row itself carries is the digest, which is durable and
+        // atomic with this observation. Where the *inspectable* provenance
+        // belongs is `OQ-KON-OP-21-008`, and this constraint removes one of its
+        // options: the event payload cannot be that home.
         let payload = self.intent(&serde_json::json!({
             "schema_version": 1,
             "observed_state": observation.state.as_str(),
@@ -3819,6 +3870,9 @@ impl Services {
                         jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     ),
                     expected_revision: run.revision,
+                    quota_state: decision
+                        .as_ref()
+                        .and_then(|decided| decided.request.clone()),
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -11335,6 +11389,7 @@ fn teams_projection_dto(
 /// block that had already lifted.
 fn provider_quota_state_dto(
     entry: &kontor_core::repository::ProviderQuotaState,
+    provenance: Option<&kontor_core::repository::QuotaObservationProvenance>,
     now: Timestamp,
 ) -> ProviderQuotaStateDto {
     ProviderQuotaStateDto {
@@ -11347,6 +11402,36 @@ fn provider_quota_state_dto(
         blocking: entry.blocks_at(now),
         windows: entry.windows().iter().map(quota_window_dto).collect(),
         credit: entry.credit.map(credit_balance_dto),
+        provenance: provenance.map(|stored| {
+            let record = &stored.record;
+            QuotaProvenanceDto {
+                id: record.id.to_string(),
+                signal_id: record.signal_id.clone(),
+                signal_version: record.signal_version.get(),
+                signal_definition_hash: record.signal_definition_hash.as_str().to_owned(),
+                agent_run_id: record.agent_run_id.to_string(),
+                runtime_binding_id: record.runtime_binding_id.to_string(),
+                native_id: record.native_id.as_str().to_owned(),
+                binding_generation: record.binding_generation,
+                item_epoch: record.item_epoch,
+                item_seq_start: record.item_seq_start,
+                item_seq_end: record.item_seq_end,
+                item_kind: record.item_kind.clone(),
+                item_observed_at: record.item_observed_at.to_string(),
+                decision_basis: record.decision_basis.as_str().to_owned(),
+                reset_zone: record.reset_zone.clone(),
+                evidence_digest: record.evidence_digest.as_str().to_owned(),
+                source_sequences: record
+                    .source_sequences
+                    .iter()
+                    .map(|(start, end)| QuotaSourceRangeDto {
+                        seq_start: *start,
+                        seq_end: *end,
+                    })
+                    .collect(),
+                recorded_at: record.recorded_at.to_string(),
+            }
+        }),
         revision: entry.revision,
     }
 }
@@ -13558,10 +13643,21 @@ impl ApplicationOperations for Services {
         let states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
-        Ok(states
-            .iter()
-            .map(|entry| provider_quota_state_dto(entry, now))
-            .collect())
+        // Resolve each row's provenance so the readback answers "why", not just
+        // "what". A row that names none -- a provider report, an operator
+        // assertion, or anything written before this record existed -- simply
+        // carries no provenance rather than a fabricated one.
+        let mut dtos = Vec::with_capacity(states.len());
+        for entry in &states {
+            let provenance = match entry.provenance_id {
+                Some(id) => state
+                    .with_store(|store| store.get_quota_observation_provenance(project_id, id))
+                    .map_err(|error| self.refuse(&error))?,
+                None => None,
+            };
+            dtos.push(provider_quota_state_dto(entry, provenance.as_ref(), now));
+        }
+        Ok(dtos)
     }
 
     async fn record_provider_quota(
@@ -13627,6 +13723,8 @@ impl ApplicationOperations for Services {
             state
                 .with_store(|store| {
                     store.set_provider_quota_state(&NewProviderQuotaState {
+                        // An operator assertion cites no runtime item.
+                        provenance: None,
                         project_id,
                         account_profile_id,
                         provider: request.provider.clone(),
@@ -13668,7 +13766,13 @@ impl ApplicationOperations for Services {
                     "the provider quota state could not be read back after the record",
                 )
             })?;
-        Ok(provider_quota_state_dto(&stored, now))
+        let provenance = match stored.provenance_id {
+            Some(id) => state
+                .with_store(|store| store.get_quota_observation_provenance(project_id, id))
+                .map_err(|error| self.refuse(&error))?,
+            None => None,
+        };
+        Ok(provider_quota_state_dto(&stored, provenance.as_ref(), now))
     }
 
     async fn probe_provider_quota(
@@ -24143,6 +24247,16 @@ impl ApplicationOperations for Services {
     ) -> Result<ReplacedSeatDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
+        // Two different facts with two different fences. "The provider was down
+        // when we tried to start" and "it ran for an hour and then hit the
+        // wall" cannot both be true of one seat, and a caller offering both is
+        // asserting a story rather than evidencing one.
+        if request.unavailable_provider.is_some() && request.quota_exhausted.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "provider-outage and quota-exhaustion evidence are mutually exclusive",
+            ));
+        }
         let mut predecessor = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
@@ -24218,6 +24332,31 @@ impl ApplicationOperations for Services {
                 "provider": evidence.provider,
             });
         }
+        // Every effect-bearing field belongs in the canonical intent, and the
+        // quota arm's evidence most of all: it is the authority to retire a
+        // seat that is still reachable and still answering. Omitting it let a
+        // used key replay across a *different* account, provider, binding or
+        // native claim -- the replay check below runs before any retire, so
+        // binding it here is what makes changed evidence conflict instead of
+        // quietly archiving the wrong session under an old receipt.
+        if let Some(evidence) = &request.quota_exhausted {
+            intent_document["quota_exhausted"] = serde_json::json!({
+                "runtime_binding_id": evidence.runtime_binding_id,
+                "native_id": evidence.native_id,
+                "provider": evidence.provider,
+                "account_profile_id": evidence.account_profile_id,
+            });
+        }
+        // The desired route is an operator decision that changes where the
+        // successor lands, so a key reused with a different one is a different
+        // command.
+        if let Some(route) = &request.model_route {
+            intent_document["model_route"] = serde_json::json!({
+                "provider": route.provider,
+                "model": route.model,
+                "effort": route.effort,
+            });
+        }
         let intent = self.intent(&intent_document)?;
         let target = AggregateRef::TeamRun {
             team_run_id: predecessor.team_run_id,
@@ -24241,6 +24380,7 @@ impl ApplicationOperations for Services {
                     &predecessor,
                     &binding,
                     request.unavailable_provider.as_ref(),
+                    request.quota_exhausted.as_ref(),
                     now,
                 )
                 .await?;
@@ -24347,8 +24487,13 @@ impl ApplicationOperations for Services {
                 )
             })?;
         if recorded_successor_id.is_none() {
+            // Unpinned on purpose. The walk that selects this successor's
+            // account has not run yet, and inheriting the predecessor's would
+            // pin the successor to the very account a quota succession exists
+            // to leave -- after which the durable pin below could only be
+            // refused, because a run owns one account.
             let successor_row = permit
-                .new_agent_run(project_id, predecessor.account_profile_id, None, now)
+                .new_agent_run(project_id, None, None, now)
                 .map_err(|error| self.refuse_domain(&error))?;
             state
                 .with_store(|store| store.create_agent_run(&successor_row))
@@ -24373,16 +24518,32 @@ impl ApplicationOperations for Services {
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
         let eligible = self.eligible_accounts(project_id)?;
+        // The *task's* explicit pin constrains the successor's walk; the
+        // predecessor's run account must not. `QuotaOutlook::candidates`
+        // returns exactly the pinned account and nothing else, so constraining
+        // this walk by the predecessor would leave a quota succession able to
+        // select only the account whose allowance is spent -- it could never
+        // reach the second account, which is the entire point. A task pin is
+        // different: it is an operator's standing decision, and if that account
+        // is blocked the walk finds nothing and no account is claimed, rather
+        // than the pin being silently violated.
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account_profile_id, _)| account_profile_id);
         let outlook = QuotaOutlook {
             states: &quota_states,
-            account: predecessor.account_profile_id,
+            account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
             now,
         };
         // An explicit route override is an operator decision the walk must not
-        // second-guess, so no account is resolved for it; the successor keeps
-        // only the predecessor's own pin.
+        // second-guess, so no account is resolved for it -- and none is
+        // inherited either. The route names a provider and a model, never an
+        // account, so claiming the predecessor's would be exactly the
+        // unverified attestation `freeze_seat_model_rung` refuses to invent on
+        // its own no-placement arm.
         let (model_rung, routed_account) = match request.model_route.as_ref() {
             Some(route) => (
                 parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
@@ -24407,7 +24568,7 @@ impl ApplicationOperations for Services {
             binding_id,
             placement: Some(LaunchPlacement::Container(workspace.clone())),
             cwd: task_root.clone(),
-            account_profile_id: predecessor.account_profile_id.or(routed_account),
+            account_profile_id: routed_account,
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
                 .map_err(|error| self.refuse_domain(&error))?,
             model_rung,
@@ -24416,6 +24577,17 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
         };
+        // A successor claims its account before it touches the runtime, exactly
+        // as a first launch does. Succession exists to move a seat off an
+        // exhausted account, so the account it lands on is the one whose future
+        // refusals must be attributable.
+        if let Some(account) = routed_account {
+            state
+                .with_store(|store| {
+                    store.pin_agent_run_account(project_id, successor_agent_run_id, account)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         let admission = permit.admission_request(&launch);
         let admitted = match adapter.admit_launch(&admission).await {
             Err(RuntimeError::ReplacementNotEvidenced {
@@ -26173,6 +26345,7 @@ impl Services {
         predecessor: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
         unavailable: Option<&kontor_api::applications::UnavailableProviderSeatRequest>,
+        quota: Option<&kontor_api::applications::QuotaExhaustedSeatRequest>,
         now: Timestamp,
     ) -> Result<kontor_core::repository::AgentRun, ApiError> {
         let state = self.state()?;
@@ -26219,6 +26392,47 @@ impl Services {
                 ));
             }
         }
+        if let Some(evidence) = quota {
+            if evidence.runtime_binding_id != binding.id.to_string()
+                || evidence.native_id != binding.identity.native_id.as_str()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the quota evidence names another immutable binding",
+                ));
+            }
+            ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
+            let claimed = kontor_core::id::AccountProfileId::parse(&evidence.account_profile_id)
+                .map_err(|error| self.refuse_domain(&error))?;
+            // The caller states which account it believes is blocked, and it
+            // must be the account this run actually claims. Deriving it instead
+            // would let a stale caller succeed against whichever account the
+            // run happened to hold.
+            if predecessor.account_profile_id != Some(claimed) {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the quota evidence names an account this seat does not hold",
+                ));
+            }
+            // The whole authorization. A reachable seat is retired only because
+            // a recorded state says its account is refusing work *now* -- not
+            // because a reset already passed, and not because someone asked.
+            // Without this the arm is a general "replace anything" hatch.
+            let states = state
+                .with_store(|store| store.list_provider_quota_states(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let blocking = states.iter().any(|row| {
+                row.account_profile_id == claimed
+                    && row.provider == evidence.provider
+                    && row.blocks_at(now)
+            });
+            if !blocking {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "no recorded quota state blocks this account and provider now",
+                ));
+            }
+        }
         let issued = adapter
             .issued_binding(&held)
             .await
@@ -26241,6 +26455,23 @@ impl Services {
             } else if let Some(evidence) = unavailable {
                 adapter
                     .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+            } else if quota.is_some() {
+                // The one arm that retires a *reachable* predecessor. A seat
+                // that hit a usage limit is still there and still answering; the
+                // generic path below refuses exactly that, which is what made
+                // the 2026-08-22 incident unrecoverable. The `Launching`-only
+                // fence of the `unavailable_provider` arm is deliberately not
+                // copied here: that fence means "never started", and this seat
+                // ran for an hour first.
+                //
+                // Nothing is relaxed downstream. The archive still has to come
+                // back runtime-observed `Cancelled` below, exactly as every
+                // other arm does, so the succession is evidenced rather than
+                // asserted.
+                adapter
+                    .retire(issued.snapshot(), now)
                     .await
                     .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
             } else {
@@ -26313,6 +26544,7 @@ impl Services {
                         jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     ),
                     expected_revision: predecessor.revision,
+                    quota_state: None,
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -26780,6 +27012,20 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let autonomy = freeze_seat_autonomy(&team_snapshot, &slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?;
+            // The account is durable *before* the first native effect. A seat
+            // that reaches a provider before its account is stored is a seat
+            // whose refusal cannot be attributed and whose replacement cannot
+            // be evidenced -- `ProviderQuotaState` is keyed by
+            // `(project, account, provider)` and there is no other key.
+            // Re-presenting the same account is a replay that writes nothing,
+            // so a restarted launch does not pin twice.
+            if let Some(account) = admitted.account_profile_id.or(routed_account) {
+                state
+                    .with_store(|store| {
+                        store.pin_agent_run_account(project_id, agent_run_id, account)
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
                     scope: scope.clone(),
@@ -29236,6 +29482,14 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let autonomy = freeze_seat_autonomy(&team_snapshot, slot, adapter.declared_autonomy())
             .map_err(|error| self.refuse_domain(&error))?;
+        // Durable before the first native effect, as in the admitted path: a
+        // seat that reaches a provider unpinned cannot have its refusal
+        // attributed or its replacement evidenced.
+        if let Some(account) = admitted.account_profile_id.or(routed_account) {
+            state
+                .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
+                .map_err(|error| self.refuse(&error))?;
+        }
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
                 scope: scope.clone(),

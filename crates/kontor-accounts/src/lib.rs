@@ -56,6 +56,7 @@ mod pin;
 mod profile;
 mod quota;
 mod resolver;
+mod signals;
 mod usage;
 
 pub use admission::{AdaptivePosition, fold};
@@ -80,6 +81,10 @@ pub use resolver::{
     AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
     ResolverPolicyBuilder, SystemKeychain,
+};
+pub use signals::{
+    QUOTA_SIGNALS_FILE, QuotaSignalsDocument, QuotaSignalsError, parse as parse_quota_signals,
+    read as read_quota_signals,
 };
 pub use usage::{
     UsageFailure, UsageReading, observe, read_chatgpt_usage, read_chatgpt_usage_strict,

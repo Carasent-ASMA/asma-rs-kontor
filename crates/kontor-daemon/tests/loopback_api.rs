@@ -677,6 +677,7 @@ fn observe(world: &World, run: AgentRunId, sequence: u64, revision: u64) {
                 freshness: Freshness::Fresh,
                 expected_revision: kontor_core::id::AggregateRevision::parse(revision)
                     .expect("a positive revision"),
+                quota_state: None,
             })
             .expect("the observation is recorded");
     });
@@ -1742,6 +1743,7 @@ async fn a_message_resume_reduces_the_run_and_team_run_back_to_running() {
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: before.revision,
+                quota_state: None,
             })
             .expect("waiting input is persisted through the shared reducer");
     });
@@ -14201,6 +14203,7 @@ async fn a_runtime_cancelled_run_accepts_one_guarded_late_handoff_without_reopen
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: run.revision,
+                quota_state: None,
             })
             .expect("the cancellation observation is durable")
     });
@@ -15143,6 +15146,519 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
             .expect("the receipt lookup succeeds")
             .is_none(),
         "the refusal records no replacement command"
+    );
+}
+
+/// The refusal that made the 2026-08-22 incident unrecoverable, and its cure.
+///
+/// A seat that hits a usage limit is **still reachable** — it answers, it just
+/// cannot work — so the generic path refuses it with *"the predecessor is still
+/// reachable and must be reused"*, and the `unavailable_provider` arm does not
+/// apply because that arm means "the provider was down when we tried to start".
+/// Neither covered a seat that ran and then hit the wall, so there was no
+/// recovery path at all.
+///
+/// The quota arm is the third fact. It admits a reachable predecessor, and the
+/// blocking quota row is the *only* thing that authorizes it: without one the
+/// original refusal must still stand, or the arm is a general "replace
+/// anything" hatch.
+#[tokio::test]
+async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    // Declared aliases, clear headroom: the seats start pinned to the work
+    // account, which is what makes a quota row about them addressable at all.
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the seat is bound").clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen model route")
+        .provider
+        .0;
+    // The pinning seam is what makes any of this addressable.
+    let account = run
+        .account_profile_id
+        .expect("a started seat owns the account the walk selected");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let team_runs_before = view.json()["tasks"][0]["team_runs"].clone();
+
+    let quota_evidence = serde_json::json!({
+        "runtime_binding_id": binding.id,
+        "native_id": binding.identity.native_id,
+        "provider": provider,
+        "account_profile_id": account.to_string(),
+    });
+
+    // (1) No blocking row. The original refusal stands, and nothing is retired.
+    let unauthorized = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-no-row")
+    .send(&world)
+    .await;
+    assert_eq!(unauthorized.status, 422, "{}", unauthorized.body);
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id)),
+        "an unauthorized quota claim never reaches the runtime"
+    );
+
+    // (2) Record the limit this seat hit.
+    let recorded = Call::post(
+        format!("/v1/projects/{project}/provider-quota-states:record"),
+        &serde_json::json!({
+            "account_profile_id": account.to_string(),
+            "provider": provider,
+            "state": "exhausted",
+            "resets_at": "2099-01-01T00:00:00Z",
+            "expected_revision": 1
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-record")
+    .send(&world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+
+    // (3) Evidence that names another binding is refused before the runtime is
+    //     contacted, exactly as the outage arm is.
+    let calls_before_mismatch = world.fake.calls().len();
+    let mut mismatched_evidence = quota_evidence.clone();
+    mismatched_evidence["native_id"] = serde_json::json!("another-native-session");
+    let mismatched = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": mismatched_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-mismatch")
+    .send(&world)
+    .await;
+    assert_eq!(mismatched.status, 409, "{}", mismatched.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_mismatch,
+        "identity mismatch is refused before contacting the runtime"
+    );
+
+    // (4) An account this seat does not hold is refused, so one account's limit
+    //     cannot retire a seat running on another.
+    let mut wrong_account = quota_evidence.clone();
+    wrong_account["account_profile_id"] =
+        serde_json::json!(kontor_core::id::AccountProfileId::generate().to_string());
+    let foreign = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": wrong_account,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-foreign-account")
+    .send(&world)
+    .await;
+    assert_eq!(foreign.status, 409, "{}", foreign.body);
+
+    // (5) Both evidence arms at once is a story, not evidence.
+    let both = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+            "unavailable_provider": {
+                "runtime_binding_id": binding.id,
+                "native_id": binding.identity.native_id,
+                "provider": provider,
+            },
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-both-arms")
+    .send(&world)
+    .await;
+    assert_eq!(both.status, 400, "{}", both.body);
+
+    // (6) The authorized succession. Note the provider is *available* — the
+    //     outage arm's own precondition is false here, which is the proof this
+    //     arm is not riding that fence.
+    assert!(
+        world.fake.provider_available(&provider),
+        "the provider is up; only this account's allowance is spent"
+    );
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-exact")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id)),
+        "the reachable predecessor is retired through the adapter's archive path"
+    );
+
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a successor id");
+    let retired = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    assert_eq!(
+        retired.terminal.as_ref().map(|evidence| evidence.outcome),
+        Some(kontor_core::state::TerminalOutcome::Cancelled),
+        "succession still requires runtime-observed cancellation",
+    );
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the run reads")
+            .expect("the successor exists")
+    });
+    assert!(successor.binding.is_some(), "the successor is bound");
+    assert_eq!(
+        successor.team_run_id, retired.team_run_id,
+        "succession stays inside the same TeamRun",
+    );
+
+    // The point of the whole operation: the successor is on a *different*
+    // account, durably. Inheriting the predecessor's account here -- which
+    // `.or(routed_account)` did, and which the successor row's own creation
+    // pin did before it -- would have moved the seat nowhere and re-refused.
+    let successor_account = successor
+        .account_profile_id
+        .expect("the successor owns the account the walk selected");
+    assert_ne!(
+        successor_account, account,
+        "succession moves off the exhausted account",
+    );
+    // The launch request and the stored pin are the same fact, so a receipt
+    // cannot name one account while `--provider` selects another.
+    assert_eq!(
+        world.fake.launched_account(successor_id),
+        Some(successor_account),
+        "the launch claims exactly the account the run owns",
+    );
+    let successor_alias = world
+        .fake
+        .launched_model(successor_id)
+        .expect("the successor route")
+        .provider
+        .0;
+    assert_ne!(
+        successor_alias, provider,
+        "the successor runs on the other login's alias",
+    );
+
+    // Re-presenting the same account is a replay, so a restarted launch does
+    // not pin twice and does not conflict.
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.pin_agent_run_account(project_id, successor_id, successor_account)
+        })
+        .expect("re-pinning the identical account is a replay");
+
+    let after = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        after.json()["tasks"][0]["team_runs"]
+            .as_array()
+            .map(std::vec::Vec::len),
+        team_runs_before.as_array().map(std::vec::Vec::len),
+        "no new TeamRun is created by a succession",
+    );
+}
+
+/// An idempotency key names one command, and the quota evidence *is* the
+/// command's authority: it is what permits retiring a seat that is still
+/// reachable and still answering.
+///
+/// So a key reused with different evidence must conflict **before** anything is
+/// retired, read or written. It did not: the canonical intent carried only
+/// `unavailable_provider`, so the same key replayed happily across a different
+/// account, provider, binding or native claim and would have archived a session
+/// the caller never named, under a receipt that said otherwise.
+#[tokio::test]
+async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the seat is bound").clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen route")
+        .provider
+        .0;
+    let account = run.account_profile_id.expect("a pinned seat");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+
+    let evidence = serde_json::json!({
+        "runtime_binding_id": binding.id,
+        "native_id": binding.identity.native_id,
+        "provider": provider,
+        "account_profile_id": account.to_string(),
+    });
+    let body = |quota: serde_json::Value| {
+        serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota,
+        })
+    };
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace");
+
+    // No blocking row yet, so the first call refuses on the merits -- but it
+    // records the intent under this key.
+    let first = Call::post(&route, &body(evidence.clone()))
+        .signed_as(&world, "admin")
+        .with_key("replace-quota-intent")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 422, "{}", first.body);
+
+    // The identical intent replays.
+    let replayed = Call::post(&route, &body(evidence.clone()))
+        .signed_as(&world, "admin")
+        .with_key("replace-quota-intent")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 422, "{}", replayed.body);
+
+    // Each field of the evidence is authority. Changing any one of them under
+    // the same key is a different command.
+    for (field, value) in [
+        (
+            "account_profile_id",
+            serde_json::json!(kontor_core::id::AccountProfileId::generate().to_string()),
+        ),
+        ("provider", serde_json::json!("codex-personal")),
+        ("native_id", serde_json::json!("another-native-session")),
+        (
+            "runtime_binding_id",
+            serde_json::json!(kontor_core::id::RuntimeBindingId::generate().to_string()),
+        ),
+    ] {
+        let mut changed = evidence.clone();
+        changed[field] = value;
+        let calls_before = world.fake.calls().len();
+        let conflict = Call::post(&route, &body(changed))
+            .signed_as(&world, "admin")
+            .with_key("replace-quota-intent")
+            .send(&world)
+            .await;
+        assert_eq!(
+            conflict.status, 409,
+            "changing {field} under the same key must conflict: {}",
+            conflict.body,
+        );
+        assert_eq!(
+            world.fake.calls().len(),
+            calls_before,
+            "the conflict is refused before the runtime is touched at all ({field})",
+        );
+        assert!(
+            !world
+                .fake
+                .calls()
+                .iter()
+                .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id)),
+            "nothing is retired under a conflicting key ({field})",
+        );
+    }
+}
+
+/// When *no* account is admissible the succession must not quietly fall back to
+/// the exhausted one. The walk answers with no placement, so no account is
+/// claimed at all and the adapter is left to emit its own provider refusal —
+/// which is honest. Silently reusing the blocked account would re-refuse while
+/// reporting success, and is exactly what inheriting the predecessor's pin did.
+#[tokio::test]
+async fn a_succession_with_no_admissible_account_claims_none_rather_than_reusing_the_blocked_one() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        work,
+        personal,
+    } = codex_alias_epic(&world, false, true).await;
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the seat is bound").clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen route")
+        .provider
+        .0;
+    let account = run.account_profile_id.expect("a pinned seat");
+
+    // Both logins are spent, so the walk has nowhere to go.
+    for (id, alias) in [(&work, "codex-work"), (&personal, "codex-personal")] {
+        let exhausted = Call::post(
+            format!("/v1/projects/{project}/provider-quota-states:record"),
+            &serde_json::json!({
+                "account_profile_id": id,
+                "provider": alias,
+                "state": "exhausted",
+                "resets_at": "2099-01-01T00:00:00Z",
+                "expected_revision": 1
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("no-account-exhaust-{alias}"))
+        .send(&world)
+        .await;
+        assert_eq!(exhausted.status, 200, "{}", exhausted.body);
+    }
+
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": {
+                "runtime_binding_id": binding.id,
+                "native_id": binding.identity.native_id,
+                "provider": provider,
+                "account_profile_id": account.to_string(),
+            },
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-no-admissible")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a successor id");
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the run reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(
+        successor.account_profile_id, None,
+        "no admissible account means no claim, never a silent reuse of the blocked one",
+    );
+    assert_ne!(
+        successor.account_profile_id,
+        Some(account),
+        "the exhausted account is emphatically not inherited",
+    );
+    assert_eq!(
+        world.fake.launched_account(successor_id),
+        None,
+        "the launch claims no account either, so the receipt cannot lie",
     );
 }
 
@@ -29052,6 +29568,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
                     observed_at: provider_reported_at,
                     expected_revision: AggregateRevision::parse(2).expect("revision two"),
                     updated_at: provider_reported_at,
+                    provenance: None,
                 }),
                 idempotency_key: None,
                 intent_hash: None,
@@ -29099,6 +29616,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
                 observed_at: mismatched_projection_at,
                 expected_revision: AggregateRevision::parse(3).expect("revision three"),
                 updated_at: mismatched_projection_at,
+                provenance: None,
             })
             .expect("a newer unmatched projection records")
     });
@@ -32436,6 +32954,45 @@ async fn a_seat_launch_claims_the_account_the_headroom_walk_selected() {
                 .map(|account| account.to_string()),
             Some(work.clone()),
             "the launch claims the account the walk selected"
+        );
+    }
+}
+
+/// Claiming an account in the launch *request* is not the same as the run
+/// owning one. `ProviderQuotaState` is keyed by `(project, account, provider)`
+/// and there is no other key, so a seat that reached a provider before its
+/// account was durable could have neither its refusal attributed nor its
+/// replacement evidenced — which is the state every delivery seat was in.
+///
+/// This asserts the durable half, and it is the pin-before-effect boundary:
+/// the seat has already launched by the time these rows are read, so a pin
+/// written after the native effect, or not at all, fails here.
+#[tokio::test]
+async fn a_started_seat_owns_its_account_durably_and_not_only_in_its_launch_request() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        work,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("a canonical project id");
+    let state = world.daemon.state();
+    assert!(!seats.is_empty(), "the epic started at least one seat");
+    for seat in &seats {
+        let run = seat["agent_run_id"]
+            .as_str()
+            .and_then(|run| AgentRunId::parse(run).ok())
+            .expect("a started run");
+        let stored = state
+            .with_store(|store| store.get_agent_run(project_id, run))
+            .expect("the run is readable")
+            .expect("the run exists");
+        assert_eq!(
+            stored.account_profile_id.map(|id| id.to_string()),
+            Some(work.clone()),
+            "the started seat owns the account the walk selected: {seat}",
         );
     }
 }

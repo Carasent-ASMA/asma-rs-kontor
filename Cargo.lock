@@ -3133,6 +3133,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tempfile",
  "thiserror 2.0.20",
  "zeroize",

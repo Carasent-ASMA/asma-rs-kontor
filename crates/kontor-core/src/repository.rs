@@ -30,11 +30,12 @@ use crate::id::{
     ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
     GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
     MiniProjectId, ModuleKey, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
-    ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
-    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
+    RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
+    TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
+    WorkProfileKey,
 };
 use crate::open_question::{
     AmbiguityRound, Disposition, OpenQuestion, OpenQuestionSummary, TriggerFiring,
@@ -1576,6 +1577,92 @@ pub struct NewObservation {
     pub freshness: crate::state::Freshness,
     /// The revision the caller believes is current.
     pub expected_revision: AggregateRevision,
+    /// A provider quota conclusion this same observation proves.
+    ///
+    /// Written in the **same transaction** as the observation, for the reason
+    /// [`NewProviderUsageObservation::quota_state`] is: a quota row whose citing
+    /// observation was never durable is a block an operator cannot explain and
+    /// cannot audit. Either both land or neither does.
+    ///
+    /// `None` is the overwhelmingly common case — almost nothing a runtime says
+    /// is a quota refusal.
+    pub quota_state: Option<NewProviderQuotaState>,
+}
+
+/// Why a runtime-observed quota decision was reached, in modeled scalars.
+///
+/// Append-only and immutable. Everything here is an identifier, an instant, an
+/// enum or a digest — there is deliberately no free text, no transcript and no
+/// open map, because the one thing this record must never become is a place a
+/// refusal sentence can accumulate.
+///
+/// It exists because a digest alone cannot be read back into a decision. An
+/// operator asking why an account is blocked is owed the exact item, on the
+/// exact run, under the exact signal revision that said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewQuotaObservationProvenance {
+    /// The record's own id.
+    pub id: QuotaObservationProvenanceId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account the decision is about.
+    pub account_profile_id: AccountProfileId,
+    /// The provider alias, as the catalog spells it.
+    pub provider: String,
+    /// Stable logical identity of the signal that matched.
+    pub signal_id: String,
+    /// Which revision of that signal.
+    pub signal_version: SpecVersion,
+    /// Digest of that signal's complete definition.
+    pub signal_definition_hash: ContentHash,
+    /// The run whose session carried the item.
+    pub agent_run_id: AgentRunId,
+    /// That run's immutable binding.
+    pub runtime_binding_id: RuntimeBindingId,
+    /// The native session behind the binding.
+    pub native_id: ExternalId,
+    /// The binding generation, so evidence cannot be transplanted.
+    pub binding_generation: u64,
+    /// Canonical epoch of the item.
+    pub item_epoch: u64,
+    /// First native sequence the item covers.
+    pub item_seq_start: u64,
+    /// Last native sequence the item covers.
+    ///
+    /// With `item_seq_start` this is an *envelope*, not the record. A collapsed
+    /// entry can span disjoint ranges, and the envelope would silently include
+    /// sequences the item never carried — so the exact set is below.
+    pub item_seq_end: u64,
+    /// Exactly which native sequences the item covered, in configured order.
+    pub source_sequences: Vec<(u64, u64)>,
+    /// The runtime's own item type.
+    pub item_kind: String,
+    /// When the *item* was emitted, never when Kontor read it.
+    pub item_observed_at: Timestamp,
+    /// What kind of evidence this was.
+    pub decision_basis: crate::spec::QuotaDecisionBasis,
+    /// The state concluded.
+    pub decided_state: crate::spec::ProviderQuotaKind,
+    /// The reset instant parsed from the message, when there was one.
+    pub parsed_resets_at: Option<Timestamp>,
+    /// The zone the signal declared for a bare wall clock.
+    pub reset_zone: Option<String>,
+    /// The digest the quota row cites.
+    ///
+    /// Not a digest of text alone: it covers the bounded refusal *and* the item
+    /// provenance that carried it, so the same sentence from a different item,
+    /// run or generation digests differently. The writer requires it to equal
+    /// the quota row's `evidence_hash`.
+    pub evidence_digest: ContentHash,
+    /// When the record was written.
+    pub recorded_at: Timestamp,
+}
+
+/// One stored provenance record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaObservationProvenance {
+    /// The immutable body as it was written.
+    pub record: NewQuotaObservationProvenance,
 }
 
 /// A request to close a run with evidence.
@@ -2497,6 +2584,9 @@ pub struct ProviderQuotaState {
     pub source: crate::spec::ProviderQuotaSource,
     /// When it was concluded.
     pub observed_at: Timestamp,
+    /// The provenance record that last moved this row, if a runtime
+    /// observation did.
+    pub provenance_id: Option<QuotaObservationProvenanceId>,
     /// Optimistic-concurrency revision.
     pub revision: AggregateRevision,
     /// Last mutation instant.
@@ -2609,6 +2699,12 @@ pub struct NewProviderQuotaState {
     pub credit: Option<crate::quota::CreditBalance>,
     /// Digest of the evidence.
     pub evidence_hash: ContentHash,
+    /// The provenance record this decision rests on, written in the same
+    /// transaction and referenced by the row.
+    ///
+    /// `None` for a provider report or an operator assertion: neither has a
+    /// runtime item behind it, and inventing one would be a claim nobody made.
+    pub provenance: Option<NewQuotaObservationProvenance>,
     /// Who concluded it.
     pub source: crate::spec::ProviderQuotaSource,
     /// When it was concluded.
@@ -2729,6 +2825,20 @@ pub trait CapacityRepository {
         &self,
         request: &NewProviderQuotaState,
     ) -> RepositoryResult<ProviderQuotaState>;
+
+    /// One provenance record by id.
+    ///
+    /// The read an operator's "why is this blocked?" resolves to: the quota row
+    /// names a record, and this returns the exact item, run and signal revision
+    /// that authorized it.
+    ///
+    /// # Errors
+    /// Backend failures only; a record from another project resolves to `None`.
+    fn get_quota_observation_provenance(
+        &self,
+        project_id: ProjectId,
+        id: QuotaObservationProvenanceId,
+    ) -> RepositoryResult<Option<QuotaObservationProvenance>>;
 
     /// Every provider quota state in one project.
     ///

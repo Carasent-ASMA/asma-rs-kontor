@@ -141,6 +141,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
+    "provider_quota_observation_provenance",
+    "provider_quota_observation_source_ranges",
     "provider_usage_observations",
     "profile_selection_outcomes",
     "quick_session_promotions",
@@ -511,8 +513,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // adds the canonical Jira task-link and unique-open-conflict ledgers. v82
     // adds first-class epic Jira conflict and transition-intent ledgers. v83
     // attributes remediation evidence and replay claims to a completion era;
-    // v84 adds append-only legacy code and stale-container recovery evidence.
-    assert_eq!(SCHEMA_VERSION, 84);
+    // v84 adds append-only legacy code and stale-container recovery evidence;
+    // v85 records why a runtime-observed quota decision was reached: which
+    // exact item, on which run, under which immutable signal revision.
+    assert_eq!(SCHEMA_VERSION, 85);
 }
 
 #[test]

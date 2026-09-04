@@ -1353,6 +1353,81 @@ impl SqliteStore {
         Ok(Applied::Created)
     }
 
+    /// Record the account the headroom walk selected for an already-admitted run.
+    ///
+    /// # Why this is a second write and not a field on admission
+    ///
+    /// Admission commits before the first native effect, and the account is not
+    /// known then: the walk that picks it runs against a *fresh* quota read
+    /// taken as the seat is about to launch, because an account that had
+    /// headroom when the task was admitted may have none by the time it starts.
+    /// So the run is created unpinned and claims its account in the moment
+    /// between admission and launch — the same shape, and for the same reason,
+    /// as [`Self::bind_agent_run`].
+    ///
+    /// # Why it must happen before the native launch
+    ///
+    /// `ProviderQuotaState` is keyed by `(project, account_profile_id,
+    /// provider)` and there is no other key. A seat that reaches a provider
+    /// before its account is durable is a seat whose refusal cannot be
+    /// attributed and whose replacement cannot be evidenced — which is exactly
+    /// the state every delivery seat was in.
+    ///
+    /// Re-presenting the identical account is a replay and writes nothing, so a
+    /// lost answer or a restarted launch costs a duplicate call and not a
+    /// second pin. A *different* account is refused: quota attribution reads
+    /// this field, and silently repointing it would move a recorded refusal
+    /// onto an account that never saw one.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] for an unknown run and
+    /// [`RepositoryError::Conflict`] when the run already claims another
+    /// account.
+    pub fn pin_agent_run_account(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: kontor_core::id::AgentRunId,
+        account_profile_id: kontor_core::id::AccountProfileId,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<Option<String>> = transaction
+            .query_row(
+                "SELECT account_profile_id FROM agent_runs WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), agent_run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(current) = existing else {
+            return Err(RepositoryError::NotFound {
+                subject: "agent run",
+            });
+        };
+        if let Some(claimed) = current {
+            if claimed.as_str() == account_profile_id.to_string() {
+                return Ok(Applied::Unchanged);
+            }
+            return Err(conflict(
+                "agent run account",
+                "the run already claims a different provider account",
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE agent_runs
+                    SET account_profile_id = ?3, revision = revision + 1
+                  WHERE project_id = ?1 AND id = ?2 AND account_profile_id IS NULL",
+                params![
+                    project_id.to_string(),
+                    agent_run_id.to_string(),
+                    account_profile_id.to_string()
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
     /// Every team run serving one task, oldest first.
     ///
     /// # Errors

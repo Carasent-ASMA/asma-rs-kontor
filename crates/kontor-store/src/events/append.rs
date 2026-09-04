@@ -674,6 +674,20 @@ pub(crate) fn record_observation(
         return Ok(run.projection);
     }
 
+    // Only the exact current reducible observation may move current quota, and
+    // it moves it in this same transaction.
+    //
+    // This sat above the monotonic check and was wrong there. `append_event`
+    // stores raw evidence for a replay and for a genuinely-new-but-older event
+    // alike, and both return here without reducing anything — so a stale
+    // refusal could still overwrite a *newer* availability row, and a duplicate
+    // delivery could mutate quota while explicitly changing no projection. Raw
+    // evidence is append-only history; current quota is current state, and only
+    // the observation that is actually authoritative right now may change it.
+    if let Some(quota) = request.quota_state.as_ref() {
+        crate::repository::set_provider_quota_state_in(&transaction, quota)?;
+    }
+
     let projection = reduce_observation(
         &transaction,
         &run,

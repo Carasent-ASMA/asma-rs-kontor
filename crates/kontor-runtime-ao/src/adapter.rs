@@ -949,6 +949,7 @@ impl AoAdapter {
             observed_at,
             evidence: Self::session_evidence(raw, view, lifecycle)?,
             source,
+            refusal: None,
         })
     }
 
@@ -1642,6 +1643,7 @@ impl RuntimeAdapter for AoAdapter {
             observed_at: request.requested_at,
             evidence,
             source: ObservationSource::CommandAck,
+            refusal: None,
         })
     }
 
