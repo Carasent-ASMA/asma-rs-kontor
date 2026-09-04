@@ -68,8 +68,9 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::wire::{
     MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_STREAM_QUEUE, PASEO_APP_VERSION,
-    PASEO_CAP_SELECTIVE_AGENT_TIMELINE, PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION,
-    PaseoDirection, PaseoProjection, PaseoServerInfo, PaseoTimelineCursor,
+    PASEO_CAP_SELECTIVE_AGENT_TIMELINE, PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION,
+    PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION, PaseoDirection, PaseoProjection, PaseoServerInfo,
+    PaseoTimelineCursor,
 };
 
 /// The JSON flag every lifecycle command carries.
@@ -1519,10 +1520,35 @@ struct Multiplex {
     /// Answers still owed, by correlation id.
     pending: std::sync::Mutex<HashMap<String, oneshot::Sender<PaseoFrame>>>,
     /// Unsolicited frames, by agent.
-    streams: std::sync::Mutex<BTreeMap<String, VecDeque<serde_json::Value>>>,
+    streams: std::sync::Mutex<BTreeMap<String, StreamBuffer>>,
+}
+
+/// A replacement invalidates the complete event queue, so it cannot be evicted
+/// by the bounded content buffer before the subscriber sees it.
+#[derive(Debug, Default)]
+struct StreamBuffer {
+    frames: VecDeque<serde_json::Value>,
+    replacement: Option<serde_json::Value>,
 }
 
 impl Multiplex {
+    fn drain_stream(&self, agent_id: &str) -> Vec<serde_json::Value> {
+        let Some(buffer) = self
+            .streams
+            .lock()
+            .expect("the transport lock is intact")
+            .remove(agent_id)
+        else {
+            return Vec::new();
+        };
+        // Deliver only the break. Canonical refetch supplies the content after
+        // it; returning queued content too could merge two timeline epochs.
+        match buffer.replacement {
+            Some(replacement) => vec![replacement],
+            None => buffer.frames.into_iter().collect(),
+        }
+    }
+
     /// Route one decoded outbound frame, or drop it.
     ///
     /// Three outcomes and no fourth: it answers a pending request, it is an
@@ -1535,17 +1561,22 @@ impl Multiplex {
             return;
         };
         let payload = message.get("payload");
-        if response_type == "agent_stream" {
+        if matches!(response_type, "agent_stream" | "agent.timeline.replacement") {
             let agent_id = payload
                 .and_then(|payload| payload.get("agentId"))
                 .and_then(serde_json::Value::as_str);
             if let Some(agent_id) = agent_id {
                 let mut streams = self.streams.lock().expect("the transport lock is intact");
-                let queue = streams.entry(agent_id.to_owned()).or_default();
-                if queue.len() >= MAX_STREAM_QUEUE {
-                    queue.pop_front();
+                let buffer = streams.entry(agent_id.to_owned()).or_default();
+                if response_type == "agent.timeline.replacement" {
+                    buffer.replacement = Some(message.clone());
+                    buffer.frames.clear();
+                } else if buffer.replacement.is_none() {
+                    if buffer.frames.len() >= MAX_STREAM_QUEUE {
+                        buffer.frames.pop_front();
+                    }
+                    buffer.frames.push_back(message.clone());
                 }
-                queue.push_back(message.clone());
             }
             return;
         }
@@ -1692,7 +1723,10 @@ impl PaseoLiveTransport {
             "clientType": PASEO_CLIENT_TYPE,
             "protocolVersion": PASEO_WS_PROTOCOL_VERSION,
             "appVersion": PASEO_APP_VERSION,
-            "capabilities": { PASEO_CAP_SELECTIVE_AGENT_TIMELINE: true },
+            "capabilities": {
+                PASEO_CAP_SELECTIVE_AGENT_TIMELINE: true,
+                PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION: true,
+            },
         })
     }
 
@@ -1941,15 +1975,7 @@ impl PaseoTransport for PaseoLiveTransport {
         let connection = held.as_ref().ok_or(RuntimeError::Transport {
             rule: "the daemon protocol socket is not connected",
         })?;
-        let mut streams = connection
-            .multiplex
-            .streams
-            .lock()
-            .expect("the transport lock is intact");
-        Ok(streams
-            .get_mut(agent_id)
-            .map(|frames| frames.drain(..).collect())
-            .unwrap_or_default())
+        Ok(connection.multiplex.drain_stream(agent_id))
     }
 }
 
@@ -2676,6 +2702,10 @@ mod tests {
         // The daemon's capability table spells this one snake_case; the
         // camelCase spelling is silently ignored, which is worse than an error.
         assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);
+        assert_eq!(
+            hello["capabilities"]["timeline_replacement_invalidation"],
+            true
+        );
     }
 
     #[test]
@@ -2824,9 +2854,8 @@ mod tests {
             "type": "agent_stream",
             "payload": { "agentId": "agt_2", "event": { "type": "timeline" }, "seq": 9 },
         }));
-        let streams = multiplex.streams.lock().expect("lock");
-        assert_eq!(streams.get("agt_1").map(VecDeque::len), Some(1));
-        assert_eq!(streams.get("agt_2").map(VecDeque::len), Some(1));
+        assert_eq!(multiplex.drain_stream("agt_1").len(), 1);
+        assert_eq!(multiplex.drain_stream("agt_2").len(), 1);
     }
 
     #[test]
@@ -2838,8 +2867,56 @@ mod tests {
                 "payload": { "agentId": "agt_1", "event": { "type": "timeline" }, "seq": seq },
             }));
         }
-        let streams = multiplex.streams.lock().expect("lock");
-        assert_eq!(streams["agt_1"].len(), MAX_STREAM_QUEUE);
+        assert_eq!(multiplex.drain_stream("agt_1").len(), MAX_STREAM_QUEUE);
+    }
+
+    #[test]
+    fn timeline_replacement_survives_overflow_and_coalesces_per_agent() {
+        let multiplex = Multiplex::default();
+        let replacement = |agent: &str, epoch: &str| {
+            serde_json::json!({
+                "type": "agent.timeline.replacement",
+                "payload": { "agentId": agent, "epoch": epoch },
+            })
+        };
+        multiplex.route(&replacement("agt_1", "first"));
+        multiplex.route(&replacement("agt_2", "other"));
+        for seq in 0..(MAX_STREAM_QUEUE + 10) {
+            multiplex.route(&serde_json::json!({
+                "type": "agent_stream",
+                "payload": { "agentId": "agt_1", "event": { "type": "timeline" }, "seq": seq },
+            }));
+        }
+        multiplex.route(&replacement("agt_1", "latest"));
+        assert_eq!(
+            multiplex.drain_stream("agt_1"),
+            vec![replacement("agt_1", "latest")]
+        );
+        assert!(multiplex.drain_stream("agt_1").is_empty());
+        assert_eq!(
+            multiplex.drain_stream("agt_2"),
+            vec![replacement("agt_2", "other")]
+        );
+        multiplex.route(&serde_json::json!({
+            "type": "agent_stream", "payload": { "agentId": "agt_1", "seq": 1 },
+        }));
+        assert_eq!(multiplex.drain_stream("agt_1").len(), 1);
+    }
+
+    #[test]
+    fn timeline_replacement_is_not_evicted_by_later_content() {
+        let multiplex = Multiplex::default();
+        let replacement = serde_json::json!({
+            "type": "agent.timeline.replacement",
+            "payload": { "agentId": "agt_1", "epoch": "new" },
+        });
+        multiplex.route(&replacement);
+        for seq in 0..(MAX_STREAM_QUEUE + 10) {
+            multiplex.route(&serde_json::json!({
+                "type": "agent_stream", "payload": { "agentId": "agt_1", "seq": seq },
+            }));
+        }
+        assert_eq!(multiplex.drain_stream("agt_1"), vec![replacement]);
     }
 
     #[test]

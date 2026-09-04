@@ -3367,9 +3367,15 @@ impl PaseoAdapter {
     async fn declared(&self) -> RuntimeResult<RuntimeCapabilities> {
         let mut capabilities = match self.fetch_server_info().await {
             Ok(info) => {
-                let degraded = !info.missing_required().is_empty() || !info.is_supported_baseline();
+                let can_read = info.permits_workspace_reads();
+                let can_drive = info.permits_workspace_driving();
+                let degraded = !info.missing_required().is_empty()
+                    || !info.is_supported_baseline()
+                    || !can_drive;
                 self.lock().server = Some(info);
-                if degraded {
+                if !can_read {
+                    self.config.capabilities_at(TrustGrade::C, &[])
+                } else if degraded {
                     self.config.degraded_capabilities()
                 } else {
                     self.config.capabilities()
@@ -3383,15 +3389,26 @@ impl PaseoAdapter {
         // version gate. Declared at every grade on purpose: a rename sets a title
         // and reads it back, so there is no readback a degraded daemon could
         // mislead a *placement* decision with.
-        let supports_project_rename = self
-            .lock()
-            .server
-            .as_ref()
-            .is_some_and(PaseoServerInfo::supports_project_rename);
+        let supports_project_rename = self.lock().server.as_ref().is_some_and(|info| {
+            info.supports_project_rename()
+                && info.permits_workspace_reads()
+                && info.permits(crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE)
+        });
         if self.mcp.is_some() || supports_project_rename {
             capabilities
                 .supported
                 .insert(RuntimeCapability::RetitleContainer);
+        }
+        // A second transport is not additional authority. Restrict the final
+        // composed surface too, including capabilities added by the MCP route.
+        if let Some(info) = self.lock().server.as_ref() {
+            if !info.permits_workspace_reads() {
+                capabilities.supported.clear();
+            } else if !info.permits(crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE) {
+                capabilities
+                    .supported
+                    .remove(&RuntimeCapability::RetitleContainer);
+            }
         }
         Ok(capabilities)
     }
@@ -7014,6 +7031,46 @@ impl RuntimeAdapter for PaseoAdapter {
             // registry is touched: an oversized frame is refused while it is
             // still only bytes.
             ensure_frame_bounded(&raw)?;
+            if raw.get("type").and_then(serde_json::Value::as_str)
+                == Some("agent.timeline.replacement")
+            {
+                let payload = raw.get("payload").ok_or_else(|| {
+                    RuntimeError::Domain(DomainError::invalid(
+                        "PaseoTimelineReplacement",
+                        "has no payload",
+                    ))
+                })?;
+                let agent_id = payload
+                    .get("agentId")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        RuntimeError::Domain(DomainError::invalid(
+                            "PaseoTimelineReplacement",
+                            "has no agent id",
+                        ))
+                    })?;
+                payload
+                    .get("epoch")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|epoch| !epoch.is_empty())
+                    .ok_or_else(|| {
+                        RuntimeError::Domain(DomainError::invalid(
+                            "PaseoTimelineReplacement",
+                            "has no epoch",
+                        ))
+                    })?;
+                if agent_id != native_id {
+                    return Err(RuntimeError::CorrelationFailed);
+                }
+                // Advertising the capability makes this one bounded signal the
+                // replacement for a full legacy row replay. Nothing from the
+                // previous numbering may be merged after it. The caller must
+                // discard its saved cursor and start a cursor-free canonical
+                // read; the new raw epoch is registered only by that readback.
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
             let envelope: PaseoStreamFrame = serde_json::from_value(
                 raw.get("payload")
                     .cloned()

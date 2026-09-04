@@ -3302,7 +3302,7 @@ async fn prelaunch_trusts_no_cli_answer_without_a_protocol_readback() {
 
 #[tokio::test]
 async fn prelaunch_refuses_a_route_the_readback_did_not_apply() {
-    for (field, value) in [("provider", "codex"), ("model", "claude-fable-5")] {
+    for (field, value) in [("provider", "codex"), ("model", "claude-fable-5-1")] {
         let recorded = daemon();
         let mut wrong = v(AGENT);
         wrong["agent"][field] = serde_json::json!(value);
@@ -4055,6 +4055,152 @@ async fn freshness_a_degraded_daemon_is_observed_but_never_driven() {
     assert!(plane.daemon.mutations().is_empty());
 }
 
+#[tokio::test]
+async fn security_declared_read_only_daemon_permissions_expose_only_reads() {
+    let mut identity = v(SERVER_INFO_NEWER_VERSION);
+    identity["permissions"] = serde_json::json!(["workspace.read"]);
+    let recorded = daemon();
+    recorded.set_identity(&identity);
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("a restricted daemon still declares its safe read surface");
+    assert_eq!(declared.trust_grade, TrustGrade::C);
+    assert!(declared.supports(RuntimeCapability::Discovery));
+    assert!(declared.supports(RuntimeCapability::Inspect));
+    assert!(!declared.supports(RuntimeCapability::Launch));
+    assert!(!declared.supports(RuntimeCapability::PrepareWorkspace));
+    assert!(!declared.supports(RuntimeCapability::RetitleContainer));
+
+    plane.daemon.take_calls();
+    let refused = plane
+        .prepare_workspace()
+        .await
+        .expect_err("workspace.read cannot authorize a workspace mutation");
+    assert_eq!(
+        refused,
+        RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace
+        }
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn security_session_permissions_bound_the_composed_surface_with_or_without_mcp() {
+    for with_mcp in [false, true] {
+        for (permissions, reads, drives, retitles) in [
+            (None, true, true, true),
+            (Some(serde_json::json!([])), false, false, false),
+            (
+                Some(serde_json::json!(["workspace.read"])),
+                true,
+                false,
+                false,
+            ),
+            (
+                Some(serde_json::json!(["workspace.write", "workspace.manage"])),
+                false,
+                false,
+                false,
+            ),
+            (
+                Some(serde_json::json!(["workspace.read", "workspace.write"])),
+                true,
+                false,
+                false,
+            ),
+            (
+                Some(serde_json::json!(["workspace.read", "workspace.manage"])),
+                true,
+                false,
+                true,
+            ),
+            (
+                Some(serde_json::json!([
+                    "workspace.read",
+                    "workspace.write",
+                    "workspace.manage"
+                ])),
+                true,
+                true,
+                true,
+            ),
+        ] {
+            let mut identity = v(SERVER_INFO_NEWER_VERSION);
+            if let Some(permissions) = permissions {
+                identity["permissions"] = permissions;
+            }
+            let recorded = daemon();
+            recorded.set_identity(&identity);
+            let plane = if with_mcp {
+                Plane::with_facade(recorded, RecordedMcp::new())
+            } else {
+                Plane::fresh(recorded)
+            };
+            let capabilities = plane
+                .adapter
+                .discover_capabilities()
+                .await
+                .expect("discovery");
+            assert_eq!(capabilities.supports(RuntimeCapability::Inspect), reads);
+            assert_eq!(capabilities.supports(RuntimeCapability::Launch), drives);
+            assert_eq!(
+                capabilities.supports(RuntimeCapability::RetitleContainer),
+                retitles
+            );
+            if !reads {
+                assert!(capabilities.supported.is_empty());
+            }
+            if !drives {
+                plane.daemon.take_calls();
+                assert!(matches!(
+                    plane.prepare_workspace().await,
+                    Err(RuntimeError::UnsupportedCapability {
+                        capability: RuntimeCapability::PrepareWorkspace
+                    })
+                ));
+                assert!(plane.daemon.mutations().is_empty());
+            }
+            if !retitles {
+                assert!(matches!(
+                    plane
+                        .adapter
+                        .retitle_container(&retitle(node(NODE_A)))
+                        .await,
+                    Err(RuntimeError::UnsupportedCapability {
+                        capability: RuntimeCapability::RetitleContainer
+                    })
+                ));
+                assert!(plane.daemon.mutations().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn security_declared_permissions_without_workspace_read_expose_nothing() {
+    let mut identity = v(SERVER_INFO_NEWER_VERSION);
+    identity["permissions"] = serde_json::json!(["workspace.write", "workspace.manage"]);
+    let recorded = daemon();
+    recorded.set_identity(&identity);
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("an explicit restricted identity is still parseable");
+    assert_eq!(declared.trust_grade, TrustGrade::C);
+    assert!(
+        declared.supported.is_empty(),
+        "without workspace.read the connection cannot even inspect a session"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // continuity_
 // ---------------------------------------------------------------------------
@@ -4563,6 +4709,108 @@ async fn timeline_a_declared_break_forces_a_canonical_refetch() {
         // And it changed no lifecycle state.
         let checkpoint = plane.adapter.checkpoint();
         assert_eq!(checkpoint.bindings.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn timeline_a_replacement_notification_invalidates_the_saved_cursor() {
+    let (plane, binding) = with_history().await;
+    let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+        .await
+        .expect("history");
+    plane.daemon.push_stream(
+        AGENT_ID,
+        vec![serde_json::json!({
+            "type": "agent.timeline.replacement",
+            "payload": {
+                "agentId": AGENT_ID,
+                "epoch": "8f2b1c34-0000-4000-8000-000000000051"
+            }
+        })],
+    );
+
+    let refused = plane
+        .adapter
+        .subscribe_live(&LiveSubscribeRequest {
+            binding: binding.clone(),
+            kinds: SESSION_KINDS.iter().copied().collect(),
+            strict_after: anchor,
+        })
+        .await
+        .expect_err("a replacement makes every saved cursor stale");
+    assert_eq!(
+        refused,
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::EpochChanged
+        }
+    );
+    // A new cursor-free canonical read is the recovery boundary. Its entries
+    // come from that read, never from the replacement notification.
+    let new_epoch = "8f2b1c34-0000-4000-8000-000000000051";
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "canonical-replacement", "agentId": AGENT_ID,
+            "agent": null, "direction": "tail", "projection": "canonical",
+            "epoch": new_epoch, "reset": false, "staleCursor": false, "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 1, "nextSeq": 2 },
+            "startCursor": { "epoch": new_epoch, "seq": 1 },
+            "endCursor": { "epoch": new_epoch, "seq": 1 },
+            "hasOlder": false, "hasNewer": false, "entries": [assistant_entry(1)], "error": null,
+        }),
+    );
+    let recovered = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("cursor-free canonical recovery");
+    assert_eq!(recovered.items.len(), 1);
+    assert_eq!(recovered.items[0].position.sequence, 1);
+    assert_ne!(recovered.items[0].position.epoch, anchor.epoch);
+}
+
+#[tokio::test]
+async fn timeline_replacement_isolates_other_agents_and_rejects_malformed_notifications() {
+    for (payload, correlation_failure) in [
+        (
+            serde_json::json!({ "agentId": "another-agent", "epoch": "new" }),
+            true,
+        ),
+        (serde_json::json!({ "agentId": AGENT_ID }), false),
+        (
+            serde_json::json!({ "agentId": AGENT_ID, "epoch": "" }),
+            false,
+        ),
+        (serde_json::json!({ "epoch": "new" }), false),
+        (serde_json::Value::Null, false),
+    ] {
+        let (plane, binding) = with_history().await;
+        let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+            .await
+            .expect("history");
+        plane.daemon.push_stream(
+            AGENT_ID,
+            vec![serde_json::json!({
+                "type": "agent.timeline.replacement", "payload": payload,
+            })],
+        );
+        let result = plane
+            .adapter
+            .subscribe_live(&LiveSubscribeRequest {
+                binding,
+                kinds: SESSION_KINDS.iter().copied().collect(),
+                strict_after: anchor,
+            })
+            .await;
+        if correlation_failure {
+            result.expect("another agent's replacement does not invalidate this session");
+        } else {
+            assert!(matches!(result, Err(RuntimeError::Domain(_))));
+        }
     }
 }
 
