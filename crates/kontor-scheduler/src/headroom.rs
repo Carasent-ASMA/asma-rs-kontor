@@ -502,6 +502,7 @@ mod tests {
                 observed_at: now(),
                 revision: kontor_core::id::AggregateRevision::INITIAL,
                 updated_at: now(),
+                provenance_id: None,
             },
         }
     }

@@ -2947,6 +2947,144 @@ pub struct AppliedContainerRetitleDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Read-only request for a one-time legacy epic-code correction.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EpicBacklogCodeCorrectionPreviewRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact active legacy value expected in the store.
+    #[schema(value_type = String)]
+    pub expected_prior_code: EpicBacklogCode,
+    /// Correct project-unique value to make effective.
+    #[schema(value_type = String)]
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained with the immutable correction.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// Apply request bound to the exact code-correction preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EpicBacklogCodeCorrectionApplyRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact active legacy value expected in the store.
+    #[schema(value_type = String)]
+    pub expected_prior_code: EpicBacklogCode,
+    /// Correct project-unique value to make effective.
+    #[schema(value_type = String)]
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained with the immutable correction.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// Hash returned by the preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Exact, no-write plan for correcting one legacy epic code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct EpicBacklogCodeCorrectionPreviewDto {
+    /// Realm that produced the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Epic whose effective code would change.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Immutable legacy source value.
+    #[schema(value_type = String)]
+    pub prior_code: EpicBacklogCode,
+    /// Proposed effective value.
+    #[schema(value_type = String)]
+    pub corrected_code: EpicBacklogCode,
+    /// Hash binding every previewed input and identity.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Snapshot position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Result of the one-time legacy epic-code correction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedEpicBacklogCodeCorrectionDto {
+    /// Exact correction plan that is now durable.
+    pub correction: EpicBacklogCodeCorrectionPreviewDto,
+    /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Read-only request to identify the sole live replacement for a stale binding.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRecoveryPreviewRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Apply request bound to an exact stale-container preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRecoveryApplyRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Hash returned by the recovery preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Exact before/after identity proved by a read-only recovery census.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRecoveryPreviewDto {
+    /// Realm that performed the census.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Topology node whose logical binding is preserved.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Native identity currently persisted and proved absent.
+    #[schema(value_type = String)]
+    pub stale_native_id: ExternalId,
+    /// Sole live parent/path/title candidate.
+    #[schema(value_type = String)]
+    pub replacement_native_id: ExternalId,
+    /// Exact native parent in which the census ran.
+    #[schema(value_type = String)]
+    pub parent_native_id: ExternalId,
+    /// Preserved canonical working directory.
+    #[schema(value_type = String)]
+    pub canonical_cwd: ExternalName,
+    /// Runtime-reported candidate title.
+    pub observed_title: String,
+    /// Hash binding the complete preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Snapshot position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Result of one atomic stale-container identity recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedContainerRecoveryDto {
+    /// Exact recovery evidence retained by the command.
+    pub recovery: ContainerRecoveryPreviewDto,
+    /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// One subject in an epic-wide native-name plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -3501,9 +3639,73 @@ pub struct ProviderQuotaStateDto {
     pub windows: Vec<QuotaWindowDto>,
     /// The depleting balance and its floor, where this provider has one.
     pub credit: Option<CreditBalanceDto>,
+    /// Why a runtime observation concluded this, when one did.
+    ///
+    /// Absent for a provider report or an operator assertion: neither cites a
+    /// runtime item, and a shape that implied otherwise would be a claim nobody
+    /// made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<QuotaProvenanceDto>,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
+}
+
+/// One provider route and the quota evidence currently joined to a live seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatProviderQuotaDto {
+    /// Provider alias declared by the seat's pinned account profile.
+    pub provider: String,
+    /// Current project quota projection, absent when this provider has not yet
+    /// produced any governed evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<ProviderQuotaStateDto>,
+}
+
+/// Observer projection joining one live logical seat to its runtime binding,
+/// pinned account and every selectable provider's current quota state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatQuotaStateDto {
+    /// Logical seat/run identity.
+    pub agent_run_id: String,
+    /// Task whose frozen team owns the seat.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Frozen team run identity.
+    pub team_run_id: String,
+    /// Exact role slot held by the seat.
+    pub role_slot: String,
+    /// Kontor runtime binding identity.
+    pub runtime_binding_id: String,
+    /// Runtime adapter family.
+    pub runtime_kind: String,
+    /// Native runtime identity.
+    pub native_id: String,
+    /// Immutable native binding generation.
+    pub binding_generation: u64,
+    /// Account pinned to the live seat.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// Reduced Kontor lifecycle; recovery refuses `running` even if an older
+    /// provider row happens to remain blocking.
+    pub lifecycle: String,
+    /// Latest runtime-observed state.
+    pub observed_state: String,
+    /// Cursor of the latest reduced runtime observation, when one exists.
+    #[schema(value_type = Option<i64>)]
+    pub runtime_observation_cursor: Option<kontor_core::id::EventCursor>,
+    /// True only when the latest blocked cursor, binding, native generation,
+    /// account and provider all match one current runtime-observation
+    /// provenance row. Clients must use this instead of deriving eligibility.
+    pub recovery_eligible: bool,
+    /// Exact provider proven by that current provenance match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_provider: Option<String>,
+    /// Exact immutable provenance proven by that current match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_provenance_id: Option<String>,
+    /// Selectable provider routes and their current quota projections.
+    pub providers: Vec<SeatProviderQuotaDto>,
 }
 
 /// One immutable, redacted successful provider-usage observation.
@@ -5036,6 +5238,13 @@ pub struct AttestLateHandoffRequest {
 pub struct ReplaceSeatRequest {
     /// The role slot whose terminal attempt is being replaced.
     pub role_slot: String,
+    /// The predecessor revision the replacement was authorized against.
+    ///
+    /// Separate from the task revision: runtime observation reduction moves
+    /// the run without moving its task, so the task CAS cannot fence stale
+    /// quota evidence on its own.
+    #[schema(value_type = u64)]
+    pub expected_predecessor_revision: AggregateRevision,
     /// The task revision the replacement is reconciled against.
     #[schema(value_type = u64)]
     pub expected_task_revision: AggregateRevision,
@@ -5050,6 +5259,42 @@ pub struct ReplaceSeatRequest {
     /// idle-seat reuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_provider: Option<UnavailableProviderSeatRequest>,
+    /// Exact evidence authorizing succession of a seat that ran and then hit a
+    /// provider usage limit.
+    ///
+    /// Distinct from `unavailable_provider`, and deliberately not a widening of
+    /// it: that arm means *the provider was down when we tried to start*, and
+    /// its launch-only fence is load-bearing for that meaning. This one means
+    /// *it ran for an hour and then hit the wall*, which is a different fact
+    /// with different evidence — the predecessor is still reachable, and a
+    /// recorded quota state is what authorizes retiring it anyway.
+    ///
+    /// Mutually exclusive with `unavailable_provider`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_exhausted: Option<QuotaExhaustedSeatRequest>,
+}
+
+/// Exact identity and quota evidence for succeeding one usage-limited seat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuotaExhaustedSeatRequest {
+    /// The exact stored runtime observation that reduced this predecessor to
+    /// the blocked state authorizing succession.
+    #[schema(value_type = i64)]
+    pub runtime_observation_cursor: kontor_core::id::EventCursor,
+    /// Kontor's immutable runtime binding id.
+    pub runtime_binding_id: String,
+    /// The exact native session id behind that binding.
+    pub native_id: String,
+    /// The provider whose allowance was exhausted.
+    pub provider: String,
+    /// The account whose recorded quota state authorizes the succession.
+    ///
+    /// Named rather than derived: the caller states which account it believes
+    /// is blocked, and the server refuses if that is not the account the run
+    /// actually claims. Deriving it would let a stale caller succeed against
+    /// whichever account the run happened to hold.
+    pub account_profile_id: String,
 }
 
 /// Exact identity and outage evidence for retiring one unused native seat.
@@ -5062,6 +5307,65 @@ pub struct UnavailableProviderSeatRequest {
     pub native_id: String,
     /// Provider the native session reports and runtime configuration marks down.
     pub provider: String,
+}
+
+/// One inclusive native-sequence range an item covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuotaSourceRangeDto {
+    /// First native sequence, inclusive.
+    pub seq_start: u64,
+    /// Last native sequence, inclusive.
+    pub seq_end: u64,
+}
+
+/// Which exact item, on which run, under which signal revision authorized a
+/// runtime-observed quota decision.
+///
+/// Modeled scalars only. There is deliberately no refusal text and no open map
+/// here — the digest identifies the sentence without the projection ever
+/// carrying one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QuotaProvenanceDto {
+    /// The provenance record's id.
+    pub id: String,
+    /// Stable logical id of the signal that matched.
+    pub signal_id: String,
+    /// That signal's revision.
+    pub signal_version: u32,
+    /// Digest of that signal's complete definition when it matched.
+    pub signal_definition_hash: String,
+    /// The run whose session carried the item.
+    pub agent_run_id: String,
+    /// That run's immutable binding.
+    pub runtime_binding_id: String,
+    /// The native session behind the binding.
+    pub native_id: String,
+    /// The binding generation, so evidence cannot be read across one.
+    pub binding_generation: u64,
+    /// Canonical epoch of the item.
+    pub item_epoch: u64,
+    /// First native sequence the item covers.
+    pub item_seq_start: u64,
+    /// Last native sequence the item covers.
+    pub item_seq_end: u64,
+    /// The runtime's own item type.
+    pub item_kind: String,
+    /// When the item was emitted, never when Kontor read it.
+    pub item_observed_at: String,
+    /// What kind of evidence this was.
+    pub decision_basis: String,
+    /// The zone the signal declared for a bare wall clock, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_zone: Option<String>,
+    /// The digest the quota row cites. Covers the bounded refusal *and* the
+    /// item provenance that carried it, so the same sentence from a different
+    /// item, run or generation digests differently. Never the text itself.
+    pub evidence_digest: String,
+    /// Exactly which native sequences the item covered, in order. An envelope
+    /// would claim sequences a collapsed entry never carried.
+    pub source_sequences: Vec<QuotaSourceRangeDto>,
+    /// When the record was written.
+    pub recorded_at: String,
 }
 
 /// One explicit runtime route used by an authorized recovery operation.
@@ -5250,6 +5554,53 @@ pub struct ReplacedSeatDto {
     /// The successor's new native identity.
     pub native_id: String,
     /// Whether this call created the successor or replayed it.
+    pub applied: AppliedDto,
+}
+
+/// Readback of one bodyless, server-evidenced seat recovery operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatRecoveryDto {
+    /// Realm that owns the durable succession attempt.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Durable succession attempt identity.
+    pub attempt_id: String,
+    /// `deferred`, `confirmed` or `refused`.
+    pub state: String,
+    /// Task whose exact team slot is recovered.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Frozen team run identity.
+    pub team_run_id: String,
+    /// Exact role slot retained by the successor.
+    pub role_slot: String,
+    /// Immutable predecessor logical run.
+    pub predecessor_agent_run_id: String,
+    /// Installed successor when recovery has confirmed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor: Option<ReplacedSeatDto>,
+    /// Exact blocked runtime cursor that authorized the attempt.
+    #[schema(value_type = i64)]
+    pub authorizing_runtime_observation_cursor: kontor_core::id::EventCursor,
+    /// Immutable runtime-quota provenance linked to that cursor.
+    pub quota_provenance_id: String,
+    /// Canonical predecessor handoff digest once the attempt is planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_hash: Option<String>,
+    /// Summary digest; absent for an explicit degraded handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_hash: Option<String>,
+    /// Exact successor runtime observation cited by the final receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<i64>)]
+    pub successor_runtime_observation_cursor: Option<kontor_core::id::EventCursor>,
+    /// Immutable final receipt, present only after confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub succession_receipt_id: Option<String>,
+    /// Earliest exact quota reset while placement is deferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_until: Option<String>,
+    /// Whether this call created progress or replayed durable state.
     pub applied: AppliedDto,
 }
 
@@ -5651,6 +6002,9 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
     ) -> Result<Vec<ProviderQuotaStateDto>, ApiError>;
 
+    /// Every live seat joined to its pinned account and provider quota state.
+    fn seat_quota_states(&self, project_id: ProjectId) -> Result<Vec<SeatQuotaStateDto>, ApiError>;
+
     /// Record or replace one account's quota state for one provider.
     async fn record_provider_quota(
         &self,
@@ -5908,6 +6262,40 @@ pub trait ApplicationOperations: Send + Sync {
         topology_node_id: TopologyNodeId,
         request: &ContainerRetitleRequest,
     ) -> Result<AppliedContainerRetitleDto, ApiError>;
+
+    /// Preview the one-time correction of a legacy-imported epic code.
+    fn preview_epic_backlog_code_correction(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionPreviewRequest,
+    ) -> Result<EpicBacklogCodeCorrectionPreviewDto, ApiError>;
+
+    /// Apply the exact legacy epic-code correction atomically.
+    fn apply_epic_backlog_code_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionApplyRequest,
+    ) -> Result<AppliedEpicBacklogCodeCorrectionDto, ApiError>;
+
+    /// Preview the sole live parent/path replacement for a stale container.
+    async fn preview_container_recovery(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryPreviewRequest,
+    ) -> Result<ContainerRecoveryPreviewDto, ApiError>;
+
+    /// Atomically replace the exact stale binding with the previewed identity.
+    async fn apply_container_recovery(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryApplyRequest,
+    ) -> Result<AppliedContainerRecoveryDto, ApiError>;
 
     /// Preview a complete epic container/seat name repair with no writes.
     async fn preview_native_names(
@@ -6488,6 +6876,14 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ReplaceSeatRequest,
     ) -> Result<ReplacedSeatDto, ApiError>;
 
+    /// Freshly observe and durably recover one quota-blocked seat.
+    async fn recover_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<SeatRecoveryDto, ApiError>;
+
     /// Settle one run against a fresh reading of its runtime.
     async fn settle_runtime(
         &self,
@@ -6894,6 +7290,22 @@ pub async fn provider_quota_states(
     Ok(Json(
         state.applications().provider_quota_states(project_id)?,
     ))
+}
+
+/// Every live seat joined to its exact account and provider quota projections.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/seat-quota-states", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = Vec<SeatQuotaStateDto>), (status = 401), (status = 403))
+)]
+pub async fn seat_quota_states(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<SeatQuotaStateDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().seat_quota_states(project_id)?))
 }
 
 /// Record or replace one account's quota state for one provider.
@@ -7804,6 +8216,126 @@ pub async fn apply_container_retitle(
         state
             .applications()
             .apply_container_retitle(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview one legacy-imported epic backlog-code correction.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose legacy code is corrected")
+    ),
+    request_body = EpicBacklogCodeCorrectionPreviewRequest,
+    responses((status = 200, body = EpicBacklogCodeCorrectionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422))
+)]
+pub async fn preview_epic_backlog_code_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<EpicBacklogCodeCorrectionPreviewRequest>,
+) -> Result<Json<EpicBacklogCodeCorrectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_epic_backlog_code_correction(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply the exact previewed legacy epic backlog-code correction.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose legacy code is corrected"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = EpicBacklogCodeCorrectionApplyRequest,
+    responses((status = 200, body = AppliedEpicBacklogCodeCorrectionDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422))
+)]
+pub async fn apply_epic_backlog_code_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<EpicBacklogCodeCorrectionApplyRequest>,
+) -> Result<Json<AppliedEpicBacklogCodeCorrectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_epic_backlog_code_correction(&key, project_id, epic_id, &request)?,
+    ))
+}
+
+/// Preview the sole live replacement for one stale topology container binding.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose binding is stale")
+    ),
+    request_body = ContainerRecoveryPreviewRequest,
+    responses((status = 200, body = ContainerRecoveryPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 501))
+)]
+pub async fn preview_container_recovery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    Json(request): Json<ContainerRecoveryPreviewRequest>,
+) -> Result<Json<ContainerRecoveryPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_container_recovery(project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply the exact previewed stale-container recovery.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose binding is stale"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ContainerRecoveryApplyRequest,
+    responses((status = 200, body = AppliedContainerRecoveryDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 501))
+)]
+pub async fn apply_container_recovery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ContainerRecoveryApplyRequest>,
+) -> Result<Json<AppliedContainerRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_container_recovery(&key, project_id, topology_node_id, &request)
             .await?,
     ))
 }
@@ -10101,6 +10633,41 @@ pub async fn replace_seat(
         state
             .applications()
             .replace_seat(&key, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Observe, classify and durably recover one quota-blocked seat.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The predecessor run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = SeatRecoveryDto, description = "Confirmed, deferred, or replayed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The durable attempt or seat identity conflicts"),
+        (status = 422, description = "The fresh runtime/quota evidence refuses recovery")
+    )
+)]
+pub async fn recover_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<SeatRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_seat(&key, project_id, agent_run_id)
             .await?,
     ))
 }

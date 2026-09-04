@@ -258,6 +258,7 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
         daemon.jira_reconciler(),
         daemon.state(),
     ));
+    let _succession_supervisor = daemon.spawn_succession_supervisor(daemon.jira_reconciler());
     let _completion_scanner = daemon.spawn_completion_scanner(COMPLETION_SCAN_INTERVAL);
 
     let bind: SocketAddr = daemon.config().bind;

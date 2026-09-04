@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::backlog_identity::EpicBacklogCode;
+
 use crate::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExecutionAuthorization,
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
@@ -28,11 +30,12 @@ use crate::id::{
     ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
     GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
     MiniProjectId, ModuleKey, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
-    ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleKey, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
-    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
+    RoleCatalogId, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId,
+    TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId,
+    Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId,
+    WorkProfileKey,
 };
 use crate::open_question::{
     AmbiguityRound, Disposition, OpenQuestion, OpenQuestionSummary, TriggerFiring,
@@ -55,6 +58,11 @@ use crate::state::{
     SeatAttachment, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
     TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
     TopologyLifecycle,
+};
+use crate::succession::{
+    NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionConfirmation,
+    SuccessionDeferredRefresh, SuccessionHandoffRecord, SuccessionReceipt, SuccessionRefusal,
+    SuccessionSuccessorRecord,
 };
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
@@ -920,6 +928,63 @@ pub struct NewNativeContainerBinding {
     pub observed_at: Timestamp,
 }
 
+/// One explicitly authorized correction of a legacy-imported epic backlog code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyEpicBacklogCodeCorrection {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose effective namespace changes.
+    pub mini_project_id: MiniProjectId,
+    /// Exact active legacy value the caller previewed.
+    pub expected_prior_code: EpicBacklogCode,
+    /// Correct, project-unique value to render after this command.
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained as immutable evidence.
+    pub reason: ExternalName,
+    /// When the correction was authorized.
+    pub corrected_at: Timestamp,
+}
+
+/// Compare-and-swap replacement of one stale native container identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyContainerRecovery {
+    /// The complete stored binding the caller proved stale.
+    pub expected: NativeContainerBinding,
+    /// The sole live replacement returned by the runtime census.
+    pub replacement: NewNativeContainerBinding,
+    /// Exact native project in which the replacement was proved.
+    pub parent_native_id: ExternalId,
+    /// Runtime-reported title observed during the census.
+    pub observed_title: ExternalName,
+}
+
+/// Immutable before/after evidence for one completed container recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTopologyContainerRecovery {
+    /// Receipt that authorized the compare-and-swap.
+    pub receipt_id: CommandReceiptId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Recovered topology node.
+    pub topology_node_id: TopologyNodeId,
+    /// Preserved logical binding identity.
+    pub container_binding_id: ExternalId,
+    /// Identity that was proved absent.
+    pub prior_identity: NativeRuntimeIdentity,
+    /// Sole live identity adopted by the compare-and-swap.
+    pub replacement_identity: NativeRuntimeIdentity,
+    /// Exact native project in which the replacement was proved.
+    pub parent_native_id: ExternalId,
+    /// Native shape read back for the replacement.
+    pub observed_kind: ObservedContainerKind,
+    /// Preserved canonical working directory.
+    pub canonical_cwd: Option<ExternalName>,
+    /// Runtime-reported title observed during the recovery census.
+    pub observed_title: ExternalName,
+    /// Recovery instant.
+    pub recovered_at: Timestamp,
+}
+
 /// Initial persisted adaptive-admission state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewAdaptiveAdmissionState {
@@ -1517,6 +1582,100 @@ pub struct NewObservation {
     pub freshness: crate::state::Freshness,
     /// The revision the caller believes is current.
     pub expected_revision: AggregateRevision,
+    /// A provider quota conclusion this same observation proves.
+    ///
+    /// Written in the **same transaction** as the observation, for the reason
+    /// [`NewProviderUsageObservation::quota_state`] is: a quota row whose citing
+    /// observation was never durable is a block an operator cannot explain and
+    /// cannot audit. Either both land or neither does.
+    ///
+    /// `None` is the overwhelmingly common case — almost nothing a runtime says
+    /// is a quota refusal.
+    pub quota_state: Option<NewProviderQuotaState>,
+}
+
+/// Why a runtime-observed quota decision was reached, in modeled scalars.
+///
+/// Append-only and immutable. Everything here is an identifier, an instant, an
+/// enum or a digest — there is deliberately no free text, no transcript and no
+/// open map, because the one thing this record must never become is a place a
+/// refusal sentence can accumulate.
+///
+/// It exists because a digest alone cannot be read back into a decision. An
+/// operator asking why an account is blocked is owed the exact item, on the
+/// exact run, under the exact signal revision that said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewQuotaObservationProvenance {
+    /// The record's own id.
+    pub id: QuotaObservationProvenanceId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The account the decision is about.
+    pub account_profile_id: AccountProfileId,
+    /// The provider alias, as the catalog spells it.
+    pub provider: String,
+    /// Stable logical identity of the signal that matched.
+    pub signal_id: String,
+    /// Which revision of that signal.
+    pub signal_version: SpecVersion,
+    /// Digest of that signal's complete definition.
+    pub signal_definition_hash: ContentHash,
+    /// The run whose session carried the item.
+    pub agent_run_id: AgentRunId,
+    /// That run's immutable binding.
+    pub runtime_binding_id: RuntimeBindingId,
+    /// The native session behind the binding.
+    pub native_id: ExternalId,
+    /// The binding generation, so evidence cannot be transplanted.
+    pub binding_generation: u64,
+    /// Store-assigned control-plane cursor of the exact reduced blocked
+    /// observation. `None` is accepted only on the pre-insert request nested in
+    /// [`NewObservation`]; the atomic observation writer fills it before the
+    /// provenance row is inserted, and every new readback carries `Some`.
+    ///
+    /// This is not an item/content sequence. Runtime-owned item positions and
+    /// the control-plane event cursor are independent orderings.
+    pub runtime_observation_cursor: Option<EventCursor>,
+    /// Canonical epoch of the item.
+    pub item_epoch: u64,
+    /// First native sequence the item covers.
+    pub item_seq_start: u64,
+    /// Last native sequence the item covers.
+    ///
+    /// With `item_seq_start` this is an *envelope*, not the record. A collapsed
+    /// entry can span disjoint ranges, and the envelope would silently include
+    /// sequences the item never carried — so the exact set is below.
+    pub item_seq_end: u64,
+    /// Exactly which native sequences the item covered, in configured order.
+    pub source_sequences: Vec<(u64, u64)>,
+    /// The runtime's own item type.
+    pub item_kind: String,
+    /// When the *item* was emitted, never when Kontor read it.
+    pub item_observed_at: Timestamp,
+    /// What kind of evidence this was.
+    pub decision_basis: crate::spec::QuotaDecisionBasis,
+    /// The state concluded.
+    pub decided_state: crate::spec::ProviderQuotaKind,
+    /// The reset instant parsed from the message, when there was one.
+    pub parsed_resets_at: Option<Timestamp>,
+    /// The zone the signal declared for a bare wall clock.
+    pub reset_zone: Option<String>,
+    /// The digest the quota row cites.
+    ///
+    /// Not a digest of text alone: it covers the bounded refusal *and* the item
+    /// provenance that carried it, so the same sentence from a different item,
+    /// run or generation digests differently. The writer requires it to equal
+    /// the quota row's `evidence_hash`.
+    pub evidence_digest: ContentHash,
+    /// When the record was written.
+    pub recorded_at: Timestamp,
+}
+
+/// One stored provenance record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaObservationProvenance {
+    /// The immutable body as it was written.
+    pub record: NewQuotaObservationProvenance,
 }
 
 /// A request to close a run with evidence.
@@ -2438,6 +2597,9 @@ pub struct ProviderQuotaState {
     pub source: crate::spec::ProviderQuotaSource,
     /// When it was concluded.
     pub observed_at: Timestamp,
+    /// The provenance record that last moved this row, if a runtime
+    /// observation did.
+    pub provenance_id: Option<QuotaObservationProvenanceId>,
     /// Optimistic-concurrency revision.
     pub revision: AggregateRevision,
     /// Last mutation instant.
@@ -2550,6 +2712,12 @@ pub struct NewProviderQuotaState {
     pub credit: Option<crate::quota::CreditBalance>,
     /// Digest of the evidence.
     pub evidence_hash: ContentHash,
+    /// The provenance record this decision rests on, written in the same
+    /// transaction and referenced by the row.
+    ///
+    /// `None` for a provider report or an operator assertion: neither has a
+    /// runtime item behind it, and inventing one would be a claim nobody made.
+    pub provenance: Option<NewQuotaObservationProvenance>,
     /// Who concluded it.
     pub source: crate::spec::ProviderQuotaSource,
     /// When it was concluded.
@@ -2670,6 +2838,20 @@ pub trait CapacityRepository {
         &self,
         request: &NewProviderQuotaState,
     ) -> RepositoryResult<ProviderQuotaState>;
+
+    /// One provenance record by id.
+    ///
+    /// The read an operator's "why is this blocked?" resolves to: the quota row
+    /// names a record, and this returns the exact item, run and signal revision
+    /// that authorized it.
+    ///
+    /// # Errors
+    /// Backend failures only; a record from another project resolves to `None`.
+    fn get_quota_observation_provenance(
+        &self,
+        project_id: ProjectId,
+        id: QuotaObservationProvenanceId,
+    ) -> RepositoryResult<Option<QuotaObservationProvenance>>;
 
     /// Every provider quota state in one project.
     ///
@@ -4168,6 +4350,90 @@ pub trait RunRepository {
         agent_run_id: AgentRunId,
         after: Option<EventCursor>,
     ) -> RepositoryResult<Vec<RuntimeEvent>>;
+}
+
+/// Durable, resumable quota-driven seat succession.
+pub trait SuccessionRepository {
+    /// Persist the complete decision before contacting the runtime.
+    fn create_succession_attempt(
+        &self,
+        request: &NewSuccessionAttempt,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Read one attempt in one project.
+    fn get_succession_attempt(
+        &self,
+        project_id: ProjectId,
+        id: crate::id::SuccessionAttemptId,
+    ) -> RepositoryResult<Option<SuccessionAttempt>>;
+
+    /// Resolve a globally unique retry key before producing another effect.
+    fn succession_attempt_by_key(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<SuccessionAttempt>>;
+
+    /// The active attempt occupying one exact team/role slot.
+    fn active_succession_attempt(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role: &RoleKey,
+    ) -> RepositoryResult<Option<SuccessionAttempt>>;
+
+    /// Realm-wide startup inventory of all resumable attempts.
+    fn list_nonterminal_succession_attempts(
+        &self,
+        limit: u32,
+    ) -> RepositoryResult<Vec<SuccessionAttempt>>;
+
+    /// Realm-wide deterministic inventory whose delay has elapsed.
+    fn list_due_succession_attempts(
+        &self,
+        now: Timestamp,
+        limit: u32,
+    ) -> RepositoryResult<Vec<SuccessionAttempt>>;
+
+    /// Refresh a due deferred attempt's exact authority and placement atomically.
+    fn refresh_deferred_succession_evidence(
+        &self,
+        request: &SuccessionDeferredRefresh,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Attach summary-or-degraded evidence before retirement.
+    fn record_succession_handoff(
+        &self,
+        request: &SuccessionHandoffRecord,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Record confirmed retirement of the exact predecessor.
+    fn mark_succession_predecessor_retired(
+        &self,
+        request: &SuccessionAttemptAdvance,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Attach the exact observed successor binding and runtime cursor.
+    fn mark_succession_successor_observed(
+        &self,
+        request: &SuccessionSuccessorRecord,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Confirm the attempt and insert its immutable receipt atomically.
+    fn confirm_succession(
+        &self,
+        request: &SuccessionConfirmation,
+    ) -> RepositoryResult<SuccessionReceipt>;
+
+    /// Stop a nonterminal attempt with a typed refusal.
+    fn refuse_succession(&self, request: &SuccessionRefusal)
+    -> RepositoryResult<SuccessionAttempt>;
+
+    /// Read the immutable receipt, if the attempt confirmed.
+    fn succession_receipt_for_attempt(
+        &self,
+        project_id: ProjectId,
+        attempt_id: crate::id::SuccessionAttemptId,
+    ) -> RepositoryResult<Option<SuccessionReceipt>>;
 }
 
 /// Inbound source events and intake decisions.

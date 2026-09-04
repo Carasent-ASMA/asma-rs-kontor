@@ -203,6 +203,10 @@ entity_ids! {
     CommandReceiptId,
     /// Identifies one recorded attempt to compact a seat's context.
     CompactionReceiptId,
+    /// Identifies one durable attempt to replace a quota-blocked seat.
+    SuccessionAttemptId,
+    /// Identifies the immutable confirmation of one completed succession.
+    SuccessionReceiptId,
     /// Identifies one canonical inbound source event.
     SourceEventId,
     /// Identifies one intake decision for a source event.
@@ -271,6 +275,14 @@ entity_ids! {
     /// usage digest. Its identity is therefore the durable freshness proof; it
     /// is never used as the mutable quota-state identity.
     ProviderUsageObservationId,
+    /// Identifies one immutable record of why a runtime-observed quota decision
+    /// was reached.
+    ///
+    /// Separate from the quota row it explains, because that row is mutable
+    /// current state while this is append-only history: the row points at the
+    /// record that last moved it, and every earlier record stays exactly as it
+    /// was written.
+    QuotaObservationProvenanceId,
 }
 
 fn parse_entity_uuid(subject: &'static str, text: &str) -> DomainResult<Uuid> {

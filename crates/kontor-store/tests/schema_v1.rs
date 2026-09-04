@@ -69,6 +69,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "epic_completion_remediation_proposals",
     "epic_completion_wakes",
     "epic_completion_wake_deliveries",
+    "epic_backlog_code_corrections",
     "epic_backlog_codes",
     "epic_native_name_tokens",
     "epic_execution_scopes",
@@ -140,6 +141,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_topology_defaults",
     "provider_quota_states",
     "provider_quota_windows",
+    "provider_quota_observation_provenance",
+    "provider_quota_observation_source_ranges",
     "provider_usage_observations",
     "profile_selection_outcomes",
     "quick_session_promotions",
@@ -169,6 +172,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
+    "succession_attempts",
+    "succession_receipts",
     "subject_authority_receipts",
     "subject_import_manifests",
     "seat_bindings",
@@ -197,6 +202,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "ticket_sync_projections",
     "trigger_specs",
     "topology_node_containers",
+    "topology_container_recoveries",
     "topology_nodes",
     "topology_spec_canonicalization_receipts",
     "topology_specs",
@@ -508,8 +514,14 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // so crash-window recovery can prove the retry is the same command. v81
     // adds the canonical Jira task-link and unique-open-conflict ledgers. v82
     // adds first-class epic Jira conflict and transition-intent ledgers. v83
-    // attributes remediation evidence and replay claims to a completion era.
-    assert_eq!(SCHEMA_VERSION, 83);
+    // attributes remediation evidence and replay claims to a completion era;
+    // v84 adds append-only legacy code and stale-container recovery evidence;
+    // v85 records why a runtime-observed quota decision was reached: which
+    // exact item, on which run, under which immutable signal revision. v86
+    // binds that provenance to the exact control-event cursor and adds the
+    // durable forward-only seat-succession attempt and receipt ledgers. v87
+    // permits a due deferred attempt to refresh its exact authority atomically.
+    assert_eq!(SCHEMA_VERSION, 87);
 }
 
 #[test]
@@ -5091,6 +5103,8 @@ fn tier_a_operational_tables_have_nowhere_to_store_a_classification() {
         "seat_bindings",
         "adaptive_admission_state",
         "topology_node_containers",
+        "topology_container_recoveries",
+        "epic_backlog_code_corrections",
     ] {
         let columns: i64 = connection
             .query_row(

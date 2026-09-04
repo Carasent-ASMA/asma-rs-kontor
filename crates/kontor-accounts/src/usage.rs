@@ -174,6 +174,8 @@ impl UsageReading {
 pub fn observe(reading: &UsageReading) -> ObservedQuota {
     if !reading.limit_reached {
         return ObservedQuota {
+            // A structured report matched no fingerprint.
+            signal: None,
             provider: reading.provider.clone(),
             kind: ProviderQuotaKind::Available,
             resets_at: None,
@@ -186,16 +188,22 @@ pub fn observe(reading: &UsageReading) -> ObservedQuota {
         .or_else(|| reading.windows.iter().map(|window| window.resets_at).max());
     match latest {
         Some(instant) => ObservedQuota {
+            // A structured report matched no fingerprint.
+            signal: None,
             provider: reading.provider.clone(),
             kind: ProviderQuotaKind::Exhausted,
             resets_at: Some(instant),
         },
         None if reading.credits_exhausted => ObservedQuota {
+            // A structured report matched no fingerprint.
+            signal: None,
             provider: reading.provider.clone(),
             kind: ProviderQuotaKind::Drained,
             resets_at: None,
         },
         None => ObservedQuota {
+            // A structured report matched no fingerprint.
+            signal: None,
             provider: reading.provider.clone(),
             kind: ProviderQuotaKind::Unknown,
             resets_at: None,

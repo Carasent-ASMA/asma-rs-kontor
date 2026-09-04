@@ -129,6 +129,26 @@ export type RoleCatalogEntry = Schemas['RoleCatalogEntryDto']
 export type RoleSelection = Schemas['RoleSelectionDto']
 /** One immutable server-owned revision reference. */
 export type RevisionRef = Schemas['RevisionRefDto']
+/** One provider/account quota projection. */
+export type ProviderQuotaState = Schemas['ProviderQuotaStateDto']
+/** One live delivery seat joined to its exact account and provider quota projections. */
+export type SeatQuotaState = Schemas['SeatQuotaStateDto']
+/** One bodyless, server-evidenced delivery-seat recovery result. */
+export type SeatRecovery = Schemas['SeatRecoveryDto']
+/** The runtime's evidence-backed result of settling one run. */
+export type RuntimeSettlement = Schemas['RuntimeSettlementDto']
+/** The exact Admin request to replace one terminal persistent delivery seat. */
+export type ReplaceSeatRequest = Schemas['ReplaceSeatRequest']
+/** One receipt-backed persistent-seat successor. */
+export type ReplacedSeat = Schemas['ReplacedSeatDto']
+/** A compare-and-swap request to observe one exact topology seat. */
+export type SeatBindingRequest = Schemas['SeatBindingRequest']
+/** The server readback after observing one topology seat. */
+export type SeatBindingOutcome = Schemas['SeatBindingOutcomeDto']
+/** A compare-and-swap request to recover one Committee native filler. */
+export type RecoverConsultationSeatRequest = Schemas['RecoverConsultationSeatRequest']
+/** A receipt-backed, identity-preserving Committee-seat recovery. */
+export type ConsultationSeatRecovery = Schemas['ConsultationSeatRecoveryDto']
 
 /** The JSON body every refusal is reported with. */
 export type Refusal = Schemas['ApiErrorBody']

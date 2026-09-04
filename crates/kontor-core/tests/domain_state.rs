@@ -1691,6 +1691,11 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("publish_team_definition", "project", "witness", None),
     ("select_project_team_definition", "project", "witness", None),
     ("upgrade_team_definition", "mini_project", "witness", None),
+    // Legacy epic-code correction is authority over exactly one epic. Container
+    // recovery is authorized at project scope because the topology node/native
+    // container pair is evidence for the project, not a receipt aggregate.
+    ("correct_epic_backlog_code", "mini_project", "witness", None),
+    ("recover_topology_container", "project", "witness", None),
     ("reconcile_native_names", "mini_project", "witness", None),
     // A native container is not an aggregate a command may name, and the node it
     // belongs to is not one either. The project is what the authority is over.

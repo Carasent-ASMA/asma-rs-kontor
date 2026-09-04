@@ -419,6 +419,38 @@ const UNAVAILABLE_PROVIDER_SEAT: &[FieldSpec] = &[
         "The provider reported by the session and marked unavailable.",
     ),
 ];
+/// Exact identity and quota evidence for succeeding one usage-limited seat.
+///
+/// Distinct from the outage evidence above, and deliberately not a widening of
+/// it: that arm means the provider was down at launch, this one means the seat
+/// ran and then hit the wall.
+const QUOTA_EXHAUSTED_SEAT: &[FieldSpec] = &[
+    field(
+        "runtime_observation_cursor",
+        ArgType::I64,
+        "The exact current runtime observation cursor carrying the quota refusal.",
+    ),
+    field(
+        "runtime_binding_id",
+        ArgType::Text,
+        "Kontor's immutable runtime binding id.",
+    ),
+    field(
+        "native_id",
+        ArgType::ExternalId,
+        "The exact native session id behind that binding.",
+    ),
+    field(
+        "provider",
+        ArgType::Text,
+        "The provider whose allowance was exhausted.",
+    ),
+    field(
+        "account_profile_id",
+        ArgType::Text,
+        "The account whose recorded quota state authorises the succession.",
+    ),
+];
 
 /// The session record a recovery gate verdict is transcribed from.
 ///
@@ -1794,6 +1826,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The predecessor's immutable role slot.",
             ),
             req(
+                "expected_predecessor_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The predecessor revision the replacement was authorized against.",
+            ),
+            req(
                 "expected_task_revision",
                 Place::Body,
                 ArgType::Revision,
@@ -1817,9 +1855,38 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Object(UNAVAILABLE_PROVIDER_SEAT),
                 "Exact evidence authorizing retirement of a never-dispatched provider-blocked seat.",
             ),
+            opt(
+                "quota_exhausted",
+                Place::Body,
+                ArgType::Object(QUOTA_EXHAUSTED_SEAT),
+                "Exact evidence authorising succession of a seat that ran and then hit a usage limit.",
+            ),
             IDEMPOTENCY,
         ],
         about: "Replace one runtime-terminal unusable seat with its linked successor.",
+    },
+    ToolSpec {
+        name: "kontor_seat_recover",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The quota-blocked predecessor run.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Recover one quota-blocked delivery seat under fresh server-derived evidence.",
     },
     ToolSpec {
         name: "kontor_session_labels_reconcile",
@@ -3781,6 +3848,168 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Repair one bound container's title, idempotently, and read it back.",
     },
     ToolSpec {
+        name: "kontor_container_recovery_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node whose persisted native child identity is stale.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+        ],
+        about: "Prove the sole exact-parent/path/title replacement for one stale native child binding, with no write.",
+    },
+    ToolSpec {
+        name: "kontor_container_recovery_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "topology_node_id",
+                Place::Path,
+                ArgType::TopologyNodeId,
+                "The node whose exact stale binding is replaced.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The exact recovery preview hash.",
+            ),
+        ],
+        about: "Atomically replace one stale native child identity with the exact previewed candidate and retain before/after evidence.",
+    },
+    ToolSpec {
+        name: "kontor_epic_backlog_code_correction_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The legacy epic whose effective code would change.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "expected_prior_code",
+                Place::Body,
+                ArgType::Text,
+                "The exact active legacy code.",
+            ),
+            req(
+                "corrected_code",
+                Place::Body,
+                ArgType::Text,
+                "The proposed project-unique replacement.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::Text,
+                "The immutable correction rationale.",
+            ),
+        ],
+        about: "Preview the one-time correction of a legacy-imported epic backlog code.",
+    },
+    ToolSpec {
+        name: "kontor_epic_backlog_code_correction_apply",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::MiniProjectId,
+                "The legacy epic whose effective code changes.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "expected_prior_code",
+                Place::Body,
+                ArgType::Text,
+                "The exact active legacy code.",
+            ),
+            req(
+                "corrected_code",
+                Place::Body,
+                ArgType::Text,
+                "The exact previewed project-unique replacement.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::Text,
+                "The immutable correction rationale.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The exact correction preview hash.",
+            ),
+        ],
+        about: "Apply one exact legacy epic-code correction while preserving the original row as immutable evidence.",
+    },
+    ToolSpec {
         name: "kontor_native_names_preview",
         tier: CallerTier::Admin,
         method: Method::Post,
@@ -3863,6 +4092,20 @@ pub static REGISTRY: &[ToolSpec] = &[
             "The owning project.",
         )],
         about: "Every recorded provider quota state, and whether each still holds a launch back.",
+    },
+    ToolSpec {
+        name: "kontor_seat_quota_states_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/seat-quota-states",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Each live delivery seat with its bound account and provider quota projections.",
     },
     ToolSpec {
         name: "kontor_provider_quota_record",
@@ -5726,6 +5969,61 @@ mod tests {
             0,
             "a client that could name an outcome could decide how a run ended"
         );
+    }
+
+    #[test]
+    fn seat_replacement_requires_the_exact_predecessor_revision_as_u64() {
+        let replace = ToolSpec::find("kontor_seat_replace").expect("the seat replacement tool");
+        let predecessor_revision = replace
+            .args
+            .iter()
+            .find(|argument| argument.name == "expected_predecessor_revision")
+            .expect("seat replacement must fence the predecessor revision");
+
+        assert_eq!(predecessor_revision.place, Place::Body);
+        assert_eq!(predecessor_revision.ty, ArgType::Revision);
+        assert!(predecessor_revision.required);
+        assert_eq!(
+            replace.input_schema()["properties"]["expected_predecessor_revision"]["type"],
+            "integer"
+        );
+        assert!(
+            replace.input_schema()["required"]
+                .as_array()
+                .expect("required arguments")
+                .iter()
+                .any(|name| name == "expected_predecessor_revision")
+        );
+    }
+
+    #[test]
+    fn seat_recovery_is_an_admin_resume_of_one_exact_predecessor() {
+        let recover = ToolSpec::find("kontor_seat_recover").expect("the seat recovery tool");
+        assert_eq!(recover.tier, CallerTier::Admin);
+        assert_eq!(recover.method, Method::Post);
+        assert_eq!(
+            recover.path,
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover"
+        );
+        assert_eq!(recover.args_in(Place::Body).count(), 0);
+        assert_eq!(
+            recover
+                .args_in(Place::Path)
+                .map(|argument| argument.name)
+                .collect::<Vec<_>>(),
+            ["project_id", "agent_run_id"]
+        );
+    }
+
+    #[test]
+    fn live_seat_quota_projection_is_observer_read_only() {
+        let list = ToolSpec::find("kontor_seat_quota_states_list")
+            .expect("the live-seat quota projection tool");
+        assert_eq!(list.tier, CallerTier::Observer);
+        assert_eq!(list.kind, OpKind::Read);
+        assert_eq!(list.method, Method::Get);
+        assert_eq!(list.path, "/v1/projects/{project_id}/seat-quota-states");
+        assert_eq!(list.args_in(Place::Body).count(), 0);
     }
 
     #[test]

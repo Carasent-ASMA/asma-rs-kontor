@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 83;
+pub const SCHEMA_VERSION: i64 = 87;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -323,6 +323,19 @@ const MIGRATIONS: &[&str] = &[
     // Schema v83. Reopened completion eras own distinct remediation evidence
     // and replay claims even though their round numbers restart at one.
     include_str!("../migrations/0083_completion_remediation_generations.sql"),
+    // Schema v84. Explicit, append-only recovery for a legacy-imported epic
+    // backlog code and for a stale topology-container identity. Both retain
+    // exact before/after evidence under their own command authority.
+    include_str!("../migrations/0084_legacy_naming_recovery.sql"),
+    // Schema v85. Provenance for a runtime-observed quota decision: which exact
+    // item, on which run, under which immutable signal revision.
+    include_str!("../migrations/0085_quota_observation_provenance.sql"),
+    // Schema v86. Durable quota-blocked seat succession plus the missing exact
+    // control-event cursor on runtime quota provenance.
+    include_str!("../migrations/0086_quota_blocked_seat_succession.sql"),
+    // Schema v87. Deferred attempts refresh their exact authority and placement
+    // in one due-time CAS without changing attempt or idempotency identity.
+    include_str!("../migrations/0087_deferred_succession_refresh.sql"),
 ];
 
 const _: () = assert!(

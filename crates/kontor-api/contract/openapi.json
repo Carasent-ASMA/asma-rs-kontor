@@ -1269,6 +1269,71 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Observe, classify and durably recover one quota-blocked seat.",
+        "operationId": "recover_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The predecessor run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmed, deferred, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeatRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The durable attempt or seat identity conflicts"
+          },
+          "422": {
+            "description": "The fresh runtime/quota evidence refuses recovery"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
       "post": {
         "tags": [
@@ -3052,6 +3117,147 @@
           },
           "503": {
             "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the exact previewed legacy epic backlog-code correction.",
+        "operationId": "apply_epic_backlog_code_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose legacy code is corrected",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicBacklogCodeCorrectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedEpicBacklogCodeCorrectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview one legacy-imported epic backlog-code correction.",
+        "operationId": "preview_epic_backlog_code_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose legacy code is corrected",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicBacklogCodeCorrectionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicBacklogCodeCorrectionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
           }
         }
       }
@@ -6504,6 +6710,47 @@
         }
       }
     },
+    "/v1/projects/{project_id}/seat-quota-states": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every live seat joined to its exact account and provider quota projections.",
+        "operationId": "seat_quota_states",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SeatQuotaStateDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/subjects/authority": {
       "get": {
         "tags": [
@@ -8243,6 +8490,153 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the exact previewed stale-container recovery.",
+        "operationId": "apply_container_recovery",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose binding is stale",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRecoveryApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedContainerRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview the sole live replacement for one stale topology container binding.",
+        "operationId": "preview_container_recovery",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose binding is stale",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRecoveryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRecoveryPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
       "post": {
         "tags": [
@@ -9807,6 +10201,24 @@
           }
         }
       },
+      "AppliedContainerRecoveryDto": {
+        "type": "object",
+        "description": "Result of one atomic stale-container identity recovery.",
+        "required": [
+          "recovery",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/ContainerRecoveryPreviewDto",
+            "description": "Exact recovery evidence retained by the command."
+          }
+        }
+      },
       "AppliedContainerRetitleDto": {
         "type": "object",
         "description": "What a container retitle produced.",
@@ -9848,6 +10260,24 @@
           "updated",
           "unchanged"
         ]
+      },
+      "AppliedEpicBacklogCodeCorrectionDto": {
+        "type": "object",
+        "description": "Result of the one-time legacy epic-code correction.",
+        "required": [
+          "correction",
+          "receipt"
+        ],
+        "properties": {
+          "correction": {
+            "$ref": "#/components/schemas/EpicBacklogCodeCorrectionPreviewDto",
+            "description": "Exact correction plan that is now durable."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
+          }
+        }
       },
       "AppliedEpicDto": {
         "type": "object",
@@ -12481,6 +12911,102 @@
           "non_compliant"
         ]
       },
+      "ContainerRecoveryApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to an exact stale-container preview.",
+        "required": [
+          "expected_revision",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the recovery preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContainerRecoveryPreviewDto": {
+        "type": "object",
+        "description": "Exact before/after identity proved by a read-only recovery census.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "topology_node_id",
+          "stale_native_id",
+          "replacement_native_id",
+          "parent_native_id",
+          "canonical_cwd",
+          "observed_title",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": "string",
+            "description": "Preserved canonical working directory."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "Runtime-reported candidate title."
+          },
+          "parent_native_id": {
+            "type": "string",
+            "description": "Exact native parent in which the census ran."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash binding the complete preview."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that performed the census."
+          },
+          "replacement_native_id": {
+            "type": "string",
+            "description": "Sole live parent/path/title candidate."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Snapshot position."
+          },
+          "stale_native_id": {
+            "type": "string",
+            "description": "Native identity currently persisted and proved absent."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Topology node whose logical binding is preserved."
+          }
+        }
+      },
+      "ContainerRecoveryPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request to identify the sole live replacement for a stale binding.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "ContainerRetitlePreviewDto": {
         "type": "object",
         "description": "What one bound container's title is, and what it should be.\n\nA preview is a read: it takes no idempotency key, reaches nothing that writes,\nand answers the two titles a human needs to compare. The runtime is asked, so\n`observed_title` is what the container actually carries rather than what Kontor\nonce recorded.",
@@ -13620,6 +14146,117 @@
           "role": {
             "$ref": "#/components/schemas/RoleSelectionDto",
             "description": "The standard role the session's seat fills."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EpicBacklogCodeCorrectionApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to the exact code-correction preview.",
+        "required": [
+          "expected_revision",
+          "expected_prior_code",
+          "corrected_code",
+          "reason",
+          "preview_hash"
+        ],
+        "properties": {
+          "corrected_code": {
+            "type": "string",
+            "description": "Correct project-unique value to make effective."
+          },
+          "expected_prior_code": {
+            "type": "string",
+            "description": "Exact active legacy value expected in the store."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the preview."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EpicBacklogCodeCorrectionPreviewDto": {
+        "type": "object",
+        "description": "Exact, no-write plan for correcting one legacy epic code.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "prior_code",
+          "corrected_code",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "corrected_code": {
+            "type": "string",
+            "description": "Proposed effective value."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Epic whose effective code would change."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash binding every previewed input and identity."
+          },
+          "prior_code": {
+            "type": "string",
+            "description": "Immutable legacy source value."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that produced the plan."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Snapshot position."
+          }
+        }
+      },
+      "EpicBacklogCodeCorrectionPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request for a one-time legacy epic-code correction.",
+        "required": [
+          "expected_revision",
+          "expected_prior_code",
+          "corrected_code",
+          "reason"
+        ],
+        "properties": {
+          "corrected_code": {
+            "type": "string",
+            "description": "Correct project-unique value to make effective."
+          },
+          "expected_prior_code": {
+            "type": "string",
+            "description": "Exact active legacy value expected in the store."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
           }
         },
         "additionalProperties": false
@@ -16612,6 +17249,17 @@
             "type": "string",
             "description": "When it was concluded."
           },
+          "provenance": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaProvenanceDto",
+                "description": "Why a runtime observation concluded this, when one did.\n\nAbsent for a provider report or an operator assertion: neither cites a\nruntime item, and a shape that implied otherwise would be a claim nobody\nmade."
+              }
+            ]
+          },
           "provider": {
             "type": "string",
             "description": "The provider, spelled as the model catalog spells it."
@@ -16917,6 +17565,176 @@
           "topology_node_id": {
             "type": "string",
             "description": "The topology node hosting it."
+          }
+        }
+      },
+      "QuotaExhaustedSeatRequest": {
+        "type": "object",
+        "description": "Exact identity and quota evidence for succeeding one usage-limited seat.",
+        "required": [
+          "runtime_observation_cursor",
+          "runtime_binding_id",
+          "native_id",
+          "provider",
+          "account_profile_id"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The account whose recorded quota state authorizes the succession.\n\nNamed rather than derived: the caller states which account it believes\nis blocked, and the server refuses if that is not the account the run\nactually claims. Deriving it would let a stale caller succeed against\nwhichever account the run happened to hold."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The exact native session id behind that binding."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider whose allowance was exhausted."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "Kontor's immutable runtime binding id."
+          },
+          "runtime_observation_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The exact stored runtime observation that reduced this predecessor to\nthe blocked state authorizing succession."
+          }
+        },
+        "additionalProperties": false
+      },
+      "QuotaProvenanceDto": {
+        "type": "object",
+        "description": "Which exact item, on which run, under which signal revision authorized a\nruntime-observed quota decision.\n\nModeled scalars only. There is deliberately no refusal text and no open map\nhere — the digest identifies the sentence without the projection ever\ncarrying one.",
+        "required": [
+          "id",
+          "signal_id",
+          "signal_version",
+          "signal_definition_hash",
+          "agent_run_id",
+          "runtime_binding_id",
+          "native_id",
+          "binding_generation",
+          "item_epoch",
+          "item_seq_start",
+          "item_seq_end",
+          "item_kind",
+          "item_observed_at",
+          "decision_basis",
+          "evidence_digest",
+          "source_sequences",
+          "recorded_at"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run whose session carried the item."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The binding generation, so evidence cannot be read across one.",
+            "minimum": 0
+          },
+          "decision_basis": {
+            "type": "string",
+            "description": "What kind of evidence this was."
+          },
+          "evidence_digest": {
+            "type": "string",
+            "description": "The digest the quota row cites. Covers the bounded refusal *and* the\nitem provenance that carried it, so the same sentence from a different\nitem, run or generation digests differently. Never the text itself."
+          },
+          "id": {
+            "type": "string",
+            "description": "The provenance record's id."
+          },
+          "item_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Canonical epoch of the item.",
+            "minimum": 0
+          },
+          "item_kind": {
+            "type": "string",
+            "description": "The runtime's own item type."
+          },
+          "item_observed_at": {
+            "type": "string",
+            "description": "When the item was emitted, never when Kontor read it."
+          },
+          "item_seq_end": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Last native sequence the item covers.",
+            "minimum": 0
+          },
+          "item_seq_start": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First native sequence the item covers.",
+            "minimum": 0
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native session behind the binding."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "When the record was written."
+          },
+          "reset_zone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The zone the signal declared for a bare wall clock, if any."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "That run's immutable binding."
+          },
+          "signal_definition_hash": {
+            "type": "string",
+            "description": "Digest of that signal's complete definition when it matched."
+          },
+          "signal_id": {
+            "type": "string",
+            "description": "Stable logical id of the signal that matched."
+          },
+          "signal_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "That signal's revision.",
+            "minimum": 0
+          },
+          "source_sequences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaSourceRangeDto"
+            },
+            "description": "Exactly which native sequences the item covered, in order. An envelope\nwould claim sequences a collapsed entry never carried."
+          }
+        }
+      },
+      "QuotaSourceRangeDto": {
+        "type": "object",
+        "description": "One inclusive native-sequence range an item covered.",
+        "required": [
+          "seq_start",
+          "seq_end"
+        ],
+        "properties": {
+          "seq_end": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Last native sequence, inclusive.",
+            "minimum": 0
+          },
+          "seq_start": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First native sequence, inclusive.",
+            "minimum": 0
           }
         }
       },
@@ -17522,6 +18340,7 @@
         "description": "What the Admin-only unusable-seat replacement is asked for.",
         "required": [
           "role_slot",
+          "expected_predecessor_revision",
           "expected_task_revision",
           "binding_generation"
         ],
@@ -17530,6 +18349,12 @@
             "type": "integer",
             "format": "int64",
             "description": "The immutable binding generation of the terminal predecessor.",
+            "minimum": 0
+          },
+          "expected_predecessor_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The predecessor revision the replacement was authorized against.\n\nSeparate from the task revision: runtime observation reduction moves\nthe run without moving its task, so the task CAS cannot fence stale\nquota evidence on its own.",
             "minimum": 0
           },
           "expected_task_revision": {
@@ -17546,6 +18371,17 @@
               {
                 "$ref": "#/components/schemas/RuntimeModelRouteRequest",
                 "description": "Admin-authorized temporary provider/model route for this successor.\nAbsent means the first currently eligible rung in the frozen chain."
+              }
+            ]
+          },
+          "quota_exhausted": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaExhaustedSeatRequest",
+                "description": "Exact evidence authorizing succession of a seat that ran and then hit a\nprovider usage limit.\n\nDistinct from `unavailable_provider`, and deliberately not a widening of\nit: that arm means *the provider was down when we tried to start*, and\nits launch-only fence is load-bearing for that meaning. This one means\n*it ran for an hour and then hit the wall*, which is a different fact\nwith different evidence — the predecessor is still reachable, and a\nrecorded quota state is what authorizes retiring it anyway.\n\nMutually exclusive with `unavailable_provider`."
               }
             ]
           },
@@ -18565,6 +19401,236 @@
               "null"
             ],
             "description": "The runtime family that owns the session, if the run is bound."
+          }
+        }
+      },
+      "SeatProviderQuotaDto": {
+        "type": "object",
+        "description": "One provider route and the quota evidence currently joined to a live seat.",
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Provider alias declared by the seat's pinned account profile."
+          },
+          "quota": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProviderQuotaStateDto",
+                "description": "Current project quota projection, absent when this provider has not yet\nproduced any governed evidence."
+              }
+            ]
+          }
+        }
+      },
+      "SeatQuotaStateDto": {
+        "type": "object",
+        "description": "Observer projection joining one live logical seat to its runtime binding,\npinned account and every selectable provider's current quota state.",
+        "required": [
+          "agent_run_id",
+          "task_id",
+          "team_run_id",
+          "role_slot",
+          "runtime_binding_id",
+          "runtime_kind",
+          "native_id",
+          "binding_generation",
+          "account_profile_id",
+          "lifecycle",
+          "observed_state",
+          "recovery_eligible",
+          "providers"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "Account pinned to the live seat."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "Logical seat/run identity."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Immutable native binding generation.",
+            "minimum": 0
+          },
+          "blocking_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact provider proven by that current provenance match."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Reduced Kontor lifecycle; recovery refuses `running` even if an older\nprovider row happens to remain blocking."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Native runtime identity."
+          },
+          "observed_state": {
+            "type": "string",
+            "description": "Latest runtime-observed state."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeatProviderQuotaDto"
+            },
+            "description": "Selectable provider routes and their current quota projections."
+          },
+          "quota_provenance_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact immutable provenance proven by that current match."
+          },
+          "recovery_eligible": {
+            "type": "boolean",
+            "description": "True only when the latest blocked cursor, binding, native generation,\naccount and provider all match one current runtime-observation\nprovenance row. Clients must use this instead of deriving eligibility."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "Exact role slot held by the seat."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "Kontor runtime binding identity."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime adapter family."
+          },
+          "runtime_observation_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Cursor of the latest reduced runtime observation, when one exists."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task whose frozen team owns the seat."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Frozen team run identity."
+          }
+        }
+      },
+      "SeatRecoveryDto": {
+        "type": "object",
+        "description": "Readback of one bodyless, server-evidenced seat recovery operation.",
+        "required": [
+          "realm_id",
+          "attempt_id",
+          "state",
+          "task_id",
+          "team_run_id",
+          "role_slot",
+          "predecessor_agent_run_id",
+          "authorizing_runtime_observation_cursor",
+          "quota_provenance_id",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call created progress or replayed durable state."
+          },
+          "attempt_id": {
+            "type": "string",
+            "description": "Durable succession attempt identity."
+          },
+          "authorizing_runtime_observation_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact blocked runtime cursor that authorized the attempt."
+          },
+          "deferred_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Earliest exact quota reset while placement is deferred."
+          },
+          "handoff_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical predecessor handoff digest once the attempt is planned."
+          },
+          "predecessor_agent_run_id": {
+            "type": "string",
+            "description": "Immutable predecessor logical run."
+          },
+          "quota_provenance_id": {
+            "type": "string",
+            "description": "Immutable runtime-quota provenance linked to that cursor."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that owns the durable succession attempt."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "Exact role slot retained by the successor."
+          },
+          "state": {
+            "type": "string",
+            "description": "`deferred`, `confirmed` or `refused`."
+          },
+          "succession_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable final receipt, present only after confirmation."
+          },
+          "successor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReplacedSeatDto",
+                "description": "Installed successor when recovery has confirmed one."
+              }
+            ]
+          },
+          "successor_runtime_observation_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Exact successor runtime observation cited by the final receipt."
+          },
+          "summary_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Summary digest; absent for an explicit degraded handoff."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task whose exact team slot is recovered."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Frozen team run identity."
           }
         }
       },

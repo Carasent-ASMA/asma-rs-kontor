@@ -44,6 +44,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
+use crate::wire::parse_wire_timestamp;
 use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
@@ -76,12 +77,14 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerProjection, ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest,
+    RetitleContainerOutcome, RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationFinding, ReconciliationReport, reconcile,
 };
+use kontor_runtime::refusal::{RefusalProvenance, TransientRefusal};
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
@@ -106,8 +109,8 @@ use crate::wire::{
     PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
     PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
-    PaseoTimelineCursor, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
-    label, normalize_entry, stream_permission_external_id,
+    PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
+    PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
 };
 
 /// Everything Paseo 0.3.1 can prove at trust grade A.
@@ -222,6 +225,13 @@ pub struct PaseoTaskScope {
     pub ticket_short_code: ExternalId,
     /// The filesystem-canonical task worktree.
     pub canonical_worktree_cwd: WorkspaceRoot,
+    /// Bounded permission relaxations declared for this ticket alone.
+    ///
+    /// Allow-only and named, never a wildcard — see
+    /// [`PermissionAllowance`](crate::posture::PermissionAllowance). Empty for
+    /// every ticket that has not asked for an exception, which is nearly all of
+    /// them: the destructive floor is the default and stays the default.
+    pub permission_overrides: Vec<crate::posture::PermissionAllowance>,
 }
 
 impl PaseoExecutionScope {
@@ -232,6 +242,9 @@ impl PaseoExecutionScope {
                 jira_issue_key: self.jira_issue_key.clone(),
                 ticket_short_code: self.ticket_short_code.clone(),
                 canonical_worktree_cwd: self.canonical_worktree_cwd.clone(),
+                // An epic-level scope names no ticket, so it can carry no
+                // ticket-scoped exception.
+                permission_overrides: Vec::new(),
             });
         }
         self.task_scopes.get(&task_id).cloned()
@@ -302,6 +315,12 @@ pub struct PaseoConfig {
     /// is `false`, `kontor_runtime::capability::preflight` refuses every
     /// account-pinned launch on this plane, which is the v1.0 behaviour.
     pub provider_selects_account: bool,
+    /// The posture seats on this plane get when their role slot declares none.
+    ///
+    /// A plane-wide default, subordinate to the role slot. `None` — the only
+    /// thing a v4 `runtimes.json` can express — means the resolution falls
+    /// through to supervised, so reading an older document never widens a seat.
+    pub permission_posture: Option<SeatAutonomy>,
     /// Worktree-local MCP composition for Claude seats, when the daemon
     /// enabled it.
     ///
@@ -836,6 +855,114 @@ pub struct PaseoAdapter {
     /// the retitle capability is undeclared, so a caller can tell before asking.
     mcp: Option<Box<dyn PaseoMcp>>,
     state: Mutex<PaseoState>,
+}
+
+/// Native item types that are *observed* provider-produced content.
+///
+/// An allowlist, deliberately. `classify_item` maps every unrecognised type to
+/// `Log` so the timeline stays complete, which is right for preservation and
+/// wrong for authority: a future or toggled user-origin type would arrive as
+/// `Log` and be read as something the provider said. Quota authority fails
+/// closed on provenance, so an unknown type authorizes nothing.
+///
+/// Adding a type here requires a **captured** fixture showing the provider emits
+/// it. `plain_text` was here and is not any more: it appears in the protocol
+/// fixtures only as the synthetic filler string `"synthetic text"`, which
+/// proves the type exists on the wire and says nothing about who produces it.
+/// A type whose provenance is merely plausible authorizes nothing.
+const PROVIDER_ORIGIN_ITEM_TYPES: &[&str] = &["assistant_message"];
+
+/// The native item type that ends one turn and begins the next.
+const TURN_BOUNDARY_ITEM_TYPE: &str = "user_message";
+
+/// The most timeline items one refusal probe reads.
+///
+/// A transport bound, not a content bound. It caps the page; it never truncates
+/// the item that is classified, because the sensitive-material scan has to see
+/// a candidate whole.
+const REFUSAL_TAIL_ITEMS: u32 = 8;
+
+/// Whether a native item type is observed provider-produced content.
+fn provider_originated(item_type: &str) -> bool {
+    PROVIDER_ORIGIN_ITEM_TYPES.contains(&item_type)
+}
+
+/// Choose the one item that may authorize a quota conclusion, if any.
+///
+/// # The rules, and why each is strict
+///
+/// * **The newest entry must itself be the provider's response.** Skipping
+///   newer content to reach an older provider item would let a tool call or log
+///   that came *after* the answer hide the fact that the turn moved on.
+/// * **The turn boundary must be positively observed.** A `user_message` has to
+///   appear in the page, otherwise the window may simply have been too short
+///   and the "provider item" may belong to a previous turn — an old refusal
+///   re-blocking an account after a later successful turn. Absence of proof is
+///   inert, never authority.
+/// * **One item, never a concatenation.** Joining a window let two unrelated
+///   messages jointly satisfy a signal's markers when neither said anything of
+///   the kind.
+/// * **The item is passed whole.** Bounding happens inside
+///   [`TransientRefusal::parse`], *after* the sensitive-material scan, so a
+///   secret in a discarded head cannot escape the scan. A candidate too large
+///   to scan safely is refused rather than trimmed.
+///
+/// A false negative here costs nothing — the usage poll and the operator both
+/// still work. A false positive archives running work.
+fn select_terminal_refusal(
+    entries: &[PaseoTimelineEntry],
+    epoch: u64,
+    agent_run_id: AgentRunId,
+    binding_generation: u64,
+    runtime_binding_id: RuntimeBindingId,
+    native_id: &ExternalId,
+) -> Option<TransientRefusal> {
+    let terminal = entries.last()?;
+    if !provider_originated(&terminal.item.item_type) {
+        return None;
+    }
+    // Positive proof that this response belongs to the current turn.
+    if !entries
+        .iter()
+        .any(|entry| entry.item.item_type == TURN_BOUNDARY_ITEM_TYPE)
+    {
+        return None;
+    }
+    let text = terminal.item.text.as_deref()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let mut source_sequences: Vec<(u64, u64)> = if terminal.source_seq_ranges.is_empty() {
+        vec![(terminal.seq_start, terminal.seq_end)]
+    } else {
+        terminal
+            .source_seq_ranges
+            .iter()
+            .map(|range| (range.start_seq, range.end_seq))
+            .collect()
+    };
+    source_sequences.sort_unstable();
+    source_sequences.dedup();
+    TransientRefusal::parse(
+        text,
+        RefusalProvenance {
+            agent_run_id,
+            binding_generation,
+            runtime_binding_id,
+            native_id: native_id.clone(),
+            position: TimelinePosition {
+                epoch,
+                sequence: terminal.seq_start,
+            },
+            sequence_end: terminal.seq_end,
+            source_sequences,
+            item_type: terminal.item.item_type.clone(),
+            // The item's own instant, never the probe's. An inspection hours
+            // after the turn ended must not make a stale refusal look fresh.
+            observed_at: parse_wire_timestamp("PaseoTimelineEntry.timestamp", &terminal.timestamp)
+                .ok()?,
+        },
+    )
 }
 
 impl PaseoAdapter {
@@ -2013,6 +2140,73 @@ impl PaseoAdapter {
         }))
     }
 
+    /// Read the last words of a *quiescent* session, for classification only.
+    ///
+    /// # Why only these shapes
+    ///
+    /// A refusal that ended a turn can only be the last thing said, so this asks
+    /// nothing of a session that is still working. The three shapes below are
+    /// exactly the ones where Paseo has stopped and declines to say why, which
+    /// is the honest mapping [`Self::normalize_agent`] already makes rather than
+    /// inventing a work verdict:
+    ///
+    /// * `Error` -> [`ObservedRunState::Blocked`] — stuck on something;
+    /// * `Closed` -> [`ObservedRunState::Unknown`] — the process is gone;
+    /// * `Idle` -> [`ObservedRunState::WaitingInput`] — a turn ended, and a
+    ///   turn that ended *because the provider refused* looks identical to one
+    ///   that ended because the work was done.
+    ///
+    /// # Why it is bounded, and outside every lock
+    ///
+    /// One cursor-free tail window, `REFUSAL_TAIL_ITEMS` items at most, capped
+    /// again in bytes, and never a walk backwards through history — the probe
+    /// runs on an observation path, and an unbounded read there would make
+    /// every inspect proportional to session age. It takes no lock and holds
+    /// none across the await, for the same reason
+    /// `holder_is_finished_or_retired` refuses to do a readback under one.
+    ///
+    /// That last property is **compiler-enforced, not conventional**:
+    /// [`Self::lock`] returns a `std::sync::MutexGuard`, which is `!Send`, and
+    /// the caller is an `#[async_trait]` method whose future must be `Send`. A
+    /// future revision that took the lock across this await would not compile.
+    ///
+    /// Every failure is `None`. A diagnostic that cannot be taken safely is not
+    /// worth degrading an observation for.
+    async fn refusal_diagnostic(
+        &self,
+        native_id: &str,
+        agent_run_id: AgentRunId,
+        binding_generation: u64,
+        runtime_binding_id: RuntimeBindingId,
+        state: ObservedRunState,
+    ) -> Option<TransientRefusal> {
+        if !matches!(
+            state,
+            ObservedRunState::Blocked | ObservedRunState::Unknown | ObservedRunState::WaitingInput
+        ) {
+            return None;
+        }
+        let page = self
+            .fetch_canonical(
+                native_id,
+                PaseoDirection::Tail,
+                None,
+                REFUSAL_TAIL_ITEMS,
+                PaseoProjection::Canonical,
+            )
+            .await
+            .ok()?;
+        let epoch = self.resolve_epoch(&page.epoch, None).ok()?;
+        select_terminal_refusal(
+            &page.entries,
+            epoch,
+            agent_run_id,
+            binding_generation,
+            runtime_binding_id,
+            &ExternalId::parse(native_id).ok()?,
+        )
+    }
+
     fn observation(
         &self,
         agent_run_id: AgentRunId,
@@ -2041,6 +2235,7 @@ impl PaseoAdapter {
             observed_at,
             evidence: Self::agent_evidence(agent)?,
             source,
+            refusal: None,
         })
     }
 
@@ -3211,8 +3406,11 @@ impl PaseoAdapter {
         request: &LaunchRequest,
         declared: &RuntimeCapabilities,
         generation: u64,
+        posture: &crate::posture::SeatPosture,
     ) -> RuntimeResult<LaunchOutcome> {
         self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
+        // The posture arrives already resolved, from `launch` — see there for why
+        // it has to be decided before this function is reachable at all.
         let effective_scope = self.effective_scope(request.scope())?;
         let project = self.require_project_for(&effective_scope)?;
         // Whichever way the place was keyed, the presented binding must be the
@@ -3229,13 +3427,20 @@ impl PaseoAdapter {
             });
         }
 
+        // Before the placement readback, the census, and every workspace and
+        // agent call: a seat whose posture cannot be proved is refused having
+        // spent no native call at all. Both inputs are local — the daemon's
+        // advertised feature from the identity already read, expressibility from
+        // a table.
+        let opencode_delivery = self.opencode_delivery_gate(request)?;
+
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
         // of this gate is that nothing has moved since.
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
         self.verify_workspace_placement(&workspace, &project, &place.root)?;
 
-        let labels = self.seat_labels(
+        let mut labels = self.seat_labels(
             request.agent_run_id(),
             request.team_run_id(),
             request.role_slot_id(),
@@ -3243,6 +3448,38 @@ impl PaseoAdapter {
             &project,
             &workspace_id,
         )?;
+        // Built before the census, not after, because the create carries a
+        // launch-intent digest and the census must match the labels the created
+        // agent will actually have. This is also the reconciliation claim: the
+        // digest exists, and is identical on every attempt, before any effect.
+        let delivery = if opencode_delivery {
+            let allowances = self
+                .config
+                .scope
+                .configured_task_scope(request.task_id())
+                .map(|configured| configured.permission_overrides)
+                .unwrap_or_default();
+            let created = PaseoRpc::delivery_agent_create(crate::client::DeliveryCreate {
+                request_id: &self.next_request_id(),
+                workspace_id: &workspace_id,
+                canonical_cwd: task_scope.worktree.as_str(),
+                model_rung: request.model_rung(),
+                autonomy: request.autonomy(),
+                title: request.display_name().as_str(),
+                labels: &labels,
+                allowances: &allowances,
+                seat_mcp: self.config.seat_mcp.as_ref(),
+                serve_profile: "worker",
+                binding_id: &request.binding_id().to_string(),
+                agent_run_id: &request.agent_run_id().to_string(),
+                role_slot_id: request.role_slot_id().as_str(),
+                prompt: request.prompt().as_str(),
+            })?;
+            labels = created.labels.clone();
+            Some(created)
+        } else {
+            None
+        };
         let slot_labels = self.slot_labels(request.team_run_id(), request.role_slot_id());
 
         // A native census before the first effect. An exact full-label match is
@@ -3253,11 +3490,16 @@ impl PaseoAdapter {
             .iter()
             .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
             .collect::<Vec<_>>();
-        let recovered_id = match exact.as_slice() {
-            [agent] => Some(agent.id.clone()),
+        // A delivery seat keeps the whole snapshot, not just the id: it is judged
+        // and bound from this read, and a follow-up fetch would answer about a
+        // later moment. The CLI providers keep taking the id and reading back,
+        // exactly as before.
+        let recovered = match exact.as_slice() {
+            [agent] => Some((*agent).clone()),
             [] => None,
             _ => return Err(RuntimeError::CorrelationFailed),
         };
+        let recovered_id = recovered.as_ref().map(|agent| agent.id.clone());
         if recovered_id.is_none()
             && census
                 .iter()
@@ -3301,9 +3543,17 @@ impl PaseoAdapter {
         // ambient harness config the machine carries. Loud on failure: a seat
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
+        //
+        // An OpenCode seat *does* reach this line now that delivery is enabled,
+        // and `compose_for_seat` is a no-op for it: its posture rides in the
+        // create's `providerOptions`, so there is nothing here to write. That is
+        // also why two OpenCode seats can share one worktree — they have no file
+        // to race over. `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
+        // holds it to that against a real directory.
         crate::seat_mcp::compose_for_seat(
             self.config.seat_mcp.as_ref(),
             request.model_rung().provider.0.as_str(),
+            posture,
             std::path::Path::new(task_scope.worktree.as_str()),
         )
         .map_err(|error| {
@@ -3313,6 +3563,9 @@ impl PaseoAdapter {
             }
         })?;
 
+        // The CLI create, for every provider whose posture is its mode. OpenCode
+        // does not come through here: its posture has to travel in
+        // `providerOptions`, which only the session socket carries.
         let command = PaseoCommand::agent_run(
             &workspace_id,
             task_scope.worktree.as_str(),
@@ -3323,37 +3576,96 @@ impl PaseoAdapter {
             None,
             request.prompt().as_str(),
         )?;
-        let native_id = match recovered_id {
-            Some(native_id) => native_id,
-            None => match self.transport.run(&command).await {
-                Ok(output) => {
-                    let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
-                    started.agent_id
-                }
-                // The command may have landed. An exact-label census before deciding
-                // anything is the whole of the recovery rule; running `agent run`
-                // again would be how one seat acquires two agents.
-                Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
-                Err(other) => return Err(other),
-            },
+
+        let agent = match (recovered, delivery.as_ref()) {
+            // An OpenCode seat this launch already made, found by its exact
+            // launch intent. The census snapshot is this attempt's own read.
+            (Some(agent), Some(_)) => agent,
+            // Every CLI provider keeps the path it had: the census gives an id,
+            // and every placement rule is decided from a session readback.
+            (Some(agent), None) => self.fetch_agent(&agent.id).await?,
+            // One create carrying permission, MCP, prompt and message id, and the
+            // snapshot it answers with is what the seat is judged from.
+            (None, Some(delivery)) => self.create_opencode_seat(delivery).await?,
+            (None, None) => {
+                let native_id = match self.transport.run(&command).await {
+                    Ok(output) => {
+                        let started: PaseoCliAgentStarted = output.parse("PaseoCliAgentStarted")?;
+                        started.agent_id
+                    }
+                    // The command may have landed. An exact-label census before
+                    // deciding anything is the whole of the recovery rule;
+                    // running `agent run` again would be how one seat acquires
+                    // two agents.
+                    Err(RuntimeError::Transport { .. }) => self.recover_launch(&labels).await?,
+                    Err(other) => return Err(other),
+                };
+                // The CLI's answer is an id, a status, a provider and two display
+                // strings — no project, no workspace, no labels, no parent. Every
+                // placement rule is decided from the session readback, which is
+                // why trusting the CLI here is a defect the fixtures name
+                // explicitly.
+                self.fetch_agent(&native_id).await?
+            }
         };
 
-        // The CLI's answer is an id, a status, a provider and two display
-        // strings — no project, no workspace, no labels, no parent. Every
-        // placement rule is decided from the session readback, which is why
-        // trusting the CLI here is a defect the fixtures name explicitly.
-        let agent = self.fetch_agent(&native_id).await?;
-        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())?;
+        // Everything the seat is admitted on, judged from that one snapshot. A
+        // delivery seat adds the per-agent acknowledgement: the daemon saying it
+        // applied *this agent's* typed providerOptions to the provider session.
+        // The advertised feature said the daemon can; only this says it did, and
+        // a seat whose policy was not applied runs under whatever the provider's
+        // own layers resolve.
+        //
+        // A delivery seat that fails any of these exists and will not be bound,
+        // so it is archived and read back terminal before the refusal is
+        // returned. Doing that for the CLI providers too would change a launch
+        // path this task has no evidence about.
+        let verdict = self
+            .verify_agent_placement(&agent, &workspace_id, &labels)
+            .and_then(|()| {
+                Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())
+            })
+            .and_then(|()| {
+                if delivery.is_none() || agent.provider_options_applied() {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::LaunchNotAdmitted {
+                        rule: "the runtime did not report providerOptionsApplied for this seat, so its posture is unproved",
+                    })
+                }
+            });
+        if let Err(invalid) = verdict {
+            if delivery.is_some() {
+                self.compensate_invalid_seat(&agent.id).await?;
+            }
+            return Err(invalid);
+        }
 
-        let snapshot = self.bind(
+        // A delivery seat exists by now, carrying this launch's exact intent. If
+        // the durable bind fails, the seat is neither stranded nor duplicated:
+        // the intent label is still on it, so the next attempt's census adopts
+        // this very agent — but only if the claim is still held, which is what
+        // `DeliveryConfirmationUnknown` preserves. Reporting the plain error
+        // would release the seat and licence a second create.
+        let bound = self.bind(
             request.agent_run_id(),
             request.binding_id(),
             &agent,
             request.requested_at(),
             generation,
             declared.clone(),
-        )?;
+        );
+        let unresolved = |error: RuntimeError, agent_id: &str| {
+            tracing::warn!(%error, agent = %agent_id, "delivery bind failed after the seat was created");
+            RuntimeError::DeliveryConfirmationUnknown {
+                rule: "this delivery seat was created but could not be bound; its launch intent is on the agent and reconciliation adopts it",
+            }
+        };
+        let snapshot = match bound {
+            Ok(snapshot) => snapshot,
+            Err(error) if delivery.is_some() => return Err(unresolved(error, &agent.id)),
+            Err(error) => return Err(error),
+        };
         let observation = self.observation(
             request.agent_run_id(),
             snapshot.identity().clone(),
@@ -3409,6 +3721,370 @@ impl PaseoAdapter {
         })
     }
 
+    /// Whether this launch is an OpenCode delivery, refusing it if it cannot be
+    /// proved.
+    ///
+    /// `Ok(false)` for every other provider: their posture *is* their mode, the
+    /// mode readback proves it, and their CLI launch path is untouched.
+    ///
+    /// # What is asked, and what deliberately is not
+    ///
+    /// Exactly one thing: does this daemon advertise
+    /// [`PaseoFeature::ProviderOptionsApplied`](crate::wire::PaseoFeature::ProviderOptionsApplied)?
+    ///
+    /// **Not the version.** Kontor already shipped a path gated on `0.6.1` that
+    /// sent a permission block the daemon validated, persisted, and dropped
+    /// before it reached the provider: the v2 SDK's `promptAsync` allow-lists its
+    /// body keys, and OpenCode's own prompt route reads only `t.tools`. The
+    /// version was correct and the policy never applied. A release number
+    /// describes a build; it cannot assert what that build does with a field.
+    ///
+    /// **Not the environment, a config root, or any file.** Those layers merge
+    /// after anything Kontor could write and depend on who the seat
+    /// authenticated as.
+    ///
+    /// So the daemon must assert the capability itself, and the agent it creates
+    /// must then confirm it *for that agent* — see
+    /// [`PaseoAgent::provider_options_applied`](crate::wire::PaseoAgent::provider_options_applied).
+    /// The feature says the daemon can; the per-agent flag says it did. A launch
+    /// binds on the second, never the first.
+    ///
+    /// Both inputs here are local — the identity was already read — so a refusal
+    /// costs no native call at all.
+    ///
+    /// # Errors
+    /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise the
+    /// feature, or when the provider cannot express the declared posture.
+    fn opencode_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<bool> {
+        let provider = request.model_rung().provider.0.as_str();
+        if crate::client::built_in_provider(provider) != "opencode" {
+            return Ok(false);
+        }
+        let applies = self
+            .lock()
+            .server
+            .as_ref()
+            .is_some_and(crate::wire::PaseoServerInfo::applies_provider_options);
+        if !applies {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "this Paseo does not advertise providerOptionsApplied, so an OpenCode posture cannot be proved",
+            });
+        }
+        // And the provider must be able to express the declared posture at all.
+        // The refusal is `paseo_mode`'s own, so an advisory seat on a provider
+        // with no contained mode is refused here rather than at the wire.
+        crate::posture::render_posture(provider, request.autonomy(), &[])?;
+        Ok(true)
+    }
+
+    /// Create one OpenCode delivery seat, and return the snapshot it is judged
+    /// from.
+    ///
+    /// One `create_agent_request` carries the permission, the MCP surface, the
+    /// prompt and its deterministic message id. There is no second effect to
+    /// reconcile, and **no follow-up fetch**: the snapshot in the answer is the
+    /// state the daemon produced for this create, and a later read answers a
+    /// question about a later moment.
+    ///
+    /// The three ways this can end:
+    ///
+    /// * the daemon says `agent_created` and hands back the agent;
+    /// * the daemon says `agent_create_failed` — it made nothing, and that is the
+    ///   one answer that lets the caller release the seat claim;
+    /// * the answer is lost or unrecognised, and reconciliation decides, never a
+    ///   second create.
+    async fn create_opencode_seat(
+        &self,
+        delivery: &crate::client::DeliveryCreateRequest,
+    ) -> RuntimeResult<PaseoAgent> {
+        let frame = match self.transport.request(&delivery.rpc).await {
+            Ok(frame) => frame,
+            // The create may have landed. Never sent again: that is how one seat
+            // acquires two sessions, each holding a worktree.
+            Err(RuntimeError::Transport { .. }) => {
+                return self.reconcile_delivery_create(delivery).await;
+            }
+            Err(other) => return Err(other),
+        };
+        let answer: crate::wire::PaseoAgentCreated =
+            frame.resolve(&delivery.rpc, "PaseoAgentCreated")?;
+        if let Some(agent) = answer.created() {
+            return Ok(agent.clone());
+        }
+        // Everything that is not a correlated `agent_created` goes to the census,
+        // and none of it releases the claim. That is one rule for three cases,
+        // on purpose.
+        //
+        // * `agent_create_unresolved` — the deployed candidate
+        //   (`a07ed03e0`) saying outright that it created an agent and could not
+        //   confirm archiving it. It even names the agent. Ambiguous by the
+        //   daemon's own admission.
+        // * `agent_create_failed` — safe on that candidate, which records the
+        //   native id *before* the initial prompt and only reports plain failure
+        //   once compensation is confirmed. It was **not** safe on stock 0.6.1
+        //   (`a878145`): there the id was captured after the prompt, a throwing
+        //   prompt left it null, and the catch reported failure while the agent
+        //   ran — an agent the daemon's own worktree cleanup also skipped.
+        // * a status this adapter does not recognise — says nothing either way.
+        //
+        // Kontor does not branch on which of these arrived. Doing so would make
+        // correctness depend on which build answered, and a daemon can be rolled
+        // back or replaced under a running plane. The census and the first-turn
+        // proof settle all three identically, and cost one directory read on a
+        // path that is already the unhappy one.
+        //
+        // The status and any named agent are recorded, and *only* recorded: an
+        // operator reading this line learns which daemon behaviour they are
+        // seeing, while the code below reaches the same answer either way. There
+        // is deliberately no predicate over these values, because a predicate
+        // exists to be branched on and the whole point here is not to.
+        tracing::warn!(
+            status = %answer.status,
+            named_agent = answer.agent_id.as_deref().unwrap_or("none"),
+            confirmed_compensation = answer.status == crate::wire::PaseoAgentCreated::FAILED,
+            unconfirmed_compensation = answer.status == crate::wire::PaseoAgentCreated::UNRESOLVED,
+            "delivery create did not return a correlated agent; reconciling"
+        );
+        self.reconcile_delivery_create(delivery).await
+    }
+
+    /// Decide an ambiguous delivery create from the agent directory alone.
+    ///
+    /// The launch-intent digest is in `labels`, and it covers the create
+    /// configuration *and* the prompt, so at most one agent in this project can
+    /// legitimately match. Four outcomes, and none of them is a second create:
+    ///
+    /// * **one match, unbound** — it is this launch's own effect; adopt it.
+    /// * **one match, already bound** — it belongs to another run. Refusing is
+    ///   the only safe answer; binding it twice would give one session two
+    ///   owners.
+    /// * **none, on a complete enumeration** — it is *not* known whether Paseo
+    ///   created an agent, because a create can land after its answer is lost and
+    ///   before this census reads. [`RuntimeError::DeliveryConfirmationUnknown`]
+    ///   says so, and the caller keeps the seat claim: a released claim is a
+    ///   licence for the next attempt to create a second seat.
+    /// * **several, or an enumeration that did not finish** — the plane has
+    ///   diverged, or this census cannot see all of it. Quarantined: no
+    ///   adoption, no create, no release.
+    async fn reconcile_delivery_create(
+        &self,
+        delivery: &crate::client::DeliveryCreateRequest,
+    ) -> RuntimeResult<PaseoAgent> {
+        let labels = &delivery.labels;
+        let (agents, complete) = self.census_by_labels(labels, false).await?;
+        if !complete {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the agent directory did not enumerate fully, so this create cannot be settled",
+            });
+        }
+        let mut matches = agents
+            .into_iter()
+            .filter(|agent| agent.matches_labels(labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
+        match matches.len() {
+            1 => {
+                let agent = matches.remove(0);
+                if self.is_bound_native(&agent.id) {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "an agent carrying this launch intent is already bound to a run",
+                    });
+                }
+                // Labels prove a create happened; they do not prove the turn did.
+                // The create carries the prompt, and the prompt is sent *after*
+                // the agent exists, so an agent can carry this exact intent and
+                // never have been told anything. Binding it would seat a run on a
+                // session that will sit idle forever, and the launch would report
+                // success. The turn has to be found on the agent's own timeline.
+                self.first_turn_proved(&agent.id, &delivery.client_message_id)
+                    .await?;
+                Ok(agent)
+            }
+            0 => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "this create is unresolved: no agent carries its launch intent yet",
+            }),
+            _ => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "several agents carry this launch intent; the plane has diverged",
+            }),
+        }
+    }
+
+    /// Prove the launch's first turn is on this agent's canonical timeline.
+    ///
+    /// Recovery adopts an agent it did not watch being created, so "the labels
+    /// match" is only half the question. The create sends the prompt after the
+    /// agent exists, and that send can fail on its own — the upstream
+    /// `promptFailure: "throw"` path is exactly this — leaving a correctly
+    /// labelled seat that was never given its instructions.
+    ///
+    /// The scan follows the same discipline as
+    /// [`Self::scan_canonical`]: canonical projection, backward from the tail
+    /// because that is the only cursor-free read Paseo exposes, bounded pages,
+    /// and **complete-or-refuse**. It does not reuse that function, which is
+    /// keyed on a `RuntimeBindingSnapshot` for cursor bookkeeping — there is no
+    /// binding here yet, and inventing one to satisfy a helper would write
+    /// continuity state for a session that may never be adopted.
+    ///
+    /// Epoch stability is held within the scan by the raw epoch string: the
+    /// first page fixes it and any later page that disagrees refuses, so two
+    /// halves of two different transcripts are never read as one.
+    ///
+    /// # Errors
+    /// [`RuntimeError::DeliveryConfirmationUnknown`] when the id is absent, the
+    /// enumeration does not finish, the epoch changes mid-scan, or the daemon
+    /// reports a gap. Every one of them means "do not bind, do not create".
+    async fn first_turn_proved(
+        &self,
+        native_id: &str,
+        client_message_id: &str,
+    ) -> RuntimeResult<()> {
+        let mut before: Option<crate::wire::PaseoTimelineCursor> = None;
+        let mut epoch: Option<String> = None;
+        for _ in 0..RECONCILE_PAGE_BUDGET {
+            let page = self
+                .fetch_canonical(
+                    native_id,
+                    if before.is_some() {
+                        PaseoDirection::Before
+                    } else {
+                        PaseoDirection::Tail
+                    },
+                    before.as_ref(),
+                    MAX_HISTORY_PAGE,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            if page.gap {
+                return Err(RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "the daemon reports dropped timeline entries, so this first turn cannot be proved",
+                });
+            }
+            match &epoch {
+                None => epoch = Some(page.epoch.clone()),
+                Some(fixed) if *fixed == page.epoch => {}
+                Some(_) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the timeline was renumbered mid-scan, so these pages are not one transcript",
+                    });
+                }
+            }
+            if page
+                .entries
+                .iter()
+                .any(|entry| entry.item.client_message_id.as_deref() == Some(client_message_id))
+            {
+                return Ok(());
+            }
+            match (page.has_older, page.start_cursor) {
+                (true, Some(start)) => before = Some(start),
+                (false, _) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "this launch's first turn is not on the agent's timeline; it was created but never told anything",
+                    });
+                }
+                (true, None) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the timeline offers no cursor onward, so this first turn cannot be proved",
+                    });
+                }
+            }
+        }
+        Err(RuntimeError::DeliveryConfirmationUnknown {
+            rule: "the timeline scan reached its page budget before proving this first turn",
+        })
+    }
+
+    /// Whether some binding on this plane already owns `native_id`.
+    fn is_bound_native(&self, native_id: &str) -> bool {
+        self.lock()
+            .bindings
+            .snapshots()
+            .any(|snapshot| snapshot.identity().native_id.as_str() == native_id)
+    }
+
+    /// Every agent matching `labels`, and whether the enumeration finished.
+    ///
+    /// [`Self::fetch_agents`] turns an exhausted page budget into a transport
+    /// error, which is right where a partial answer is useless. Here the *fact*
+    /// of incompleteness is the answer — a census that stopped early cannot say
+    /// "no agent carries this intent" — so it is returned rather than raised.
+    async fn census_by_labels(
+        &self,
+        labels: &BTreeMap<String, String>,
+        include_archived: bool,
+    ) -> RuntimeResult<(Vec<PaseoAgent>, bool)> {
+        let mut found = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_DIRECTORY_PAGES {
+            let request = PaseoRpc::agent_list(
+                self.next_request_id(),
+                labels,
+                include_archived,
+                MAX_DIRECTORY_PAGE,
+                cursor.as_deref(),
+            );
+            let frame = self.transport.request(&request).await?;
+            let page: crate::wire::PaseoAgentPage = frame.resolve(&request, "PaseoAgentPage")?;
+            found.extend(page.entries.into_iter().map(|entry| entry.agent));
+            match page.page_info.next() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return Ok((found, true)),
+            }
+        }
+        Ok((found, false))
+    }
+
+    /// Archive a delivery seat this launch will not bind, and require it to read
+    /// back terminal.
+    ///
+    /// A created agent Kontor refuses is a live session nobody owns. It is
+    /// archived over the same socket the create used, and then *read back*.
+    ///
+    /// **The archive acknowledgement is not the proof, and its loss is not a
+    /// failure.** An acknowledgement can go missing after the daemon has already
+    /// archived the seat; treating that as an error would report a cleanup as
+    /// undone, and — because a plain transport error releases the launch claim —
+    /// would licence a second create for a run that already has a native. So the
+    /// readback runs whether or not the send was acknowledged, and only a fresh
+    /// reading of *this exact agent* as terminal counts.
+    ///
+    /// Every other outcome — live, unfetchable, or an answer about a different
+    /// agent — returns [`RuntimeError::DeliveryConfirmationUnknown`], which keeps
+    /// the claim and leaves the seat recoverable.
+    async fn compensate_invalid_seat(&self, native_id: &str) -> RuntimeResult<()> {
+        // The archive request is *attempted*, and its acknowledgement is never
+        // the proof. An acknowledgement can be lost after the daemon acted, so
+        // failing here would report "the archive did not happen" about a seat
+        // that is already gone — and, because a plain transport error releases
+        // the launch claim, would licence a second create for a run that already
+        // has a native. So the send's outcome is recorded and the readback runs
+        // either way.
+        let archive = PaseoRpc::agent_archive(self.next_request_id(), native_id);
+        let sent = self.transport.request(&archive).await;
+        if let Err(error) = &sent {
+            tracing::warn!(%error, agent = %native_id, "archive acknowledgement lost; reading the seat back anyway");
+        }
+
+        // Only the agent's own state settles it. Anything that is not a fresh
+        // reading of *this* agent as terminal — a live seat, a readback that
+        // cannot be fetched, an answer about something else — leaves the seat
+        // recoverable and keeps the claim.
+        match self.fetch_agent(native_id).await {
+            Ok(agent) if agent.id == native_id && agent.is_archived() => Ok(()),
+            Ok(agent) if agent.id != native_id => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the compensating readback answered about another agent; the seat is left recoverable",
+            }),
+            Ok(_) => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "an invalid delivery seat still reads back live; it is left recoverable",
+            }),
+            Err(error) => {
+                tracing::warn!(%error, agent = %native_id, "compensating readback failed");
+                Err(RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "an invalid delivery seat could not be read back; it is left recoverable",
+                })
+            }
+        }
+    }
+
     /// Recover a launch whose acknowledgement was lost.
     ///
     /// The full label set is planted on the agent, so exactly one agent in this
@@ -3418,9 +4094,20 @@ impl PaseoAdapter {
     /// * one match — bind it; the command did land;
     /// * several — the plane has diverged, and picking one would bind a run to a
     ///   session that may belong to another. No launch.
-    /// * none — it is *not* known whether Paseo created an agent. The receipt
-    ///   stays confirmation-unknown and reconciliation looks again. A blind
-    ///   relaunch here is how one seat ends up with two agents editing one tree.
+    /// * none — it is *not* known whether Paseo created an agent, and this
+    ///   returns [`RuntimeError::Transport`] to say the attempt is unresolved.
+    ///   A blind relaunch here is how one seat ends up with two agents editing
+    ///   one tree.
+    ///
+    /// **Known hazard, pre-dating this task** (`e3b562c`, KON-MVP-11).
+    /// `Transport` is the variant callers retry, while `launch` releases the
+    /// admission on every error — so a retry after a create that did land, but
+    /// whose labels the census could not yet see, can create a second seat.
+    /// `DeliveryConfirmationUnknown` is the variant that says "unresolved, do
+    /// not retry blindly", and the AO adapter already uses it for this same
+    /// hazard. Changing it here would alter retry semantics for every provider
+    /// on this plane, so it is recorded rather than done in passing: see
+    /// `docs/evidence/KON-OP-20/2026-08-31-upstream-dependency-applied-permission.md`.
     async fn recover_launch(&self, labels: &BTreeMap<String, String>) -> RuntimeResult<String> {
         let agents = self.fetch_agents(labels, false).await?;
         let mut matches = agents
@@ -3561,6 +4248,10 @@ impl PaseoAdapter {
                 crate::seat_mcp::compose_for_seat(
                     self.config.seat_mcp.as_ref(),
                     request.model_rung.provider.0.as_str(),
+                    // A consultation seat gets no permission block at all: its
+                    // mode is already non-mutating and a consultation that could
+                    // edit the tree is not a consultation.
+                    &crate::posture::SeatPosture::read_only(),
                     std::path::Path::new(request.cwd.as_str()),
                 )
                 .map_err(|error| {
@@ -4118,6 +4809,10 @@ impl RuntimeAdapter for PaseoAdapter {
         provenance: &ConsultationRouteProvenance,
     ) -> RuntimeResult<()> {
         super::client::consultation_route_permission_mode(rung, provenance).map(|_| ())
+    }
+
+    fn declared_autonomy(&self) -> Option<SeatAutonomy> {
+        self.config.permission_posture
     }
 
     fn provider_available(&self, provider: &str) -> bool {
@@ -5034,6 +5729,10 @@ impl RuntimeAdapter for PaseoAdapter {
             .get(&request.topology_node_id)
             .cloned()
             && existing.binding.identity.generation == generation
+            && request
+                .bound_native_id
+                .as_ref()
+                .is_none_or(|persisted| persisted == &existing.binding.identity.native_id)
         {
             return Ok(ContainerOutcome {
                 snapshot: existing,
@@ -5132,6 +5831,85 @@ impl RuntimeAdapter for PaseoAdapter {
             .containers
             .insert(request.topology_node_id, snapshot.clone());
         Ok(ContainerOutcome { snapshot, created })
+    }
+
+    async fn preview_container_recovery(
+        &self,
+        request: &ContainerRecoveryRequest,
+    ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::PrepareWorkspace) {
+            return Err(self.refuse(RuntimeCapability::PrepareWorkspace, &declared));
+        }
+        let generation = self.generation();
+        if request.stale_identity.runtime_kind != self.config.runtime_kind
+            || request.stale_identity.host != self.config.host_key
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the stale container binding belongs to another runtime host",
+            });
+        }
+
+        let workspaces = self
+            .fetch_workspaces(request.bound_project_native_id.as_str())
+            .await?;
+        if workspaces
+            .iter()
+            .any(|workspace| workspace.id == request.stale_identity.native_id.as_str())
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recovered as another identity",
+            });
+        }
+
+        let candidates = workspaces
+            .iter()
+            .filter(|workspace| {
+                workspace.project_id == request.bound_project_native_id.as_str()
+                    && WorkspaceRoot::parse(&workspace.workspace_directory)
+                        .is_ok_and(|root| root == request.canonical_cwd)
+            })
+            .collect::<Vec<_>>();
+        let candidate = match candidates.as_slice() {
+            [candidate] => *candidate,
+            [] => {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "no live workspace occupies the stale container's exact parent and canonical path",
+                });
+            }
+            [_, _, ..] => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "several live workspaces occupy the stale container's exact parent and canonical path",
+                });
+            }
+        };
+        if candidate.visible_title() != request.expected_title.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
+            });
+        }
+
+        let identity = self.identity(ExternalId::parse(&candidate.id)?, generation);
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection: ContainerProjection::NativeChild,
+                identity: identity.clone(),
+                root: Some(request.canonical_cwd.clone()),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared,
+            correlation: ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity,
+                request.requested_at,
+            ),
+        };
+        Ok(ContainerRecoveryOutcome {
+            snapshot,
+            observed_title: candidate.visible_title().to_owned(),
+        })
     }
 
     async fn prepare_workspace(
@@ -5254,6 +6032,28 @@ impl RuntimeAdapter for PaseoAdapter {
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        // First of all, and deliberately: before the transport is touched and
+        // before the seat is claimed. `declared()` below asks the transport for
+        // its gated server identity, which can establish a connection, and the
+        // claim that follows takes the seat and would have to give it back. A
+        // provider whose posture Kontor cannot prove is refused having spent
+        // nothing and having held nothing.
+        //
+        // Both inputs are local: the request carries its own task id, and the
+        // ticket's declared exceptions are configuration. Resolved once here and
+        // handed down, so launch and composition cannot render it differently.
+        let allowances = self
+            .config
+            .scope
+            .configured_task_scope(request.task_id())
+            .map(|configured| configured.permission_overrides)
+            .unwrap_or_default();
+        let posture = crate::posture::seat_posture(
+            request.model_rung().provider.0.as_str(),
+            request.autonomy(),
+            &allowances,
+        )?;
+
         let declared = self.declared().await?;
 
         // The seat is taken here: before the readbacks, long before `agent run`,
@@ -5279,7 +6079,20 @@ impl RuntimeAdapter for PaseoAdapter {
             state.generation
         };
 
-        let outcome = self.launch_admitted(request, &declared, generation).await;
+        let outcome = self
+            .launch_admitted(request, &declared, generation, &posture)
+            .await;
+        // A failed launch gives the seat back — except when it is not known
+        // whether a native seat exists. Releasing there would let the next
+        // attempt claim the slot and create a *second* agent for the same run,
+        // which is the one outcome the reconciliation claim exists to prevent.
+        // The claim is held until a census can settle it.
+        if matches!(
+            outcome,
+            Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+        ) {
+            return outcome;
+        }
         if outcome.is_err() {
             self.lock().admissions.release(request);
         }
@@ -5731,13 +6544,28 @@ impl RuntimeAdapter for PaseoAdapter {
         // lifecycle, which on this wire lives in the agent snapshot rather than
         // in the transcript.
         self.observe_permissions(binding.binding_id(), &agent);
-        self.observation(
-            binding.agent_run_id(),
-            binding.identity().clone(),
-            &agent,
-            request.requested_at,
-            ObservationSource::Inspect,
-        )
+        // A quiescent session may have stopped because the provider refused.
+        // The probe is bounded and takes no lock; `observe_permissions` above
+        // released its own before this await is reached.
+        let (state, _) = Self::normalize_agent(&agent);
+        let refusal = self
+            .refusal_diagnostic(
+                &native_id,
+                binding.agent_run_id(),
+                binding.identity().generation,
+                binding.binding_id(),
+                state,
+            )
+            .await;
+        Ok(self
+            .observation(
+                binding.agent_run_id(),
+                binding.identity().clone(),
+                &agent,
+                request.requested_at,
+                ObservationSource::Inspect,
+            )?
+            .with_refusal(refusal))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -6353,7 +7181,7 @@ impl RuntimeAdapter for PaseoAdapter {
     /// Report, honestly, that this daemon cannot compact a seat's context.
     ///
     /// The Paseo 0.3.1 protocol exposes no per-seat context configuration and no
-    /// compaction operation, so [`PaseoAdapter::capabilities`] advertises
+    /// compaction operation, so `PaseoAdapter::capabilities` advertises
     /// neither [`RuntimeCapability::ContextPolicy`] nor
     /// [`RuntimeCapability::Compact`], and this method emits **no RPC at all**.
     ///
@@ -6777,6 +7605,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -6881,6 +7710,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers,
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -6965,6 +7795,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -6992,6 +7823,7 @@ mod task_scope_tests {
                 jira_issue_key: ExternalId::parse("ASMA-7870").expect("ticket"),
                 ticket_short_code: ExternalId::parse("OP-01").expect("short code"),
                 canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-01").expect("worktree"),
+                permission_overrides: Vec::new(),
             },
         );
         scope.task_scopes.insert(
@@ -7001,6 +7833,7 @@ mod task_scope_tests {
                 jira_issue_key: ExternalId::parse("ASMA-7871").expect("ticket"),
                 ticket_short_code: ExternalId::parse("OP-02").expect("short code"),
                 canonical_worktree_cwd: WorkspaceRoot::parse("/repo/op-02").expect("worktree"),
+                permission_overrides: Vec::new(),
             },
         );
 
@@ -7039,6 +7872,7 @@ mod task_scope_tests {
                 provider_selects_account: false,
                 provider_fallbacks: BTreeMap::new(),
                 adopted_containers: BTreeMap::new(),
+                permission_posture: None,
                 seat_mcp: None,
             },
             Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
@@ -7168,6 +8002,7 @@ mod governed_pin_tests {
             provider_selects_account,
             provider_fallbacks: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
+            permission_posture: None,
             seat_mcp: None,
         }
     }
@@ -7236,5 +8071,289 @@ mod governed_pin_tests {
             ),
             "a launch on another account's alias is not this account's launch"
         );
+    }
+}
+
+#[cfg(test)]
+mod refusal_probe_tests {
+    use super::*;
+    use crate::wire::{PaseoSeqRange, PaseoTimelineItem};
+
+    fn a_binding() -> RuntimeBindingId {
+        RuntimeBindingId::parse("01a0306f-9398-7a51-a612-8c36463db277").expect("a binding id")
+    }
+
+    fn a_native() -> ExternalId {
+        ExternalId::parse("65583f43-30cd-4a99-b715-3ae8ea967698").expect("a native id")
+    }
+
+    const CODEX_REFUSAL: &str = "[System Error] You've hit your usage limit. Visit \
+         https://chatgpt.com/codex/settings/usage to purchase more credits or try \
+         again at Aug 23rd, 2026 9:35 AM.";
+
+    fn entry(seq: u64, item_type: &str, text: Option<&str>) -> PaseoTimelineEntry {
+        PaseoTimelineEntry {
+            item: PaseoTimelineItem {
+                item_type: item_type.to_owned(),
+                client_message_id: None,
+                message_id: None,
+                call_id: None,
+                text: text.map(str::to_owned),
+            },
+            timestamp: "2026-08-23T09:00:00Z".to_owned(),
+            seq_start: seq,
+            seq_end: seq,
+            source_seq_ranges: Vec::new(),
+            collapsed: Vec::new(),
+        }
+    }
+
+    fn select(entries: &[PaseoTimelineEntry]) -> Option<TransientRefusal> {
+        select_terminal_refusal(
+            entries,
+            1,
+            AgentRunId::generate(),
+            1,
+            a_binding(),
+            &a_native(),
+        )
+    }
+
+    #[test]
+    fn only_observed_provider_content_is_selected() {
+        assert!(provider_originated("assistant_message"));
+        assert!(!provider_originated("user_message"));
+        // Present in the protocol fixtures only as synthetic filler, so its
+        // provenance is unproven and it authorizes nothing.
+        assert!(!provider_originated("plain_text"));
+        assert!(!provider_originated("tool_call"));
+        // Fail closed on provenance: `classify_item` calls these `Log`, which
+        // is right for the timeline and wrong for authority.
+        assert!(!provider_originated("compaction"));
+        assert!(!provider_originated("some_future_user_origin_type"));
+        assert!(!provider_originated(""));
+    }
+
+    #[test]
+    fn a_terminal_provider_response_inside_an_observed_turn_is_selected() {
+        let entries = [
+            entry(1, "user_message", Some("do the thing")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        let refusal = select(&entries).expect("a terminal refusal");
+        assert!(refusal.as_str().contains("usage limit"));
+        assert_eq!(refusal.provenance().position.sequence, 2);
+        assert_eq!(refusal.provenance().item_type, "assistant_message");
+    }
+
+    #[test]
+    fn a_newer_tool_result_means_the_provider_item_is_not_terminal() {
+        let entries = [
+            entry(1, "user_message", Some("do the thing")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+            entry(3, "tool_call", Some("{}")),
+        ];
+        assert!(
+            select(&entries).is_none(),
+            "the turn moved on; the refusal is not the last word",
+        );
+    }
+
+    #[test]
+    fn an_unobserved_turn_boundary_is_inert_rather_than_authoritative() {
+        // The page filled up before reaching a `user_message`, so this response
+        // may belong to a previous turn.
+        let entries = [
+            entry(1, "assistant_message", Some("earlier work")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        assert!(
+            select(&entries).is_none(),
+            "absence of boundary proof is inert, never authority",
+        );
+    }
+
+    #[test]
+    fn an_old_refusal_followed_by_a_new_successful_turn_does_not_classify() {
+        let entries = [
+            entry(1, "user_message", Some("first task")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+            entry(3, "user_message", Some("second task")),
+            entry(4, "assistant_message", Some("Done, all tests pass.")),
+        ];
+        let refusal = select(&entries).expect("the newest response is selected");
+        assert!(
+            !refusal.as_str().contains("usage limit"),
+            "the current turn's answer is what is classified, not last turn's refusal",
+        );
+    }
+
+    /// Markers split across two messages must not jointly satisfy a signal.
+    /// One item is classified, never a concatenation.
+    #[test]
+    fn text_is_never_joined_across_items() {
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(
+                2,
+                "assistant_message",
+                Some("[System Error] you've hit your"),
+            ),
+            entry(
+                3,
+                "assistant_message",
+                Some("usage limit, try again at Aug 23rd, 2026 9:35 AM"),
+            ),
+        ];
+        let refusal = select(&entries).expect("the terminal item");
+        assert_eq!(
+            refusal.as_str(),
+            "usage limit, try again at Aug 23rd, 2026 9:35 AM",
+            "only the terminal item's own text is carried",
+        );
+    }
+
+    /// A sensitive head must be scanned even though only the tail would survive
+    /// bounding — the scan sees the candidate whole, or nothing is classified.
+    #[test]
+    fn a_sensitive_head_is_scanned_before_any_tail_is_taken() {
+        let filler = "a".repeat(3_000);
+        let poisoned = format!("authorization: Bearer {filler} usage limit reached");
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(&poisoned)),
+        ];
+        assert!(
+            select(&entries).is_none(),
+            "the discarded head is still scanned, so the secret cannot ride the tail out",
+        );
+    }
+
+    #[test]
+    fn an_item_too_large_to_scan_safely_is_refused_rather_than_trimmed() {
+        let huge = "a".repeat(kontor_runtime::refusal::MAX_CANDIDATE_BYTES + 1);
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(&huge)),
+        ];
+        assert!(select(&entries).is_none());
+    }
+
+    #[test]
+    fn a_collapsed_range_carries_its_whole_span_in_provenance() {
+        let mut collapsed = entry(4, "assistant_message", Some(CODEX_REFUSAL));
+        collapsed.seq_end = 6;
+        collapsed.source_seq_ranges = vec![
+            PaseoSeqRange {
+                start_seq: 4,
+                end_seq: 5,
+            },
+            PaseoSeqRange {
+                start_seq: 6,
+                end_seq: 6,
+            },
+        ];
+        let entries = [entry(1, "user_message", Some("go")), collapsed];
+        let refusal = select(&entries).expect("a terminal refusal");
+        assert_eq!(refusal.provenance().sequence_end, 6);
+        assert_eq!(
+            refusal.provenance().source_sequences,
+            vec![(4, 5), (6, 6)],
+            "the collapsed span is provenance, not a single sequence",
+        );
+    }
+
+    /// Every identity in the provenance binds the digest, not just the run and
+    /// generation. A binding or native id left out would let the same sentence
+    /// on a different session digest identically.
+    #[test]
+    fn provenance_binds_the_digest_to_the_exact_binding_and_native_session() {
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        let run = AgentRunId::generate();
+        let mine = select_terminal_refusal(&entries, 1, run, 1, a_binding(), &a_native())
+            .expect("a refusal");
+        let other_binding = select_terminal_refusal(
+            &entries,
+            1,
+            run,
+            1,
+            RuntimeBindingId::generate(),
+            &a_native(),
+        )
+        .expect("a refusal");
+        let other_native = select_terminal_refusal(
+            &entries,
+            1,
+            run,
+            1,
+            a_binding(),
+            &ExternalId::parse("a-different-native-session").expect("a native id"),
+        )
+        .expect("a refusal");
+        assert_ne!(
+            mine.digest(),
+            other_binding.digest(),
+            "evidence cannot be read across bindings",
+        );
+        assert_ne!(
+            mine.digest(),
+            other_native.digest(),
+            "nor across native sessions",
+        );
+    }
+
+    #[test]
+    fn provenance_binds_the_digest_to_one_run_and_generation() {
+        let entries = [
+            entry(1, "user_message", Some("go")),
+            entry(2, "assistant_message", Some(CODEX_REFUSAL)),
+        ];
+        let run = AgentRunId::generate();
+        let mine = select_terminal_refusal(&entries, 1, run, 1, a_binding(), &a_native())
+            .expect("a refusal");
+        let other_generation =
+            select_terminal_refusal(&entries, 1, run, 2, a_binding(), &a_native())
+                .expect("a refusal");
+        let other_run = select_terminal_refusal(
+            &entries,
+            1,
+            AgentRunId::generate(),
+            1,
+            a_binding(),
+            &a_native(),
+        )
+        .expect("a refusal");
+        assert_ne!(
+            mine.digest(),
+            other_generation.digest(),
+            "evidence cannot be transplanted across binding generations",
+        );
+        assert_ne!(
+            mine.digest(),
+            other_run.digest(),
+            "evidence cannot be transplanted onto a sibling seat",
+        );
+    }
+
+    #[test]
+    fn an_empty_or_textless_terminal_item_is_inert() {
+        assert!(
+            select(&[
+                entry(1, "user_message", Some("go")),
+                entry(2, "assistant_message", None)
+            ])
+            .is_none()
+        );
+        assert!(
+            select(&[
+                entry(1, "user_message", Some("go")),
+                entry(2, "assistant_message", Some("   "))
+            ])
+            .is_none()
+        );
+        assert!(select(&[]).is_none());
     }
 }

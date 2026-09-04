@@ -17,8 +17,9 @@ system behaviour instead of instructions somebody has to remember.
 | Location | Holds |
 | --- | --- |
 | `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence |
-| `<state-root>/runtimes.json` | Runtime family, plane endpoint and per-account provider aliases. Schema generation `4`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
-| `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
+| `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases and the plane's default seat posture. Schema generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
+| `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
+| `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -204,28 +205,329 @@ child work.
 ## Seat supervision
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)
-to `<state-root>/supervision.yml` to publish the intended policy for validation
-and inspection. This does **not** enable runtime watchdog behavior today. If the
-file is absent, Kontor invents no timeout or watchdog behavior; if it is present,
-Kontor reads and validates it but does not act on it yet.
+to `<state-root>/supervision.yml` only when this Realm should opt into the
+candidate resident succession engine. Enablement is deliberately explicit:
 
-Normal completion is notification-first: the orchestrator yields after dispatch
-and the runtime wakes it on completion, error or permission. The watchdog is an
-independent bounded observer for a turn that never completes. It may classify a
-suspected hang only when both active-turn age and missing-progress evidence are
-stale. Recovery reconciles the same seat first; it never duplicates a seat or
-cancels running work.
+- with no file, no supervisor starts;
+- schema v1 remains readable for legacy classification and starts no automatic
+  succession;
+- schema v2 requires `recovery.max_concurrent_successions`, rejects zero and
+  values above the process safety bound, and starts the supervisor only when
+  `watchdog.enabled` is `true`;
+- a disabled schema-v2 watchdog starts no supervisor even when the concurrency
+  field is present.
 
-The YAML contains prompt paths and required skill names. Kontor validates and
-exposes those references but does not interpret their names. The intended
-consumer will have the selected runtime adapter load their contents, keeping
-Paseo, AO, Codex and future adapters on the same policy shape without hard-coded
-provider behavior; no adapter is dispatched from this policy today.
+This prevents a daemon upgrade from silently assigning a cadence or concurrency
+ceiling to an existing Realm. The shipped example selects schema v2, a
+300-second cadence and five concurrent succession sagas; those are deployment
+choices, not kernel defaults.
 
-> **Status:** the policy is read and validated, and has **no consumer yet** —
-> nothing currently acts on a configured watchdog. Absent configuration correctly
-> invents no behaviour; present configuration also does nothing until
-> `KON-OP-21` wires it. This is recorded rather than implied.
+The declared normal mode is notification-first: the orchestrator yields after
+dispatch and the configured orchestration surface is expected to wake it on
+completion, error or permission. The watchdog is an independent bounded observer
+for a turn that never completes. It may classify a suspected hang only when both
+active-turn age and missing-progress evidence are stale. Recovery reconciles the
+same seat first; it never duplicates a seat or cancels running work.
+
+The `completion` block remains the orchestration policy contract; KON-OP-21 does
+not add a notification transport. Its resident supervisor is the bounded
+durable-recovery backstop described below, not a replacement event bus.
+
+The resident loop waits for the startup reconciliation barrier, first resumes
+due durable attempts, then rebuilds its inventory on the configured cadence and
+on committed append signals when `runtime_error` is configured as a wake
+condition. It evaluates only nonterminal active TeamRuns and only a blocked seat
+whose latest reachable runtime observation,
+binding generation, account, provider quota row and immutable
+runtime-observation provenance match exactly. Durable attempts are both queue
+and slot lock; restart and replay resume them rather than creating another
+successor. Hang classification remains read-only and is not silently converted
+into quota succession.
+
+The YAML also contains prompt paths and required skill names. Kontor validates
+and exposes those references but does not reinterpret or execute them in the
+resident loop. They remain orchestration-surface metadata; the selected runtime
+adapter remains responsible for native inspection and placement.
+
+> **Release status:** these KON-OP-21 paths are implemented and covered by local
+> contract/regression tests in the current candidate tree. Merge, independent
+> audit and live-runtime verification are still pending; a local green test is
+> not a claim that an installed Realm is already running them.
+
+## Seat permission posture
+
+What a seat may do before it has to ask a human is declared, not inherited from
+whatever the machine's harness config happens to carry. Operators write one of
+three words; Kontor maps each to one internal `SeatAutonomy`.
+
+| Written in `runtimes.json` | Means | Internally |
+| --- | --- | --- |
+| `autonomous` | Act within what Kontor already authorized, without asking again per tool call | `Bounded` |
+| `ask` | Ask a human before each guarded action — the default, and what every seat did before this field existed | `Supervised` |
+| `plan` | Read and propose, never act | `Advisory` |
+
+`permission_posture` on a Paseo plane is a **default**, and it is resolved
+most-specific-first:
+
+1. the role slot's own `autonomy`, when the frozen team template declared one;
+2. the plane's `permission_posture`;
+3. `ask`.
+
+A template that already decided keeps deciding, even when the plane default is
+the wider one. A realm that declares nothing at either level behaves exactly as
+it did before the field existed, which is why a generation-4 document can be read
+without migrating it: absence resolves to `ask` and never widens a seat.
+
+### How each provider is told
+
+Posture is translated once, by a single renderer shared between the launch and
+the readback that verifies it, so what a seat is spawned under and what Kontor
+later checks cannot drift apart.
+
+| Provider | `autonomous` | `ask` | `plan` |
+| --- | --- | --- | --- |
+| `claude` | `bypassPermissions` | `auto` | `plan` |
+| `codex` | `full-access` | `auto-review` | *refused — Codex has no read-only mode* |
+| `opencode` | `build` + applied block | `build` + applied block | `plan` + applied block |
+| `cursor` | `agent` | *refused* | *refused* |
+
+Cursor is refused for `ask` and `plan` rather than mapped to its modes of those
+names. Its ACP runtime permits shell writes in `plan`, and shell *and* file
+writes in `ask` — the same measured finding that keeps cursor out of
+consultation. A mode label is not a permission boundary, and a posture Kontor
+cannot enforce is refused before launch rather than reported as held. `agent`
+means what `autonomous` means, so that one stays.
+
+OpenCode carries its posture in a permission block rather than in a mode —
+`build` says nothing about what a seat may do, and `plan` is behavioural guidance
+whose canary showed shell writes proceeding. It launches only when the daemon
+both *can* apply that block and *says it did* for the exact agent.
+
+### How an OpenCode seat is launched
+
+**One `create_agent_request`, carrying everything:**
+
+- `config.providerOptions.permission` — the rendered block;
+- `config.mcpServers` — the typed seat MCP surface;
+- `initialPrompt` — the first turn, a **top-level sibling of `config`**;
+- `clientMessageId` — likewise top-level, derived from the launch rather than
+  generated, so a retry asks about the same turn;
+- `labels`, also top-level, carrying a launch-intent digest over the whole
+  outgoing message *and* the prompt.
+
+The envelope is not a guess. `CreateAgentRequestMessageSchema`
+(`packages/protocol/src/messages.ts`) declares `initialPrompt`, `clientMessageId`
+and `labels` as siblings of `config`; `handleCreateAgentRequest`
+(`packages/server/src/server/session.ts`) destructures both from the message and
+passes them to `createAgentCommand`; and the answer is a `status` frame carrying
+`agent_created`, the `requestId` and the agent payload built from the live
+snapshot. Read from `paseo-op20-v0.6.1-backport`, deploy pin `a07ed03e0`.
+
+There is no second stage. An earlier design created the seat empty and sent the
+first turn separately so acceptance could stand as proof; with the daemon now
+reporting application on the agent itself, that turn proves nothing the snapshot
+does not already say, and two effects to reconcile instead of one is pure hazard.
+
+**Two gates, and the difference between them matters.** Before any native call,
+the daemon must advertise `providerOptionsApplied`. After the create, the
+returned agent must report `providerOptionsApplied: true`. The feature says the
+daemon *can*; the per-agent flag says it *did*. A launch binds on the second.
+Missing and `false` are both refusals.
+
+The gate is deliberately **not** a version. Kontor shipped a version-gated path
+once whose permission the daemon validated, persisted, and dropped before it
+reached the provider: the v2 SDK's `promptAsync` allow-lists its body keys, and
+OpenCode's own prompt route reads only `t.tools`. The version was right and the
+policy never applied.
+
+**The seat is judged from the create's own snapshot** — placement, route, and the
+acknowledgement — with no follow-up fetch, because a later read answers a
+question about a later moment.
+
+### When the answer is ambiguous
+
+A create whose answer is lost may still have landed, so it is never sent again.
+Reconciliation is an exact-label paginated census on the launch intent:
+
+| The census finds | What happens |
+| --- | --- |
+| one match, unbound, **and its first turn proved** | adopted — it is this launch's own effect |
+| one match, unbound, first turn not provable | refused; it was created and never told anything |
+| one match, already bound to a run | refused; one session may not have two owners |
+| none, on a complete enumeration | `DeliveryConfirmationUnknown` — **the seat claim is kept** |
+| several, or an enumeration that did not finish | quarantined: no adoption, no create, no release |
+
+Labels prove a create happened; they do not prove the turn did. The create sends
+the prompt *after* the agent exists, so an agent can carry this launch's exact
+intent and never have been prompted — adopting it would seat a run on a session
+that sits idle forever while the launch reports success. Recovery therefore
+requires the launch's `clientMessageId` on the agent's **canonical** timeline,
+scanned backward from the tail with bounded pages under one fixed epoch. An
+absent id, an unfinished scan, a renumbering mid-scan, or a daemon-reported gap
+all refuse.
+
+Keeping the claim is the point, and **nothing releases it on an ambiguous
+outcome** — not `agent_create_failed`, not the typed `agent_create_unresolved`,
+not an unrecognised status. Releasing would let the next attempt take the slot
+and create a *second* agent for a run that may already have one.
+
+The deploy carrier (`a07ed03e0` on exact v0.6.1; `661536df9` on main) does
+distinguish those two words: it records the native id before sending the initial
+prompt, attempts an exact-agent archive if the create then fails, and reports
+`agent_create_failed` only once that compensation is **confirmed** —
+`agent_create_unresolved`, naming the agent, when it is not. The revision before
+it (`a878145`) could not: the id was captured after the prompt, so a throwing
+prompt left it null and a create failure was reported while the agent ran.
+
+Kontor does not branch on the difference, and does not adopt the agent the
+carrier names. Branching would make correctness depend on which build answered,
+and a daemon can be rolled back under a running plane. One path — census, then
+first-turn proof — serves both.
+
+A created seat that fails any check is archived over the same socket and read
+back terminal. The archive *acknowledgement* is not the cleanup: it can be lost
+after the daemon has already acted, so the readback runs whether or not the send
+was acknowledged, and only a fresh reading of that exact agent as terminal
+counts. Live, unfetchable, or an answer about a different agent all refuse
+recoverably and keep the claim. A durable bind failure
+returns confirmation-unknown too: the intent label is on the agent, so
+reconciliation adopts that very seat instead of stranding or duplicating it.
+
+### Why the policy is not a file or an environment variable
+
+OpenCode merges configuration rather than replacing it, and the layers resolve as
+
+```text
+global -> OPENCODE_CONFIG -> project -> OPENCODE_CONFIG_DIR
+       -> OPENCODE_CONFIG_CONTENT -> active-org remote config
+       -> managed config/preferences -> OPENCODE_PERMISSION
+```
+
+so nothing Kontor writes is the last word. Merging is per key and per nested key,
+and a rule the block does not name — from an auth-backed active-org config or a
+system managed profile, both of which sort late — survives and, because
+permissions resolve by last match, beats the destructive floor. The create
+sidesteps all of it, and the per-agent acknowledgement is what makes that
+claimable rather than assumed.
+
+> **Operational note.** A machine-global config — such as the 2026-08-22 stopgap
+> some operator hosts still carry — cannot reach a Kontor-launched OpenCode seat:
+> the policy is applied to the session by the daemon, not resolved from files. It
+> still governs any OpenCode process started outside Kontor.
+
+> **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
+> Kontor derives the intended value alongside the mode, but nothing sets it:
+> verified against Paseo 0.6.1, neither `paseo agent run` nor `paseo agent update`
+> exposes a flag for it, and Kontor drives the CLI rather than the MCP surface
+> where it is settable. Recorded rather than implied.
+
+## Provider quota signals
+
+Copy [`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml)
+to `<state-root>/quota-signals.yml` to tell Kontor how each vendor words an
+exhaustion refusal. The sentences are data on purpose: a vendor rewords its
+message far more often than Kontor ships, and encoding them as Rust constants
+would make tracking a copy change a rebuild.
+
+Install and read it back:
+
+```sh
+cp config/examples/quota-signals.yml "$KONTOR_STATE_ROOT/quota-signals.yml"
+$EDITOR "$KONTOR_STATE_ROOT/quota-signals.yml"
+# Readback: the daemon refuses to start on a present-but-invalid document, so a
+# clean start is the readback. Confirm what it now classifies with:
+kontor --state-root "$KONTOR_STATE_ROOT" provider-quota-states-list
+```
+
+Each signal carries the provider as the catalog spells it, whether the vendor
+charges a plan allowance or a prepaid credit balance, the markers that must all
+appear before text is read as a refusal, and — for a plan allowance that states
+one — the text preceding the reset instant and the IANA zone a bare wall clock
+is printed in. A vendor that prints local time without naming a zone cannot be
+read correctly without that field, and guessing wrong shifts the reset by hours.
+
+**Every signal carries an identity, and the alias is not it.** Each entry
+declares a stable logical `id`, unique within the document, and a positive
+`version` that increments whenever its wording or parsing changes. Two logins of
+one vendor carry the same sentence under the same family, so a record naming
+only `claude-work` could not say which fingerprint authorized a retirement —
+which is why the shipped Claude entries have distinct ids despite identical
+wording. A signal's complete definition (id, version, provider, basis, ordered
+markers, reset prefix, zone) is digested, and durable provenance cites that
+digest: changing any of it under an unchanged id and version produces a
+different digest, which immutable history is entitled to refuse.
+
+**`provider` is an exact catalog alias, never a vendor family.** A deployment
+addresses one login per alias — `codex-work` and `codex-personal` are two
+accounts of the same vendor — and each account's routing document declares
+exactly which aliases it may select. A quota state is keyed by
+`(account, provider)`, so a signal naming the bare family `codex` matches no
+account that routes `codex-work`, and classification for that account is
+silently inert. **Name one entry per alias**, repeating the vendor's wording as
+many times as the deployment has logins.
+
+**Order is significant, and eligibility is applied first.** The daemon filters
+this sequence to the aliases the seat's own account may select, and only then
+reads the text; classification returns the first *eligible* signal whose markers
+all appear. So repeating identical wording across two aliases is safe —
+`codex-work`'s entry can never stand in front of `codex-personal`'s for a seat
+running on the personal login. Order still decides between two entries that are
+both eligible for one account, which is why the shipped example lists the Claude
+aliases before the Codex ones: the whole of the Codex marker set is the words
+"usage limit", which a Claude refusal also contains.
+
+**A vendor that restates its zone is checked against the declared one.** Some
+messages print `… resets 10:40pm (Europe/Chisinau)`. That annotation is never
+read as part of the clock, and it is **compared** rather than skipped: *every*
+parenthesized token in the message is checked, and any that names a zone the
+tzdb knows must **agree** with `reset_zone`. A disagreement anywhere — including
+one hidden behind an earlier unrecognised annotation such as `(EEST)` — yields
+no instant at all — the account still blocks, as `Unknown`, which is the
+visible prompt to fix the signal. Ignoring it would let a message saying
+`(Europe/Oslo)` be converted as Chisinau and land an hour wrong with nothing to
+show for it. An abbreviation like `(EEST)` is not an IANA name, cannot be
+compared, and is left alone.
+
+**A stated zone is the provenance of a captured message, not the host's
+clock.** `reset_zone` qualifies the wall clock *that vendor's message printed*,
+recorded alongside the wording it belongs to. It is never inferred from the
+daemon's own timezone: a host that later moves to another zone is a fact about
+now, and letting it reinterpret a historical fingerprint would silently move
+every reset derived from it. The shipped Codex entry states `Europe/Oslo`
+because that is where the 2026-08-21/23 incident message was captured, and the
+Claude entries state `Europe/Chisinau` because that is what their own
+2026-08-30 message printed — neither because any particular machine runs
+there.
+
+**Only an exact, distinctive system-refusal fingerprint may activate a signal.**
+A bare phrase like `usage limit` is not sufficient: an ordinary assistant
+message *discussing* limit handling contains it, and this configuration has the
+authority to archive a live seat. Require the vendor's framing, its settings
+URL and its retry wording together. A vendor whose refusal has not been captured
+stays commented out rather than shipped on unverified copy — a false negative
+falls back to the poll and the operator, while a false positive retires work
+that was running.
+
+**Absent, unreadable and invalid are three different outcomes.** Only the first
+is inert:
+
+| The document is… | Kontor… |
+| --- | --- |
+| absent | leaves refusal-message classification inert; pre-flight provider polling is unchanged, and a schema-v2 supervisor can resume existing durable attempts but cannot derive a new quota decision from unconfigured wording |
+| present but unreadable | refuses to start, with a typed `Read` naming the path |
+| present but unparsable or schema-invalid | refuses to start, with a typed `Document` or `Invalid` naming the stable rule |
+
+A broken document is never quietly degraded to "inert". It states an intent the
+realm cannot honour, and starting anyway would leave an operator believing
+reactive classification is armed when it is not.
+
+> **Status:** the `claude` entry in the shipped example is **provisional** — no
+> live Claude refusal has been captured into this repository, so its markers are
+> stated from observed phrasing rather than verified against a recorded message,
+> and it declares no `reset_prefix`. A Claude refusal therefore records a
+> blocking state with **no** stated reset instant until a real message is
+> captured and the document corrected. The Codex entry is verified against the
+> message recorded on 2026-08-21.
 
 ## Seat MCP surface
 
@@ -252,6 +554,13 @@ inspection/response. A response uses a canonical UUIDv7 `Idempotency-Key` and is
 persisted in schema v75 before the runtime effect. Confirmed replay is inert;
 confirmation-unknown dispatch fails closed instead of guessing or answering a
 second time.
+
+Quota succession is exposed separately. `kontor_seat_quota_states_list` is an
+Observer read joining each live delivery seat to its exact account and provider
+quota projections. `kontor_seat_recover` is an Admin, bodyless command addressed
+only by project, predecessor run and `Idempotency-Key`; the server fresh-reads
+and freezes every binding, revision and quota-provenance fact rather than
+accepting an eligibility claim from the caller.
 
 ## Other deployment data
 

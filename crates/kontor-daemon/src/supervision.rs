@@ -13,6 +13,12 @@ use serde::{Deserialize, Serialize};
 /// The optional policy file inside a Realm state root.
 pub const SUPERVISION_FILE: &str = "supervision.yml";
 
+/// Highest operator-configurable number of simultaneous succession sagas.
+///
+/// This is a process-safety bound, not an operating default. Schema v2 still
+/// requires the operator to choose the effective value explicitly.
+pub const MAX_CONCURRENT_SUCCESSIONS: u32 = 64;
+
 /// Why the policy file could not be used.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -27,7 +33,7 @@ pub enum SupervisionError {
         source: std::io::Error,
     },
     /// The document is not valid YAML for this schema.
-    #[error("the supervision policy is not a valid schema-version-1 YAML document")]
+    #[error("the supervision policy is not a valid supported YAML document")]
     Document,
     /// The document is structurally valid but unsafe or contradictory.
     #[error("the supervision policy is invalid: {rule}")]
@@ -136,6 +142,12 @@ pub struct RecoveryPolicy {
     pub allow_duplicate_seat: bool,
     /// Whether capacity pressure may cancel work already running.
     pub cancel_running_work: bool,
+    /// Explicit process-wide ceiling for concurrently coordinated successions.
+    ///
+    /// Absent in schema v1, whose behavior remains classification-only. It is
+    /// required by schema v2, which enables the resident succession engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_successions: Option<u32>,
 }
 
 /// Safe first recovery action.
@@ -203,8 +215,8 @@ impl SupervisionPolicy {
     /// # Errors
     /// Returns a stable rule without echoing configured prompt or skill text.
     pub fn validate(&self) -> Result<(), SupervisionError> {
-        if self.schema_version != 1 {
-            return invalid("schema_version must be 1");
+        if !matches!(self.schema_version, 1 | 2) {
+            return invalid("schema_version must be 1 or 2");
         }
         if self.completion.mode == CompletionMode::NotificationFirst
             && (!self.completion.background || !self.completion.notify_on_finish)
@@ -213,9 +225,10 @@ impl SupervisionPolicy {
         }
         if self.watchdog.cadence_seconds == 0
             || self.watchdog.stale_after_seconds < self.watchdog.cadence_seconds
+            || self.watchdog.stale_after_seconds > i64::MAX as u64
         {
             return invalid(
-                "watchdog durations must be positive and cadence must not exceed stale_after",
+                "watchdog durations must be positive, representable, and cadence must not exceed stale_after",
             );
         }
         let evidence: BTreeSet<_> = self.watchdog.required_evidence.iter().copied().collect();
@@ -234,6 +247,25 @@ impl SupervisionPolicy {
         if self.recovery.allow_duplicate_seat || self.recovery.cancel_running_work {
             return invalid("recovery may neither duplicate a seat nor cancel running work");
         }
+        match (
+            self.schema_version,
+            self.recovery.max_concurrent_successions,
+        ) {
+            (1, None) => {}
+            (1, Some(_)) => {
+                return invalid("schema_version 1 cannot enable automatic succession");
+            }
+            (2, Some(limit @ 1..=MAX_CONCURRENT_SUCCESSIONS)) => {
+                let _ = limit;
+            }
+            (2, None) => {
+                return invalid("schema_version 2 requires max_concurrent_successions");
+            }
+            (2, Some(_)) => {
+                return invalid("max_concurrent_successions is outside the safe bound");
+            }
+            _ => unreachable!("schema version was validated above"),
+        }
         if self.prompts.watchdog.trim().is_empty() || self.prompts.recovery.trim().is_empty() {
             return invalid("watchdog and recovery prompt references are required");
         }
@@ -242,6 +274,19 @@ impl SupervisionPolicy {
             return invalid("skill references must be non-empty and unique");
         }
         Ok(())
+    }
+
+    /// Configured concurrency ceiling for the automatic succession engine.
+    ///
+    /// Schema v1 deliberately returns `None`: accepting the old document does
+    /// not silently turn on new process behavior after an upgrade.
+    #[must_use]
+    pub const fn max_concurrent_successions(&self) -> Option<u32> {
+        if self.schema_version == 2 && self.watchdog.enabled {
+            self.recovery.max_concurrent_successions
+        } else {
+            None
+        }
     }
 
     /// Classify one read-only runtime observation.
@@ -315,6 +360,7 @@ mod tests {
         let policy = parse(EXAMPLE).expect("the shipped example is valid");
         assert_eq!(policy.completion.mode, CompletionMode::NotificationFirst);
         assert!(policy.completion.notify_on_finish);
+        assert_eq!(policy.max_concurrent_successions(), Some(5));
     }
 
     #[test]
@@ -348,5 +394,43 @@ mod tests {
     fn an_absent_file_configures_no_implicit_watchdog() {
         let root = tempfile::tempdir().expect("temporary state root");
         assert_eq!(read(root.path()).expect("absence is valid"), None);
+    }
+
+    #[test]
+    fn schema_one_remains_parse_compatible_and_does_not_enable_succession() {
+        let document = EXAMPLE
+            .replacen("schema_version: 2", "schema_version: 1", 1)
+            .replace("  max_concurrent_successions: 5\n", "");
+        let policy = parse(&document).expect("the legacy document remains readable");
+        assert_eq!(policy.max_concurrent_successions(), None);
+    }
+
+    #[test]
+    fn schema_two_refuses_an_absent_or_zero_succession_bound() {
+        let absent = EXAMPLE.replace("  max_concurrent_successions: 5\n", "");
+        assert!(matches!(
+            parse(&absent),
+            Err(SupervisionError::Invalid { .. })
+        ));
+
+        let zero = EXAMPLE.replacen(
+            "  max_concurrent_successions: 5",
+            "  max_concurrent_successions: 0",
+            1,
+        );
+        assert!(matches!(
+            parse(&zero),
+            Err(SupervisionError::Invalid { .. })
+        ));
+
+        let excessive = EXAMPLE.replacen(
+            "  max_concurrent_successions: 5",
+            "  max_concurrent_successions: 65",
+            1,
+        );
+        assert!(matches!(
+            parse(&excessive),
+            Err(SupervisionError::Invalid { .. })
+        ));
     }
 }

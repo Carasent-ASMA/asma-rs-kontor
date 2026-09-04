@@ -456,50 +456,7 @@ impl SqliteStore {
         batch_id: &ExternalId,
     ) -> RepositoryResult<Vec<StoredJiraMaterializationItem>> {
         let transaction = self.begin()?;
-        let mut statement = transaction
-            .prepare(
-                "SELECT id, batch_id, project_id, epic_id, task_id, link_id, ordinal,
-                        item_kind, intent_kind, requested_key, marker, confirmed_key,
-                        readback_hash, confirmed_at
-                 FROM jira_materialization_items
-                 WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
-            )
-            .map_err(backend)?;
-        let mut rows = statement
-            .query(params![project_id.to_string(), batch_id.as_str()])
-            .map_err(backend)?;
-        let mut items = Vec::new();
-        while let Some(row) = rows.next().map_err(backend)? {
-            let task: Option<String> = row.get(4).map_err(backend)?;
-            let link: Option<String> = row.get(5).map_err(backend)?;
-            let requested: Option<String> = row.get(9).map_err(backend)?;
-            let confirmed: Option<String> = row.get(11).map_err(backend)?;
-            let hash: Option<String> = row.get(12).map_err(backend)?;
-            let at: Option<String> = row.get(13).map_err(backend)?;
-            items.push(StoredJiraMaterializationItem {
-                id: ExternalId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
-                batch_id: ExternalId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
-                project_id: ProjectId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
-                epic_id: MiniProjectId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
-                task_id: task.as_deref().map(TaskId::parse).transpose()?,
-                link_id: link.as_deref().map(TicketLinkId::parse).transpose()?,
-                ordinal: u32::try_from(row.get::<_, i64>(6).map_err(backend)?).map_err(|_| {
-                    kontor_core::DomainError::invalid(
-                        "Jira item ordinal",
-                        "stored a value outside u32",
-                    )
-                })?,
-                item_kind: JiraItemKind::parse(&row.get::<_, String>(7).map_err(backend)?)?,
-                intent_kind: JiraIntentKind::parse(&row.get::<_, String>(8).map_err(backend)?)?,
-                requested_key: requested.as_deref().map(ExternalId::parse).transpose()?,
-                marker: ExternalId::parse(&row.get::<_, String>(10).map_err(backend)?)?,
-                confirmed_key: confirmed.as_deref().map(ExternalId::parse).transpose()?,
-                readback_hash: hash.as_deref().map(ContentHash::parse).transpose()?,
-                confirmed_at: at.as_deref().map(parse_utc_timestamp).transpose()?,
-            });
-        }
-        drop(rows);
-        drop(statement);
+        let items = read_jira_materialization_items(&transaction, project_id, batch_id)?;
         transaction.commit().map_err(backend)?;
         Ok(items)
     }
@@ -663,10 +620,13 @@ impl SqliteStore {
                     subject: "Jira materialization recovery",
                     rule: "the recovered item set has no batch",
                 })?;
-            transaction.commit().map_err(backend)?;
             let mut items = Vec::with_capacity(recovery.len());
             for recovered_batch_id in &batch_ids {
-                items.extend(self.jira_materialization_items(project_id, recovered_batch_id)?);
+                items.extend(read_jira_materialization_items(
+                    &transaction,
+                    project_id,
+                    recovered_batch_id,
+                )?);
             }
             items.sort_by_key(|item| item.ordinal);
             let scope_matches = items.len() == recovery.len()
@@ -682,6 +642,7 @@ impl SqliteStore {
                     rule: "the recovered batch no longer matches its immutable recovery ledger",
                 });
             }
+            transaction.commit().map_err(backend)?;
             return Ok(Some(RecoveredJiraMaterialization {
                 batch_id,
                 batch_ids,
@@ -886,10 +847,13 @@ impl SqliteStore {
             }
         }
 
-        transaction.commit().map_err(backend)?;
         let mut items = Vec::with_capacity(recovery.len());
         for recovered_batch_id in &batch_ids {
-            items.extend(self.jira_materialization_items(project_id, recovered_batch_id)?);
+            items.extend(read_jira_materialization_items(
+                &transaction,
+                project_id,
+                recovered_batch_id,
+            )?);
         }
         items.sort_by_key(|item| item.ordinal);
         let scope_matches = items.len() == recovery.len()
@@ -905,6 +869,7 @@ impl SqliteStore {
                 rule: "the recovered batch set does not match its immutable recovery ledger",
             });
         }
+        transaction.commit().map_err(backend)?;
         Ok(Some(RecoveredJiraMaterialization {
             batch_id,
             batch_ids,
@@ -1332,4 +1297,51 @@ impl SqliteStore {
         transaction.commit().map_err(backend)?;
         Ok(active)
     }
+}
+
+fn read_jira_materialization_items(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    batch_id: &ExternalId,
+) -> RepositoryResult<Vec<StoredJiraMaterializationItem>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, batch_id, project_id, epic_id, task_id, link_id, ordinal,
+                    item_kind, intent_kind, requested_key, marker, confirmed_key,
+                    readback_hash, confirmed_at
+             FROM jira_materialization_items
+             WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
+        )
+        .map_err(backend)?;
+    let mut rows = statement
+        .query(params![project_id.to_string(), batch_id.as_str()])
+        .map_err(backend)?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        let task: Option<String> = row.get(4).map_err(backend)?;
+        let link: Option<String> = row.get(5).map_err(backend)?;
+        let requested: Option<String> = row.get(9).map_err(backend)?;
+        let confirmed: Option<String> = row.get(11).map_err(backend)?;
+        let hash: Option<String> = row.get(12).map_err(backend)?;
+        let at: Option<String> = row.get(13).map_err(backend)?;
+        items.push(StoredJiraMaterializationItem {
+            id: ExternalId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+            batch_id: ExternalId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+            project_id: ProjectId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+            epic_id: MiniProjectId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+            task_id: task.as_deref().map(TaskId::parse).transpose()?,
+            link_id: link.as_deref().map(TicketLinkId::parse).transpose()?,
+            ordinal: u32::try_from(row.get::<_, i64>(6).map_err(backend)?).map_err(|_| {
+                kontor_core::DomainError::invalid("Jira item ordinal", "stored a value outside u32")
+            })?,
+            item_kind: JiraItemKind::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+            intent_kind: JiraIntentKind::parse(&row.get::<_, String>(8).map_err(backend)?)?,
+            requested_key: requested.as_deref().map(ExternalId::parse).transpose()?,
+            marker: ExternalId::parse(&row.get::<_, String>(10).map_err(backend)?)?,
+            confirmed_key: confirmed.as_deref().map(ExternalId::parse).transpose()?,
+            readback_hash: hash.as_deref().map(ContentHash::parse).transpose()?,
+            confirmed_at: at.as_deref().map(parse_utc_timestamp).transpose()?,
+        });
+    }
+    Ok(items)
 }

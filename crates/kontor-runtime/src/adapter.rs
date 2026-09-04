@@ -28,7 +28,9 @@ use crate::admission::AdmissionRequest;
 use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
-use crate::container::ContainerBindingSnapshot;
+use crate::container::{
+    ContainerBindingSnapshot, ContainerRecoveryOutcome, ContainerRecoveryRequest,
+};
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -805,6 +807,16 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// The posture seats on this runtime get when their role slot declares none.
+    ///
+    /// A plane-wide operator default, subordinate to the role slot: a template
+    /// that already declared a seat's autonomy has made that decision, and this
+    /// must not overrule it. `None` — the default, and what every runtime that
+    /// has no such concept returns — leaves the resolution at supervised.
+    fn declared_autonomy(&self) -> Option<kontor_core::spec::SeatAutonomy> {
+        None
+    }
+
     /// Whether an operator-declared provider route is currently eligible.
     /// Runtimes with no provider concept accept every route.
     fn provider_available(&self, _provider: &str) -> bool {
@@ -1122,6 +1134,21 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PrepareProject,
+        })
+    }
+
+    /// Read the one exact-parent/exact-path native child that may replace a
+    /// stale persisted container binding.
+    ///
+    /// The default refuses. Implementations must perform no native mutation:
+    /// this method is the preview used again immediately before the store CAS.
+    async fn preview_container_recovery(
+        &self,
+        request: &ContainerRecoveryRequest,
+    ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace,
         })
     }
 

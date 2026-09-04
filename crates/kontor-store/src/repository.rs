@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
+use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExceptionKind,
     ExceptionProvenance, ExecutionAuthorization, HolidayImportBatch, HolidayImportKind,
@@ -27,12 +28,13 @@ use kontor_core::id::{
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
     ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
     IntakeReceiptId, MiniProjectId, ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey,
-    ProjectId, ProviderUsageObservationId, QuickSessionId, RealmId, RoleCatalogId, RoleCode,
-    RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId,
-    SignedDuration, SpecVersion, StatusConflictId, TaskId, TaskWorkflowId, TeamDefinitionId,
-    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
-    format_utc_timestamp, parse_utc_timestamp,
+    ProjectId, ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
+    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
+    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId,
+    SuccessionAttemptId, TaskId, TaskWorkflowId, TeamDefinitionId, TeamDefinitionMigrationId,
+    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
+    TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp,
+    parse_utc_timestamp,
 };
 use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
@@ -58,27 +60,29 @@ use kontor_core::repository::{
     NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
     NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
     ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
-    RealmEventPage, RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError,
-    RepositoryResult, RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
-    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
+    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
-    LiveNativeSubject, MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, NativePlacement,
-    NewTeamDefinitionMigration, ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
+    LegacyEpicBacklogCodeCorrection, LiveNativeSubject, MigrationObjectKind,
+    MiniProjectTeamDefinitionSnapshot, NativePlacement, NewTeamDefinitionMigration,
+    ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
 };
 use kontor_core::spec::{
-    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
+    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
     ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability,
     ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier,
@@ -94,6 +98,12 @@ use kontor_core::state::{
     TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
     TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle, certify_task_progress,
     evaluate_seat_attachment, plan_team_advance, plan_team_closure,
+};
+use kontor_core::succession::{
+    NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
+    SuccessionConfirmation, SuccessionDeferredRefresh, SuccessionHandoff, SuccessionHandoffRecord,
+    SuccessionReceipt, SuccessionRefusal, SuccessionRefusalReason, SuccessionSuccessorObservation,
+    SuccessionSuccessorRecord,
 };
 use kontor_core::ticket::{
     EpicStatusConflict, EpicStatusTransitionIntent, ExternalCommentRevision,
@@ -8127,7 +8137,7 @@ const AVAILABILITY_OVERRIDE_COLUMNS: &str = "project_id, account_profile_id, ava
 
 const PROVIDER_QUOTA_STATE_COLUMNS: &str = "project_id, account_profile_id, provider, state, \
     resets_at, evidence_hash, source, observed_at, revision, updated_at, credit_minor_units, \
-    credit_reserve_minor_units, credit_currency";
+    credit_reserve_minor_units, credit_currency, provenance_id";
 
 /// The window set for one pair, ordered by kind so a stored row and a re-read of
 /// it are byte-identical.
@@ -8135,6 +8145,113 @@ const PROVIDER_QUOTA_WINDOW_COLUMNS: &str = "kind, resets_at, used_percent";
 
 const PROVIDER_USAGE_OBSERVATION_COLUMNS: &str = "id, project_id, account_profile_id, provider, \
     evidence_hash, state, resets_at, windows, observed_at";
+
+/// A `u64` this database can store without loss.
+///
+/// Clamping to `i64::MAX` was worse than a refusal: it wrote a number nobody
+/// observed and made the row look authoritative. Provenance that cannot be
+/// stored exactly is not provenance.
+fn storable_u64(field: &'static str, value: u64) -> RepositoryResult<i64> {
+    i64::try_from(value).map_err(|_| {
+        RepositoryError::from(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            field.to_owned(),
+            "exceeds what this database stores exactly",
+        ))
+    })
+}
+
+/// A stored integer read back as `u64`, refusing a corrupt negative.
+fn stored_u64(field: &'static str, value: i64) -> RepositoryResult<u64> {
+    u64::try_from(value).map_err(|_| {
+        RepositoryError::from(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            field.to_owned(),
+            "is stored negative and cannot be read back",
+        ))
+    })
+}
+
+/// A stored integer read back as `u32`, refusing anything out of range.
+fn stored_u32(field: &'static str, value: i64) -> RepositoryResult<u32> {
+    u32::try_from(value).map_err(|_| {
+        RepositoryError::from(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            field.to_owned(),
+            "is stored outside the range it can be read back in",
+        ))
+    })
+}
+
+fn read_quota_observation_provenance(
+    row: &Row<'_>,
+    source_sequences: Vec<(u64, u64)>,
+) -> RepositoryResult<QuotaObservationProvenance> {
+    let parsed_resets_at: Option<String> = row.get(19).map_err(backend)?;
+    let reset_zone: Option<String> = row.get(20).map_err(backend)?;
+    // What the record declared its set to be, held against what was read. The
+    // schema seals the collection, and this is the reader refusing to present a
+    // set that somehow disagrees with the seal rather than quietly shrinking it.
+    let declared = stored_u64(
+        "source_range_count",
+        row.get::<_, i64>(21).map_err(backend)?,
+    )?;
+    if declared != source_sequences.len() as u64 {
+        return Err(DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            "source_range_count".to_owned(),
+            "the stored range set must be exactly the set the record declared",
+        )
+        .into());
+    }
+    Ok(QuotaObservationProvenance {
+        record: kontor_core::repository::NewQuotaObservationProvenance {
+            id: QuotaObservationProvenanceId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+            project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+            account_profile_id: AccountProfileId::parse(
+                &row.get::<_, String>(2).map_err(backend)?,
+            )?,
+            provider: row.get::<_, String>(3).map_err(backend)?,
+            signal_id: row.get::<_, String>(4).map_err(backend)?,
+            signal_version: kontor_core::id::SpecVersion::parse(stored_u32(
+                "signal_version",
+                row.get::<_, i64>(5).map_err(backend)?,
+            )?)?,
+            signal_definition_hash: ContentHash::parse(&row.get::<_, String>(6).map_err(backend)?)?,
+            agent_run_id: AgentRunId::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+            runtime_binding_id: kontor_core::id::RuntimeBindingId::parse(
+                &row.get::<_, String>(8).map_err(backend)?,
+            )?,
+            native_id: ExternalId::parse(&row.get::<_, String>(9).map_err(backend)?)?,
+            binding_generation: stored_u64(
+                "binding_generation",
+                row.get::<_, i64>(10).map_err(backend)?,
+            )?,
+            runtime_observation_cursor: row
+                .get::<_, Option<i64>>(11)
+                .map_err(backend)?
+                .map(EventCursor::parse)
+                .transpose()?,
+            item_epoch: stored_u64("item_epoch", row.get::<_, i64>(12).map_err(backend)?)?,
+            item_seq_start: stored_u64("item_seq_start", row.get::<_, i64>(13).map_err(backend)?)?,
+            item_seq_end: stored_u64("item_seq_end", row.get::<_, i64>(14).map_err(backend)?)?,
+            source_sequences,
+            item_kind: row.get::<_, String>(15).map_err(backend)?,
+            item_observed_at: read_timestamp(&row.get::<_, String>(16).map_err(backend)?)?,
+            decision_basis: kontor_core::spec::QuotaDecisionBasis::parse(
+                &row.get::<_, String>(17).map_err(backend)?,
+            )?,
+            decided_state: ProviderQuotaKind::parse(&row.get::<_, String>(18).map_err(backend)?)?,
+            parsed_resets_at: parsed_resets_at
+                .as_deref()
+                .map(read_timestamp)
+                .transpose()?,
+            reset_zone,
+            evidence_digest: ContentHash::parse(&row.get::<_, String>(22).map_err(backend)?)?,
+            recorded_at: read_timestamp(&row.get::<_, String>(23).map_err(backend)?)?,
+        },
+    })
+}
 
 /// Read one header row. `windows` is filled by the caller, which holds the
 /// connection the set has to be read through.
@@ -8147,6 +8264,12 @@ fn read_provider_quota_state(row: &Row<'_>) -> RepositoryResult<ProviderQuotaSta
         state: ProviderQuotaKind::parse(&row.get::<_, String>(3).map_err(backend)?)?,
         resets_at: resets_at.as_deref().map(read_timestamp).transpose()?,
         windows: Vec::new(),
+        provenance_id: row
+            .get::<_, Option<String>>(13)
+            .map_err(backend)?
+            .as_deref()
+            .map(QuotaObservationProvenanceId::parse)
+            .transpose()?,
         credit: read_credit_balance(row)?,
         evidence_hash: ContentHash::parse(&row.get::<_, String>(5).map_err(backend)?)?,
         source: ProviderQuotaSource::parse(&row.get::<_, String>(6).map_err(backend)?)?,
@@ -8291,9 +8414,131 @@ fn validate_provider_quota_state(request: &NewProviderQuotaState) -> RepositoryR
     Ok(())
 }
 
-fn set_provider_quota_state_in(
+/// Append one immutable provenance record.
+///
+/// Insert-only by construction: the table's own triggers refuse an update or a
+/// delete, so a repeated id is a genuine conflict rather than something to
+/// paper over.
+fn insert_quota_observation_provenance_in(
+    transaction: &Transaction<'_>,
+    record: &kontor_core::repository::NewQuotaObservationProvenance,
+    assigned_cursor: Option<EventCursor>,
+) -> RepositoryResult<()> {
+    // The exact set, in configured order, checked against the envelope before
+    // anything lands. Without this an empty or inconsistent child set could sit
+    // beside authoritative envelope scalars and nobody would notice.
+    let refuse = |rule: &'static str| -> RepositoryError {
+        DomainError::invalid_at(
+            "QuotaObservationProvenance",
+            "source_sequences".to_owned(),
+            rule,
+        )
+        .into()
+    };
+    if record.source_sequences.is_empty() {
+        return Err(refuse("an item covers at least one sequence range"));
+    }
+    let mut previous_end: Option<u64> = None;
+    for (start, end) in &record.source_sequences {
+        if start > end {
+            return Err(refuse("a range ends before it starts"));
+        }
+        if previous_end.is_some_and(|last| *start <= last) {
+            return Err(refuse("ranges must be ordered and disjoint"));
+        }
+        previous_end = Some(*end);
+    }
+    let first = record.source_sequences[0].0;
+    let last = record
+        .source_sequences
+        .last()
+        .map(|(_, end)| *end)
+        .unwrap_or(first);
+    if first != record.item_seq_start || last != record.item_seq_end {
+        return Err(refuse(
+            "the envelope must be exactly the first and last bound",
+        ));
+    }
+    let runtime_observation_cursor = match (record.runtime_observation_cursor, assigned_cursor) {
+        (Some(recorded), Some(assigned)) if recorded != assigned => {
+            return Err(DomainError::invalid_at(
+                "QuotaObservationProvenance",
+                "runtime_observation_cursor".to_owned(),
+                "must equal the control event allocated by the observation transaction",
+            )
+            .into());
+        }
+        (Some(recorded), _) => recorded,
+        (None, Some(assigned)) => assigned,
+        (None, None) => {
+            return Err(DomainError::MissingEvidence {
+                subject: "quota observation provenance",
+                rule: "a runtime observation must cite its exact control event cursor",
+            }
+            .into());
+        }
+    };
+    transaction
+        .execute(
+            "INSERT INTO provider_quota_observation_provenance
+                 (id, project_id, account_profile_id, provider, signal_id, signal_version,
+                  signal_definition_hash, agent_run_id, runtime_binding_id, native_id,
+                  binding_generation, runtime_observation_cursor, item_epoch, item_seq_start,
+                  item_seq_end, item_kind, item_observed_at, decision_basis, decided_state,
+                  parsed_resets_at, reset_zone, source_range_count, evidence_digest, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            params![
+                record.id.to_string(),
+                record.project_id.to_string(),
+                record.account_profile_id.to_string(),
+                record.provider.as_str(),
+                record.signal_id.as_str(),
+                i64::from(record.signal_version.get()),
+                record.signal_definition_hash.as_str(),
+                record.agent_run_id.to_string(),
+                record.runtime_binding_id.to_string(),
+                record.native_id.as_str(),
+                storable_u64("binding_generation", record.binding_generation)?,
+                runtime_observation_cursor.get(),
+                storable_u64("item_epoch", record.item_epoch)?,
+                storable_u64("item_seq_start", record.item_seq_start)?,
+                storable_u64("item_seq_end", record.item_seq_end)?,
+                record.item_kind.as_str(),
+                text(record.item_observed_at),
+                record.decision_basis.as_str(),
+                record.decided_state.as_str(),
+                record.parsed_resets_at.map(text),
+                record.reset_zone.as_deref(),
+                storable_u64("source_range_count", record.source_sequences.len() as u64)?,
+                record.evidence_digest.as_str(),
+                text(record.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    for (ordinal, (start, end)) in record.source_sequences.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO provider_quota_observation_source_ranges
+                     (provenance_id, project_id, ordinal, seq_start, seq_end)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    record.id.to_string(),
+                    record.project_id.to_string(),
+                    storable_u64("ordinal", ordinal as u64)?,
+                    storable_u64("seq_start", *start)?,
+                    storable_u64("seq_end", *end)?,
+                ],
+            )
+            .map_err(backend)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn set_provider_quota_state_in(
     transaction: &Transaction<'_>,
     request: &NewProviderQuotaState,
+    runtime_observation_cursor: Option<EventCursor>,
 ) -> RepositoryResult<ProviderQuotaState> {
     validate_provider_quota_state(request)?;
     if read_account_profile_in(transaction, request.project_id, request.account_profile_id)?
@@ -8319,6 +8564,36 @@ fn set_provider_quota_state_in(
         .optional()
         .map_err(backend)?;
     let current = current.transpose()?;
+
+    // Cross-producer recency. A run's native sequence orders that run's own
+    // events and says nothing about this `(account, provider)` pair, which
+    // several producers write: the usage poller's `ProviderReport`, an
+    // operator's override, and any run that happens to hold the account. So a
+    // refusal can be the newest reducible event *for its run* and still be
+    // older than a `ProviderReport` that already restored availability — and
+    // taking the current revision, as a caller must, would quietly overwrite
+    // the newer truth with the older one.
+    //
+    // Only a `RuntimeObservation` is fenced here, and deliberately: it is the
+    // one source that learns anything only *after* something was refused, so it
+    // is always describing a moment that has already passed. A `ProviderReport`
+    // is a structured answer about now and is the only source that can move a
+    // state back to available without a human, so on an equal instant it wins.
+    // An operator override is a judgement and is never fenced by a machine.
+    //
+    // Regression is a no-op rather than an error: the caller's conclusion was
+    // true when it was observed, it is simply no longer current, and failing
+    // the whole observation transaction over stale-but-honest evidence would
+    // lose the runtime event as well.
+    if request.source == kontor_core::spec::ProviderQuotaSource::RuntimeObservation
+        && let Some(existing) = current.as_ref()
+        && (existing.observed_at > request.observed_at
+            || (existing.observed_at == request.observed_at
+                && existing.source == kontor_core::spec::ProviderQuotaSource::ProviderReport))
+    {
+        return Ok(existing.clone());
+    }
+
     let next = match &current {
         Some(existing) => {
             existing
@@ -8342,13 +8617,80 @@ fn set_provider_quota_state_in(
     let credit_remaining = credit.as_ref().map(|(remaining, _, _)| *remaining);
     let credit_reserve = credit.as_ref().map(|(_, reserve, _)| *reserve);
     let credit_currency = credit.map(|(_, _, currency)| currency);
+    // Provenance first, in this same transaction. The row's reference is a real
+    // foreign key, so the record has to exist before the row can point at it --
+    // and a failure anywhere below rolls both back together, which is the whole
+    // point: a block whose cited evidence never landed is a block nobody can
+    // explain.
+    // A record that does not describe *this* decision is not provenance for it.
+    // Every field the two share is compared before either lands, so a mismatched
+    // record cannot be attached to a row it never authorized.
+    if let Some(record) = request.provenance.as_ref() {
+        let disagreement = if record.project_id != request.project_id {
+            Some("project_id")
+        } else if record.account_profile_id != request.account_profile_id {
+            Some("account_profile_id")
+        } else if record.provider != request.provider {
+            Some("provider")
+        } else if record.decided_state != request.state {
+            Some("decided_state")
+        } else if record.parsed_resets_at != request.resets_at {
+            Some("parsed_resets_at")
+        } else if record.evidence_digest != request.evidence_hash {
+            Some("evidence_digest")
+        } else {
+            None
+        };
+        if let Some(field) = disagreement {
+            return Err(DomainError::invalid_at(
+                "QuotaObservationProvenance",
+                field.to_owned(),
+                "does not match the quota state it would authorize",
+            )
+            .into());
+        }
+        // Only a runtime observation produces one. A provider report or an
+        // operator assertion citing a runtime item would be a claim neither of
+        // them made.
+        if request.source != kontor_core::spec::ProviderQuotaSource::RuntimeObservation {
+            return Err(DomainError::invalid_at(
+                "NewProviderQuotaState",
+                "provenance".to_owned(),
+                "only a runtime observation may write provenance",
+            )
+            .into());
+        }
+    } else if request.source == kontor_core::spec::ProviderQuotaSource::RuntimeObservation {
+        // The converse, and it holds whether or not a row already exists. An
+        // accepted runtime observation that carried none would clear
+        // `provenance_id` and leave a *new* runtime decision nobody can
+        // explain. A stale one never reaches here: the recency rule above
+        // returns before any write.
+        return Err(DomainError::invalid_at(
+            "NewProviderQuotaState",
+            "provenance".to_owned(),
+            "a runtime observation must carry the provenance it rests on",
+        )
+        .into());
+    }
+    let provenance_id = match request.provenance.as_ref() {
+        Some(record) => {
+            insert_quota_observation_provenance_in(
+                transaction,
+                record,
+                runtime_observation_cursor,
+            )?;
+            Some(record.id.to_string())
+        }
+        None => None,
+    };
     transaction
         .execute(
             "INSERT INTO provider_quota_states
                  (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
                   source, observed_at, revision, updated_at, credit_minor_units,
-                  credit_reserve_minor_units, credit_currency)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                  credit_reserve_minor_units, credit_currency, provenance_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (project_id, account_profile_id, provider) DO UPDATE SET
                  state = excluded.state,
                  resets_at = excluded.resets_at,
@@ -8359,7 +8701,8 @@ fn set_provider_quota_state_in(
                  updated_at = excluded.updated_at,
                  credit_minor_units = excluded.credit_minor_units,
                  credit_reserve_minor_units = excluded.credit_reserve_minor_units,
-                 credit_currency = excluded.credit_currency",
+                 credit_currency = excluded.credit_currency,
+                 provenance_id = excluded.provenance_id",
             params![
                 request.project_id.to_string(),
                 request.account_profile_id.to_string(),
@@ -8374,6 +8717,7 @@ fn set_provider_quota_state_in(
                 credit_remaining,
                 credit_reserve,
                 credit_currency,
+                provenance_id,
             ],
         )
         .map_err(backend)?;
@@ -8654,9 +8998,55 @@ impl CapacityRepository for SqliteStore {
         request: &NewProviderQuotaState,
     ) -> RepositoryResult<ProviderQuotaState> {
         let transaction = self.begin()?;
-        let stored = set_provider_quota_state_in(&transaction, request)?;
+        let stored = set_provider_quota_state_in(&transaction, request, None)?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
+    }
+
+    fn get_quota_observation_provenance(
+        &self,
+        project_id: ProjectId,
+        id: QuotaObservationProvenanceId,
+    ) -> RepositoryResult<Option<QuotaObservationProvenance>> {
+        // The exact set first: a record read without it would report an envelope
+        // as though it were the sequences the item carried.
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT seq_start, seq_end
+                   FROM provider_quota_observation_source_ranges
+                  WHERE project_id = ?1 AND provenance_id = ?2
+                  ORDER BY ordinal",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), id.to_string()])
+            .map_err(backend)?;
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            ranges.push((
+                stored_u64("seq_start", row.get::<_, i64>(0).map_err(backend)?)?,
+                stored_u64("seq_end", row.get::<_, i64>(1).map_err(backend)?)?,
+            ));
+        }
+        drop(rows);
+        drop(statement);
+        self.connection
+            .query_row(
+                "SELECT id, project_id, account_profile_id, provider, signal_id, signal_version,
+                        signal_definition_hash, agent_run_id, runtime_binding_id, native_id,
+                        binding_generation, runtime_observation_cursor, item_epoch,
+                        item_seq_start, item_seq_end, item_kind,
+                        item_observed_at, decision_basis, decided_state, parsed_resets_at,
+                        reset_zone, source_range_count, evidence_digest, recorded_at
+                   FROM provider_quota_observation_provenance
+                  WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_quota_observation_provenance(row, ranges.clone())),
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
     }
 
     fn list_provider_quota_states(
@@ -8794,7 +9184,7 @@ impl CapacityRepository for SqliteStore {
         }
 
         if let Some(quota) = request.quota_state.as_ref() {
-            let _ = set_provider_quota_state_in(&transaction, quota)?;
+            let _ = set_provider_quota_state_in(&transaction, quota, None)?;
         } else {
             let current: Option<RepositoryResult<ProviderQuotaState>> = transaction
                 .query_row(
@@ -10418,6 +10808,435 @@ fn ensure_atomic_intent_matches(
     Ok(())
 }
 
+fn topology_container_recovery_by_receipt(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<StoredTopologyContainerRecovery> {
+    transaction
+        .query_row(
+            "SELECT receipt_id, project_id, topology_node_id, container_binding_id,
+                    prior_runtime_kind, prior_host, prior_generation, prior_native_id,
+                    next_runtime_kind, next_host, next_generation, next_native_id,
+                    parent_native_id, observed_kind, canonical_cwd, observed_title,
+                    recovered_at
+             FROM topology_container_recoveries
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![project_id.to_string(), receipt_id.to_string()],
+            |row| {
+                let prior_generation: i64 = row.get(6)?;
+                let next_generation: i64 = row.get(10)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    prior_generation,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    next_generation,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, String>(16)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?
+        .ok_or(RepositoryError::NotFound {
+            subject: "topology container recovery evidence",
+        })
+        .and_then(
+            |(
+                receipt_id,
+                project_id,
+                topology_node_id,
+                container_binding_id,
+                prior_runtime_kind,
+                prior_host,
+                prior_generation,
+                prior_native_id,
+                next_runtime_kind,
+                next_host,
+                next_generation,
+                next_native_id,
+                parent_native_id,
+                observed_kind,
+                canonical_cwd,
+                observed_title,
+                recovered_at,
+            )| {
+                Ok(StoredTopologyContainerRecovery {
+                    receipt_id: CommandReceiptId::parse(&receipt_id)?,
+                    project_id: ProjectId::parse(&project_id)?,
+                    topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
+                    container_binding_id: ExternalId::parse(&container_binding_id)?,
+                    prior_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&prior_runtime_kind)?,
+                        host: ExternalName::parse(&prior_host)?,
+                        generation: u64::try_from(prior_generation).map_err(|_| {
+                            DomainError::invalid(
+                                "prior native generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&prior_native_id)?,
+                    },
+                    replacement_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&next_runtime_kind)?,
+                        host: ExternalName::parse(&next_host)?,
+                        generation: u64::try_from(next_generation).map_err(|_| {
+                            DomainError::invalid(
+                                "replacement native generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&next_native_id)?,
+                    },
+                    parent_native_id: ExternalId::parse(&parent_native_id)?,
+                    observed_kind: ObservedContainerKind::parse(&observed_kind)?,
+                    canonical_cwd: canonical_cwd
+                        .as_deref()
+                        .map(ExternalName::parse)
+                        .transpose()?,
+                    observed_title: ExternalName::parse(&observed_title)?,
+                    recovered_at: read_timestamp(&recovered_at)?,
+                })
+            },
+        )
+}
+
+impl SqliteStore {
+    /// Correct one legacy-imported epic code and record the authority atomically.
+    pub fn correct_legacy_epic_backlog_code_with_intent(
+        &self,
+        correction: &LegacyEpicBacklogCodeCorrection,
+        expected_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(EpicBacklogCode, CommandReceipt, crate::graph::Applied)> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: correction.mini_project_id,
+        };
+        if intent.project_id != correction.project_id
+            || intent.kind != CommandKind::CorrectEpicBacklogCode
+            || intent.target != target
+            || intent.target_revision != expected_revision
+        {
+            return Err(DomainError::invalid(
+                "CommandReceipt",
+                "the local command authority does not match the epic-code correction",
+            )
+            .into());
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
+        {
+            let code: String = transaction
+                .query_row(
+                    "SELECT corrected_code FROM epic_backlog_code_corrections
+                     WHERE project_id = ?1 AND receipt_id = ?2",
+                    params![correction.project_id.to_string(), existing.id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            return Ok((
+                EpicBacklogCode::parse(code)?,
+                existing,
+                crate::graph::Applied::Unchanged,
+            ));
+        }
+
+        let source: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT code, provenance FROM epic_backlog_codes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                params![
+                    correction.project_id.to_string(),
+                    correction.mini_project_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((prior_code, provenance)) = source else {
+            return Err(RepositoryError::NotFound {
+                subject: "active epic backlog code",
+            });
+        };
+        if provenance != "legacy" {
+            return Err(conflict(
+                "epic backlog code correction",
+                "only a legacy-imported code may be corrected",
+            ));
+        }
+        if prior_code != correction.expected_prior_code.as_str() {
+            return Err(conflict(
+                "epic backlog code correction",
+                "the active legacy code moved since preview",
+            ));
+        }
+        let pinned: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM mini_project_team_definition_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    correction.project_id.to_string(),
+                    correction.mini_project_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if pinned != 0 {
+            return Err(conflict(
+                "epic backlog code correction",
+                "an epic that already pins a Team Definition cannot change its item-code namespace",
+            ));
+        }
+        let collision: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM (
+                     SELECT code AS value FROM epic_backlog_codes
+                      WHERE project_id = ?1 AND status = 'active'
+                     UNION ALL
+                     SELECT corrected_code AS value FROM epic_backlog_code_corrections
+                      WHERE project_id = ?1
+                 ) WHERE value = ?2 COLLATE NOCASE",
+                params![
+                    correction.project_id.to_string(),
+                    correction.corrected_code.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if collision != 0 {
+            return Err(conflict(
+                "epic backlog code correction",
+                "the corrected code is already reserved in this project",
+            ));
+        }
+
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO epic_backlog_code_corrections
+                     (project_id, mini_project_id, prior_code, corrected_code,
+                      reason, receipt_id, corrected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    correction.project_id.to_string(),
+                    correction.mini_project_id.to_string(),
+                    correction.expected_prior_code.as_str(),
+                    correction.corrected_code.as_str(),
+                    correction.reason.as_str(),
+                    receipt.id.to_string(),
+                    text(correction.corrected_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((
+            correction.corrected_code.clone(),
+            receipt,
+            crate::graph::Applied::Created,
+        ))
+    }
+
+    /// Replace one stale native container identity and record the authority atomically.
+    pub fn recover_topology_container_with_intent(
+        &self,
+        recovery: &TopologyContainerRecovery,
+        expected_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(
+        StoredTopologyContainerRecovery,
+        CommandReceipt,
+        crate::graph::Applied,
+    )> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::Project {
+            project_id: recovery.expected.project_id,
+        };
+        if intent.project_id != recovery.expected.project_id
+            || intent.kind != CommandKind::RecoverTopologyContainer
+            || intent.target != target
+            || intent.target_revision != expected_revision
+        {
+            return Err(DomainError::invalid(
+                "CommandReceipt",
+                "the local command authority does not match the container recovery",
+            )
+            .into());
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
+        {
+            let evidence = topology_container_recovery_by_receipt(
+                &transaction,
+                recovery.expected.project_id,
+                existing.id,
+            )?;
+            return Ok((evidence, existing, crate::graph::Applied::Unchanged));
+        }
+        if recovery.replacement.project_id != recovery.expected.project_id
+            || recovery.replacement.topology_node_id != recovery.expected.topology_node_id
+            || recovery.replacement.container_binding_id != recovery.expected.container_binding_id
+            || recovery.replacement.identity == recovery.expected.identity
+        {
+            return Err(DomainError::invalid(
+                "topology container recovery",
+                "the replacement must preserve project, node and logical binding while changing native identity",
+            )
+            .into());
+        }
+
+        let collision: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM topology_node_containers
+                 WHERE project_id = ?1 AND topology_node_id <> ?2
+                   AND runtime_kind = ?3 AND host = ?4 AND generation = ?5 AND native_id = ?6",
+                params![
+                    recovery.expected.project_id.to_string(),
+                    recovery.expected.topology_node_id.to_string(),
+                    recovery.replacement.identity.runtime_kind.as_str(),
+                    recovery.replacement.identity.host.as_str(),
+                    i64::try_from(recovery.replacement.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "replacement native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.replacement.identity.native_id.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if collision != 0 {
+            return Err(conflict(
+                "topology container recovery",
+                "the replacement native container is already bound to another topology node",
+            ));
+        }
+
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE topology_node_containers
+                 SET runtime_kind = ?1, host = ?2, generation = ?3, native_id = ?4,
+                     observed_kind = ?5, canonical_cwd = ?6, bound_at = ?7,
+                     last_readback_at = ?7, revision = revision + 1
+                 WHERE project_id = ?8 AND topology_node_id = ?9
+                   AND container_binding_id = ?10
+                   AND runtime_kind = ?11 AND host = ?12 AND generation = ?13
+                   AND native_id = ?14 AND revision = ?15",
+                params![
+                    recovery.replacement.identity.runtime_kind.as_str(),
+                    recovery.replacement.identity.host.as_str(),
+                    i64::try_from(recovery.replacement.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "replacement native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.replacement.identity.native_id.as_str(),
+                    recovery.replacement.observed_kind.as_str(),
+                    recovery
+                        .replacement
+                        .canonical_cwd
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    text(recovery.replacement.observed_at),
+                    recovery.expected.project_id.to_string(),
+                    recovery.expected.topology_node_id.to_string(),
+                    recovery.expected.container_binding_id.as_str(),
+                    recovery.expected.identity.runtime_kind.as_str(),
+                    recovery.expected.identity.host.as_str(),
+                    i64::try_from(recovery.expected.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "prior native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.expected.identity.native_id.as_str(),
+                    revision_column(recovery.expected.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "topology container recovery",
+                "the stale binding moved since preview",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO topology_container_recoveries
+                     (receipt_id, project_id, topology_node_id, container_binding_id,
+                      prior_runtime_kind, prior_host, prior_generation, prior_native_id,
+                      next_runtime_kind, next_host, next_generation, next_native_id,
+                      parent_native_id, observed_kind, canonical_cwd, observed_title,
+                      recovered_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                         ?13, ?14, ?15, ?16, ?17)",
+                params![
+                    receipt.id.to_string(),
+                    recovery.expected.project_id.to_string(),
+                    recovery.expected.topology_node_id.to_string(),
+                    recovery.expected.container_binding_id.as_str(),
+                    recovery.expected.identity.runtime_kind.as_str(),
+                    recovery.expected.identity.host.as_str(),
+                    i64::try_from(recovery.expected.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "prior native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.expected.identity.native_id.as_str(),
+                    recovery.replacement.identity.runtime_kind.as_str(),
+                    recovery.replacement.identity.host.as_str(),
+                    i64::try_from(recovery.replacement.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "replacement native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.replacement.identity.native_id.as_str(),
+                    recovery.parent_native_id.as_str(),
+                    recovery.replacement.observed_kind.as_str(),
+                    recovery
+                        .replacement
+                        .canonical_cwd
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    recovery.observed_title.as_str(),
+                    text(recovery.replacement.observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        let evidence = topology_container_recovery_by_receipt(
+            &transaction,
+            recovery.expected.project_id,
+            receipt.id,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((evidence, receipt, crate::graph::Applied::Created))
+    }
+}
+
 impl WorkflowRepository for SqliteStore {
     fn create_task_workflow(&self, request: &NewTaskWorkflow) -> RepositoryResult<TaskWorkflow> {
         request.snapshot.verify()?;
@@ -11971,6 +12790,1332 @@ impl RunRepository for SqliteStore {
     ) -> RepositoryResult<Vec<RuntimeEvent>> {
         crate::events::replay::read_runtime_events(self, project_id, agent_run_id, after)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Quota-blocked seat succession
+// ---------------------------------------------------------------------------
+
+const SUCCESSION_ATTEMPT_COLUMNS: &str = "id, project_id, task_id, team_run_id, role_key, \
+    predecessor_agent_run_id, predecessor_runtime_binding_id, predecessor_runtime_kind, \
+    predecessor_host, predecessor_native_id, predecessor_generation, expected_task_revision, \
+    expected_team_revision, expected_predecessor_revision, runtime_observation_cursor, \
+    quota_provenance_id, quota_state_revision, quota_evidence_hash, quota_provider, \
+    successor_model_rung, successor_model_rung_hash, successor_account_profile_id, \
+    idempotency_key, intent_hash, state, deferred_until, handoff, handoff_hash, \
+    successor_agent_run_id, successor_runtime_binding_id, successor_runtime_kind, \
+    successor_host, successor_native_id, successor_generation, successor_observation_cursor, \
+    successor_observed_at, refusal_reason, revision, created_at, updated_at, \
+    predecessor_retired_at, confirmed_at, refused_at, successor_planned_at";
+
+#[derive(Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSuccessionModelRung {
+    schema_version: u32,
+    model_rung: ModelRung,
+}
+
+struct StoredSuccessionQuotaEvidence {
+    account_profile_id: String,
+    provider: String,
+    agent_run_id: String,
+    runtime_observation_cursor: i64,
+    runtime_binding_id: String,
+    native_id: String,
+    binding_generation: i64,
+    evidence_hash: String,
+    state: String,
+    resets_at: Option<String>,
+}
+
+fn succession_model_rung_document(model_rung: &ModelRung) -> RepositoryResult<CanonicalDocument> {
+    model_rung.validate()?;
+    Ok(CanonicalDocument::from_serializable(
+        &StoredSuccessionModelRung {
+            schema_version: 1,
+            model_rung: model_rung.clone(),
+        },
+    )?)
+}
+
+fn read_succession_attempt(row: &Row<'_>) -> RepositoryResult<SuccessionAttempt> {
+    let predecessor_generation =
+        u64::try_from(row.get::<_, i64>(10).map_err(backend)?).map_err(|_| {
+            RepositoryError::Backend {
+                detail: "a succession predecessor generation is stored negative".to_owned(),
+            }
+        })?;
+    let route_json: Option<String> = row.get(19).map_err(backend)?;
+    let route_hash: Option<String> = row.get(20).map_err(backend)?;
+    let successor_account: Option<String> = row.get(21).map_err(backend)?;
+    let (successor_model_rung, successor_account_profile_id) =
+        match (route_json, route_hash, successor_account) {
+            (Some(json), Some(hash), Some(account)) => {
+                let route_document = stored_payload(&json, &hash)?;
+                let stored_route: StoredSuccessionModelRung = route_document.deserialize()?;
+                if stored_route.schema_version != 1 {
+                    return Err(DomainError::invalid(
+                        "stored succession model rung",
+                        "schema_version must be 1",
+                    )
+                    .into());
+                }
+                stored_route.model_rung.validate()?;
+                (
+                    Some(stored_route.model_rung),
+                    Some(AccountProfileId::parse(&account)?),
+                )
+            }
+            (None, None, None) => (None, None),
+            _ => {
+                return Err(RepositoryError::Backend {
+                    detail: "a succession successor route is only partly stored".to_owned(),
+                });
+            }
+        };
+
+    let handoff_json: Option<String> = row.get(26).map_err(backend)?;
+    let handoff_hash: Option<String> = row.get(27).map_err(backend)?;
+    let (handoff, handoff_hash) = match (handoff_json, handoff_hash) {
+        (Some(json), Some(hash)) => {
+            let document = stored_payload(&json, &hash)?;
+            let handoff: SuccessionHandoff = document.deserialize()?;
+            handoff.validate()?;
+            (Some(handoff), Some(ContentHash::parse(&hash)?))
+        }
+        (None, None) => (None, None),
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "a succession handoff is only partly stored".to_owned(),
+            });
+        }
+    };
+
+    let successor_run: Option<String> = row.get(28).map_err(backend)?;
+    let successor_binding: Option<String> = row.get(29).map_err(backend)?;
+    let successor_runtime: Option<String> = row.get(30).map_err(backend)?;
+    let successor_host: Option<String> = row.get(31).map_err(backend)?;
+    let successor_native: Option<String> = row.get(32).map_err(backend)?;
+    let successor_generation: Option<i64> = row.get(33).map_err(backend)?;
+    let successor_cursor: Option<i64> = row.get(34).map_err(backend)?;
+    let successor_observed_at: Option<String> = row.get(35).map_err(backend)?;
+    let successor = match (
+        successor_run,
+        successor_binding,
+        successor_runtime,
+        successor_host,
+        successor_native,
+        successor_generation,
+        successor_cursor,
+        successor_observed_at,
+    ) {
+        (
+            Some(run),
+            Some(binding),
+            Some(runtime_kind),
+            Some(host),
+            Some(native_id),
+            Some(generation),
+            Some(cursor),
+            Some(observed_at),
+        ) => Some(SuccessionSuccessorObservation {
+            agent_run_id: AgentRunId::parse(&run)?,
+            runtime_binding_id: RuntimeBindingId::parse(&binding)?,
+            native_identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                host: ExternalName::parse(&host)?,
+                generation: u64::try_from(generation).map_err(|_| RepositoryError::Backend {
+                    detail: "a succession successor generation is stored negative".to_owned(),
+                })?,
+                native_id: ExternalId::parse(&native_id)?,
+            },
+            runtime_observation_cursor: EventCursor::parse(cursor)?,
+            observed_at: read_timestamp(&observed_at)?,
+        }),
+        (None, None, None, None, None, None, None, None) => None,
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "a succession successor observation is only partly stored".to_owned(),
+            });
+        }
+    };
+
+    let deferred_until: Option<String> = row.get(25).map_err(backend)?;
+    let refusal_reason: Option<String> = row.get(36).map_err(backend)?;
+    let predecessor_retired_at: Option<String> = row.get(40).map_err(backend)?;
+    let confirmed_at: Option<String> = row.get(41).map_err(backend)?;
+    let refused_at: Option<String> = row.get(42).map_err(backend)?;
+    Ok(SuccessionAttempt {
+        request: NewSuccessionAttempt {
+            id: SuccessionAttemptId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+            project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+            task_id: TaskId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+            team_run_id: TeamRunId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+            role: RoleKey::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+            predecessor_agent_run_id: AgentRunId::parse(
+                &row.get::<_, String>(5).map_err(backend)?,
+            )?,
+            predecessor_runtime_binding_id: RuntimeBindingId::parse(
+                &row.get::<_, String>(6).map_err(backend)?,
+            )?,
+            predecessor_native_identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(&row.get::<_, String>(7).map_err(backend)?)?,
+                host: ExternalName::parse(&row.get::<_, String>(8).map_err(backend)?)?,
+                native_id: ExternalId::parse(&row.get::<_, String>(9).map_err(backend)?)?,
+                generation: predecessor_generation,
+            },
+            expected_task_revision: revision_of(row.get::<_, i64>(11).map_err(backend)?)?,
+            expected_team_revision: revision_of(row.get::<_, i64>(12).map_err(backend)?)?,
+            expected_predecessor_revision: revision_of(row.get::<_, i64>(13).map_err(backend)?)?,
+            runtime_observation_cursor: EventCursor::parse(
+                row.get::<_, i64>(14).map_err(backend)?,
+            )?,
+            quota_provenance_id: QuotaObservationProvenanceId::parse(
+                &row.get::<_, String>(15).map_err(backend)?,
+            )?,
+            quota_state_revision: revision_of(row.get::<_, i64>(16).map_err(backend)?)?,
+            quota_evidence_hash: ContentHash::parse(&row.get::<_, String>(17).map_err(backend)?)?,
+            quota_provider: row.get(18).map_err(backend)?,
+            successor_model_rung,
+            successor_account_profile_id,
+            idempotency_key: IdempotencyKey::parse(&row.get::<_, String>(22).map_err(backend)?)?,
+            intent_hash: ContentHash::parse(&row.get::<_, String>(23).map_err(backend)?)?,
+            deferred_until: deferred_until.as_deref().map(read_timestamp).transpose()?,
+            created_at: read_timestamp(&row.get::<_, String>(38).map_err(backend)?)?,
+        },
+        state: SuccessionAttemptState::parse(&row.get::<_, String>(24).map_err(backend)?)?,
+        handoff,
+        handoff_hash,
+        successor,
+        refusal_reason: refusal_reason
+            .as_deref()
+            .map(SuccessionRefusalReason::parse)
+            .transpose()?,
+        revision: revision_of(row.get::<_, i64>(37).map_err(backend)?)?,
+        updated_at: read_timestamp(&row.get::<_, String>(39).map_err(backend)?)?,
+        successor_planned_at: row
+            .get::<_, Option<String>>(43)
+            .map_err(backend)?
+            .as_deref()
+            .map(read_timestamp)
+            .transpose()?,
+        predecessor_retired_at: predecessor_retired_at
+            .as_deref()
+            .map(read_timestamp)
+            .transpose()?,
+        confirmed_at: confirmed_at.as_deref().map(read_timestamp).transpose()?,
+        refused_at: refused_at.as_deref().map(read_timestamp).transpose()?,
+    })
+}
+
+fn read_succession_attempt_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    id: SuccessionAttemptId,
+) -> RepositoryResult<Option<SuccessionAttempt>> {
+    let row: Option<RepositoryResult<SuccessionAttempt>> = transaction
+        .query_row(
+            &format!(
+                "SELECT {SUCCESSION_ATTEMPT_COLUMNS} FROM succession_attempts
+                 WHERE project_id = ?1 AND id = ?2"
+            ),
+            params![project_id.to_string(), id.to_string()],
+            |row| Ok(read_succession_attempt(row)),
+        )
+        .optional()
+        .map_err(backend)?;
+    row.transpose()
+}
+
+fn read_succession_by_key_in(
+    transaction: &Transaction<'_>,
+    key: &IdempotencyKey,
+) -> RepositoryResult<Option<SuccessionAttempt>> {
+    let row: Option<RepositoryResult<SuccessionAttempt>> = transaction
+        .query_row(
+            &format!(
+                "SELECT {SUCCESSION_ATTEMPT_COLUMNS} FROM succession_attempts
+                 WHERE idempotency_key = ?1"
+            ),
+            params![key.as_str()],
+            |row| Ok(read_succession_attempt(row)),
+        )
+        .optional()
+        .map_err(backend)?;
+    row.transpose()
+}
+
+fn same_succession_intent(stored: &NewSuccessionAttempt, request: &NewSuccessionAttempt) -> bool {
+    stored.project_id == request.project_id
+        && stored.task_id == request.task_id
+        && stored.team_run_id == request.team_run_id
+        && stored.role == request.role
+        && stored.predecessor_agent_run_id == request.predecessor_agent_run_id
+        && stored.predecessor_runtime_binding_id == request.predecessor_runtime_binding_id
+        && stored.predecessor_native_identity == request.predecessor_native_identity
+        && stored.expected_task_revision == request.expected_task_revision
+        && stored.expected_team_revision == request.expected_team_revision
+        && stored.expected_predecessor_revision == request.expected_predecessor_revision
+        && stored.runtime_observation_cursor == request.runtime_observation_cursor
+        && stored.quota_provenance_id == request.quota_provenance_id
+        && stored.quota_state_revision == request.quota_state_revision
+        && stored.quota_evidence_hash == request.quota_evidence_hash
+        && stored.quota_provider == request.quota_provider
+        && (request.deferred_until.is_some()
+            || (stored.successor_model_rung == request.successor_model_rung
+                && stored.successor_account_profile_id == request.successor_account_profile_id))
+        && stored.intent_hash == request.intent_hash
+        && stored.deferred_until == request.deferred_until
+}
+
+fn succession_attempts_query(
+    connection: &Connection,
+    predicate: &str,
+    parameters: impl rusqlite::Params,
+) -> RepositoryResult<Vec<SuccessionAttempt>> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {SUCCESSION_ATTEMPT_COLUMNS} FROM succession_attempts
+             WHERE {predicate}"
+        ))
+        .map_err(backend)?;
+    let mut rows = statement.query(parameters).map_err(backend)?;
+    let mut attempts = Vec::new();
+    while let Some(row) = rows.next().map_err(backend)? {
+        attempts.push(read_succession_attempt(row)?);
+    }
+    Ok(attempts)
+}
+
+fn validate_successor_observation(
+    transaction: &Transaction<'_>,
+    attempt: &SuccessionAttempt,
+    observation: &SuccessionSuccessorObservation,
+) -> RepositoryResult<()> {
+    let successor_account =
+        attempt
+            .request
+            .successor_account_profile_id
+            .ok_or(DomainError::MissingEvidence {
+                subject: "succession successor",
+                rule: "the attempt has no frozen successor account",
+            })?;
+    if observation.agent_run_id == attempt.request.predecessor_agent_run_id {
+        return Err(conflict(
+            "succession successor",
+            "the predecessor cannot be installed as its own successor",
+        ));
+    }
+    let run = read_agent_run(
+        transaction,
+        attempt.request.project_id,
+        observation.agent_run_id,
+    )?
+    .ok_or(RepositoryError::NotFound {
+        subject: "succession successor run",
+    })?;
+    let binding = run.binding.as_ref().ok_or(DomainError::MissingEvidence {
+        subject: "succession successor",
+        rule: "the successor has no runtime binding",
+    })?;
+    if run.team_run_id != attempt.request.team_run_id
+        || run.role != attempt.request.role
+        || run.parent_agent_run_id != Some(attempt.request.predecessor_agent_run_id)
+        || run.account_profile_id != Some(successor_account)
+        || binding.id != observation.runtime_binding_id
+        || binding.identity != observation.native_identity
+        || run.projection.last_cursor != Some(observation.runtime_observation_cursor)
+        || !matches!(
+            run.projection.observed,
+            ObservedRunState::Running | ObservedRunState::WaitingInput
+        )
+    {
+        return Err(DomainError::MissingEvidence {
+            subject: "succession successor",
+            rule: "the readback does not match the frozen slot, account, lineage and binding",
+        }
+        .into());
+    }
+    let confirmed: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM runtime_events
+             WHERE project_id = ?1 AND cursor = ?2 AND event_kind = 'runtime_observation'
+               AND agent_run_id = ?3 AND runtime_kind = ?4 AND host = ?5
+               AND generation = ?6 AND native_id = ?7
+               AND observed_state IN ('running', 'waiting_input')",
+            params![
+                attempt.request.project_id.to_string(),
+                observation.runtime_observation_cursor.get(),
+                observation.agent_run_id.to_string(),
+                observation.native_identity.runtime_kind.as_str(),
+                observation.native_identity.host.as_str(),
+                generation_column(observation.native_identity.generation)?,
+                observation.native_identity.native_id.as_str(),
+            ],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    if confirmed != 1 {
+        return Err(DomainError::MissingEvidence {
+            subject: "succession successor",
+            rule: "the cited cursor is not the exact confirmed successor observation",
+        }
+        .into());
+    }
+    Ok(())
+}
+
+impl SuccessionRepository for SqliteStore {
+    fn create_succession_attempt(
+        &self,
+        request: &NewSuccessionAttempt,
+    ) -> RepositoryResult<SuccessionAttempt> {
+        let state = request.initial_state()?;
+        let route = request
+            .successor_model_rung
+            .as_ref()
+            .map(succession_model_rung_document)
+            .transpose()?;
+        let transaction = self.begin()?;
+        if let Some(existing) = read_succession_by_key_in(&transaction, &request.idempotency_key)? {
+            if same_succession_intent(&existing.request, request) {
+                return Ok(existing);
+            }
+            return Err(conflict(
+                "succession idempotency key",
+                "the key already names a different frozen succession intent",
+            ));
+        }
+
+        let task_revision: Option<i64> = transaction
+            .query_row(
+                "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![request.project_id.to_string(), request.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let task_revision = task_revision.ok_or(RepositoryError::NotFound {
+            subject: "succession task",
+        })?;
+        revision_of(task_revision)?.expect("succession task", request.expected_task_revision)?;
+
+        let team: Option<(String, i64, Option<String>)> = transaction
+            .query_row(
+                "SELECT task_id, revision, closed_at FROM team_runs
+                 WHERE project_id = ?1 AND id = ?2",
+                params![
+                    request.project_id.to_string(),
+                    request.team_run_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let (team_task, team_revision, team_closed) = team.ok_or(RepositoryError::NotFound {
+            subject: "succession team run",
+        })?;
+        if TaskId::parse(&team_task)? != request.task_id || team_closed.is_some() {
+            return Err(conflict(
+                "succession team run",
+                "the team is not the open team serving the frozen task",
+            ));
+        }
+        revision_of(team_revision)?
+            .expect("succession team run", request.expected_team_revision)?;
+
+        let predecessor = read_agent_run(
+            &transaction,
+            request.project_id,
+            request.predecessor_agent_run_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "succession predecessor run",
+        })?;
+        predecessor.revision.expect(
+            "succession predecessor",
+            request.expected_predecessor_revision,
+        )?;
+        let predecessor_binding =
+            predecessor
+                .binding
+                .as_ref()
+                .ok_or(DomainError::MissingEvidence {
+                    subject: "succession predecessor",
+                    rule: "the quota-blocked run has no runtime binding",
+                })?;
+        if predecessor.team_run_id != request.team_run_id
+            || predecessor.role != request.role
+            || predecessor_binding.id != request.predecessor_runtime_binding_id
+            || predecessor_binding.identity != request.predecessor_native_identity
+            || predecessor.projection.observed != ObservedRunState::Blocked
+            || predecessor.projection.last_cursor != Some(request.runtime_observation_cursor)
+            || predecessor.terminal.is_some()
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor",
+                rule: "the current slot, binding and latest blocked cursor do not match the frozen decision",
+            }
+            .into());
+        }
+        let predecessor_account =
+            predecessor
+                .account_profile_id
+                .ok_or(DomainError::MissingEvidence {
+                    subject: "succession predecessor",
+                    rule: "a quota-blocked predecessor must be pinned to an account",
+                })?;
+
+        let evidence: Option<StoredSuccessionQuotaEvidence> = transaction
+            .query_row(
+                "SELECT p.account_profile_id, p.provider, p.agent_run_id,
+                            p.runtime_observation_cursor, p.runtime_binding_id, p.native_id,
+                            p.binding_generation, q.evidence_hash, q.state, q.resets_at
+                     FROM provider_quota_observation_provenance p
+                     JOIN provider_quota_states q
+                       ON q.project_id = p.project_id
+                      AND q.account_profile_id = p.account_profile_id
+                      AND q.provider = p.provider
+                      AND q.provenance_id = p.id
+                     WHERE p.project_id = ?1 AND p.id = ?2 AND q.revision = ?3",
+                params![
+                    request.project_id.to_string(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                ],
+                |row| {
+                    Ok(StoredSuccessionQuotaEvidence {
+                        account_profile_id: row.get(0)?,
+                        provider: row.get(1)?,
+                        agent_run_id: row.get(2)?,
+                        runtime_observation_cursor: row.get(3)?,
+                        runtime_binding_id: row.get(4)?,
+                        native_id: row.get(5)?,
+                        binding_generation: row.get(6)?,
+                        evidence_hash: row.get(7)?,
+                        state: row.get(8)?,
+                        resets_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(evidence) = evidence else {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession quota",
+                rule: "the current quota row does not cite the frozen provenance and revision",
+            }
+            .into());
+        };
+        let resets_at = evidence
+            .resets_at
+            .as_deref()
+            .map(read_timestamp)
+            .transpose()?;
+        let quota_blocks = match ProviderQuotaKind::parse(&evidence.state)? {
+            ProviderQuotaKind::Exhausted => {
+                resets_at.is_some_and(|reset| request.created_at < reset)
+            }
+            ProviderQuotaKind::Drained | ProviderQuotaKind::Unknown => true,
+            ProviderQuotaKind::Available | ProviderQuotaKind::CannotReport => false,
+        };
+        if AccountProfileId::parse(&evidence.account_profile_id)? != predecessor_account
+            || evidence.provider != request.quota_provider
+            || AgentRunId::parse(&evidence.agent_run_id)? != request.predecessor_agent_run_id
+            || EventCursor::parse(evidence.runtime_observation_cursor)?
+                != request.runtime_observation_cursor
+            || RuntimeBindingId::parse(&evidence.runtime_binding_id)?
+                != request.predecessor_runtime_binding_id
+            || ExternalId::parse(&evidence.native_id)?
+                != request.predecessor_native_identity.native_id
+            || u64::try_from(evidence.binding_generation).ok()
+                != Some(request.predecessor_native_identity.generation)
+            || ContentHash::parse(&evidence.evidence_hash)? != request.quota_evidence_hash
+            || !quota_blocks
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession quota",
+                rule: "the current blocking quota evidence does not exactly match the predecessor observation",
+            }
+            .into());
+        }
+        if let Some(account_profile_id) = request.successor_account_profile_id
+            && read_account_profile_in(&transaction, request.project_id, account_profile_id)?
+                .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "succession successor account",
+            });
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO succession_attempts
+                    (id, project_id, task_id, team_run_id, role_key,
+                     predecessor_agent_run_id, predecessor_runtime_binding_id,
+                     predecessor_runtime_kind, predecessor_host, predecessor_native_id,
+                     predecessor_generation, expected_task_revision, expected_team_revision,
+                     expected_predecessor_revision, runtime_observation_cursor,
+                     quota_provenance_id, quota_state_revision, quota_evidence_hash,
+                     quota_provider, successor_model_rung, successor_model_rung_hash,
+                     successor_account_profile_id, idempotency_key, intent_hash, state,
+                     deferred_until, revision, created_at, updated_at, successor_planned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+                         ?25, ?26, 1, ?27, ?27, ?28)",
+                params![
+                    request.id.to_string(),
+                    request.project_id.to_string(),
+                    request.task_id.to_string(),
+                    request.team_run_id.to_string(),
+                    request.role.as_str(),
+                    request.predecessor_agent_run_id.to_string(),
+                    request.predecessor_runtime_binding_id.to_string(),
+                    request.predecessor_native_identity.runtime_kind.as_str(),
+                    request.predecessor_native_identity.host.as_str(),
+                    request.predecessor_native_identity.native_id.as_str(),
+                    generation_column(request.predecessor_native_identity.generation)?,
+                    revision_column(request.expected_task_revision)?,
+                    revision_column(request.expected_team_revision)?,
+                    revision_column(request.expected_predecessor_revision)?,
+                    request.runtime_observation_cursor.get(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                    request.quota_evidence_hash.as_str(),
+                    request.quota_provider.as_str(),
+                    route.as_ref().map(CanonicalDocument::json),
+                    route.as_ref().map(|document| document.hash().as_str()),
+                    request
+                        .successor_account_profile_id
+                        .map(|account| account.to_string()),
+                    request.idempotency_key.as_str(),
+                    request.intent_hash.as_str(),
+                    state.as_str(),
+                    request.deferred_until.map(text),
+                    text(request.created_at),
+                    (state == SuccessionAttemptState::Planned).then(|| text(request.created_at)),
+                ],
+            )
+            .map_err(backend)?;
+        let attempt = read_succession_attempt_in(&transaction, request.project_id, request.id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "created succession attempt",
+            })?;
+        transaction.commit().map_err(backend)?;
+        Ok(attempt)
+    }
+
+    fn get_succession_attempt(
+        &self,
+        project_id: ProjectId,
+        id: SuccessionAttemptId,
+    ) -> RepositoryResult<Option<SuccessionAttempt>> {
+        let transaction = self.begin()?;
+        read_succession_attempt_in(&transaction, project_id, id)
+    }
+
+    fn succession_attempt_by_key(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<SuccessionAttempt>> {
+        let transaction = self.begin()?;
+        read_succession_by_key_in(&transaction, key)
+    }
+
+    fn active_succession_attempt(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role: &RoleKey,
+    ) -> RepositoryResult<Option<SuccessionAttempt>> {
+        let mut attempts = succession_attempts_query(
+            &self.connection,
+            "project_id = ?1 AND team_run_id = ?2 AND role_key = ?3
+             AND state IN ('planned', 'deferred', 'predecessor_retired', 'successor_observed')
+             ORDER BY created_at, id",
+            params![
+                project_id.to_string(),
+                team_run_id.to_string(),
+                role.as_str()
+            ],
+        )?;
+        Ok(attempts.pop())
+    }
+
+    fn list_nonterminal_succession_attempts(
+        &self,
+        limit: u32,
+    ) -> RepositoryResult<Vec<SuccessionAttempt>> {
+        if limit == 0 {
+            return Err(
+                DomainError::invalid("succession inventory limit", "must be positive").into(),
+            );
+        }
+        succession_attempts_query(
+            &self.connection,
+            "state IN ('planned', 'deferred', 'predecessor_retired', 'successor_observed')
+             ORDER BY created_at, id LIMIT ?1",
+            params![i64::from(limit)],
+        )
+    }
+
+    fn list_due_succession_attempts(
+        &self,
+        now: Timestamp,
+        limit: u32,
+    ) -> RepositoryResult<Vec<SuccessionAttempt>> {
+        if limit == 0 {
+            return Err(
+                DomainError::invalid("succession inventory limit", "must be positive").into(),
+            );
+        }
+        succession_attempts_query(
+            &self.connection,
+            "state IN ('planned', 'predecessor_retired', 'successor_observed')
+             OR (state = 'deferred' AND deferred_until <= ?1)
+             ORDER BY created_at, id LIMIT ?2",
+            params![text(now), i64::from(limit)],
+        )
+    }
+
+    fn refresh_deferred_succession_evidence(
+        &self,
+        request: &SuccessionDeferredRefresh,
+    ) -> RepositoryResult<SuccessionAttempt> {
+        let resulting_state = request.resulting_state()?;
+        let route = request
+            .successor_model_rung
+            .as_ref()
+            .map(succession_model_rung_document)
+            .transpose()?;
+        let transaction = self.begin()?;
+        let attempt =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        attempt
+            .revision
+            .expect("succession attempt", request.expected_revision)?;
+        if attempt.state != SuccessionAttemptState::Deferred {
+            return Err(conflict(
+                "succession deferred refresh",
+                "only a deferred attempt can refresh its authority",
+            ));
+        }
+        if !attempt.is_due(request.refreshed_at) {
+            return Err(conflict(
+                "succession deferred refresh",
+                "the deferred attempt is not due",
+            ));
+        }
+
+        let predecessor = read_agent_run(
+            &transaction,
+            request.project_id,
+            attempt.request.predecessor_agent_run_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "succession predecessor run",
+        })?;
+        predecessor.revision.expect(
+            "succession predecessor",
+            request.expected_predecessor_revision,
+        )?;
+        let predecessor_binding =
+            predecessor
+                .binding
+                .as_ref()
+                .ok_or(DomainError::MissingEvidence {
+                    subject: "succession predecessor",
+                    rule: "the due predecessor has no runtime binding",
+                })?;
+        if predecessor.team_run_id != attempt.request.team_run_id
+            || predecessor.role != attempt.request.role
+            || predecessor_binding.id != attempt.request.predecessor_runtime_binding_id
+            || predecessor_binding.identity != attempt.request.predecessor_native_identity
+            || predecessor.projection.observed != ObservedRunState::Blocked
+            || predecessor.projection.last_cursor != Some(request.runtime_observation_cursor)
+            || predecessor.terminal.is_some()
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor",
+                rule: "the refreshed cursor is not the latest blocked observation on the original slot and binding",
+            }
+            .into());
+        }
+        let predecessor_account =
+            predecessor
+                .account_profile_id
+                .ok_or(DomainError::MissingEvidence {
+                    subject: "succession predecessor",
+                    rule: "a quota-blocked predecessor must remain pinned to an account",
+                })?;
+
+        let exact_observation: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM runtime_events
+                 WHERE project_id = ?1 AND cursor = ?2
+                   AND event_kind = 'runtime_observation' AND agent_run_id = ?3
+                   AND runtime_kind = ?4 AND host = ?5 AND generation = ?6
+                   AND native_id = ?7 AND observed_state = 'blocked'",
+                params![
+                    request.project_id.to_string(),
+                    request.runtime_observation_cursor.get(),
+                    attempt.request.predecessor_agent_run_id.to_string(),
+                    attempt
+                        .request
+                        .predecessor_native_identity
+                        .runtime_kind
+                        .as_str(),
+                    attempt.request.predecessor_native_identity.host.as_str(),
+                    generation_column(attempt.request.predecessor_native_identity.generation)?,
+                    attempt
+                        .request
+                        .predecessor_native_identity
+                        .native_id
+                        .as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if exact_observation != 1 {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor",
+                rule: "the refreshed cursor is not an exact blocked observation on the original binding",
+            }
+            .into());
+        }
+
+        let evidence: Option<StoredSuccessionQuotaEvidence> = transaction
+            .query_row(
+                "SELECT p.account_profile_id, p.provider, p.agent_run_id,
+                        p.runtime_observation_cursor, p.runtime_binding_id, p.native_id,
+                        p.binding_generation, q.evidence_hash, q.state, q.resets_at
+                 FROM provider_quota_observation_provenance p
+                 JOIN provider_quota_states q
+                   ON q.project_id = p.project_id
+                  AND q.account_profile_id = p.account_profile_id
+                  AND q.provider = p.provider
+                  AND q.provenance_id = p.id
+                 WHERE p.project_id = ?1 AND p.id = ?2 AND q.revision = ?3
+                   AND p.decision_basis = 'runtime_refusal'
+                   AND p.decided_state = q.state
+                   AND p.parsed_resets_at IS q.resets_at
+                   AND p.evidence_digest = q.evidence_hash",
+                params![
+                    request.project_id.to_string(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                ],
+                |row| {
+                    Ok(StoredSuccessionQuotaEvidence {
+                        account_profile_id: row.get(0)?,
+                        provider: row.get(1)?,
+                        agent_run_id: row.get(2)?,
+                        runtime_observation_cursor: row.get(3)?,
+                        runtime_binding_id: row.get(4)?,
+                        native_id: row.get(5)?,
+                        binding_generation: row.get(6)?,
+                        evidence_hash: row.get(7)?,
+                        state: row.get(8)?,
+                        resets_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(evidence) = evidence else {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession quota",
+                rule: "the current quota row does not cite the refreshed provenance and revision",
+            }
+            .into());
+        };
+        if AccountProfileId::parse(&evidence.account_profile_id)? != predecessor_account
+            || evidence.provider != request.quota_provider
+            || AgentRunId::parse(&evidence.agent_run_id)?
+                != attempt.request.predecessor_agent_run_id
+            || EventCursor::parse(evidence.runtime_observation_cursor)?
+                != request.runtime_observation_cursor
+            || RuntimeBindingId::parse(&evidence.runtime_binding_id)?
+                != attempt.request.predecessor_runtime_binding_id
+            || ExternalId::parse(&evidence.native_id)?
+                != attempt.request.predecessor_native_identity.native_id
+            || u64::try_from(evidence.binding_generation).ok()
+                != Some(attempt.request.predecessor_native_identity.generation)
+            || ContentHash::parse(&evidence.evidence_hash)? != request.quota_evidence_hash
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession quota",
+                rule: "the refreshed quota evidence does not exactly match the predecessor observation",
+            }
+            .into());
+        }
+        // Deliberately do not require `evidence.state` to block at `refreshed_at`.
+        // At an exhausted reset boundary, the current row no longer blocks a
+        // new launch while the fresh reachable Blocked predecessor remains the
+        // authority for replanning this already-durable attempt.
+        let _ = ProviderQuotaKind::parse(&evidence.state)?;
+        let _ = evidence
+            .resets_at
+            .as_deref()
+            .map(read_timestamp)
+            .transpose()?;
+
+        if let Some(account_profile_id) = request.successor_account_profile_id
+            && read_account_profile_in(&transaction, request.project_id, account_profile_id)?
+                .is_none()
+        {
+            return Err(RepositoryError::NotFound {
+                subject: "succession successor account",
+            });
+        }
+
+        let next = attempt.revision.next()?;
+        let changed = match resulting_state {
+            SuccessionAttemptState::Deferred => transaction.execute(
+                "UPDATE succession_attempts
+                 SET expected_predecessor_revision = ?1, runtime_observation_cursor = ?2,
+                     quota_provenance_id = ?3, quota_state_revision = ?4,
+                     quota_evidence_hash = ?5, quota_provider = ?6,
+                     deferred_until = ?7, revision = ?8, updated_at = ?9
+                 WHERE project_id = ?10 AND id = ?11 AND revision = ?12
+                   AND state = 'deferred'",
+                params![
+                    revision_column(request.expected_predecessor_revision)?,
+                    request.runtime_observation_cursor.get(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                    request.quota_evidence_hash.as_str(),
+                    request.quota_provider.as_str(),
+                    request.deferred_until.map(text),
+                    revision_column(next)?,
+                    text(request.refreshed_at),
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            ),
+            SuccessionAttemptState::Planned => transaction.execute(
+                "UPDATE succession_attempts
+                 SET state = 'planned', expected_predecessor_revision = ?1,
+                     runtime_observation_cursor = ?2, quota_provenance_id = ?3,
+                     quota_state_revision = ?4, quota_evidence_hash = ?5,
+                     quota_provider = ?6, successor_model_rung = ?7,
+                     successor_model_rung_hash = ?8, successor_account_profile_id = ?9,
+                     deferred_until = NULL, successor_planned_at = ?10,
+                     revision = ?11, updated_at = ?10
+                 WHERE project_id = ?12 AND id = ?13 AND revision = ?14
+                   AND state = 'deferred'",
+                params![
+                    revision_column(request.expected_predecessor_revision)?,
+                    request.runtime_observation_cursor.get(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                    request.quota_evidence_hash.as_str(),
+                    request.quota_provider.as_str(),
+                    route.as_ref().map(CanonicalDocument::json),
+                    route.as_ref().map(|document| document.hash().as_str()),
+                    request
+                        .successor_account_profile_id
+                        .map(|account| account.to_string()),
+                    text(request.refreshed_at),
+                    revision_column(next)?,
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            ),
+            _ => unreachable!("deferred refresh validates only Deferred or Planned"),
+        }
+        .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "succession deferred refresh",
+                "the attempt revision or state moved during the write",
+            ));
+        }
+        let stored =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn record_succession_handoff(
+        &self,
+        request: &SuccessionHandoffRecord,
+    ) -> RepositoryResult<SuccessionAttempt> {
+        let document = request.handoff.canonicalize()?;
+        let transaction = self.begin()?;
+        let attempt =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        if let Some(existing_hash) = attempt.handoff_hash.as_ref() {
+            if existing_hash == document.hash() {
+                return Ok(attempt);
+            }
+            return Err(conflict(
+                "succession handoff",
+                "this attempt already carries different handoff evidence",
+            ));
+        }
+        attempt
+            .revision
+            .expect("succession attempt", request.expected_revision)?;
+        if attempt.state != SuccessionAttemptState::Planned
+            || request.handoff.attempt_id != request.attempt_id
+            || request.handoff.predecessor_agent_run_id != attempt.request.predecessor_agent_run_id
+            || request.handoff.predecessor_runtime_binding_id
+                != attempt.request.predecessor_runtime_binding_id
+            || request.handoff.predecessor_native_identity
+                != attempt.request.predecessor_native_identity
+        {
+            return Err(conflict(
+                "succession handoff",
+                "the evidence does not name the exact active predecessor decision",
+            ));
+        }
+        let next = attempt.revision.next()?;
+        transaction
+            .execute(
+                "UPDATE succession_attempts
+                 SET handoff = ?1, handoff_hash = ?2, revision = ?3, updated_at = ?4
+                 WHERE project_id = ?5 AND id = ?6 AND revision = ?7",
+                params![
+                    document.json(),
+                    document.hash().as_str(),
+                    revision_column(next)?,
+                    text(request.recorded_at),
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let stored =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn mark_succession_predecessor_retired(
+        &self,
+        request: &SuccessionAttemptAdvance,
+    ) -> RepositoryResult<SuccessionAttempt> {
+        let transaction = self.begin()?;
+        let attempt =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        if matches!(
+            attempt.state,
+            SuccessionAttemptState::PredecessorRetired
+                | SuccessionAttemptState::SuccessorObserved
+                | SuccessionAttemptState::Confirmed
+        ) {
+            return Ok(attempt);
+        }
+        attempt
+            .revision
+            .expect("succession attempt", request.expected_revision)?;
+        attempt
+            .state
+            .ensure_advance_to(SuccessionAttemptState::PredecessorRetired)?;
+        let predecessor = read_agent_run(
+            &transaction,
+            attempt.request.project_id,
+            attempt.request.predecessor_agent_run_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "succession predecessor run",
+        })?;
+        let terminal = predecessor
+            .terminal
+            .as_ref()
+            .ok_or(DomainError::MissingEvidence {
+                subject: "succession predecessor retirement",
+                rule: "the predecessor must carry runtime-observed cancellation before the attempt advances",
+            })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor retirement",
+                rule: "only runtime-observed cancellation may advance the attempt",
+            }
+            .into());
+        }
+        if attempt.handoff.is_none() {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor retirement",
+                rule: "summary-or-degraded handoff evidence must be durable before release",
+            }
+            .into());
+        }
+        let next = attempt.revision.next()?;
+        transaction
+            .execute(
+                "UPDATE succession_attempts
+                 SET state = 'predecessor_retired', predecessor_retired_at = ?1,
+                     revision = ?2, updated_at = ?1
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    text(request.occurred_at),
+                    revision_column(next)?,
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let stored =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn mark_succession_successor_observed(
+        &self,
+        request: &SuccessionSuccessorRecord,
+    ) -> RepositoryResult<SuccessionAttempt> {
+        let transaction = self.begin()?;
+        let attempt =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        if let Some(existing) = attempt.successor.as_ref() {
+            if existing == &request.observation {
+                return Ok(attempt);
+            }
+            return Err(conflict(
+                "succession successor observation",
+                "this attempt already observed a different successor",
+            ));
+        }
+        attempt
+            .revision
+            .expect("succession attempt", request.expected_revision)?;
+        attempt
+            .state
+            .ensure_advance_to(SuccessionAttemptState::SuccessorObserved)?;
+        validate_successor_observation(&transaction, &attempt, &request.observation)?;
+        let identity = &request.observation.native_identity;
+        let next = attempt.revision.next()?;
+        transaction
+            .execute(
+                "UPDATE succession_attempts
+                 SET state = 'successor_observed', successor_agent_run_id = ?1,
+                     successor_runtime_binding_id = ?2, successor_runtime_kind = ?3,
+                     successor_host = ?4, successor_native_id = ?5, successor_generation = ?6,
+                     successor_observation_cursor = ?7, successor_observed_at = ?8,
+                     revision = ?9, updated_at = ?8
+                 WHERE project_id = ?10 AND id = ?11 AND revision = ?12",
+                params![
+                    request.observation.agent_run_id.to_string(),
+                    request.observation.runtime_binding_id.to_string(),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    identity.native_id.as_str(),
+                    generation_column(identity.generation)?,
+                    request.observation.runtime_observation_cursor.get(),
+                    text(request.observation.observed_at),
+                    revision_column(next)?,
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let stored =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn confirm_succession(
+        &self,
+        request: &SuccessionConfirmation,
+    ) -> RepositoryResult<SuccessionReceipt> {
+        let receipt_document = request.receipt.canonicalize()?;
+        let transaction = self.begin()?;
+        if let Some(existing) = read_succession_receipt_in(
+            &transaction,
+            request.receipt.project_id,
+            request.receipt.attempt_id,
+        )? {
+            if existing == request.receipt {
+                return Ok(existing);
+            }
+            return Err(conflict(
+                "succession receipt",
+                "this attempt already confirmed under a different receipt",
+            ));
+        }
+        let attempt = read_succession_attempt_in(
+            &transaction,
+            request.receipt.project_id,
+            request.receipt.attempt_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "succession attempt",
+        })?;
+        attempt
+            .revision
+            .expect("succession attempt", request.expected_revision)?;
+        attempt
+            .state
+            .ensure_advance_to(SuccessionAttemptState::Confirmed)?;
+        request.receipt.validate_against(&attempt)?;
+        if request.receipt.confirmed_at < attempt.updated_at {
+            return Err(conflict(
+                "succession confirmation",
+                "confirmation predates the successor readback",
+            ));
+        }
+        let successor = attempt
+            .successor
+            .as_ref()
+            .ok_or(DomainError::MissingEvidence {
+                subject: "succession confirmation",
+                rule: "the successor was not observed",
+            })?;
+        validate_successor_observation(&transaction, &attempt, successor)?;
+        let next = attempt.revision.next()?;
+        transaction
+            .execute(
+                "UPDATE succession_attempts
+                 SET state = 'confirmed', confirmed_at = ?1, revision = ?2, updated_at = ?1
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    text(request.receipt.confirmed_at),
+                    revision_column(next)?,
+                    request.receipt.project_id.to_string(),
+                    request.receipt.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO succession_receipts
+                    (id, project_id, attempt_id, receipt, receipt_hash, confirmed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    request.receipt.id.to_string(),
+                    request.receipt.project_id.to_string(),
+                    request.receipt.attempt_id.to_string(),
+                    receipt_document.json(),
+                    receipt_document.hash().as_str(),
+                    text(request.receipt.confirmed_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(request.receipt.clone())
+    }
+
+    fn refuse_succession(
+        &self,
+        request: &SuccessionRefusal,
+    ) -> RepositoryResult<SuccessionAttempt> {
+        let transaction = self.begin()?;
+        let attempt =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        if attempt.state == SuccessionAttemptState::Refused {
+            if attempt.refusal_reason == Some(request.reason) {
+                return Ok(attempt);
+            }
+            return Err(conflict(
+                "succession refusal",
+                "this attempt already carries a different refusal",
+            ));
+        }
+        attempt
+            .revision
+            .expect("succession attempt", request.expected_revision)?;
+        attempt
+            .state
+            .ensure_advance_to(SuccessionAttemptState::Refused)?;
+        let next = attempt.revision.next()?;
+        transaction
+            .execute(
+                "UPDATE succession_attempts
+                 SET state = 'refused', refusal_reason = ?1, refused_at = ?2,
+                     revision = ?3, updated_at = ?2
+                 WHERE project_id = ?4 AND id = ?5 AND revision = ?6",
+                params![
+                    request.reason.as_str(),
+                    text(request.refused_at),
+                    revision_column(next)?,
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        let stored =
+            read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "succession attempt",
+                })?;
+        transaction.commit().map_err(backend)?;
+        Ok(stored)
+    }
+
+    fn succession_receipt_for_attempt(
+        &self,
+        project_id: ProjectId,
+        attempt_id: SuccessionAttemptId,
+    ) -> RepositoryResult<Option<SuccessionReceipt>> {
+        let transaction = self.begin()?;
+        read_succession_receipt_in(&transaction, project_id, attempt_id)
+    }
+}
+
+fn read_succession_receipt_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    attempt_id: SuccessionAttemptId,
+) -> RepositoryResult<Option<SuccessionReceipt>> {
+    let row: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT receipt, receipt_hash FROM succession_receipts
+             WHERE project_id = ?1 AND attempt_id = ?2",
+            params![project_id.to_string(), attempt_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(|(json, hash)| {
+        let document = stored_payload(&json, &hash)?;
+        let receipt: SuccessionReceipt = document.deserialize()?;
+        receipt.canonicalize()?;
+        Ok(receipt)
+    })
+    .transpose()
 }
 
 // ---------------------------------------------------------------------------

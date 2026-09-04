@@ -1,7 +1,8 @@
 # ASMA Kontor Architecture
 
-> **Status:** Current pre-1.0 repository contract. Synchronized with the tree on
-> 2026-08-26.
+> **Status:** Current pre-1.0 repository contract. Synchronized with the
+> 2026-09-04 candidate tree; KON-OP-21 succession remains locally verified,
+> not yet independently audited or live-runtime verified.
 >
 > **Scope:** Governing principles, authority boundaries, consistency model,
 > technology choices and extension rules for `asma-rs-kontor`.
@@ -181,7 +182,8 @@ sole hierarchy/naming authority and recommends `ESW • KOP-8001`,
 seat title; ASW seats use the exact configured registered professional role or
 advisor-profile code, and ASW never performs Committee aggregation. See
 [`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md). Implementation conformance is
-intentionally pending the next audit.
+present in the candidate tree; independent audit and live migration remain
+pending.
 
 Jira materialization recovery preserves the failed create batch as the sole
 intent. Schema v74 adds an append-only recovery ledger keyed to its exact item,
@@ -221,8 +223,12 @@ resolver computes typed `Admit`, `Wait` and `NeedsHuman` outcomes, and launch
 honours `Admit`. The delivery launch boundary still has to return a model rung,
 however, so it currently drops the reset/escalation payload from `Wait` and
 `NeedsHuman` and preserves the adapter's typed provider-outage refusal path.
-Automatic pre-launch parking until the computed reset is not shipped; mid-run
-quota detection and successor handoff are separately open.
+Automatic pre-launch parking until the computed reset is not shipped. The
+current candidate tree separately implements mid-run quota detection, durable
+redacted handoff, successor placement and resident bounded reconciliation. It
+does so only under explicit schema-v2 supervision enablement; schema v1 and an
+absent or disabled policy remain inert. Those KON-OP-21 paths have local tests
+but are not claimed as merged, deployed or live-runtime verified here.
 
 The calendar dimension is implemented in `kontor-calendar` and is reached by no
 route and no tool, so every project currently resolves to `unrestricted`. That

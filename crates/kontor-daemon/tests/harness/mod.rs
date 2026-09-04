@@ -123,6 +123,13 @@ pub(crate) struct World {
     pub(crate) team_run: TeamRunId,
 }
 
+#[derive(Default)]
+struct WorldComposition {
+    usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
+    jira_connectors: Option<kontor_jira::JiraConnectors>,
+    quota_signals: Option<String>,
+}
+
 impl World {
     /// Start a Realm whose runtime declares everything.
     pub(crate) async fn open() -> Self {
@@ -143,6 +150,39 @@ impl World {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
+    /// Start an empty Realm with the shipped runtime-refusal quota signals.
+    pub(crate) async fn open_empty_with_quota_signals() -> Self {
+        Self::open_empty_with_quota_signal_document(include_str!(
+            "../../../../config/examples/quota-signals.yml"
+        ))
+        .await
+    }
+
+    /// Start an empty Realm with an exact test-owned signal document.
+    pub(crate) async fn open_empty_with_quota_signal_document(document: &str) -> Self {
+        Self::open_empty_with_quota_signal_document_and_capacity(document, DEFAULT_CAPACITY).await
+    }
+
+    /// Start an empty Realm with exact refusal signals and a test-owned
+    /// headroom horizon.
+    pub(crate) async fn open_empty_with_quota_signal_document_and_capacity(
+        document: &str,
+        capacity: CapacityConfig,
+    ) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            capacity,
+            WorldComposition {
+                quota_signals: Some(document.to_owned()),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
     /// Start an empty Realm with an already-validated native Jira boundary.
     pub(crate) async fn open_empty_with_jira(connectors: kontor_jira::JiraConnectors) -> Self {
         Self::compose_with_connector(
@@ -151,8 +191,10 @@ impl World {
             false,
             false,
             DEFAULT_CAPACITY,
-            None,
-            Some(connectors),
+            WorldComposition {
+                jira_connectors: Some(connectors),
+                ..WorldComposition::default()
+            },
         )
         .await
     }
@@ -169,8 +211,10 @@ impl World {
             false,
             false,
             DEFAULT_CAPACITY,
-            Some(reporter),
-            None,
+            WorldComposition {
+                usage_reporter: Some(reporter),
+                ..WorldComposition::default()
+            },
         )
         .await
     }
@@ -268,8 +312,7 @@ impl World {
             seeded,
             planed,
             capacity,
-            None,
-            None,
+            WorldComposition::default(),
         )
         .await
     }
@@ -280,10 +323,16 @@ impl World {
         seeded: bool,
         planed: bool,
         capacity: CapacityConfig,
-        usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
-        jira_connectors: Option<kontor_jira::JiraConnectors>,
+        composition: WorldComposition,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
+        if let Some(document) = composition.quota_signals.as_deref() {
+            std::fs::write(
+                directory.path().join(kontor_accounts::QUOTA_SIGNALS_FILE),
+                document,
+            )
+            .expect("the quota signals fixture is installed");
+        }
         let fake = Arc::new(if planed {
             ScriptedFakeRuntime::requiring_a_plane(capabilities)
         } else {
@@ -297,10 +346,10 @@ impl World {
         let mut config = DaemonConfig::at(directory.path())
             .with_port(0)
             .with_capacity(capacity);
-        if let Some(connectors) = jira_connectors {
+        if let Some(connectors) = composition.jira_connectors {
             config = config.with_jira_connectors(connectors);
         }
-        let daemon = match usage_reporter {
+        let daemon = match composition.usage_reporter {
             Some(reporter) => {
                 let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);
                 Daemon::start_with_usage_poller(config, registry, poller)

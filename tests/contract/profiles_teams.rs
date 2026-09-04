@@ -386,6 +386,7 @@ impl World {
                 contact: RuntimeContact::Reachable,
                 freshness: Freshness::Fresh,
                 expected_revision: current.revision,
+                quota_state: None,
             })
             .expect("the terminal observation is recorded");
 

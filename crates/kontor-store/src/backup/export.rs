@@ -46,7 +46,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 6;
+pub const EXPORT_SCHEMA_VERSION: u32 = 9;
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -97,6 +97,59 @@ const EPIC_JIRA_RECONCILIATION_EXPORT_VERSION: u32 = 6;
 /// Record arrays introduced together in generation 6.
 const EPIC_JIRA_RECONCILIATION_RECORD_FIELDS: [&str; 2] =
     ["epic_status_conflicts", "epic_jira_transition_intents"];
+
+/// Database generation that introduced immutable legacy naming/container recovery.
+const LEGACY_NAMING_RECOVERY_SCHEMA_VERSION: i64 = 84;
+
+/// The export generation that first carried legacy naming/container recovery evidence.
+const LEGACY_NAMING_RECOVERY_EXPORT_VERSION: u32 = 7;
+
+/// Record arrays introduced together in generation 7.
+const LEGACY_NAMING_RECOVERY_RECORD_FIELDS: [&str; 2] = [
+    "epic_backlog_code_corrections",
+    "topology_container_recoveries",
+];
+
+/// Database generation that first persisted *any* of the quota chain.
+///
+/// `provider_quota_states` arrives at 0048 and windows at 0051; provenance is
+/// the newest limb, not the oldest. The legacy-export fence keys to this, not to
+/// the provenance generation: a generation-3 document had no field for a quota
+/// row either, so against any database from 0048 onward it is already
+/// incomplete, and keying the fence to 0074 would let it claim completeness for
+/// the whole 48..73 range it silently dropped.
+const QUOTA_CHAIN_SCHEMA_VERSION: i64 = 48;
+
+/// Database generation that first persisted per-window headroom and the credit
+/// balance columns.
+const QUOTA_WINDOWS_SCHEMA_VERSION: i64 = 51;
+
+/// Database generation that first persisted typed quota observation provenance.
+///
+/// This invariant moves with the migration that introduced the provenance
+/// tables; it is intentionally distinct from the older quota-state generation.
+const QUOTA_OBSERVATION_PROVENANCE_SCHEMA_VERSION: i64 = 85;
+
+/// Export generation that first defined the quota chain.
+const QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION: u32 = 8;
+
+/// Record arrays introduced together in generation 8.
+const QUOTA_CHAIN_RECORD_FIELDS: [&str; 4] = [
+    "provider_quota_observation_provenance",
+    "provider_quota_observation_source_ranges",
+    "provider_quota_states",
+    "provider_quota_windows",
+];
+
+/// Database generation that introduced resumable seat succession and bound
+/// runtime quota provenance to its exact control-event cursor.
+const SUCCESSION_SCHEMA_VERSION: i64 = 86;
+
+/// Export generation that first carries succession and provenance cursors.
+const SUCCESSION_EXPORT_VERSION: u32 = 9;
+
+/// Record arrays introduced together in generation 9.
+const SUCCESSION_RECORD_FIELDS: [&str; 2] = ["succession_attempts", "succession_receipts"];
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -207,6 +260,25 @@ impl KontorExportV1 {
             })?;
             remove_epic_jira_reconciliation_record_fields(records)?;
         }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_legacy_naming_recovery_record_fields(records)?;
+        }
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_quota_chain_record_fields(records)?;
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_succession_record_fields(records)?;
+            remove_quota_runtime_cursor_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -225,6 +297,16 @@ impl KontorExportV1 {
         }
         if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
             remove_epic_jira_reconciliation_record_fields(&mut value)?;
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            remove_legacy_naming_recovery_record_fields(&mut value)?;
+        }
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            remove_quota_chain_record_fields(&mut value)?;
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION {
+            remove_succession_record_fields(&mut value)?;
+            remove_quota_runtime_cursor_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -298,6 +380,21 @@ impl KontorExportV1 {
                 detail: "the legacy export generation carries epic Jira reconciliation records it did not define",
             });
         }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION
+            && self.database_schema_version >= LEGACY_NAMING_RECOVERY_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove legacy naming recovery completeness",
+            });
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION
+            && !(self.records.epic_backlog_code_corrections.is_empty()
+                && self.records.topology_container_recoveries.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries legacy naming recovery records it did not define",
+            });
+        }
         if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
             && !(self.records.team_definitions.is_empty()
                 && self.records.project_team_definition_defaults.is_empty()
@@ -317,6 +414,85 @@ impl KontorExportV1 {
                 detail: "the legacy export generation carries Team Definition records it did not define",
             });
         }
+
+        // The same rule as profile-selection outcomes, for the same reason. A
+        // generation-3 document has no field for any quota row, so against a
+        // database old enough to hold one it cannot distinguish "there were
+        // none" from "this generation could not see them". It must not be read
+        // as complete.
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION
+            && self.database_schema_version >= QUOTA_CHAIN_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove quota chain completeness",
+            });
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION
+            && self.database_schema_version >= SUCCESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove succession completeness",
+            });
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION
+            && (!self.records.succession_attempts.is_empty()
+                || !self.records.succession_receipts.is_empty()
+                || self
+                    .records
+                    .provider_quota_observation_provenance
+                    .iter()
+                    .any(|record| record.runtime_observation_cursor.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries succession evidence it did not define",
+            });
+        }
+        if self.database_schema_version < SUCCESSION_SCHEMA_VERSION
+            && (!self.records.succession_attempts.is_empty()
+                || !self.records.succession_receipts.is_empty()
+                || self
+                    .records
+                    .provider_quota_observation_provenance
+                    .iter()
+                    .any(|record| record.runtime_observation_cursor.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries succession evidence its database generation could not hold",
+            });
+        }
+        // And the converses, which are claims rather than omissions. Each limb of
+        // the chain arrived in a different generation, so a document asserting a
+        // row its stated database could not have held is describing a lineage
+        // that never existed. This verifies a claimed source lineage; it is not
+        // import authority.
+        // The converse for profile selections, which had only the omission rule:
+        // a document cannot carry outcomes read from a database generation whose
+        // schema had nowhere to read them from.
+        if self.database_schema_version < PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION
+            && !self.records.profile_selection_outcomes.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries profile-selection outcomes its database generation could not hold",
+            });
+        }
+        self.verify_quota_chain_fits_its_database()?;
+        self.verify_quota_chain_links()?;
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION
+            && !(self
+                .records
+                .provider_quota_observation_provenance
+                .is_empty()
+                && self
+                    .records
+                    .provider_quota_observation_source_ranges
+                    .is_empty()
+                && self.records.provider_quota_states.is_empty()
+                && self.records.provider_quota_windows.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries quota records it did not define",
+            });
+        }
         if ContentHash::of(&self.canonical_records_bytes()?) != self.records_hash {
             return Err(BackupError::Verification {
                 detail: "the export's records do not hash to its declared digest",
@@ -328,6 +504,277 @@ impl KontorExportV1 {
             return Err(BackupError::Verification {
                 detail: "the export's continuity summary does not match its records",
             });
+        }
+        Ok(())
+    }
+
+    /// Refuse a quota chain that could not have come from the stated database.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Verification`] naming the table or field whose
+    /// generation postdates the database the document claims to come from.
+    fn verify_quota_chain_fits_its_database(&self) -> Result<(), BackupError> {
+        let database = self.database_schema_version;
+        if database < QUOTA_CHAIN_SCHEMA_VERSION && !self.records.provider_quota_states.is_empty() {
+            return Err(BackupError::Verification {
+                detail: "the export carries provider_quota_states rows its database generation could not hold",
+            });
+        }
+        if database < QUOTA_WINDOWS_SCHEMA_VERSION {
+            if !self.records.provider_quota_windows.is_empty() {
+                return Err(BackupError::Verification {
+                    detail: "the export carries provider_quota_windows rows its database generation could not hold",
+                });
+            }
+            if self.records.provider_quota_states.iter().any(|row| {
+                row.credit_minor_units.is_some()
+                    || row.credit_reserve_minor_units.is_some()
+                    || row.credit_currency.is_some()
+            }) {
+                return Err(BackupError::Verification {
+                    detail: "the export carries provider_quota_states credit balances its database generation could not hold",
+                });
+            }
+        }
+        if database < QUOTA_OBSERVATION_PROVENANCE_SCHEMA_VERSION
+            && !(self
+                .records
+                .provider_quota_observation_provenance
+                .is_empty()
+                && self
+                    .records
+                    .provider_quota_observation_source_ranges
+                    .is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries quota provenance its database generation could not hold",
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a quota chain whose links do not hold.
+    ///
+    /// Typed fields are not enough on their own. The document carries its own
+    /// digest, so anything that edits records and rehashes produces a document
+    /// that verifies -- unless the links between the records are checked too. A
+    /// pointer into a dropped record, a pointer moved to a neighbouring one, a
+    /// digest that no longer matches the row that cites it, or a range set that
+    /// does not cover what its parent claims to have read: each is a graph the
+    /// source database could not have produced, and each is refused here.
+    ///
+    /// Uncited provenance is *not* refused. The table is append-only history:
+    /// every accepted observation appends a record and moves the quota row's
+    /// pointer, so yesterday's records legitimately survive with nothing citing
+    /// them. Requiring a citation would refuse every realm that has ever
+    /// observed a refusal twice.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Verification`] naming the broken link.
+    fn verify_quota_chain_links(&self) -> Result<(), BackupError> {
+        use std::collections::BTreeMap;
+
+        // Indexed by `id` alone, because that is the source table's primary key.
+        // Keying by `(project, id)` here would accept a document that reuses one
+        // provenance id across two projects -- a graph the database refuses.
+        let provenance: BTreeMap<&str, &ProviderQuotaObservationProvenanceRow> = self
+            .records
+            .provider_quota_observation_provenance
+            .iter()
+            .map(|row| (row.id.as_str(), row))
+            .collect();
+        if provenance.len() != self.records.provider_quota_observation_provenance.len() {
+            return Err(BackupError::Verification {
+                detail: "the export carries two quota provenance records with one identity",
+            });
+        }
+
+        // `(project, account, provider)` is the states table's primary key, and
+        // windows hang off exactly that triple by foreign key. Both are checked
+        // here for the same reason the provenance id is: a rehashed document can
+        // otherwise present duplicates and orphans the source cannot hold.
+        let mut states: BTreeMap<(&str, &str, &str), &ProviderQuotaStatesRow> = BTreeMap::new();
+        for state in &self.records.provider_quota_states {
+            let key = (
+                state.project_id.as_str(),
+                state.account_profile_id.as_str(),
+                state.provider.as_str(),
+            );
+            if states.insert(key, state).is_some() {
+                return Err(BackupError::Verification {
+                    detail: "the export carries two provider_quota_states rows with one identity",
+                });
+            }
+        }
+
+        let mut windows: std::collections::BTreeSet<(&str, &str, &str, &str)> =
+            std::collections::BTreeSet::new();
+        for window in &self.records.provider_quota_windows {
+            let parent = (
+                window.project_id.as_str(),
+                window.account_profile_id.as_str(),
+                window.provider.as_str(),
+            );
+            if !windows.insert((parent.0, parent.1, parent.2, window.kind.as_str())) {
+                return Err(BackupError::Verification {
+                    detail: "the export carries two provider_quota_windows rows with one identity",
+                });
+            }
+            if !states.contains_key(&parent) {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_windows row names no exported quota state in its project",
+                });
+            }
+        }
+
+        for state in &self.records.provider_quota_states {
+            // The reverse of "uncited history is fine". History is uncited
+            // because something newer replaced it; a record that still matches
+            // its row in every distinguishing field has not been replaced, so a
+            // row that does not cite it has had its pointer dropped rather than
+            // moved. Zero matches is ordinary -- a poller's row, or one written
+            // before provenance existed -- and two is a graph the digest binding
+            // makes impossible.
+            // Only a runtime observation may cite a runtime refusal. An
+            // operator override or a provider report that happens to agree on
+            // every modelled value did not use that authority and must not be
+            // made to claim it -- and must not carry a pointer either.
+            let runtime_authority = state.source == "runtime_observation";
+            if state.provenance_id.is_some() && !runtime_authority {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row that is not a runtime observation cites quota provenance",
+                });
+            }
+            let mut matching = self
+                .records
+                .provider_quota_observation_provenance
+                .iter()
+                .filter(|record| {
+                    runtime_authority
+                        && record.project_id == state.project_id
+                        && record.account_profile_id == state.account_profile_id
+                        && record.provider == state.provider
+                        && record.evidence_digest == state.evidence_hash
+                        && record.decided_state == state.state
+                        && record.parsed_resets_at == state.resets_at
+                });
+            if let Some(sole) = matching.next() {
+                if matching.next().is_some() {
+                    return Err(BackupError::Verification {
+                        detail: "two quota provenance records claim one row's exact conclusion",
+                    });
+                }
+                if state.provenance_id.as_deref() != Some(sole.id.as_str()) {
+                    return Err(BackupError::Verification {
+                        detail: "a provider_quota_states row does not cite the provenance that decided it",
+                    });
+                }
+            }
+
+            let Some(pointer) = state.provenance_id.as_deref() else {
+                continue;
+            };
+            let Some(cited) = provenance.get(pointer) else {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance the export does not carry",
+                });
+            };
+            if cited.project_id != state.project_id {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance belonging to another project",
+                });
+            }
+            if cited.account_profile_id != state.account_profile_id
+                || cited.provider != state.provider
+            {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance for a different account or provider",
+                });
+            }
+            if cited.evidence_digest != state.evidence_hash {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance whose evidence digest is not the row's",
+                });
+            }
+            if cited.decided_state != state.state || cited.parsed_resets_at != state.resets_at {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance that decided something else",
+                });
+            }
+            if cited.decision_basis != "runtime_refusal" {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance that was not a runtime refusal",
+                });
+            }
+        }
+
+        let mut ranges: BTreeMap<&str, Vec<&ProviderQuotaObservationSourceRangeRow>> =
+            BTreeMap::new();
+        for range in &self.records.provider_quota_observation_source_ranges {
+            let Some(parent) = provenance.get(range.provenance_id.as_str()) else {
+                return Err(BackupError::Verification {
+                    detail: "a quota source range names a parent the export does not carry",
+                });
+            };
+            if parent.project_id != range.project_id {
+                return Err(BackupError::Verification {
+                    detail: "a quota source range belongs to a different project than its parent",
+                });
+            }
+            let owned = ranges.entry(range.provenance_id.as_str()).or_default();
+            if owned.iter().any(|held| held.ordinal == range.ordinal) {
+                return Err(BackupError::Verification {
+                    detail: "the export carries two quota source ranges with one identity",
+                });
+            }
+            owned.push(range);
+        }
+
+        for (id, parent) in &provenance {
+            let mut owned = ranges.remove(*id).unwrap_or_default();
+            if owned.is_empty() {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record carries no source range",
+                });
+            }
+            owned.sort_by_key(|range| range.ordinal);
+            for (position, range) in owned.iter().enumerate() {
+                if range.ordinal != i64::try_from(position).unwrap_or(i64::MAX) {
+                    return Err(BackupError::Verification {
+                        detail: "a quota provenance record's source ranges are not a contiguous ordinal list from zero",
+                    });
+                }
+                if range.seq_start > range.seq_end {
+                    return Err(BackupError::Verification {
+                        detail: "a quota source range ends before it starts",
+                    });
+                }
+                if range.seq_start < parent.item_seq_start || range.seq_end > parent.item_seq_end {
+                    return Err(BackupError::Verification {
+                        detail: "a quota source range falls outside its parent's envelope",
+                    });
+                }
+            }
+            if owned
+                .windows(2)
+                .any(|pair| pair[0].seq_end >= pair[1].seq_start)
+            {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record's source ranges overlap or are misordered",
+                });
+            }
+            if i64::try_from(owned.len()).unwrap_or(i64::MAX) != parent.source_range_count {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record carries a different number of source ranges than it sealed",
+                });
+            }
+            let first = owned.first().expect("a nonempty range set");
+            let last = owned.last().expect("a nonempty range set");
+            if first.seq_start != parent.item_seq_start || last.seq_end != parent.item_seq_end {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record's source ranges do not span its envelope",
+                });
+            }
         }
         Ok(())
     }
@@ -403,6 +850,45 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in QUOTA_CHAIN_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < SUCCESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in SUCCESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -447,6 +933,61 @@ fn remove_epic_jira_reconciliation_record_fields(
     })?;
     for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
         records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-7 arrays from a supported legacy record object.
+fn remove_legacy_naming_recovery_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-8 arrays from a supported legacy record object.
+fn remove_quota_chain_record_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in QUOTA_CHAIN_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-9 succession arrays from a supported legacy record object.
+fn remove_succession_record_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-9 field added to the existing provenance row shape.
+fn remove_quota_runtime_cursor_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    let Some(provenance) = records.get_mut("provider_quota_observation_provenance") else {
+        return Ok(());
+    };
+    let provenance = provenance.as_array_mut().ok_or(BackupError::Verification {
+        detail: "the export quota provenance records are not an array",
+    })?;
+    for record in provenance {
+        let record = record.as_object_mut().ok_or(BackupError::Verification {
+            detail: "an export quota provenance record is not an object",
+        })?;
+        record.remove("runtime_observation_cursor");
     }
     Ok(())
 }
@@ -975,6 +1516,25 @@ exported_tables! {
         last_readback_at: String,
         revision: i64,
     }
+    topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
+        receipt_id: String,
+        project_id: String,
+        topology_node_id: String,
+        container_binding_id: String,
+        prior_runtime_kind: String,
+        prior_host: String,
+        prior_generation: i64,
+        prior_native_id: String,
+        next_runtime_kind: String,
+        next_host: String,
+        next_generation: i64,
+        next_native_id: String,
+        parent_native_id: String,
+        observed_kind: String,
+        canonical_cwd: Option<String>,
+        observed_title: String,
+        recovered_at: String,
+    }
     adaptive_admission_state: AdaptiveAdmissionStateRow from "adaptive_admission_state" key(mini_project_id) {
         project_id: String,
         mini_project_id: String,
@@ -1018,6 +1578,15 @@ exported_tables! {
         provenance: String,
         status: String,
         assigned_at: String,
+    }
+    epic_backlog_code_corrections: EpicBacklogCodeCorrectionsRow from "epic_backlog_code_corrections" key(project_id, mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        prior_code: String,
+        corrected_code: String,
+        reason: String,
+        receipt_id: String,
+        corrected_at: String,
     }
     task_ai_short_names: TaskAiShortNamesRow from "task_ai_short_names" key(project_id, task_id) {
         project_id: String,
@@ -1835,6 +2404,158 @@ exported_tables! {
         observed_by_seat_id: String,
         recorded_at: String,
     }
+
+    /// Why a provider quota row says what it says.
+    ///
+    /// Carried in full because it was designed to be carriable: modelled
+    /// scalars, a signal identity and two digests. The vendor's sentence is
+    /// never in it, so there is nothing here that redaction would have to
+    /// remove, and a destination realm can re-judge an inherited quota row
+    /// against the fingerprint that produced it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_observation_provenance: ProviderQuotaObservationProvenanceRow
+        from "provider_quota_observation_provenance" key(id) {
+        id: String,
+        project_id: String,
+        account_profile_id: String,
+        provider: String,
+        signal_id: String,
+        signal_version: i64,
+        signal_definition_hash: String,
+        agent_run_id: String,
+        runtime_binding_id: String,
+        native_id: String,
+        binding_generation: i64,
+        /// Exact control-plane observation cursor; absent only on legacy v85 rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_observation_cursor: Option<i64>,
+        item_epoch: i64,
+        item_seq_start: i64,
+        item_seq_end: i64,
+        item_kind: String,
+        item_observed_at: String,
+        decision_basis: String,
+        decided_state: String,
+        parsed_resets_at: Option<String>,
+        reset_zone: Option<String>,
+        /// How many source ranges the record sealed itself to.
+        source_range_count: i64,
+        evidence_digest: String,
+        recorded_at: String,
+    }
+
+    /// The exact timeline ranges one provenance record was read from.
+    ///
+    /// Exported as its own rows rather than folded into the parent: the set is
+    /// ordered and disjoint, and an envelope alone cannot say which sequences
+    /// were actually read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_observation_source_ranges: ProviderQuotaObservationSourceRangeRow
+        from "provider_quota_observation_source_ranges" key(provenance_id, ordinal) {
+        provenance_id: String,
+        project_id: String,
+        ordinal: i64,
+        seq_start: i64,
+        seq_end: i64,
+    }
+
+    /// The quota conclusion itself, including the provenance it cites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_states: ProviderQuotaStatesRow
+        from "provider_quota_states" key(project_id, account_profile_id, provider) {
+        project_id: String,
+        account_profile_id: String,
+        provider: String,
+        state: String,
+        resets_at: Option<String>,
+        /// The balance a credit vendor reported, in minor units.
+        ///
+        /// Carried because it decides launch eligibility: a row exported
+        /// without its balance and reserve reads as an account with no money
+        /// constraint at all, which is the opposite of what a drained row means.
+
+        credit_minor_units: Option<i64>,
+        credit_reserve_minor_units: Option<i64>,
+        credit_currency: Option<String>,
+        evidence_hash: String,
+        source: String,
+        observed_at: String,
+        provenance_id: Option<String>,
+        revision: i64,
+        updated_at: String,
+    }
+
+    /// Per-window headroom belonging to a quota row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_windows: ProviderQuotaWindowsRow
+        from "provider_quota_windows" key(project_id, account_profile_id, provider, kind) {
+        project_id: String,
+        account_profile_id: String,
+        provider: String,
+        kind: String,
+        resets_at: Option<String>,
+        used_percent: i64,
+    }
+
+    /// Forward-only quota-blocked seat succession attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    succession_attempts: SuccessionAttemptsRow from "succession_attempts" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_key: String,
+        predecessor_agent_run_id: String,
+        predecessor_runtime_binding_id: String,
+        predecessor_runtime_kind: String,
+        predecessor_host: String,
+        predecessor_native_id: String,
+        predecessor_generation: i64,
+        expected_task_revision: i64,
+        expected_team_revision: i64,
+        expected_predecessor_revision: i64,
+        runtime_observation_cursor: i64,
+        quota_provenance_id: String,
+        quota_state_revision: i64,
+        quota_evidence_hash: String,
+        quota_provider: String,
+        successor_model_rung: Option<String>,
+        successor_model_rung_hash: Option<String>,
+        successor_account_profile_id: Option<String>,
+        idempotency_key: String,
+        intent_hash: String,
+        state: String,
+        deferred_until: Option<String>,
+        handoff: Option<String>,
+        handoff_hash: Option<String>,
+        successor_agent_run_id: Option<String>,
+        successor_runtime_binding_id: Option<String>,
+        successor_runtime_kind: Option<String>,
+        successor_host: Option<String>,
+        successor_native_id: Option<String>,
+        successor_generation: Option<i64>,
+        successor_observation_cursor: Option<i64>,
+        successor_observed_at: Option<String>,
+        refusal_reason: Option<String>,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+        predecessor_retired_at: Option<String>,
+        confirmed_at: Option<String>,
+        refused_at: Option<String>,
+        successor_planned_at: Option<String>,
+    }
+
+    /// Immutable receipts for confirmed succession attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    succession_receipts: SuccessionReceiptsRow from "succession_receipts" key(id) {
+        id: String,
+        project_id: String,
+        attempt_id: String,
+        receipt: String,
+        receipt_hash: String,
+        confirmed_at: String,
+    }
 }
 
 impl ExportedRecords {
@@ -1855,6 +2576,21 @@ impl ExportedRecords {
         }
         if schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
             for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            for field in QUOTA_CHAIN_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < SUCCESSION_EXPORT_VERSION {
+            for field in SUCCESSION_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

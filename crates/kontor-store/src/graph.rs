@@ -454,14 +454,77 @@ impl SqliteStore {
         let found: Option<String> = self
             .connection
             .query_row(
-                "SELECT code FROM epic_backlog_codes
-                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                "SELECT COALESCE(c.corrected_code, b.code)
+                 FROM epic_backlog_codes b
+                 LEFT JOIN epic_backlog_code_corrections c
+                   ON c.project_id = b.project_id
+                  AND c.mini_project_id = b.mini_project_id
+                 WHERE b.project_id = ?1 AND b.mini_project_id = ?2
+                   AND b.status = 'active'",
                 params![project_id.to_string(), mini_project_id.to_string()],
                 |row| row.get(0),
             )
             .optional()
             .map_err(backend)?;
         Ok(found.as_deref().map(EpicBacklogCode::parse).transpose()?)
+    }
+
+    /// Read the immutable source row and any one-time effective correction.
+    pub fn epic_backlog_code_origin(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<(EpicBacklogCode, String, Option<EpicBacklogCode>)>> {
+        let found: Option<(String, String, Option<String>)> = self
+            .connection
+            .query_row(
+                "SELECT b.code, b.provenance, c.corrected_code
+                 FROM epic_backlog_codes b
+                 LEFT JOIN epic_backlog_code_corrections c
+                   ON c.project_id = b.project_id
+                  AND c.mini_project_id = b.mini_project_id
+                 WHERE b.project_id = ?1 AND b.mini_project_id = ?2
+                   AND b.status = 'active'",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(source, provenance, corrected)| {
+                Ok((
+                    EpicBacklogCode::parse(source)?,
+                    provenance,
+                    corrected
+                        .as_deref()
+                        .map(EpicBacklogCode::parse)
+                        .transpose()?,
+                ))
+            })
+            .transpose()
+    }
+
+    /// Whether a source or corrected epic code is already reserved in a project.
+    pub fn epic_backlog_code_is_reserved(
+        &self,
+        project_id: ProjectId,
+        code: &EpicBacklogCode,
+    ) -> RepositoryResult<bool> {
+        let count: i64 = self
+            .connection
+            .query_row(
+                "SELECT count(*) FROM (
+                     SELECT code AS value FROM epic_backlog_codes
+                      WHERE project_id = ?1 AND status = 'active'
+                     UNION ALL
+                     SELECT corrected_code AS value FROM epic_backlog_code_corrections
+                      WHERE project_id = ?1
+                 ) WHERE value = ?2 COLLATE NOCASE",
+                params![project_id.to_string(), code.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        Ok(count != 0)
     }
 
     /// Every reconciliation conflict recorded against one task's links.
@@ -1283,6 +1346,81 @@ impl SqliteStore {
                     })?,
                     binding.identity.native_id.as_str(),
                     text(binding.bound_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Record the account the headroom walk selected for an already-admitted run.
+    ///
+    /// # Why this is a second write and not a field on admission
+    ///
+    /// Admission commits before the first native effect, and the account is not
+    /// known then: the walk that picks it runs against a *fresh* quota read
+    /// taken as the seat is about to launch, because an account that had
+    /// headroom when the task was admitted may have none by the time it starts.
+    /// So the run is created unpinned and claims its account in the moment
+    /// between admission and launch — the same shape, and for the same reason,
+    /// as [`Self::bind_agent_run`].
+    ///
+    /// # Why it must happen before the native launch
+    ///
+    /// `ProviderQuotaState` is keyed by `(project, account_profile_id,
+    /// provider)` and there is no other key. A seat that reaches a provider
+    /// before its account is durable is a seat whose refusal cannot be
+    /// attributed and whose replacement cannot be evidenced — which is exactly
+    /// the state every delivery seat was in.
+    ///
+    /// Re-presenting the identical account is a replay and writes nothing, so a
+    /// lost answer or a restarted launch costs a duplicate call and not a
+    /// second pin. A *different* account is refused: quota attribution reads
+    /// this field, and silently repointing it would move a recorded refusal
+    /// onto an account that never saw one.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::NotFound`] for an unknown run and
+    /// [`RepositoryError::Conflict`] when the run already claims another
+    /// account.
+    pub fn pin_agent_run_account(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: kontor_core::id::AgentRunId,
+        account_profile_id: kontor_core::id::AccountProfileId,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<Option<String>> = transaction
+            .query_row(
+                "SELECT account_profile_id FROM agent_runs WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), agent_run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(current) = existing else {
+            return Err(RepositoryError::NotFound {
+                subject: "agent run",
+            });
+        };
+        if let Some(claimed) = current {
+            if claimed.as_str() == account_profile_id.to_string() {
+                return Ok(Applied::Unchanged);
+            }
+            return Err(conflict(
+                "agent run account",
+                "the run already claims a different provider account",
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE agent_runs
+                    SET account_profile_id = ?3, revision = revision + 1
+                  WHERE project_id = ?1 AND id = ?2 AND account_profile_id IS NULL",
+                params![
+                    project_id.to_string(),
+                    agent_run_id.to_string(),
+                    account_profile_id.to_string()
                 ],
             )
             .map_err(backend)?;
@@ -2485,8 +2623,13 @@ fn ensure_epic_backlog_code(
 ) -> RepositoryResult<EpicBacklogCode> {
     let existing: Option<String> = transaction
         .query_row(
-            "SELECT code FROM epic_backlog_codes
-             WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+            "SELECT COALESCE(c.corrected_code, b.code)
+             FROM epic_backlog_codes b
+             LEFT JOIN epic_backlog_code_corrections c
+               ON c.project_id = b.project_id
+              AND c.mini_project_id = b.mini_project_id
+             WHERE b.project_id = ?1 AND b.mini_project_id = ?2
+               AND b.status = 'active'",
             params![project_id.to_string(), mini_project_id.to_string()],
             |row| row.get(0),
         )
@@ -2517,7 +2660,11 @@ fn ensure_epic_backlog_code(
     let mut statement = transaction
         .prepare(
             "SELECT code FROM epic_backlog_codes
-             WHERE project_id = ?1 AND status = 'active' ORDER BY code COLLATE NOCASE",
+             WHERE project_id = ?1 AND status = 'active'
+             UNION ALL
+             SELECT corrected_code FROM epic_backlog_code_corrections
+             WHERE project_id = ?1
+             ORDER BY 1 COLLATE NOCASE",
         )
         .map_err(backend)?;
     let used = statement

@@ -100,7 +100,7 @@ The current repository includes:
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 150 tools — exposed through the stdio MCP server and
+- one capability catalogue — 166 tools — exposed through the stdio MCP server and
   a `kontor` CLI *generated from the same registry*, with credential tiers and
   narrow serve profiles;
 - a responsive React operator console and Tauri desktop shell.
@@ -114,8 +114,7 @@ admits its absence:
 | --- | --- |
 | Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
 | Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
-| Seat watchdog engine | `supervision.yml` is documented and validated and has no consumer yet. Absent configuration correctly invents no behaviour; present configuration also does nothing. |
-| Mid-run quota succession | A seat stopped by a provider usage limit is not yet detected, summarised and relaunched on the next admissible account. |
+| KON-OP-21 release verification | The current candidate tree implements evidence-bound mid-run quota succession and a resident bounded supervisor, but merge, independent audit and live-runtime verification are still pending. This README does not count local compilation or focused tests as a deployed capability. |
 | Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung and preserves the adapter's typed refusal path instead of parking until the computed reset. |
 | Automatic stale-evidence rejection | Post-freeze product drift that invalidates a completion bundle is currently caught by a reviewer, not by the state machine. |
 | Remote access and federation | Loopback only. Multi-realm switching, remote bind, pairing and TLS are unbuilt security designs, not hidden flags. |
@@ -221,16 +220,19 @@ is intentionally explicit and remains local to the state root.
 
 Reading and writing are also separate processes on the MCP side: a server runs at
 one credential tier and optionally one narrow serve profile, so a delivery seat
-is given the eighteen tools it works with rather than all 146. See
+is given the narrow tools it works with rather than all 166. See
 [`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
 
 Seat lifecycle policy has a checked example
 [`supervision.yml`](config/examples/paseo-supervision.yml). Copying it into the
-state root makes the intended notification-first and bounded-watchdog policy
-available for validation and inspection, but **does not enable watchdog
-behavior yet**: the file has no consumer until `KON-OP-21` wires one. See
-[Configuration](docs/CONFIGURATION.md). With or without the policy file, the
-current daemon invents no timeout behavior.
+state root opts into the candidate resident succession engine only when the
+document is schema v2, `watchdog.enabled` is `true`, and
+`recovery.max_concurrent_successions` is explicitly set inside the safe bound.
+With no policy, with schema v1, or with a disabled watchdog, automatic
+succession does not start and Kontor invents no cadence or capacity. See
+[Configuration](docs/CONFIGURATION.md).
+This path has local contract and regression coverage; merge, independent audit
+and live-runtime verification remain release gates.
 
 For frontend development:
 

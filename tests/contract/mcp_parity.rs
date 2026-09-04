@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 148 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 148 is forever — it is what makes a later change to the daemon's
+//! 166 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 166 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "160 forever": this is what makes a later contract change fail here, so a
+    // Not "166 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        160,
+        166,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        159,
+        165,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -560,7 +560,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        161,
+        167,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -655,6 +655,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_turn_settle", CallerTier::Operator),
         ("kontor_late_handoff_attest", CallerTier::Admin),
         ("kontor_seat_replace", CallerTier::Admin),
+        ("kontor_seat_recover", CallerTier::Admin),
         ("kontor_profile_packs_list", CallerTier::Observer),
         ("kontor_profile_pack_register", CallerTier::Admin),
         // KON-24: the context-window preview reads and changes nothing; the
@@ -736,6 +737,14 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_team_definition_upgrade_apply", CallerTier::Admin),
         ("kontor_native_names_preview", CallerTier::Admin),
         ("kontor_native_names_apply", CallerTier::Admin),
+        (
+            "kontor_epic_backlog_code_correction_preview",
+            CallerTier::Admin,
+        ),
+        (
+            "kontor_epic_backlog_code_correction_apply",
+            CallerTier::Admin,
+        ),
         // KON-OP-03: the ceilings a realm admits work under are configuration,
         // so reading and changing them is admin. Collecting evidence, judging
         // an account and attending or releasing one exact seat are operator
@@ -749,6 +758,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_capacity_override", CallerTier::Operator),
         ("kontor_seat_attention", CallerTier::Operator),
         ("kontor_seat_retire", CallerTier::Operator),
+        ("kontor_seat_quota_states_list", CallerTier::Observer),
         // KON-OP-03 successor contracts. Configuration — who the Core Team is,
         // what an Advisor, Committee or Completion profile says, which roster
         // an epic pins — is admin. Running a consultation, opening or promoting
@@ -802,6 +812,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // title rather than accepting one.
         ("kontor_container_retitle_preview", CallerTier::Admin),
         ("kontor_container_retitle_apply", CallerTier::Admin),
+        ("kontor_container_recovery_preview", CallerTier::Admin),
+        ("kontor_container_recovery_apply", CallerTier::Admin),
         // Runtime-owned correlation labels are immutable placement evidence.
         // Repair is exact-id/generation fenced and therefore Admin-only.
         ("kontor_session_labels_reconcile", CallerTier::Admin),

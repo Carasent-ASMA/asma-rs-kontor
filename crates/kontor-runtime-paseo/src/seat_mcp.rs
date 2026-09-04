@@ -1,4 +1,4 @@
-//! Worktree-local MCP composition for Claude seats.
+//! Worktree-local harness composition for a seat's own working directory.
 //!
 //! # Why a seat's MCP config is written into its worktree
 //!
@@ -23,15 +23,38 @@
 //!    has no human to answer.
 //! 3. the worktree's `info/exclude` — `.mcp.json` and `.claude/` appended once.
 //!
+//! # Why an opencode seat is composed too
+//!
+//! An opencode seat's posture is not in its mode — [`crate::posture`] renders
+//! it as a `permission` block, and this is where that block is written so the
+//! seat reads it at process start rather than inheriting whatever the machine
+//! carries.
+//!
+//! It is written to `<cwd>/.opencode/opencode.json`, **not** `<cwd>/opencode.json`,
+//! and the difference is load-bearing. The root file is one a repository
+//! legitimately commits — the superproject these seats run in tracks one
+//! carrying its model and instructions — and git applies no ignore rule to a
+//! *tracked* file, so merging into it would dirty every seat's own diff and
+//! leave Kontor's floor one `git add` from being committed as project config.
+//! Opencode reads both and the `.opencode/` copy takes precedence, which is
+//! exactly the ordering this needs: the operator's committed configuration
+//! survives untouched, and the seat's posture still wins. Nothing outside the
+//! worktree is touched — in particular never `~/.config/opencode/opencode.json`,
+//! whose machine-local edit is the stopgap this composition exists to replace.
+//!
 //! # The kill switch and the provider boundary
 //!
 //! `KONTOR_SEAT_MCP=off` in the daemon's environment disables composition for
 //! the whole process — the daemon resolves it once at fleet composition and
-//! hands the adapter `None`. Non-Claude providers are a no-op in v1: only the
+//! hands the adapter `None`. That withdraws the MCP files **and nothing else**:
+//! a declared permission posture is a safety boundary rather than part of this
+//! surface, so it is composed either way. Providers other than Claude and
+//! opencode are a no-op for MCP: only the
 //! Claude harness reads `.mcp.json` from its cwd (codex/opencode are follow-up).
 //! Account-qualified Claude provider ids such as `claude-work` and
 //! `claude-personal` are the same harness boundary and are composed too.
 
+use crate::posture::SeatPosture;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -91,20 +114,75 @@ impl SeatMcp {
         let exclude_path = git_exclude_path(cwd)?;
         write_mcp_json(cwd, &self.command, &self.state_root, serve_profile)?;
         write_claude_settings(cwd)?;
-        exclude_from_git(&exclude_path)
+        exclude_from_git(&exclude_path, CLAUDE_EXCLUDED)
+    }
+}
+
+impl SeatMcp {
+    /// The `config.mcpServers` entry a delivery seat is created with.
+    ///
+    /// Built from this value rather than taken as JSON from a caller: the
+    /// create payload decides what a seat can reach, and "some object the
+    /// launch path happened to assemble" is not a thing to validate after the
+    /// fact. The shape mirrors what [`SeatMcp::compose`] writes into
+    /// `.mcp.json` for a Claude seat, so both surfaces name one server at one
+    /// tier under one profile.
+    #[must_use]
+    pub fn server_config(&self, serve_profile: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kontor": {
+                "type": "local",
+                "command": [
+                    self.command.clone(),
+                    "--state-root".to_owned(),
+                    self.state_root.display().to_string(),
+                    "--credential-tier".to_owned(),
+                    "operator".to_owned(),
+                    "--serve-profile".to_owned(),
+                    serve_profile.to_owned(),
+                ],
+            }
+        })
     }
 }
 
 /// Compose for one seat: a no-op unless composition is configured **and** the
-/// provider is `claude`.
+/// provider is one this composes for.
+///
+/// Claude gets its MCP files; opencode gets the permission block its declared
+/// posture rendered to. The two are disjoint because neither harness reads the
+/// other's files, and every other provider writes nothing.
+///
+/// `posture` arrives already rendered rather than being derived here, so the
+/// block a seat reads and the `--mode` it was launched under are two uses of one
+/// evaluation. Deriving it twice is how they would come to disagree.
 ///
 /// # Errors
 /// As [`SeatMcp::compose`].
-pub fn compose_for_seat(seat: Option<&SeatMcp>, provider: &str, cwd: &Path) -> io::Result<()> {
+pub fn compose_for_seat(
+    seat: Option<&SeatMcp>,
+    provider: &str,
+    posture: &SeatPosture,
+    cwd: &Path,
+) -> io::Result<()> {
+    let harness = crate::client::built_in_provider(provider);
+    // **No OpenCode configuration is written here, by any provider.**
+    //
+    // An OpenCode seat reaches this function and leaves with nothing written.
+    // Its posture and its MCP surface both travel in the create's `config`, so
+    // there is nothing here to carry — and a file could not carry the posture
+    // anyway: the layers that decide it merge after anything Kontor writes and
+    // depend on who the seat authenticated as. Writing one would only put two
+    // seats sharing a worktree in each other's way, and change operator state
+    // for nothing.
+    //
+    // Nor does any other provider touch it: a Claude or Codex seat has no
+    // business rewriting OpenCode configuration, and Kontor holds no marker
+    // proving a `permission` block found there is one it wrote rather than one a
+    // human did.
+    let _ = posture;
     match seat {
-        Some(seat) if crate::client::built_in_provider(provider) == "claude" => {
-            seat.compose(cwd, "consultation")
-        }
+        Some(seat) if harness == "claude" => seat.compose(cwd, "consultation"),
         _ => Ok(()),
     }
 }
@@ -201,16 +279,7 @@ fn merge_json(
     std::fs::write(path, rendered)
 }
 
-/// The lines the composed files must never surface as in `git status`.
-const EXCLUDED: &[&str] = &[".mcp.json", ".claude/"];
-
-/// Append the composed paths to the worktree's `info/exclude`, once each.
-///
-/// `git rev-parse --git-path info/exclude` rather than a hand-rolled `.git`
-/// walk: for a linked worktree the exclude file lives under the *common* git
-/// dir, and re-deriving git's own path rules here would be a second copy that
-/// drifts. This is a local plumbing query, not a runtime effect, so it does not
-/// travel through the Paseo transport seam.
+/// Resolve the worktree-local Git exclude file before composing seat files.
 fn git_exclude_path(cwd: &Path) -> io::Result<PathBuf> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -234,7 +303,10 @@ fn git_exclude_path(cwd: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-fn exclude_from_git(path: &Path) -> io::Result<()> {
+/// The lines a composed Claude seat must never surface as in `git status`.
+const CLAUDE_EXCLUDED: &[&str] = &[".mcp.json", ".claude/"];
+
+fn exclude_from_git(path: &Path, lines: &[&str]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -243,7 +315,7 @@ fn exclude_from_git(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    let missing: Vec<&str> = EXCLUDED
+    let missing: Vec<&str> = lines
         .iter()
         .copied()
         .filter(|line| !existing.lines().any(|present| present.trim() == *line))
@@ -303,7 +375,13 @@ mod tests {
     fn composition_writes_the_files_and_none_of_them_dirty_the_worktree() {
         let repo = repo();
         let cwd = repo.path();
-        compose_for_seat(Some(&seat("/realm/state")), "claude", cwd).expect("composition");
+        compose_for_seat(
+            Some(&seat("/realm/state")),
+            "claude",
+            &SeatPosture::read_only(),
+            cwd,
+        )
+        .expect("composition");
 
         let mcp: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cwd.join(".mcp.json")).expect("written"))
@@ -370,22 +448,100 @@ mod tests {
 
         let repo = repo();
         // The daemon resolves the kill switch to `None` before the adapter sees it.
-        compose_for_seat(None, "claude", repo.path()).expect("a no-op");
-        compose_for_seat(Some(&seat("/realm/state")), "codex", repo.path()).expect("a no-op");
+        compose_for_seat(None, "claude", &SeatPosture::read_only(), repo.path()).expect("a no-op");
+        compose_for_seat(
+            Some(&seat("/realm/state")),
+            "codex",
+            &SeatPosture::read_only(),
+            repo.path(),
+        )
+        .expect("a no-op");
         assert!(
             !repo.path().join(".mcp.json").exists() && !repo.path().join(".claude").exists(),
             "nothing was written"
         );
     }
 
+    /// An OpenCode seat leaves the worktree it shares exactly as it found it.
+    ///
+    /// Not "no `opencode.json`" — *nothing*: the whole tree is listed before and
+    /// after, at every posture, with a seat MCP configured and without one. This
+    /// is what lets two OpenCode seats share one worktree, so it is asserted
+    /// against the directory rather than against a path the test picked.
+    #[test]
+    fn an_opencode_seat_leaves_the_shared_worktree_untouched() {
+        fn listing(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+            let mut found = Vec::new();
+            let mut pending = vec![root.to_path_buf()];
+            while let Some(directory) = pending.pop() {
+                for entry in std::fs::read_dir(&directory).expect("readable") {
+                    let path = entry.expect("an entry").path();
+                    if path.is_dir() {
+                        pending.push(path);
+                    } else {
+                        found.push((path.clone(), std::fs::read(&path).expect("readable")));
+                    }
+                }
+            }
+            found.sort();
+            found
+        }
+
+        let repo = repo();
+        let cwd = repo.path();
+        std::fs::write(
+            cwd.join("opencode.json"),
+            r#"{"permission": {"bash": "ask"}}"#,
+        )
+        .expect("an operator file the seat must not touch");
+        let before = listing(cwd);
+        assert!(!before.is_empty(), "the oracle would pass on an empty tree");
+
+        for posture in [
+            SeatPosture::read_only(),
+            crate::posture::seat_posture("opencode", kontor_core::spec::SeatAutonomy::Bounded, &[])
+                .expect("bounded"),
+            crate::posture::seat_posture(
+                "opencode",
+                kontor_core::spec::SeatAutonomy::Supervised,
+                &[],
+            )
+            .expect("supervised"),
+            crate::posture::seat_posture(
+                "opencode",
+                kontor_core::spec::SeatAutonomy::Advisory,
+                &[],
+            )
+            .expect("advisory"),
+        ] {
+            for seat_mcp in [None, Some(seat("/realm/state"))] {
+                compose_for_seat(seat_mcp.as_ref(), "opencode", &posture, cwd)
+                    .expect("an OpenCode seat composes nothing");
+                compose_for_seat(seat_mcp.as_ref(), "opencode-work", &posture, cwd)
+                    .expect("an account alias is still the OpenCode harness");
+            }
+        }
+
+        assert_eq!(
+            listing(cwd),
+            before,
+            "an OpenCode seat wrote into the worktree it shares"
+        );
+    }
+
     /// A provider id selects an account, while MCP composition belongs to the
-    /// harness. A Claude account alias must therefore receive the same local
+    /// harness.""" A Claude account alias must therefore receive the same local
     /// MCP boundary as the built-in `claude` id.
     #[test]
     fn a_claude_account_alias_composes_the_same_seat_mcp_boundary() {
         let repo = repo();
-        compose_for_seat(Some(&seat("/realm/state")), "claude-personal", repo.path())
-            .expect("a Claude account alias is still the Claude harness");
+        compose_for_seat(
+            Some(&seat("/realm/state")),
+            "claude-personal",
+            &SeatPosture::read_only(),
+            repo.path(),
+        )
+        .expect("a Claude account alias is still the Claude harness");
 
         let mcp: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(repo.path().join(".mcp.json")).expect("written"),
@@ -429,7 +585,13 @@ mod tests {
         )
         .expect("seeded");
 
-        compose_for_seat(Some(&seat("/realm/state")), "claude", cwd).expect("composition");
+        compose_for_seat(
+            Some(&seat("/realm/state")),
+            "claude",
+            &SeatPosture::read_only(),
+            cwd,
+        )
+        .expect("composition");
 
         let mcp: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cwd.join(".mcp.json")).expect("read"))
@@ -479,7 +641,7 @@ mod tests {
             cwd.join(path)
         };
         let exclude = std::fs::read_to_string(path).expect("the exclude file exists");
-        for line in EXCLUDED {
+        for line in CLAUDE_EXCLUDED {
             assert_eq!(
                 exclude.lines().filter(|present| present == line).count(),
                 1,

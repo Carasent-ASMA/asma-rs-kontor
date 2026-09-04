@@ -47,8 +47,11 @@ pub mod endpoint;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
+pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
+pub mod succession;
+pub mod succession_supervision;
 pub mod supervision;
 pub mod usage;
 
@@ -149,6 +152,18 @@ pub enum StartupError {
         /// The domain's own refusal.
         #[source]
         source: kontor_core::DomainError,
+    },
+    /// A present `quota-signals.yml` could not be read or validated.
+    ///
+    /// Absence is valid and leaves classification inert. A document that exists
+    /// but will not parse is refused instead, because it states an intent the
+    /// Realm cannot honour, and starting anyway would leave an operator
+    /// believing reactive classification is armed when it is not.
+    #[error("the realm's quota signals document could not be used: {source}")]
+    QuotaSignals {
+        /// The accounts crate's own refusal.
+        #[source]
+        source: kontor_accounts::QuotaSignalsError,
     },
     /// The state root does not exist and could not be created.
     #[error("the state root could not be prepared: {source}")]
@@ -374,12 +389,21 @@ impl Daemon {
             .map_err(|source| StartupError::Connector { source })?;
         let usage_poller =
             usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));
+        // Absent is valid and leaves reactive classification inert. A *present*
+        // document that will not parse refuses the start, because serving a
+        // Realm whose operator believes classification is armed is worse than
+        // not starting.
+        let quota_signals = kontor_accounts::read_quota_signals(&config.state_root)
+            .map_err(|source| StartupError::QuotaSignals { source })?
+            .map(|document| document.signals)
+            .unwrap_or_default();
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
             jira,
             config.state_root.join("runtime-roots"),
             usage_poller.clone(),
+            quota_signals,
         )
         .map_err(|source| StartupError::Applications { source })?;
 
@@ -541,6 +565,25 @@ impl Daemon {
                 }
             }
         })
+    }
+
+    /// Start automatic quota-blocked seat succession when schema v2 enables it.
+    ///
+    /// Absence and legacy schema v1 both return `None`: upgrading the daemon
+    /// never invents a cadence or concurrency ceiling for an existing Realm.
+    #[must_use]
+    pub fn spawn_succession_supervisor(
+        &self,
+        coordinator: Arc<dyn succession_supervision::SuccessionSupervisionCoordinator>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let policy = self.supervision.clone()?;
+        policy.max_concurrent_successions()?;
+        let state = self.state.clone();
+        Some(tokio::spawn(succession_supervision::poll_until_stopped(
+            coordinator,
+            state,
+            policy,
+        )))
     }
 
     /// Take the inventory a restart owes, then open the scheduling barrier.
@@ -970,7 +1013,25 @@ pub fn recover(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
     use super::*;
+
+    #[derive(Debug)]
+    struct NoopSuccessionCoordinator;
+
+    #[async_trait]
+    impl succession_supervision::SuccessionSupervisionCoordinator for NoopSuccessionCoordinator {
+        async fn coordinate(
+            &self,
+            _intent: succession_supervision::SuccessionSupervisionIntent,
+        ) -> Result<
+            succession_supervision::SuccessionCoordinationOutcome,
+            succession_supervision::SuccessionCoordinationError,
+        > {
+            Ok(succession_supervision::SuccessionCoordinationOutcome::Unchanged)
+        }
+    }
 
     #[test]
     fn a_non_loopback_bind_is_refused_including_the_wildcards() {
@@ -1055,5 +1116,64 @@ mod tests {
             !state_root.exists(),
             "a refused start leaves no state root behind"
         );
+    }
+
+    #[tokio::test]
+    async fn succession_supervision_is_v2_only_and_stops_with_the_realm() {
+        const EXAMPLE: &str = include_str!("../../../config/examples/paseo-supervision.yml");
+        let coordinator: Arc<dyn succession_supervision::SuccessionSupervisionCoordinator> =
+            Arc::new(NoopSuccessionCoordinator);
+
+        let absent_root = tempfile::tempdir().expect("absent-policy root");
+        let absent = Daemon::start(
+            DaemonConfig::at(absent_root.path()).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .expect("daemon without policy");
+        assert!(
+            absent
+                .spawn_succession_supervisor(Arc::clone(&coordinator))
+                .is_none(),
+            "absence must not invent resident behavior"
+        );
+        absent.shutdown();
+
+        let v1_document = EXAMPLE
+            .replacen("schema_version: 2", "schema_version: 1", 1)
+            .replace("  max_concurrent_successions: 5\n", "");
+        let v1_policy = supervision::parse(&v1_document).expect("legacy policy");
+        let v1_root = tempfile::tempdir().expect("v1-policy root");
+        let v1 = Daemon::start_with_supervision(
+            DaemonConfig::at(v1_root.path()).with_port(0),
+            RuntimeRegistry::new(),
+            Some(v1_policy),
+            None,
+        )
+        .expect("v1 daemon");
+        assert!(
+            v1.spawn_succession_supervisor(Arc::clone(&coordinator))
+                .is_none(),
+            "schema v1 remains behaviorally inert"
+        );
+        v1.shutdown();
+
+        let v2_policy = supervision::parse(EXAMPLE).expect("v2 policy");
+        let v2_root = tempfile::tempdir().expect("v2-policy root");
+        let v2 = Daemon::start_with_supervision(
+            DaemonConfig::at(v2_root.path()).with_port(0),
+            RuntimeRegistry::new(),
+            Some(v2_policy),
+            None,
+        )
+        .expect("v2 daemon");
+        v2.state().barrier().settle(BarrierState::Open);
+        let handle = v2
+            .spawn_succession_supervisor(coordinator)
+            .expect("schema v2 starts the configured supervisor");
+        v2.shutdown();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("the supervisor observes realm shutdown")
+            .expect("the supervisor task exits normally");
     }
 }

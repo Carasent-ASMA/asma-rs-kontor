@@ -776,6 +776,18 @@ impl ApiError {
                     "correct the declared worktree or its Git branch conflict, then retry the same materialization",
                 )
             }
+            // A predecessor the runtime will not agree is finished is a
+            // *conflict*, not a server defect. It fell into the catch-all below
+            // and answered an unclassified 503, which told an operator to check
+            // the daemon log and upgrade the build -- for a refusal that is
+            // working exactly as designed. The 2026-08-22 incident's permanent
+            // correction is that this becomes a typed 409.
+            RuntimeError::ReplacementNotEvidenced { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::RevisionConflict,
+                "the runtime does not agree the cited predecessor is finished",
+            )
+            .advising(rule),
             RuntimeError::Domain(domain) => Self::from_domain(realm_id, domain),
             // Whatever is left is genuinely unclassified, and it says so in the
             // log rather than only in the answer: an operator who sees this

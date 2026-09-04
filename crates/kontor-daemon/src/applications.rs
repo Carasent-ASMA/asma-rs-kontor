@@ -40,9 +40,10 @@ use kontor_api::applications::{
     EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction,
     LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
     ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
-    PublishedTeamRevisionDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
-    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
-    SeatProjectionDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
+    PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto,
+    ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, SeatProviderQuotaDto,
+    SeatQuotaStateDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
     TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
     TeamsProjectionDto, WorkProfileCatalogDto,
 };
@@ -79,19 +80,23 @@ use kontor_api::applications::{
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
-    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedProjectTeamDefinitionSelectionDto,
+    AppliedContainerRecoveryDto, AppliedContainerRetitleDto, AppliedEpicBacklogCodeCorrectionDto,
+    AppliedNativeNamesDto, AppliedProjectTeamDefinitionSelectionDto,
     AppliedProjectTopologySelectionDto, AppliedTeamDefinitionUpgradeDto, AppliedTopologyUpgradeDto,
-    CodeHelpEntryDto, ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
-    JiraMaterializationAppliedDto, JiraMaterializationApplyRequest, JiraMaterializationIntentDto,
-    JiraMaterializationItemDto, JiraMaterializationModeDto, JiraMaterializationPreviewDto,
-    JiraMaterializationPreviewRequest, NativeNameSubjectKindDto, NativeNameTargetDto,
-    NativeNamesApplyRequest, NativeNamesPreviewDto, NativeNamesPreviewRequest, PinnedSpecDto,
-    PinnedTeamDefinitionDto, ProjectTeamDefinitionSelectionApplyRequest,
-    ProjectTeamDefinitionSelectionPreviewDto, ProjectTeamDefinitionSelectionPreviewRequest,
-    ProjectTopologySelectionApplyRequest, ProjectTopologySelectionPreviewDto,
-    ProjectTopologySelectionPreviewRequest, SemanticTopologyRequest, SemanticTopologyTargetDto,
-    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
-    TeamDefinitionRefDto, TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
+    CodeHelpEntryDto, ContainerRecoveryApplyRequest, ContainerRecoveryPreviewDto,
+    ContainerRecoveryPreviewRequest, ContainerRetitlePreviewDto, ContainerRetitleRequest,
+    DesiredBindingDto, EpicBacklogCodeCorrectionApplyRequest, EpicBacklogCodeCorrectionPreviewDto,
+    EpicBacklogCodeCorrectionPreviewRequest, JiraMaterializationAppliedDto,
+    JiraMaterializationApplyRequest, JiraMaterializationIntentDto, JiraMaterializationItemDto,
+    JiraMaterializationModeDto, JiraMaterializationPreviewDto, JiraMaterializationPreviewRequest,
+    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
+    NativeNamesPreviewRequest, PinnedSpecDto, PinnedTeamDefinitionDto,
+    ProjectTeamDefinitionSelectionApplyRequest, ProjectTeamDefinitionSelectionPreviewDto,
+    ProjectTeamDefinitionSelectionPreviewRequest, ProjectTopologySelectionApplyRequest,
+    ProjectTopologySelectionPreviewDto, ProjectTopologySelectionPreviewRequest,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
+    SessionLabelsReconciledDto, ShareabilityDto, TeamDefinitionRefDto,
+    TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
     TeamDefinitionUpgradePreviewRequest, TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest,
     TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto,
     TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
@@ -101,9 +106,9 @@ use kontor_api::applications::{
     LateHandoffAttestationDto, ProfileArtifactDto, ProfileHandoffDto, ProfilePackDto,
     ProfilePhaseDto, ProfileValidationDto, RegisterPackRequest, ReplaceSeatRequest,
     ReplacedSeatDto, ResolveConflictRequest, RoleSlotWaiverDto, RuntimeModelRouteRequest,
-    SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto, TicketCommentDto,
-    TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto, WaiveRoleSlotRequest,
-    WorkProfileDetailDto,
+    SeatRecoveryDto, SettleTurnRequest, SettledTurnDto, SubmitIntakeRequest, TicketClaimDto,
+    TicketCommentDto, TicketCommentPullDto, TicketConflictDto, TriggerSpecDto, TurnFollowUpDto,
+    WaiveRoleSlotRequest, WorkProfileDetailDto,
 };
 use kontor_api::applications::{
     CodeHelpProjectionDto, DraftTopologySpecRequest, PublishTeamDefinitionRequest,
@@ -136,8 +141,9 @@ use kontor_core::id::{
     ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
     MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey,
     RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, TaskId, TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId,
-    TicketProjectionId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
+    SpecVersion, StatusConflictId, SuccessionAttemptId, SuccessionReceiptId, TaskId,
+    TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId, TicketProjectionId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::naming::{
     NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
@@ -147,8 +153,8 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, MigrationObjectKind, MiniProject,
-    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    IntakeOutcome, IntakeRepository, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
+    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
     NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
@@ -161,10 +167,10 @@ use kontor_core::repository::{
     StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
     StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
     StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
+    SuccessionRepository, TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
     TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -176,9 +182,15 @@ use kontor_core::spec::{
     TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    DerivedRunState, Freshness, GateVerdict, ImportedTaskState, ObservedContainerKind,
-    RuntimeContact, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    DerivedRunState, Freshness, GateVerdict, ImportedTaskState, NativeContainerBinding,
+    ObservedContainerKind, RuntimeContact, SeatBinding, SessionTopologyNode, TaskState,
+    TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+};
+use kontor_core::succession::{
+    NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
+    SuccessionConfirmation, SuccessionDeferredRefresh, SuccessionHandoffOutcome,
+    SuccessionHandoffRecord, SuccessionReceipt, SuccessionSuccessorObservation,
+    SuccessionSuccessorRecord,
 };
 use kontor_core::ticket::{
     CommentPolicy, EpicCompletionEvidence, EpicReconciliationInput, EpicStatusConflict,
@@ -211,14 +223,16 @@ use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
-    ContainerRequest, RetitleContainerRequest,
+    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
-    LaunchParts, LaunchPlacement, MessageId, PermissionDecision, ReconcileSessionLabelsRequest,
+    HistoryRequest, LaunchParts, LaunchPlacement, MessageId, PermissionDecision,
+    ReconcileSessionLabelsRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::WorkspaceRoot;
+use kontor_runtime::{BindingMessageTimeline, BindingTimelineEvent};
 use kontor_scheduler::headroom::HeadroomConfig;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
@@ -247,6 +261,15 @@ use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRu
 use kontor_teams::{
     CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, MANDATORY_LEAD_ROLE,
     MANDATORY_PROGRAM_ROLE,
+};
+
+use crate::succession::{
+    SuccessionHandoffRequest, SuccessionRedactionPolicy, UnavailableSuccessionSummarizer,
+    produce_succession_handoff,
+};
+use crate::succession_supervision::{
+    QuotaBlockedSeatIntent, SuccessionCoordinationError, SuccessionCoordinationOutcome,
+    SuccessionSupervisionCoordinator, SuccessionSupervisionIntent,
 };
 
 /// One epic's roster, with the epic-side facts that travel with it.
@@ -479,6 +502,12 @@ struct PreparedNativeNames {
     actions: Vec<NativeNameAction>,
 }
 
+struct PreparedContainerRecovery {
+    preview: ContainerRecoveryPreviewDto,
+    expected: NativeContainerBinding,
+    replacement: NewNativeContainerBinding,
+}
+
 struct CoreTeamRoutePlan {
     epic: MiniProject,
     roster: FrozenRoster,
@@ -562,6 +591,17 @@ pub struct Services {
     /// Serializes explicit provider probes so concurrent first use of one
     /// global idempotency key cannot contact the vendor twice.
     provider_probe_guard: tokio::sync::Mutex<()>,
+    /// Serializes one durable succession through its effectful resume states.
+    succession_guard: tokio::sync::Mutex<()>,
+    /// Vendor exhaustion wording, read once from the Realm's state root.
+    ///
+    /// Empty means the Realm configured no `quota-signals.yml`, and reactive
+    /// classification is inert: the usage poller stays the sole source of
+    /// truth, exactly as before the document existed. Read at construction for
+    /// the same reason `capacity` is — an observation path must not do
+    /// filesystem I/O, and a document that changed mid-flight would classify
+    /// two observations of one refusal differently.
+    quota_signals: Vec<kontor_accounts::QuotaSignal>,
 }
 
 struct CompletionCommit<'a> {
@@ -605,6 +645,7 @@ impl Services {
         jira: JiraConnectors,
         runtime_roots: PathBuf,
         usage_poller: crate::usage::UsagePoller,
+        quota_signals: Vec<kontor_accounts::QuotaSignal>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -617,6 +658,8 @@ impl Services {
             runtime_roots,
             usage_poller,
             provider_probe_guard: tokio::sync::Mutex::new(()),
+            succession_guard: tokio::sync::Mutex::new(()),
+            quota_signals,
         }))
     }
 
@@ -3782,6 +3825,46 @@ impl Services {
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the agent run no longer exists"))?;
+        // Decide here, write in the observation's own transaction below. A
+        // quota row whose citing observation was never durable is a block an
+        // operator cannot explain, so the two land together or not at all.
+        let decision = match (observation.refusal.as_ref(), run.account_profile_id) {
+            (Some(refusal), Some(account_profile_id)) => crate::quota_observation::decide(
+                state,
+                project_id,
+                account_profile_id,
+                &self.quota_signals,
+                refusal,
+                now,
+            )
+            .map_err(|error| {
+                // The error carries structure only -- never the refusal text --
+                // so it is safe to log while the refusal itself is not.
+                tracing::warn!(
+                    account = %account_profile_id,
+                    detail = %error,
+                    "the observed provider limit could not be recorded",
+                );
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the observed provider limit could not be recorded",
+                )
+            })?,
+            _ => None,
+        };
+        // Structured provenance deliberately does *not* go into this payload.
+        //
+        // The durable control-plane log is a closed vocabulary of flat scalar
+        // fields (`ensure_control_metadata`), and that is load-bearing: it is
+        // the one place a transcript could accumulate, and the flat-scalar rule
+        // exists so a known field name cannot become a lid on an arbitrary
+        // subtree. A nested `quota_classification` object violated both halves,
+        // and the log was right to refuse it.
+        //
+        // What the row itself carries is the digest, which is durable and
+        // atomic with this observation. Where the *inspectable* provenance
+        // belongs is `OQ-KON-OP-21-008`, and this constraint removes one of its
+        // options: the event payload cannot be that home.
         let payload = self.intent(&serde_json::json!({
             "schema_version": 1,
             "observed_state": observation.state.as_str(),
@@ -3809,6 +3892,9 @@ impl Services {
                         jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     ),
                     expected_revision: run.revision,
+                    quota_state: decision
+                        .as_ref()
+                        .and_then(|decided| decided.request.clone()),
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -6469,6 +6555,165 @@ impl Services {
             },
             adapter,
         ))
+    }
+
+    /// Build the complete read-only proof for replacing one stale child binding.
+    async fn prepare_container_recovery(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        expected_revision: AggregateRevision,
+    ) -> Result<PreparedContainerRecovery, ApiError> {
+        let state = self.state()?;
+        let request = ContainerRetitleRequest { expected_revision };
+        let (retitle, adapter) = self.retitle_request(project_id, topology_node_id, &request)?;
+        if retitle.projection != ContainerProjection::NativeChild {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a stale native child workspace may use container recovery",
+            ));
+        }
+        let expected = state
+            .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this topology node holds no native container to recover",
+                )
+            })?;
+        let canonical_cwd = expected.canonical_cwd.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stale child binding has no canonical working directory",
+            )
+        })?;
+        let canonical_root = WorkspaceRoot::parse(canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let parent_native_id = retitle.bound_project_native_id.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stale child has no persisted native project ancestor",
+            )
+        })?;
+        let recovery_request = ContainerRecoveryRequest {
+            topology_node_id,
+            container_binding_id: retitle.container_binding_id,
+            stale_identity: expected.identity.clone(),
+            bound_project_native_id: parent_native_id.clone(),
+            canonical_cwd: canonical_root,
+            expected_title: retitle.desired_title,
+            requested_at: kontor_api::now(),
+        };
+        let outcome = adapter
+            .preview_container_recovery(&recovery_request)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_node(topology_node_id)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_correlated()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_root(&recovery_request.canonical_cwd)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.id != recovery_request.container_binding_id
+            || outcome.snapshot.binding.projection != ContainerProjection::NativeChild
+            || outcome.snapshot.binding.identity == expected.identity
+            || outcome.observed_title != recovery_request.expected_title.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the runtime recovery census did not preserve the logical binding and exact rendered title",
+            ));
+        }
+
+        // The candidate must not already belong to another logical node. This
+        // is repeated by the store CAS so a race between preview and apply is
+        // still refused.
+        let nodes = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?;
+        let mut all_nodes = nodes;
+        if let Some(epic_id) = state
+            .with_store(|store| store.get_topology_node(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|node| node.mini_project_id)
+        {
+            all_nodes.extend(
+                state
+                    .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+                    .map_err(|error| self.refuse(&error))?,
+            );
+        }
+        for node in all_nodes {
+            if node.id == topology_node_id {
+                continue;
+            }
+            if state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .is_some_and(|binding| binding.identity == outcome.snapshot.binding.identity)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the recovery candidate is already bound to another topology node",
+                ));
+            }
+        }
+
+        let replacement = NewNativeContainerBinding {
+            topology_node_id,
+            project_id,
+            container_binding_id: expected.container_binding_id.clone(),
+            identity: outcome.snapshot.binding.identity.clone(),
+            observed_kind: ObservedContainerKind::Workspace,
+            canonical_cwd: Some(canonical_cwd.clone()),
+            observed_at: recovery_request.requested_at,
+        };
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "project_revision": expected_revision.get(),
+            "topology_node_id": topology_node_id.to_string(),
+            "container_binding_id": expected.container_binding_id.as_str(),
+            "stale_identity": {
+                "runtime_kind": expected.identity.runtime_kind.as_str(),
+                "host": expected.identity.host.as_str(),
+                "generation": expected.identity.generation,
+                "native_id": expected.identity.native_id.as_str(),
+                "binding_revision": expected.revision.get(),
+            },
+            "replacement_identity": {
+                "runtime_kind": replacement.identity.runtime_kind.as_str(),
+                "host": replacement.identity.host.as_str(),
+                "generation": replacement.identity.generation,
+                "native_id": replacement.identity.native_id.as_str(),
+            },
+            "parent_native_id": parent_native_id.as_str(),
+            "canonical_cwd": canonical_cwd.as_str(),
+            "observed_title": outcome.observed_title,
+        }))?;
+        Ok(PreparedContainerRecovery {
+            preview: ContainerRecoveryPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id,
+                stale_native_id: expected.identity.native_id.clone(),
+                replacement_native_id: replacement.identity.native_id.clone(),
+                parent_native_id,
+                canonical_cwd,
+                observed_title: outcome.observed_title,
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            expected,
+            replacement,
+        })
     }
 
     /// Preflight every existing native container and persistent seat in one
@@ -9777,6 +10022,48 @@ fn slot_prompt(
     kontor_core::id::BoundedText::parse(&format!("{instruction}{OPEN_QUESTION_DUTY}"))
 }
 
+/// Prompt a linked successor with the frozen handoff and the ordinary open
+/// question duty. Scope stays in the container/session title; the prompt only
+/// carries the work continuity evidence.
+fn succession_slot_prompt(
+    slot: &RoleSlotId,
+    roots: &BTreeSet<RoleSlotId>,
+    handoff: &kontor_core::succession::SuccessionHandoff,
+) -> kontor_core::DomainResult<BoundedText> {
+    let instruction = if roots.contains(slot) {
+        "continue the admitted task from the predecessor handoff."
+    } else {
+        "wait: this seat is downstream of a handoff. Do no work until you are handed the artifacts your role requires."
+    };
+    let continuity = match &handoff.outcome {
+        SuccessionHandoffOutcome::Summary { summary, .. } => {
+            format!(" Predecessor handoff: {}", summary.as_str())
+        }
+        SuccessionHandoffOutcome::Degraded { reason, .. } => format!(
+            " Predecessor handoff is explicitly degraded ({}); reconstruct only from durable task evidence.",
+            reason.as_str()
+        ),
+    };
+    BoundedText::parse(&format!("{instruction}{continuity}{OPEN_QUESTION_DUTY}"))
+}
+
+/// Derive the retry-stable runtime binding identity from a durable successor
+/// UUID while keeping it distinct from the logical run id.
+fn related_runtime_binding_id(
+    successor_agent_run_id: AgentRunId,
+) -> kontor_core::DomainResult<kontor_core::id::RuntimeBindingId> {
+    let mut binding_id = successor_agent_run_id.to_string();
+    let last = binding_id.pop().expect("an entity id is not empty");
+    binding_id.push(
+        char::from_digit(
+            last.to_digit(16).expect("an entity id is hexadecimal") ^ 1,
+            16,
+        )
+        .expect("a hexadecimal digit remains hexadecimal"),
+    );
+    kontor_core::id::RuntimeBindingId::parse(&binding_id)
+}
+
 /// The open-question duty every ordinary team seat is launched with (OP-REQ-038).
 ///
 /// A duty, not a mechanism: this adds no scanner, no capability, no role and no
@@ -9832,17 +10119,28 @@ async fn freeze_seat_context_policy(
 ///
 /// Read from the team run's *own frozen* template for the same reason the
 /// context policy and the model rung are: a later edit to a template must not
-/// change the authority a running seat was launched under. A seat that declares
-/// nothing is [`SeatAutonomy::standard`] — supervised — so a template written
-/// before this policy existed keeps behaving exactly as it did.
+/// change the authority a running seat was launched under.
+///
+/// Three sources, most specific first:
+///
+/// 1. the role slot, when the frozen template declared one;
+/// 2. `plane_default`, the runtime's own `permission_posture`;
+/// 3. [`SeatAutonomy::standard`] — supervised.
+///
+/// The order is what makes a plane-wide default safe to introduce: a template
+/// that already said what a seat may do keeps saying it, and a realm that
+/// declares nothing at either level behaves exactly as it did before either
+/// existed. A `runtimes.json` still at generation 4 can only reach step 3.
 fn freeze_seat_autonomy(
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
+    plane_default: Option<SeatAutonomy>,
 ) -> kontor_core::DomainResult<SeatAutonomy> {
     Ok(
         kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
             .slot(slot)
             .and_then(|seat| seat.autonomy)
+            .or(plane_default)
             .unwrap_or_else(SeatAutonomy::standard),
     )
 }
@@ -11155,6 +11453,7 @@ fn teams_projection_dto(
 /// block that had already lifted.
 fn provider_quota_state_dto(
     entry: &kontor_core::repository::ProviderQuotaState,
+    provenance: Option<&kontor_core::repository::QuotaObservationProvenance>,
     now: Timestamp,
 ) -> ProviderQuotaStateDto {
     ProviderQuotaStateDto {
@@ -11167,6 +11466,36 @@ fn provider_quota_state_dto(
         blocking: entry.blocks_at(now),
         windows: entry.windows().iter().map(quota_window_dto).collect(),
         credit: entry.credit.map(credit_balance_dto),
+        provenance: provenance.map(|stored| {
+            let record = &stored.record;
+            QuotaProvenanceDto {
+                id: record.id.to_string(),
+                signal_id: record.signal_id.clone(),
+                signal_version: record.signal_version.get(),
+                signal_definition_hash: record.signal_definition_hash.as_str().to_owned(),
+                agent_run_id: record.agent_run_id.to_string(),
+                runtime_binding_id: record.runtime_binding_id.to_string(),
+                native_id: record.native_id.as_str().to_owned(),
+                binding_generation: record.binding_generation,
+                item_epoch: record.item_epoch,
+                item_seq_start: record.item_seq_start,
+                item_seq_end: record.item_seq_end,
+                item_kind: record.item_kind.clone(),
+                item_observed_at: record.item_observed_at.to_string(),
+                decision_basis: record.decision_basis.as_str().to_owned(),
+                reset_zone: record.reset_zone.clone(),
+                evidence_digest: record.evidence_digest.as_str().to_owned(),
+                source_sequences: record
+                    .source_sequences
+                    .iter()
+                    .map(|(start, end)| QuotaSourceRangeDto {
+                        seq_start: *start,
+                        seq_end: *end,
+                    })
+                    .collect(),
+                recorded_at: record.recorded_at.to_string(),
+            }
+        }),
         revision: entry.revision,
     }
 }
@@ -13378,10 +13707,151 @@ impl ApplicationOperations for Services {
         let states = state
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
-        Ok(states
-            .iter()
-            .map(|entry| provider_quota_state_dto(entry, now))
-            .collect())
+        // Resolve each row's provenance so the readback answers "why", not just
+        // "what". A row that names none -- a provider report, an operator
+        // assertion, or anything written before this record existed -- simply
+        // carries no provenance rather than a fabricated one.
+        let mut dtos = Vec::with_capacity(states.len());
+        for entry in &states {
+            let provenance = match entry.provenance_id {
+                Some(id) => state
+                    .with_store(|store| store.get_quota_observation_provenance(project_id, id))
+                    .map_err(|error| self.refuse(&error))?,
+                None => None,
+            };
+            dtos.push(provider_quota_state_dto(entry, provenance.as_ref(), now));
+        }
+        Ok(dtos)
+    }
+
+    fn seat_quota_states(&self, project_id: ProjectId) -> Result<Vec<SeatQuotaStateDto>, ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let accounts = state
+            .with_store(|store| store.list_account_profiles(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let teams = state
+            .with_store(|store| store.list_team_runs(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let mut projected = Vec::new();
+
+        for team in teams {
+            let seats = state
+                .with_store(|store| {
+                    store.list_agent_runs_for_team_run(project_id, team.team_run_id)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            for seat in seats {
+                let run = state
+                    .with_store(|store| store.get_agent_run(project_id, seat.agent_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(ApiErrorCode::NotFound, "a projected agent run disappeared")
+                    })?;
+                let (Some(binding), Some(account_profile_id)) =
+                    (run.binding.as_ref(), run.account_profile_id)
+                else {
+                    continue;
+                };
+                if run.terminal.is_some() {
+                    continue;
+                }
+                let profile = accounts
+                    .iter()
+                    .find(|profile| profile.id == account_profile_id)
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::NotFound,
+                            "a live seat's pinned account profile is unavailable",
+                        )
+                    })?;
+                let selectable = kontor_accounts::selectable_providers(profile)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let mut providers = Vec::with_capacity(selectable.len());
+                let mut blocking_match = None;
+
+                for provider in selectable {
+                    let quota = quota_states.iter().find(|row| {
+                        row.account_profile_id == account_profile_id && row.provider == provider
+                    });
+                    let provenance = match quota.and_then(|row| row.provenance_id) {
+                        Some(id) => state
+                            .with_store(|store| {
+                                store.get_quota_observation_provenance(project_id, id)
+                            })
+                            .map_err(|error| self.refuse(&error))?,
+                        None => None,
+                    };
+                    if let (Some(row), Some(stored), Some(cursor)) =
+                        (quota, provenance.as_ref(), run.projection.last_cursor)
+                    {
+                        let record = &stored.record;
+                        let fresh_blocked = run.projection.lifecycle
+                            == kontor_core::state::RunLifecycle::Blocked
+                            && run.projection.observed
+                                == kontor_core::state::ObservedRunState::Blocked
+                            && run.projection.derived == DerivedRunState::Confirmed
+                            && Freshness::evaluate(
+                                run.projection.last_confirmed_at,
+                                now,
+                                jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                            ) == Freshness::Fresh;
+                        let exact = fresh_blocked
+                            && row.blocks_at(now)
+                            && row.source
+                                == kontor_core::spec::ProviderQuotaSource::RuntimeObservation
+                            && row.provenance_id == Some(record.id)
+                            && record.runtime_observation_cursor == Some(cursor)
+                            && record.project_id == project_id
+                            && record.account_profile_id == account_profile_id
+                            && record.provider == provider
+                            && record.agent_run_id == run.id
+                            && record.runtime_binding_id == binding.id
+                            && record.native_id == binding.identity.native_id
+                            && record.binding_generation == binding.identity.generation
+                            && record.decided_state == row.state
+                            && record.parsed_resets_at == row.resets_at
+                            && record.evidence_digest == row.evidence_hash
+                            && record.decision_basis
+                                == kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal;
+                        if exact {
+                            blocking_match = Some((provider.clone(), record.id.to_string()));
+                        }
+                    }
+                    providers.push(SeatProviderQuotaDto {
+                        provider,
+                        quota: quota
+                            .map(|row| provider_quota_state_dto(row, provenance.as_ref(), now)),
+                    });
+                }
+
+                projected.push(SeatQuotaStateDto {
+                    agent_run_id: run.id.to_string(),
+                    task_id: team.task_id,
+                    team_run_id: run.team_run_id.to_string(),
+                    role_slot: run.role.as_str().to_owned(),
+                    runtime_binding_id: binding.id.to_string(),
+                    runtime_kind: binding.identity.runtime_kind.as_str().to_owned(),
+                    native_id: binding.identity.native_id.as_str().to_owned(),
+                    binding_generation: binding.identity.generation,
+                    account_profile_id,
+                    lifecycle: run.projection.lifecycle.as_str().to_owned(),
+                    observed_state: run.projection.observed.as_str().to_owned(),
+                    runtime_observation_cursor: run.projection.last_cursor,
+                    recovery_eligible: blocking_match.is_some(),
+                    blocking_provider: blocking_match
+                        .as_ref()
+                        .map(|(provider, _)| provider.clone()),
+                    quota_provenance_id: blocking_match.map(|(_, provenance)| provenance),
+                    providers,
+                });
+            }
+        }
+        projected.sort_by(|left, right| left.agent_run_id.cmp(&right.agent_run_id));
+        Ok(projected)
     }
 
     async fn record_provider_quota(
@@ -13447,6 +13917,8 @@ impl ApplicationOperations for Services {
             state
                 .with_store(|store| {
                     store.set_provider_quota_state(&NewProviderQuotaState {
+                        // An operator assertion cites no runtime item.
+                        provenance: None,
                         project_id,
                         account_profile_id,
                         provider: request.provider.clone(),
@@ -13488,7 +13960,13 @@ impl ApplicationOperations for Services {
                     "the provider quota state could not be read back after the record",
                 )
             })?;
-        Ok(provider_quota_state_dto(&stored, now))
+        let provenance = match stored.provenance_id {
+            Some(id) => state
+                .with_store(|store| store.get_quota_observation_provenance(project_id, id))
+                .map_err(|error| self.refuse(&error))?,
+            None => None,
+        };
+        Ok(provider_quota_state_dto(&stored, provenance.as_ref(), now))
     }
 
     async fn probe_provider_quota(
@@ -15650,6 +16128,315 @@ impl ApplicationOperations for Services {
                     AppliedDto::Created
                 },
                 revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    fn preview_epic_backlog_code_correction(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionPreviewRequest,
+    ) -> Result<EpicBacklogCodeCorrectionPreviewDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let source = state
+            .with_store(|store| store.epic_backlog_code_origin(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic has no active backlog code to correct",
+                )
+            })?;
+        if source.1 != "legacy" {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a legacy-imported epic backlog code may be corrected",
+            ));
+        }
+        if source.2.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this legacy epic backlog code has already been corrected",
+            ));
+        }
+        if source.0 != request.expected_prior_code {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the active legacy epic code differs from the caller's preview basis",
+            ));
+        }
+        if request.corrected_code == request.expected_prior_code {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the corrected epic code must differ from the legacy value",
+            ));
+        }
+        if state
+            .with_store(|store| {
+                store.epic_backlog_code_is_reserved(project_id, &request.corrected_code)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the corrected epic code is already reserved in this project",
+            ));
+        }
+        if state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "an epic that already pins a Team Definition cannot change its item-code namespace",
+            ));
+        }
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "project_revision": project.revision.get(),
+            "epic_id": epic_id.to_string(),
+            "epic_revision": epic.revision.get(),
+            "prior_code": request.expected_prior_code.as_str(),
+            "corrected_code": request.corrected_code.as_str(),
+            "reason": request.reason.as_str(),
+        }))?;
+        Ok(EpicBacklogCodeCorrectionPreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            epic_id,
+            prior_code: request.expected_prior_code.clone(),
+            corrected_code: request.corrected_code.clone(),
+            preview_hash,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn apply_epic_backlog_code_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionApplyRequest,
+    ) -> Result<AppliedEpicBacklogCodeCorrectionDto, ApiError> {
+        let state = self.state()?;
+        self.project_at(project_id, request.expected_revision)?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_epic_backlog_code",
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "prior_code": request.expected_prior_code.as_str(),
+            "corrected_code": request.corrected_code.as_str(),
+            "reason": request.reason.as_str(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        if replayed.is_none() {
+            let preview = self.preview_epic_backlog_code_correction(
+                project_id,
+                epic_id,
+                &EpicBacklogCodeCorrectionPreviewRequest {
+                    expected_revision: request.expected_revision,
+                    expected_prior_code: request.expected_prior_code.clone(),
+                    corrected_code: request.corrected_code.clone(),
+                    reason: request.reason.clone(),
+                },
+            )?;
+            if preview.preview_hash != request.preview_hash {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the legacy epic-code correction changed since preview",
+                ));
+            }
+        }
+        let now = kontor_api::now();
+        let target_revision = replayed
+            .as_ref()
+            .map_or(epic.revision, |receipt| receipt.target_revision);
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::CorrectEpicBacklogCode,
+                target,
+                target_revision,
+                intent: intent.clone(),
+                created_at: now,
+            },
+        );
+        let (_, receipt, applied) = state
+            .with_store(|store| {
+                store.correct_legacy_epic_backlog_code_with_intent(
+                    &LegacyEpicBacklogCodeCorrection {
+                        project_id,
+                        mini_project_id: epic_id,
+                        expected_prior_code: request.expected_prior_code.clone(),
+                        corrected_code: request.corrected_code.clone(),
+                        reason: request.reason.clone(),
+                        corrected_at: now,
+                    },
+                    target_revision,
+                    &envelope,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(AppliedEpicBacklogCodeCorrectionDto {
+            correction: EpicBacklogCodeCorrectionPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                epic_id,
+                prior_code: request.expected_prior_code.clone(),
+                corrected_code: request.corrected_code.clone(),
+                preview_hash: request.preview_hash.clone(),
+                snapshot_cursor: self.cursor()?,
+            },
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: applied_dto(applied),
+                revision: target_revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn preview_container_recovery(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryPreviewRequest,
+    ) -> Result<ContainerRecoveryPreviewDto, ApiError> {
+        Ok(self
+            .prepare_container_recovery(project_id, topology_node_id, request.expected_revision)
+            .await?
+            .preview)
+    }
+
+    async fn apply_container_recovery(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryApplyRequest,
+    ) -> Result<AppliedContainerRecoveryDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let target = AggregateRef::Project { project_id };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "recover_topology_container",
+            "project_id": project_id.to_string(),
+            "topology_node_id": topology_node_id.to_string(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        let prepared = if replayed.is_none() {
+            let prepared = self
+                .prepare_container_recovery(project_id, topology_node_id, request.expected_revision)
+                .await?;
+            if prepared.preview.preview_hash != request.preview_hash {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the stale-container recovery candidate changed since preview",
+                ));
+            }
+            Some(prepared)
+        } else {
+            None
+        };
+        let current = state
+            .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this topology node holds no native container binding",
+                )
+            })?;
+        let target_revision = replayed
+            .as_ref()
+            .map_or(project.revision, |receipt| receipt.target_revision);
+        let now = kontor_api::now();
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecoverTopologyContainer,
+                target,
+                target_revision,
+                intent,
+                created_at: now,
+            },
+        );
+        let recovery = prepared.as_ref().map_or_else(
+            || TopologyContainerRecovery {
+                expected: current.clone(),
+                replacement: NewNativeContainerBinding {
+                    topology_node_id,
+                    project_id,
+                    container_binding_id: current.container_binding_id.clone(),
+                    identity: current.identity.clone(),
+                    observed_kind: current.observed_kind,
+                    canonical_cwd: current.canonical_cwd.clone(),
+                    observed_at: now,
+                },
+                parent_native_id: current.identity.native_id.clone(),
+                observed_title: ExternalName::parse("replay")
+                    .expect("the replay marker is a valid external name"),
+            },
+            |prepared| TopologyContainerRecovery {
+                expected: prepared.expected.clone(),
+                replacement: prepared.replacement.clone(),
+                parent_native_id: prepared.preview.parent_native_id.clone(),
+                observed_title: ExternalName::parse(&prepared.preview.observed_title)
+                    .expect("runtime titles were parsed by the recovery contract"),
+            },
+        );
+        let (evidence, receipt, applied) = state
+            .with_store(|store| {
+                store.recover_topology_container_with_intent(&recovery, target_revision, &envelope)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        let canonical_cwd = evidence.canonical_cwd.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the stored child recovery evidence has no canonical working directory",
+            )
+        })?;
+        Ok(AppliedContainerRecoveryDto {
+            recovery: ContainerRecoveryPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id,
+                stale_native_id: evidence.prior_identity.native_id,
+                replacement_native_id: evidence.replacement_identity.native_id,
+                parent_native_id: evidence.parent_native_id,
+                canonical_cwd,
+                observed_title: evidence.observed_title.as_str().to_owned(),
+                preview_hash: request.preview_hash.clone(),
+                snapshot_cursor: self.cursor()?,
+            },
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: applied_dto(applied),
+                revision: target_revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -23654,6 +24441,87 @@ impl ApplicationOperations for Services {
     ) -> Result<ReplacedSeatDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
+        // Two different facts with two different fences. "The provider was down
+        // when we tried to start" and "it ran for an hour and then hit the
+        // wall" cannot both be true of one seat, and a caller offering both is
+        // asserting a story rather than evidencing one.
+        if request.unavailable_provider.is_some() && request.quota_exhausted.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "provider-outage and quota-exhaustion evidence are mutually exclusive",
+            ));
+        }
+        if let Some(evidence) = request.quota_exhausted.as_ref() {
+            let existing = state
+                .with_store(|store| store.succession_attempt_by_key(key))
+                .map_err(|error| self.refuse(&error))?;
+            if existing.is_none() {
+                let predecessor = state
+                    .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(ApiErrorCode::NotFound, "no such predecessor run exists")
+                    })?;
+                if predecessor.revision != request.expected_predecessor_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the predecessor moved since the replacement was authorized",
+                        )
+                        .with_revision(Some(predecessor.revision)));
+                }
+                let binding = predecessor.binding.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the predecessor has no immutable native binding to replace",
+                    )
+                })?;
+                if request.binding_generation != binding.identity.generation {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the immutable binding generation differs from the replacement request",
+                    ));
+                }
+                let role_slot = RoleSlotId::parse(&request.role_slot)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                if predecessor.role != role_slot.into_role_key() {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the predecessor did not hold the requested role slot",
+                    ));
+                }
+                let task_id = self.task_for_team_run(project_id, predecessor.team_run_id)?;
+                if self.task_row(project_id, task_id)?.revision != request.expected_task_revision {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the task moved since the replacement was authorized",
+                    ));
+                }
+                self.validate_quota_succession_evidence(
+                    project_id,
+                    &predecessor,
+                    binding,
+                    evidence,
+                    now,
+                    false,
+                )?;
+            }
+            let recovery = self
+                .recover_quota_seat(
+                    key,
+                    project_id,
+                    agent_run_id,
+                    request.model_route.as_ref(),
+                    false,
+                )
+                .await?;
+            return recovery.successor.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::CapacityExhausted,
+                    "the quota successor is durably deferred until recorded headroom returns",
+                )
+            });
+        }
         let mut predecessor = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
             .map_err(|error| self.refuse(&error))?
@@ -23663,6 +24531,14 @@ impl ApplicationOperations for Services {
                     "no such predecessor run exists in this project",
                 )
             })?;
+        if predecessor.revision != request.expected_predecessor_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the predecessor moved since the replacement was authorized",
+                )
+                .with_revision(Some(predecessor.revision)));
+        }
         let binding = predecessor.binding.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::StaleBinding,
@@ -23713,6 +24589,82 @@ impl ApplicationOperations for Services {
             ));
         }
 
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the predecessor's runtime",
+                )
+            })?;
+
+        // Resolve the quota successor before the command intent, predecessor
+        // retirement or any native call. A Wait/NeedsHuman answer is a
+        // side-effect-free deferral, never permission to archive first and
+        // discover afterwards that nowhere can accept the work.
+        let quota_successor_route = if request.quota_exhausted.is_some() {
+            let quota_states = state
+                .with_store(|store| store.list_provider_quota_states(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let eligible = self.eligible_accounts(project_id)?;
+            let task_pin = state
+                .with_store(|store| store.task_account_selection(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?
+                .map(|(account_profile_id, _)| account_profile_id);
+            let outlook = QuotaOutlook {
+                states: &quota_states,
+                account: task_pin,
+                accounts: &eligible,
+                headroom: self.headroom_policy(),
+                now,
+            };
+            let declared = if let Some(route) = request.model_route.as_ref() {
+                vec![parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?]
+            } else {
+                let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let chain = template
+                    .slot(&role_slot)
+                    .and_then(|seat| seat.model_chain.as_ref())
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::UnsupportedCapability,
+                            "the role slot has no declared successor route",
+                        )
+                    })?;
+                outlook
+                    .effective_rungs(&chain.rungs)
+                    .map_err(|error| self.refuse_domain(&error))?
+            };
+            match resolve_chain_placement(
+                adapter.as_ref(),
+                &declared,
+                kontor_scheduler::headroom::SeatClass::Delivery,
+                &outlook,
+            )
+            .map_err(|error| self.refuse_domain(&error))?
+            {
+                kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                    Some((rung, Some(account)))
+                }
+                kontor_scheduler::headroom::Placement::Wait { .. } => {
+                    return Err(self.deny(
+                        ApiErrorCode::CapacityExhausted,
+                        "the quota successor is deferred until recorded headroom returns",
+                    ));
+                }
+                kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "no governed successor route has admissible headroom",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
         let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "replace_seat",
@@ -23720,6 +24672,7 @@ impl ApplicationOperations for Services {
             "team_run_id": predecessor.team_run_id.to_string(),
             "role_slot": role_slot.as_role_key().as_str(),
             "task_revision": task.revision.get(),
+            "predecessor_revision": predecessor.revision.get(),
             "binding_generation": binding.identity.generation,
         });
         if let Some(evidence) = &request.unavailable_provider {
@@ -23727,6 +24680,32 @@ impl ApplicationOperations for Services {
                 "runtime_binding_id": evidence.runtime_binding_id,
                 "native_id": evidence.native_id,
                 "provider": evidence.provider,
+            });
+        }
+        // Every effect-bearing field belongs in the canonical intent, and the
+        // quota arm's evidence most of all: it is the authority to retire a
+        // seat that is still reachable and still answering. Omitting it let a
+        // used key replay across a *different* account, provider, binding or
+        // native claim -- the replay check below runs before any retire, so
+        // binding it here is what makes changed evidence conflict instead of
+        // quietly archiving the wrong session under an old receipt.
+        if let Some(evidence) = &request.quota_exhausted {
+            intent_document["quota_exhausted"] = serde_json::json!({
+                "runtime_binding_id": evidence.runtime_binding_id,
+                "native_id": evidence.native_id,
+                "provider": evidence.provider,
+                "account_profile_id": evidence.account_profile_id,
+                "runtime_observation_cursor": evidence.runtime_observation_cursor.get(),
+            });
+        }
+        // The desired route is an operator decision that changes where the
+        // successor lands, so a key reused with a different one is a different
+        // command.
+        if let Some(route) = &request.model_route {
+            intent_document["model_route"] = serde_json::json!({
+                "provider": route.provider,
+                "model": route.model,
+                "effort": route.effort,
             });
         }
         let intent = self.intent(&intent_document)?;
@@ -23752,6 +24731,10 @@ impl ApplicationOperations for Services {
                     &predecessor,
                     &binding,
                     request.unavailable_provider.as_ref(),
+                    request
+                        .quota_exhausted
+                        .as_ref()
+                        .map(|evidence| (evidence, false)),
                     now,
                 )
                 .await?;
@@ -23848,18 +24831,14 @@ impl ApplicationOperations for Services {
         );
         let binding_id = kontor_core::id::RuntimeBindingId::parse(&binding_id)
             .map_err(|error| self.refuse_domain(&error))?;
-        let adapter = state
-            .runtimes()
-            .get(&binding.identity.runtime_kind)
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "this daemon is not configured with the predecessor's runtime",
-                )
-            })?;
         if recorded_successor_id.is_none() {
+            // Unpinned on purpose. The walk that selects this successor's
+            // account has not run yet, and inheriting the predecessor's would
+            // pin the successor to the very account a quota succession exists
+            // to leave -- after which the durable pin below could only be
+            // refused, because a run owns one account.
             let successor_row = permit
-                .new_agent_run(project_id, predecessor.account_profile_id, None, now)
+                .new_agent_run(project_id, None, None, now)
                 .map_err(|error| self.refuse_domain(&error))?;
             state
                 .with_store(|store| store.create_agent_run(&successor_row))
@@ -23884,23 +24863,44 @@ impl ApplicationOperations for Services {
             .with_store(|store| store.list_provider_quota_states(project_id))
             .map_err(|error| self.refuse(&error))?;
         let eligible = self.eligible_accounts(project_id)?;
+        // The *task's* explicit pin constrains the successor's walk; the
+        // predecessor's run account must not. `QuotaOutlook::candidates`
+        // returns exactly the pinned account and nothing else, so constraining
+        // this walk by the predecessor would leave a quota succession able to
+        // select only the account whose allowance is spent -- it could never
+        // reach the second account, which is the entire point. A task pin is
+        // different: it is an operator's standing decision, and if that account
+        // is blocked the walk finds nothing and no account is claimed, rather
+        // than the pin being silently violated.
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account_profile_id, _)| account_profile_id);
         let outlook = QuotaOutlook {
             states: &quota_states,
-            account: predecessor.account_profile_id,
+            account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
             now,
         };
         // An explicit route override is an operator decision the walk must not
-        // second-guess, so no account is resolved for it; the successor keeps
-        // only the predecessor's own pin.
-        let (model_rung, routed_account) = match request.model_route.as_ref() {
-            Some(route) => (
-                parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
-                None,
-            ),
-            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
-                .map_err(|error| self.refuse_domain(&error))?,
+        // second-guess, so no account is resolved for it -- and none is
+        // inherited either. The route names a provider and a model, never an
+        // account, so claiming the predecessor's would be exactly the
+        // unverified attestation `freeze_seat_model_rung` refuses to invent on
+        // its own no-placement arm.
+        let (model_rung, routed_account) = match quota_successor_route {
+            Some(preplanned) => preplanned,
+            None => match request.model_route.as_ref() {
+                Some(route) => (
+                    parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
+                    None,
+                ),
+                None => {
+                    freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
+                        .map_err(|error| self.refuse_domain(&error))?
+                }
+            },
         };
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
@@ -23918,15 +24918,26 @@ impl ApplicationOperations for Services {
             binding_id,
             placement: Some(LaunchPlacement::Container(workspace.clone())),
             cwd: task_root.clone(),
-            account_profile_id: predecessor.account_profile_id.or(routed_account),
+            account_profile_id: routed_account,
             prompt: slot_prompt(&role_slot, &eligible_roots(slots.template()))
                 .map_err(|error| self.refuse_domain(&error))?,
             model_rung,
             context_policy: context_policy.clone(),
-            autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot)
+            autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
         };
+        // A successor claims its account before it touches the runtime, exactly
+        // as a first launch does. Succession exists to move a seat off an
+        // exhausted account, so the account it lands on is the one whose future
+        // refusals must be attributable.
+        if let Some(account) = routed_account {
+            state
+                .with_store(|store| {
+                    store.pin_agent_run_account(project_id, successor_agent_run_id, account)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         let admission = permit.admission_request(&launch);
         let admitted = match adapter.admit_launch(&admission).await {
             Err(RuntimeError::ReplacementNotEvidenced {
@@ -23993,6 +25004,16 @@ impl ApplicationOperations for Services {
                 AppliedDto::Created
             },
         })
+    }
+
+    async fn recover_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<SeatRecoveryDto, ApiError> {
+        self.recover_quota_seat(key, project_id, agent_run_id, None, true)
+            .await
     }
 
     async fn abandon_run(
@@ -25672,6 +26693,1389 @@ impl Services {
         report
     }
 
+    /// Freshly observe a predecessor, freeze its exact quota authority and
+    /// persist the route decision before any destructive runtime effect.
+    async fn recover_quota_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        requested_route: Option<&RuntimeModelRouteRequest>,
+        fresh_observation_required: bool,
+    ) -> Result<SeatRecoveryDto, ApiError> {
+        let _succession_guard = self.succession_guard.lock().await;
+        let state = self.state()?;
+        if let Some(attempt) = state
+            .with_store(|store| store.succession_attempt_by_key(key))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if attempt.request.project_id != project_id
+                || attempt.request.predecessor_agent_run_id != agent_run_id
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key already names another succession attempt",
+                ));
+            }
+            return self
+                .resume_succession_attempt(attempt, AppliedDto::Unchanged)
+                .await;
+        }
+
+        let now = kontor_api::now();
+        let predecessor = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "no such predecessor run exists"))?;
+        if predecessor.terminal.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal predecessor has no new recovery attempt to observe",
+            ));
+        }
+        if predecessor.projection.lifecycle == kontor_core::state::RunLifecycle::Running
+            || predecessor.projection.observed == kontor_core::state::ObservedRunState::Running
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "a running seat is never observed for quota succession",
+            ));
+        }
+        let binding = predecessor.binding.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the predecessor has no immutable native binding to recover",
+            )
+        })?;
+        let held = state.sessions().get(binding.id).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "this process holds no frozen capability snapshot for the predecessor",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the predecessor's runtime",
+                )
+            })?;
+        if fresh_observation_required {
+            let issued = adapter
+                .issued_binding(&held)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let observation = adapter
+                .inspect(&kontor_runtime::request::InspectRequest {
+                    binding: issued.snapshot().clone(),
+                    requested_at: now,
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            if observation.identity != binding.identity
+                || observation.agent_run_id != agent_run_id
+                || observation.contact != RuntimeContact::Reachable
+                || observation.state != kontor_core::state::ObservedRunState::Blocked
+                || observation.refusal.is_none()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "recovery requires a fresh reachable blocked runtime refusal from the exact binding",
+                ));
+            }
+            self.persist_run_observation(project_id, agent_run_id, &observation, now)?;
+        }
+        let predecessor = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the predecessor disappeared"))?;
+        let binding = predecessor.binding.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the predecessor binding disappeared",
+            )
+        })?;
+        let cursor = predecessor.projection.last_cursor.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the fresh runtime observation did not become the current projection",
+            )
+        })?;
+        let account_profile_id = predecessor.account_profile_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "quota recovery requires an account-pinned predecessor",
+            )
+        })?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let mut exact_evidence = None;
+        for row in quota_states.iter().filter(|row| {
+            row.account_profile_id == account_profile_id
+                && row.source == kontor_core::spec::ProviderQuotaSource::RuntimeObservation
+                && row.blocks_at(now)
+        }) {
+            let Some(provenance_id) = row.provenance_id else {
+                continue;
+            };
+            let Some(provenance) = state
+                .with_store(|store| {
+                    store.get_quota_observation_provenance(project_id, provenance_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+            else {
+                continue;
+            };
+            let record = &provenance.record;
+            if record.runtime_observation_cursor == Some(cursor)
+                && record.agent_run_id == agent_run_id
+                && record.runtime_binding_id == binding.id
+                && record.native_id == binding.identity.native_id
+                && record.binding_generation == binding.identity.generation
+                && record.account_profile_id == account_profile_id
+                && record.provider == row.provider
+                && record.decided_state == row.state
+                && record.parsed_resets_at == row.resets_at
+                && record.evidence_digest == row.evidence_hash
+                && record.decision_basis == kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal
+            {
+                exact_evidence = Some(kontor_api::applications::QuotaExhaustedSeatRequest {
+                    runtime_observation_cursor: cursor,
+                    runtime_binding_id: binding.id.to_string(),
+                    native_id: binding.identity.native_id.as_str().to_owned(),
+                    provider: row.provider.clone(),
+                    account_profile_id: account_profile_id.to_string(),
+                });
+                break;
+            }
+        }
+        let evidence = exact_evidence.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the fresh refusal produced no exact current runtime quota provenance",
+            )
+        })?;
+        let quota = self.validate_quota_succession_evidence(
+            project_id,
+            &predecessor,
+            &binding,
+            &evidence,
+            now,
+            false,
+        )?;
+
+        let task_id = self.task_for_team_run(project_id, predecessor.team_run_id)?;
+        let task = self.task_row(project_id, task_id)?;
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the recovery task is not scoped to an epic",
+            )
+        })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, predecessor.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the team run no longer exists"))?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the team run is terminal and cannot receive a successor",
+            ));
+        }
+        let role_slot = RoleSlotId::new(predecessor.role.clone());
+        let eligible = self.eligible_accounts(project_id)?;
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account, _)| account);
+        let outlook = QuotaOutlook {
+            states: &quota_states,
+            account: task_pin,
+            accounts: &eligible,
+            headroom: self.headroom_policy(),
+            now,
+        };
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let chain = template
+            .slot(&role_slot)
+            .and_then(|seat| seat.model_chain.as_ref())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the role slot has no declared successor route",
+                )
+            })?;
+        let declared = if let Some(route) = requested_route {
+            vec![parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?]
+        } else {
+            outlook
+                .effective_rungs(&chain.rungs)
+                .map_err(|error| self.refuse_domain(&error))?
+        };
+        let placement = resolve_chain_placement(
+            adapter.as_ref(),
+            &declared,
+            kontor_scheduler::headroom::SeatClass::Delivery,
+            &outlook,
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let (successor_model_rung, successor_account_profile_id, deferred_until) = match placement {
+            kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                (Some(rung), Some(account), None)
+            }
+            kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
+            kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "no governed successor route has admissible headroom",
+                ));
+            }
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "recover_seat",
+            "project_id": project_id.to_string(),
+            "predecessor_agent_run_id": agent_run_id.to_string(),
+            "team_run_id": predecessor.team_run_id.to_string(),
+            "role_slot": predecessor.role.as_str(),
+            "task_revision": task.revision.get(),
+            "team_revision": team.revision.get(),
+            "predecessor_revision": predecessor.revision.get(),
+            "runtime_observation_cursor": cursor.get(),
+            "quota_provenance_id": quota.provenance_id.map(|id| id.to_string()),
+            "quota_state_revision": quota.revision.get(),
+            "quota_evidence_hash": quota.evidence_hash.as_str(),
+            "quota_provider": quota.provider,
+            "successor_model_rung": successor_model_rung,
+            "successor_account_profile_id": successor_account_profile_id.map(|id| id.to_string()),
+            "deferred_until": deferred_until.map(|instant| instant.to_string()),
+        }))?;
+        let attempt = state
+            .with_store(|store| {
+                store.create_succession_attempt(&NewSuccessionAttempt {
+                    id: SuccessionAttemptId::generate(),
+                    project_id,
+                    task_id,
+                    team_run_id: predecessor.team_run_id,
+                    role: predecessor.role.clone(),
+                    predecessor_agent_run_id: agent_run_id,
+                    predecessor_runtime_binding_id: binding.id,
+                    predecessor_native_identity: binding.identity.clone(),
+                    expected_task_revision: task.revision,
+                    expected_team_revision: team.revision,
+                    expected_predecessor_revision: predecessor.revision,
+                    runtime_observation_cursor: cursor,
+                    quota_provenance_id: quota
+                        .provenance_id
+                        .expect("validated runtime quota has provenance"),
+                    quota_state_revision: quota.revision,
+                    quota_evidence_hash: quota.evidence_hash.clone(),
+                    quota_provider: quota.provider.clone(),
+                    successor_model_rung,
+                    successor_account_profile_id,
+                    idempotency_key: key.clone(),
+                    intent_hash: intent.hash().clone(),
+                    deferred_until,
+                    created_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        self.resume_succession_attempt(attempt, AppliedDto::Created)
+            .await
+    }
+
+    async fn resume_succession_attempt(
+        &self,
+        mut attempt: SuccessionAttempt,
+        applied: AppliedDto,
+    ) -> Result<SeatRecoveryDto, ApiError> {
+        if attempt.state == SuccessionAttemptState::Refused {
+            return Ok(self.succession_readback(&attempt, None, applied));
+        }
+        let state = self.state()?;
+        let project_id = attempt.request.project_id;
+        let now = kontor_api::now();
+        if attempt.state == SuccessionAttemptState::Deferred {
+            if !attempt.is_due(now) {
+                return Ok(self.succession_readback(&attempt, None, applied));
+            }
+            attempt = self.refresh_due_succession_attempt(attempt, now).await?;
+            if matches!(
+                attempt.state,
+                SuccessionAttemptState::Deferred | SuccessionAttemptState::Refused
+            ) {
+                return Ok(self.succession_readback(&attempt, None, applied));
+            }
+        }
+
+        if attempt.state == SuccessionAttemptState::Planned && attempt.handoff.is_none() {
+            let handoff = self.produce_attempt_handoff(&attempt, now).await;
+            attempt = state
+                .with_store(|store| {
+                    store.record_succession_handoff(&SuccessionHandoffRecord {
+                        project_id,
+                        attempt_id: attempt.request.id,
+                        expected_revision: attempt.revision,
+                        handoff,
+                        recorded_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        if attempt.state == SuccessionAttemptState::Planned {
+            let predecessor = state
+                .with_store(|store| {
+                    store.get_agent_run(project_id, attempt.request.predecessor_agent_run_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the succession predecessor disappeared",
+                    )
+                })?;
+            let binding = predecessor.binding.clone().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the succession predecessor binding disappeared",
+                )
+            })?;
+            if let Some(terminal) = predecessor.terminal.as_ref() {
+                if terminal.outcome != TerminalOutcome::Cancelled
+                    || !matches!(
+                        terminal.source,
+                        TerminalEvidenceSource::RuntimeObservation { .. }
+                    )
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the durable succession predecessor has contradictory terminal evidence",
+                    ));
+                }
+                if state.sessions().get(binding.id).is_some() {
+                    self.release(binding.id)?;
+                }
+            } else {
+                let evidence = kontor_api::applications::QuotaExhaustedSeatRequest {
+                    runtime_observation_cursor: attempt.request.runtime_observation_cursor,
+                    runtime_binding_id: attempt.request.predecessor_runtime_binding_id.to_string(),
+                    native_id: attempt
+                        .request
+                        .predecessor_native_identity
+                        .native_id
+                        .as_str()
+                        .to_owned(),
+                    provider: attempt.request.quota_provider.clone(),
+                    account_profile_id: predecessor
+                        .account_profile_id
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::RevisionConflict,
+                                "the succession predecessor lost its account attribution",
+                            )
+                        })?
+                        .to_string(),
+                };
+                let retirement_now = kontor_api::now();
+                let resumed_after_deferral = attempt
+                    .successor_planned_at
+                    .is_some_and(|planned_at| planned_at > attempt.request.created_at);
+                self.retire_predecessor_for_replacement(
+                    project_id,
+                    &predecessor,
+                    &binding,
+                    None,
+                    Some((&evidence, resumed_after_deferral)),
+                    retirement_now,
+                )
+                .await?;
+            }
+            attempt = state
+                .with_store(|store| {
+                    store.mark_succession_predecessor_retired(&SuccessionAttemptAdvance {
+                        project_id,
+                        attempt_id: attempt.request.id,
+                        expected_revision: attempt.revision,
+                        occurred_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        if attempt.state == SuccessionAttemptState::PredecessorRetired {
+            let observation = self.launch_succession_successor(&attempt).await?;
+            attempt = state
+                .with_store(|store| {
+                    store.mark_succession_successor_observed(&SuccessionSuccessorRecord {
+                        project_id,
+                        attempt_id: attempt.request.id,
+                        expected_revision: attempt.revision,
+                        observation,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+
+        if attempt.state == SuccessionAttemptState::SuccessorObserved {
+            let successor = attempt.successor.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the succession state has no successor readback",
+                )
+            })?;
+            let handoff_hash = attempt.handoff_hash.clone().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the succession state has no durable handoff digest",
+                )
+            })?;
+            let receipt = SuccessionReceipt {
+                schema_version: 1,
+                id: SuccessionReceiptId::generate(),
+                attempt_id: attempt.request.id,
+                project_id,
+                task_id: attempt.request.task_id,
+                team_run_id: attempt.request.team_run_id,
+                role: attempt.request.role.clone(),
+                predecessor_agent_run_id: attempt.request.predecessor_agent_run_id,
+                predecessor_runtime_binding_id: attempt.request.predecessor_runtime_binding_id,
+                predecessor_native_identity: attempt.request.predecessor_native_identity.clone(),
+                successor_agent_run_id: successor.agent_run_id,
+                successor_runtime_binding_id: successor.runtime_binding_id,
+                successor_native_identity: successor.native_identity.clone(),
+                successor_runtime_observation_cursor: successor.runtime_observation_cursor,
+                authorizing_runtime_observation_cursor: attempt.request.runtime_observation_cursor,
+                quota_provenance_id: attempt.request.quota_provenance_id,
+                quota_state_revision: attempt.request.quota_state_revision,
+                quota_evidence_hash: attempt.request.quota_evidence_hash.clone(),
+                handoff_hash,
+                summary_hash: attempt
+                    .handoff
+                    .as_ref()
+                    .and_then(|handoff| handoff.summary_hash())
+                    .cloned(),
+                intent_hash: attempt.request.intent_hash.clone(),
+                confirmed_at: kontor_api::now(),
+            };
+            state
+                .with_store(|store| {
+                    store.confirm_succession(&SuccessionConfirmation {
+                        expected_revision: attempt.revision,
+                        receipt,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            attempt = state
+                .with_store(|store| store.get_succession_attempt(project_id, attempt.request.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the confirmed succession disappeared",
+                    )
+                })?;
+        }
+
+        if attempt.state != SuccessionAttemptState::Confirmed {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the succession attempt stopped in an unsupported state",
+            ));
+        }
+        let receipt = state
+            .with_store(|store| {
+                store.succession_receipt_for_attempt(project_id, attempt.request.id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the confirmed succession has no immutable receipt",
+                )
+            })?;
+        Ok(self.succession_readback(&attempt, Some(&receipt), applied))
+    }
+
+    /// Re-observe a due deferred predecessor and atomically freeze its next
+    /// route decision on the original attempt.
+    ///
+    /// The original quota row proves why the attempt was created. At the reset
+    /// boundary that row may legitimately stop blocking new launches, so this
+    /// refresh does not reuse the generic `blocks_at(now)` authorization. It
+    /// instead requires the same exact native binding to remain reachable and
+    /// Blocked with a runtime-owned refusal, persists that observation, joins
+    /// the resulting current provenance for the same account/provider, then
+    /// lets fresh headroom either admit or renew the wait.
+    async fn refresh_due_succession_attempt(
+        &self,
+        attempt: SuccessionAttempt,
+        now: Timestamp,
+    ) -> Result<SuccessionAttempt, ApiError> {
+        let state = self.state()?;
+        let project_id = attempt.request.project_id;
+        let predecessor = state
+            .with_store(|store| {
+                store.get_agent_run(project_id, attempt.request.predecessor_agent_run_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the deferred succession predecessor disappeared",
+                )
+            })?;
+        if predecessor.terminal.is_some()
+            || predecessor.team_run_id != attempt.request.team_run_id
+            || predecessor.role != attempt.request.role
+            || predecessor.projection.observed == kontor_core::state::ObservedRunState::Running
+            || predecessor.projection.lifecycle == kontor_core::state::RunLifecycle::Running
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the deferred succession predecessor is no longer the same blocked seat",
+            ));
+        }
+        let binding = predecessor.binding.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the deferred succession predecessor lost its native binding",
+            )
+        })?;
+        if binding.id != attempt.request.predecessor_runtime_binding_id
+            || binding.identity != attempt.request.predecessor_native_identity
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the deferred succession predecessor moved to another native binding",
+            ));
+        }
+        let account_profile_id = predecessor.account_profile_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the deferred succession predecessor lost its account attribution",
+            )
+        })?;
+        let held = state.sessions().get(binding.id).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "this process does not hold the deferred predecessor binding",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the deferred predecessor runtime is not configured",
+                )
+            })?;
+        let issued = adapter
+            .issued_binding(&held)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let observation = adapter
+            .inspect(&kontor_runtime::request::InspectRequest {
+                binding: issued.snapshot().clone(),
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let Some(refusal) = observation.refusal.as_ref() else {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "a due succession still requires a fresh runtime-owned quota refusal",
+            ));
+        };
+        let refusal_provenance = refusal.provenance();
+        if observation.agent_run_id != predecessor.id
+            || observation.identity != binding.identity
+            || observation.contact != RuntimeContact::Reachable
+            || observation.state != kontor_core::state::ObservedRunState::Blocked
+            || refusal_provenance.agent_run_id != predecessor.id
+            || refusal_provenance.runtime_binding_id != binding.id
+            || refusal_provenance.native_id != binding.identity.native_id
+            || refusal_provenance.binding_generation != binding.identity.generation
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "a due succession requires the same exact reachable blocked native refusal",
+            ));
+        }
+        let refusal_digest = refusal.digest();
+        let (projection, _) =
+            self.persist_run_observation(project_id, predecessor.id, &observation, now)?;
+        let cursor = projection.last_cursor.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the refreshed blocked observation produced no durable cursor",
+            )
+        })?;
+        let predecessor = state
+            .with_store(|store| store.get_agent_run(project_id, predecessor.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the predecessor disappeared"))?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let quota = quota_states
+            .iter()
+            .find(|row| {
+                row.account_profile_id == account_profile_id
+                    && row.provider == attempt.request.quota_provider
+                    && row.source
+                        == kontor_core::spec::ProviderQuotaSource::RuntimeObservation
+                    && row.evidence_hash == refusal_digest
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the fresh refusal produced no current quota evidence for the deferred provider",
+                )
+            })?;
+        let quota_provenance_id = quota.provenance_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the refreshed runtime quota state has no immutable provenance",
+            )
+        })?;
+        let quota_provenance = state
+            .with_store(|store| {
+                store.get_quota_observation_provenance(project_id, quota_provenance_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the refreshed runtime quota provenance is absent",
+                )
+            })?;
+        let record = &quota_provenance.record;
+        if record.runtime_observation_cursor != Some(cursor)
+            || record.agent_run_id != predecessor.id
+            || record.runtime_binding_id != binding.id
+            || record.native_id != binding.identity.native_id
+            || record.binding_generation != binding.identity.generation
+            || record.account_profile_id != account_profile_id
+            || record.provider != attempt.request.quota_provider
+            || record.decided_state != quota.state
+            || record.parsed_resets_at != quota.resets_at
+            || record.evidence_digest != quota.evidence_hash
+            || record.decision_basis != kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the refreshed quota provenance does not exactly match the due predecessor",
+            ));
+        }
+
+        let task = self.task_row(project_id, attempt.request.task_id)?;
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the deferred recovery task is not scoped to an epic",
+            )
+        })?;
+        self.ensure_no_team_definition_migration(project_id, epic_id)?;
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, attempt.request.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the deferred team disappeared"))?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the deferred succession team is terminal",
+            ));
+        }
+        let eligible = self.eligible_accounts(project_id)?;
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, task.id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account, _)| account);
+        let outlook = QuotaOutlook {
+            states: &quota_states,
+            account: task_pin,
+            accounts: &eligible,
+            headroom: self.headroom_policy(),
+            now,
+        };
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let role_slot = RoleSlotId::new(attempt.request.role.clone());
+        let chain = template
+            .slot(&role_slot)
+            .and_then(|seat| seat.model_chain.as_ref())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the deferred role slot has no declared successor route",
+                )
+            })?;
+        let declared = outlook
+            .effective_rungs(&chain.rungs)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let placement = resolve_chain_placement(
+            adapter.as_ref(),
+            &declared,
+            kontor_scheduler::headroom::SeatClass::Delivery,
+            &outlook,
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let (successor_model_rung, successor_account_profile_id, deferred_until) = match placement {
+            kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                (Some(rung), Some(account), None)
+            }
+            kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
+            kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+                return state
+                    .with_store(|store| {
+                        store.refuse_succession(&kontor_core::succession::SuccessionRefusal {
+                            project_id,
+                            attempt_id: attempt.request.id,
+                            expected_revision: attempt.revision,
+                            reason: kontor_core::succession::SuccessionRefusalReason::LaunchRefused,
+                            refused_at: now,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error));
+            }
+        };
+        state
+            .with_store(|store| {
+                store.refresh_deferred_succession_evidence(&SuccessionDeferredRefresh {
+                    project_id,
+                    attempt_id: attempt.request.id,
+                    expected_revision: attempt.revision,
+                    expected_predecessor_revision: predecessor.revision,
+                    runtime_observation_cursor: cursor,
+                    quota_provenance_id,
+                    quota_state_revision: quota.revision,
+                    quota_evidence_hash: quota.evidence_hash.clone(),
+                    quota_provider: quota.provider.clone(),
+                    successor_model_rung,
+                    successor_account_profile_id,
+                    deferred_until,
+                    refreshed_at: now,
+                })
+            })
+            .map_err(|error| self.refuse(&error))
+    }
+
+    async fn produce_attempt_handoff(
+        &self,
+        attempt: &SuccessionAttempt,
+        produced_at: Timestamp,
+    ) -> kontor_core::succession::SuccessionHandoff {
+        let state = self
+            .state()
+            .expect("succession handoff runs only after service attachment");
+        let timeline = match state
+            .sessions()
+            .get(attempt.request.predecessor_runtime_binding_id)
+        {
+            Some(snapshot) => match state
+                .runtimes()
+                .get(&attempt.request.predecessor_native_identity.runtime_kind)
+            {
+                Some(adapter) => adapter
+                    .history(&HistoryRequest {
+                        binding: snapshot,
+                        cursor: None,
+                        page_size: 256,
+                    })
+                    .await
+                    .ok()
+                    .and_then(|page| {
+                        BindingMessageTimeline::project(
+                            attempt.request.predecessor_runtime_binding_id,
+                            attempt.request.predecessor_native_identity.clone(),
+                            page.items.into_iter().map(|event| {
+                                BindingTimelineEvent::new(
+                                    attempt.request.predecessor_runtime_binding_id,
+                                    attempt.request.predecessor_native_identity.clone(),
+                                    event,
+                                )
+                            }),
+                        )
+                        .ok()
+                    }),
+                None => None,
+            },
+            None => None,
+        };
+        let redaction = SuccessionRedactionPolicy::new(
+            ContentHash::of(b"kontor-succession-redaction-v1"),
+            Vec::new(),
+        );
+        produce_succession_handoff(
+            SuccessionHandoffRequest {
+                attempt_id: attempt.request.id,
+                predecessor_agent_run_id: attempt.request.predecessor_agent_run_id,
+                predecessor_runtime_binding_id: attempt.request.predecessor_runtime_binding_id,
+                predecessor_native_identity: attempt.request.predecessor_native_identity.clone(),
+                timeline,
+                // No governed summarizer transport is configured in the
+                // composition root. Keep the typed degraded path honest.
+                summarizer_model_rung: None,
+                produced_at,
+            },
+            &redaction,
+            &UnavailableSuccessionSummarizer,
+        )
+        .await
+    }
+
+    /// Create or recover the one linked successor, then return a fresh exact
+    /// runtime observation suitable for the durable FSM transition.
+    async fn launch_succession_successor(
+        &self,
+        attempt: &SuccessionAttempt,
+    ) -> Result<SuccessionSuccessorObservation, ApiError> {
+        let state = self.state()?;
+        let project_id = attempt.request.project_id;
+        let now = kontor_api::now();
+        let predecessor = state
+            .with_store(|store| {
+                store.get_agent_run(project_id, attempt.request.predecessor_agent_run_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the succession predecessor disappeared",
+                )
+            })?;
+        let terminal = predecessor.terminal.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the successor cannot launch before predecessor retirement",
+            )
+        })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor lacks runtime-observed cancellation",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, attempt.request.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the succession team disappeared"))?;
+        let task = self.task_row(project_id, attempt.request.task_id)?;
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the succession task is not scoped to an epic",
+            )
+        })?;
+        let role_slot = RoleSlotId::new(attempt.request.role.clone());
+        let members = self.team_members(project_id, attempt.request.team_run_id)?;
+        let recorded_successor = members.iter().find(|run| {
+            run.parent_agent_run_id == Some(attempt.request.predecessor_agent_run_id)
+                && !run.is_operator_abandoned_unbound()
+        });
+        if let Some(successor) = recorded_successor
+            && let Some(binding) = successor.binding.as_ref()
+        {
+            return self
+                .observe_succession_successor(project_id, successor, binding, now)
+                .await;
+        }
+
+        let successor_account = attempt
+            .request
+            .successor_account_profile_id
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the planned succession has no frozen successor account",
+                )
+            })?;
+        let model_rung = attempt
+            .request
+            .successor_model_rung
+            .clone()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the planned succession has no frozen successor route",
+                )
+            })?;
+        let adapter = state
+            .runtimes()
+            .get(&attempt.request.predecessor_native_identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the succession runtime is not configured in this daemon",
+                )
+            })?;
+        let recorded_successor_id = recorded_successor.map(|run| run.id);
+        let slot_members: Vec<_> = members
+            .iter()
+            .filter(|run| {
+                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
+            })
+            .cloned()
+            .collect();
+        let bindings: Vec<_> = members
+            .iter()
+            .filter_map(|run| run.binding.as_ref())
+            .filter_map(|binding| state.sessions().get(binding.id))
+            .collect();
+        let lease = TeamRunLease::acquire(attempt.request.team_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &slot_members, &bindings)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let closed = slots
+            .latest_closed(&role_slot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if closed.agent_run_id() != attempt.request.predecessor_agent_run_id {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the predecessor is not the role slot's latest closed attempt",
+            ));
+        }
+        let successor_agent_run_id = recorded_successor_id.unwrap_or_else(AgentRunId::generate);
+        let permit = slots
+            .reserve_successor(closed, successor_agent_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let binding_id = related_runtime_binding_id(successor_agent_run_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if recorded_successor_id.is_none() {
+            let row = permit
+                .new_agent_run(project_id, None, None, now)
+                .map_err(|error| self.refuse_domain(&error))?;
+            state
+                .with_store(|store| store.create_agent_run(&row))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        self.ensure_launch_intent(project_id, successor_agent_run_id)?;
+        state
+            .with_store(|store| {
+                store.pin_agent_run_account(project_id, successor_agent_run_id, successor_account)
+            })
+            .map_err(|error| self.refuse(&error))?;
+
+        adapter
+            .prepare_plane()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let task_root = self.task_root(project_id, attempt.request.task_id)?;
+        let node = self.ensure_task_node(project_id, attempt.request.task_id)?;
+        let workspace = self
+            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .await?;
+        let scope = self.execution_scope(
+            project_id,
+            epic_id,
+            Some(attempt.request.task_id),
+            adapter.as_ref(),
+        )?;
+        let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let handoff = attempt.handoff.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the successor cannot launch without a durable handoff",
+            )
+        })?;
+        let launch = SlotLaunch {
+            display_name: self.delivery_seat_name(
+                project_id,
+                attempt.request.task_id,
+                &scope,
+                &team.snapshot,
+                &role_slot,
+            )?,
+            scope,
+            task_id: attempt.request.task_id,
+            binding_id,
+            placement: Some(LaunchPlacement::Container(workspace)),
+            cwd: task_root,
+            account_profile_id: Some(successor_account),
+            prompt: succession_slot_prompt(&role_slot, &eligible_roots(slots.template()), handoff)
+                .map_err(|error| self.refuse_domain(&error))?,
+            model_rung,
+            context_policy: context_policy.clone(),
+            autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot, adapter.declared_autonomy())
+                .map_err(|error| self.refuse_domain(&error))?,
+            requested_at: now,
+        };
+        let admission = permit.admission_request(&launch);
+        let admitted = match adapter.admit_launch(&admission).await {
+            Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "this seat holds no session to replace",
+            }) => {
+                adapter
+                    .admit_launch(&AdmissionRequest {
+                        replaces: None,
+                        ..admission
+                    })
+                    .await
+            }
+            answer => answer,
+        };
+        let authority = admitted
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+            .into_authority()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let prepared = permit.launch_request(authority, launch);
+        let outcome = adapter
+            .launch(prepared.request())
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        slots
+            .bind(prepared, &outcome.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let successor_binding = RuntimeBinding {
+            id: outcome.snapshot.binding_id(),
+            agent_run_id: successor_agent_run_id,
+            identity: outcome.snapshot.identity().clone(),
+            bound_at: now,
+        };
+        state
+            .with_store(|store| {
+                store.bind_agent_run(project_id, successor_agent_run_id, &successor_binding)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.record_run_context_policy(project_id, successor_agent_run_id, &context_policy)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        self.persist_run_observation(
+            project_id,
+            successor_agent_run_id,
+            &outcome.observation,
+            now,
+        )?;
+        self.hold(&outcome.snapshot)?;
+        self.retry_undelivered_dispatches().await?;
+        self.observe_succession_successor(
+            project_id,
+            &state
+                .with_store(|store| store.get_agent_run(project_id, successor_agent_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the launched successor disappeared before live readback",
+                    )
+                })?,
+            &successor_binding,
+            kontor_api::now(),
+        )
+        .await
+    }
+
+    async fn observe_succession_successor(
+        &self,
+        project_id: ProjectId,
+        successor: &kontor_core::repository::AgentRun,
+        binding: &RuntimeBinding,
+        now: Timestamp,
+    ) -> Result<SuccessionSuccessorObservation, ApiError> {
+        let state = self.state()?;
+        let held = state.sessions().get(binding.id).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the recovered successor binding is not held by this process",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the recovered successor runtime is not configured",
+                )
+            })?;
+        let issued = adapter
+            .issued_binding(&held)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let mut observation = adapter
+            .inspect(&kontor_runtime::request::InspectRequest {
+                binding: issued.snapshot().clone(),
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if observation.contact == RuntimeContact::Reachable
+            && observation.identity == binding.identity
+            && observation.state == kontor_core::state::ObservedRunState::Launching
+        {
+            adapter
+                .resume(&kontor_runtime::request::ResumeRequest {
+                    binding: issued.snapshot().clone(),
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            observation = adapter
+                .inspect(&kontor_runtime::request::InspectRequest {
+                    binding: issued.snapshot().clone(),
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
+        if observation.contact != RuntimeContact::Reachable
+            || observation.identity != binding.identity
+            || !matches!(
+                observation.state,
+                kontor_core::state::ObservedRunState::Running
+                    | kontor_core::state::ObservedRunState::WaitingInput
+            )
+        {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the recovered successor is not freshly live on its exact binding",
+            ));
+        }
+        let (projection, _) =
+            self.persist_run_observation(project_id, successor.id, &observation, now)?;
+        let cursor = projection.last_cursor.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the recovered successor observation produced no durable cursor",
+            )
+        })?;
+        Ok(SuccessionSuccessorObservation {
+            agent_run_id: successor.id,
+            runtime_binding_id: binding.id,
+            native_identity: binding.identity.clone(),
+            runtime_observation_cursor: cursor,
+            observed_at: observation.observed_at,
+        })
+    }
+
+    fn succession_readback(
+        &self,
+        attempt: &SuccessionAttempt,
+        receipt: Option<&SuccessionReceipt>,
+        applied: AppliedDto,
+    ) -> SeatRecoveryDto {
+        let successor = receipt.map(|receipt| ReplacedSeatDto {
+            realm_id: self
+                .state()
+                .expect("services state is initialized")
+                .realm_id(),
+            task_id: receipt.task_id,
+            team_run_id: receipt.team_run_id.to_string(),
+            predecessor_agent_run_id: receipt.predecessor_agent_run_id.to_string(),
+            successor_agent_run_id: receipt.successor_agent_run_id.to_string(),
+            role_slot: receipt.role.as_str().to_owned(),
+            runtime_kind: receipt
+                .successor_native_identity
+                .runtime_kind
+                .as_str()
+                .to_owned(),
+            native_id: receipt
+                .successor_native_identity
+                .native_id
+                .as_str()
+                .to_owned(),
+            applied,
+        });
+        SeatRecoveryDto {
+            realm_id: self
+                .state()
+                .expect("services state is initialized")
+                .realm_id(),
+            attempt_id: attempt.request.id.to_string(),
+            state: attempt.state.as_str().to_owned(),
+            task_id: attempt.request.task_id,
+            team_run_id: attempt.request.team_run_id.to_string(),
+            role_slot: attempt.request.role.as_str().to_owned(),
+            predecessor_agent_run_id: attempt.request.predecessor_agent_run_id.to_string(),
+            successor,
+            authorizing_runtime_observation_cursor: attempt.request.runtime_observation_cursor,
+            quota_provenance_id: attempt.request.quota_provenance_id.to_string(),
+            handoff_hash: attempt
+                .handoff_hash
+                .as_ref()
+                .map(|hash| hash.as_str().to_owned()),
+            summary_hash: attempt
+                .handoff
+                .as_ref()
+                .and_then(|handoff| handoff.summary_hash())
+                .map(|hash| hash.as_str().to_owned()),
+            successor_runtime_observation_cursor: receipt
+                .map(|receipt| receipt.successor_runtime_observation_cursor),
+            succession_receipt_id: receipt.map(|receipt| receipt.id.to_string()),
+            deferred_until: attempt
+                .request
+                .deferred_until
+                .map(|instant| instant.to_string()),
+            applied,
+        }
+    }
+
+    /// Prove a quota succession was authorized by this run's exact current
+    /// runtime refusal and the quota projection written from it.
+    fn validate_quota_succession_evidence(
+        &self,
+        project_id: ProjectId,
+        predecessor: &kontor_core::repository::AgentRun,
+        binding: &RuntimeBinding,
+        evidence: &kontor_api::applications::QuotaExhaustedSeatRequest,
+        now: Timestamp,
+        allow_elapsed_reset: bool,
+    ) -> Result<kontor_core::repository::ProviderQuotaState, ApiError> {
+        let state = self.state()?;
+        if predecessor.projection.lifecycle == kontor_core::state::RunLifecycle::Running
+            || predecessor.projection.observed == kontor_core::state::ObservedRunState::Running
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "a running seat is never retired for quota succession",
+            ));
+        }
+        if predecessor.terminal.is_some()
+            || predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Blocked
+            || predecessor.projection.observed != kontor_core::state::ObservedRunState::Blocked
+            || predecessor.projection.derived != DerivedRunState::Confirmed
+            || predecessor.projection.last_cursor != Some(evidence.runtime_observation_cursor)
+            || Freshness::evaluate(
+                predecessor.projection.last_confirmed_at,
+                now,
+                jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+            ) != Freshness::Fresh
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "quota succession requires the exact current fresh blocked runtime projection",
+            ));
+        }
+        if evidence.runtime_binding_id != binding.id.to_string()
+            || evidence.native_id != binding.identity.native_id.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the quota evidence names another immutable binding",
+            ));
+        }
+        ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
+        let claimed = kontor_core::id::AccountProfileId::parse(&evidence.account_profile_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if predecessor.account_profile_id != Some(claimed) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the quota evidence names an account this seat does not hold",
+            ));
+        }
+
+        let events = state
+            .with_store(|store| store.read_runtime_events(project_id, predecessor.id, None))
+            .map_err(|error| self.refuse(&error))?;
+        let event = events
+            .iter()
+            .find(|event| event.cursor == evidence.runtime_observation_cursor)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the cited quota runtime observation does not belong to this predecessor",
+                )
+            })?;
+        if event.identity != binding.identity {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the cited quota runtime observation names another native generation",
+            ));
+        }
+        let payload: serde_json::Value = event
+            .payload
+            .deserialize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if payload
+            .get("observed_state")
+            .and_then(serde_json::Value::as_str)
+            != Some("blocked")
+            || payload.get("contact").and_then(serde_json::Value::as_str) != Some("reachable")
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the cited runtime observation is not a reachable blocked refusal",
+            ));
+        }
+
+        let states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let row = states
+            .iter()
+            .find(|row| {
+                let elapsed_deferred_reset = allow_elapsed_reset
+                    && row.state == kontor_core::spec::ProviderQuotaKind::Exhausted
+                    && row.resets_at.is_some_and(|resets_at| resets_at <= now);
+                row.account_profile_id == claimed
+                    && row.provider == evidence.provider
+                    && (row.blocks_at(now) || elapsed_deferred_reset)
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "no recorded quota state blocks this account and provider now",
+                )
+            })?;
+        if row.source != kontor_core::spec::ProviderQuotaSource::RuntimeObservation {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "quota succession requires a runtime-observed quota state",
+            ));
+        }
+        let provenance_id = row.provenance_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the runtime-observed quota state has no immutable provenance",
+            )
+        })?;
+        let provenance = state
+            .with_store(|store| store.get_quota_observation_provenance(project_id, provenance_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the runtime-observed quota provenance is absent",
+                )
+            })?;
+        let provenance = &provenance.record;
+        if provenance.runtime_observation_cursor != Some(evidence.runtime_observation_cursor)
+            || provenance.project_id != project_id
+            || provenance.account_profile_id != claimed
+            || provenance.provider != row.provider
+            || provenance.agent_run_id != predecessor.id
+            || provenance.runtime_binding_id != binding.id
+            || provenance.native_id != binding.identity.native_id
+            || provenance.binding_generation != binding.identity.generation
+            || provenance.decided_state != row.state
+            || provenance.parsed_resets_at != row.resets_at
+            || provenance.evidence_digest != row.evidence_hash
+            || provenance.decision_basis != kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the current quota provenance does not match this observation and binding",
+            ));
+        }
+        Ok(row.clone())
+    }
+
     /// Retire one still-bound predecessor under the Admin replacement command
     /// and persist the runtime's fresh archive readback as its cancellation.
     ///
@@ -25684,6 +28088,7 @@ impl Services {
         predecessor: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
         unavailable: Option<&kontor_api::applications::UnavailableProviderSeatRequest>,
+        quota: Option<(&kontor_api::applications::QuotaExhaustedSeatRequest, bool)>,
         now: Timestamp,
     ) -> Result<kontor_core::repository::AgentRun, ApiError> {
         let state = self.state()?;
@@ -25730,6 +28135,22 @@ impl Services {
                 ));
             }
         }
+        let quota_row = if let Some((evidence, allow_elapsed_reset)) = quota {
+            // Re-prove immediately before the first awaited runtime read. The
+            // earlier proof protects the route walk; this one protects the
+            // destructive native boundary if another request moved either the
+            // run projection or its quota authority in between.
+            Some(self.validate_quota_succession_evidence(
+                project_id,
+                predecessor,
+                binding,
+                evidence,
+                now,
+                allow_elapsed_reset,
+            )?)
+        } else {
+            None
+        };
         let issued = adapter
             .issued_binding(&held)
             .await
@@ -25741,47 +28162,88 @@ impl Services {
             })
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let observation =
-            if liveness.terminal_evidence(&issued, now, state.evidence_window_seconds())
-                == Some(TerminalOutcome::Cancelled)
-            {
-                // A previous attempt may have archived the native seat and crashed
-                // before persisting that readback. The fresh archive evidence is
-                // sufficient; repeating the native effect is unnecessary.
-                liveness
-            } else if let Some(evidence) = unavailable {
-                adapter
-                    .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            } else {
-                if liveness.contact != RuntimeContact::ProcessMissing {
-                    return Err(self.deny(
-                        ApiErrorCode::UnsupportedCapability,
-                        "the predecessor is still reachable and must be reused",
-                    ));
-                }
-                // A closed process is normally only between turns. Give the runtime
-                // one chance to prove same-seat continuity before retirement; only
-                // a process it both reports missing and cannot resume is unusable.
-                if adapter
-                    .resume(&kontor_runtime::request::ResumeRequest {
-                        binding: issued.snapshot().clone(),
-                        requested_at: now,
-                    })
-                    .await
-                    .is_ok()
-                {
-                    return Err(self.deny(
-                        ApiErrorCode::UnsupportedCapability,
-                        "the predecessor resumed in place and must be reused",
-                    ));
-                }
-                adapter
-                    .retire(issued.snapshot(), now)
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        let observation = if liveness.terminal_evidence(
+            &issued,
+            now,
+            state.evidence_window_seconds(),
+        ) == Some(TerminalOutcome::Cancelled)
+        {
+            // A previous attempt may have archived the native seat and crashed
+            // before persisting that readback. The fresh archive evidence is
+            // sufficient; repeating the native effect is unnecessary.
+            liveness
+        } else if let Some(evidence) = unavailable {
+            adapter
+                .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        } else if let Some(quota_row) = quota_row.as_ref() {
+            let Some(refusal) = liveness.refusal.as_ref() else {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "quota succession requires a fresh reachable blocked runtime refusal before retirement",
+                ));
             };
+            let provenance = refusal.provenance();
+            if liveness.contact != RuntimeContact::Reachable
+                || liveness.state != kontor_core::state::ObservedRunState::Blocked
+                || liveness.identity != binding.identity
+                || liveness.agent_run_id != predecessor.id
+                || refusal.digest() != quota_row.evidence_hash
+                || provenance.agent_run_id != predecessor.id
+                || provenance.runtime_binding_id != binding.id
+                || provenance.native_id != binding.identity.native_id
+                || provenance.binding_generation != binding.identity.generation
+            {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "quota succession requires the exact current runtime refusal that produced its provider quota evidence",
+                ));
+            }
+            // The one arm that retires a *reachable* predecessor. A seat
+            // that hit a usage limit is still there and still answering; the
+            // generic path below refuses exactly that, which is what made
+            // the 2026-08-22 incident unrecoverable. The `Launching`-only
+            // fence of the `unavailable_provider` arm is deliberately not
+            // copied here: that fence means "never started", and this seat
+            // ran for an hour first.
+            //
+            // Nothing is relaxed downstream. The archive still has to come
+            // back runtime-observed `Cancelled` below, exactly as every
+            // other arm does, so the succession is evidenced rather than
+            // asserted.
+            adapter
+                .retire(issued.snapshot(), now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        } else {
+            if liveness.contact != RuntimeContact::ProcessMissing {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the predecessor is still reachable and must be reused",
+                ));
+            }
+            // A closed process is normally only between turns. Give the runtime
+            // one chance to prove same-seat continuity before retirement; only
+            // a process it both reports missing and cannot resume is unusable.
+            if adapter
+                .resume(&kontor_runtime::request::ResumeRequest {
+                    binding: issued.snapshot().clone(),
+                    requested_at: now,
+                })
+                .await
+                .is_ok()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the predecessor resumed in place and must be reused",
+                ));
+            }
+            adapter
+                .retire(issued.snapshot(), now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        };
         let Some(outcome) =
             observation.terminal_evidence(&issued, now, state.evidence_window_seconds())
         else {
@@ -25824,6 +28286,7 @@ impl Services {
                         jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     ),
                     expected_revision: predecessor.revision,
+                    quota_state: None,
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -26289,8 +28752,22 @@ impl Services {
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let autonomy = freeze_seat_autonomy(&team_snapshot, &slot)
+            let autonomy = freeze_seat_autonomy(&team_snapshot, &slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?;
+            // The account is durable *before* the first native effect. A seat
+            // that reaches a provider before its account is stored is a seat
+            // whose refusal cannot be attributed and whose replacement cannot
+            // be evidenced -- `ProviderQuotaState` is keyed by
+            // `(project, account, provider)` and there is no other key.
+            // Re-presenting the same account is a replay that writes nothing,
+            // so a restarted launch does not pin twice.
+            if let Some(account) = admitted.account_profile_id.or(routed_account) {
+                state
+                    .with_store(|store| {
+                        store.pin_agent_run_account(project_id, agent_run_id, account)
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             let outcome = adapter
                 .launch(&authority.into_request(LaunchParts {
                     scope: scope.clone(),
@@ -28745,8 +31222,16 @@ impl Services {
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let autonomy = freeze_seat_autonomy(&team_snapshot, slot)
+        let autonomy = freeze_seat_autonomy(&team_snapshot, slot, adapter.declared_autonomy())
             .map_err(|error| self.refuse_domain(&error))?;
+        // Durable before the first native effect, as in the admitted path: a
+        // seat that reaches a provider unpinned cannot have its refusal
+        // attributed or its replacement evidenced.
+        if let Some(account) = admitted.account_profile_id.or(routed_account) {
+            state
+                .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
+                .map_err(|error| self.refuse(&error))?;
+        }
         let outcome = adapter
             .launch(&authority.into_request(LaunchParts {
                 scope: scope.clone(),
@@ -29105,6 +31590,214 @@ impl Services {
     }
 }
 
+#[async_trait]
+impl SuccessionSupervisionCoordinator for Services {
+    async fn coordinate(
+        &self,
+        intent: SuccessionSupervisionIntent,
+    ) -> Result<SuccessionCoordinationOutcome, SuccessionCoordinationError> {
+        match intent {
+            SuccessionSupervisionIntent::Resume {
+                project_id,
+                attempt_id,
+            } => {
+                let _guard = self.succession_guard.lock().await;
+                let state = self.state().map_err(map_succession_api_error)?;
+                let before = state
+                    .with_store(|store| store.get_succession_attempt(project_id, attempt_id))
+                    .map_err(|_| SuccessionCoordinationError::Repository)?
+                    .ok_or(SuccessionCoordinationError::Conflict)?;
+                if before.state == SuccessionAttemptState::Confirmed {
+                    return Ok(SuccessionCoordinationOutcome::Unchanged);
+                }
+                if before.state == SuccessionAttemptState::Refused {
+                    return Ok(SuccessionCoordinationOutcome::Refused);
+                }
+                if before.state == SuccessionAttemptState::Deferred
+                    && !before.is_due(kontor_api::now())
+                {
+                    return Ok(SuccessionCoordinationOutcome::Deferred);
+                }
+                match self
+                    .resume_succession_attempt(before.clone(), AppliedDto::Updated)
+                    .await
+                {
+                    Ok(readback) if readback.state == SuccessionAttemptState::Deferred.as_str() => {
+                        Ok(SuccessionCoordinationOutcome::Deferred)
+                    }
+                    Ok(_) => Ok(SuccessionCoordinationOutcome::Advanced),
+                    Err(error) if succession_error_is_durable_refusal(error.code) => {
+                        let current = state
+                            .with_store(|store| {
+                                store.get_succession_attempt(project_id, attempt_id)
+                            })
+                            .map_err(|_| SuccessionCoordinationError::Repository)?
+                            .ok_or(SuccessionCoordinationError::Conflict)?;
+                        if current.state == SuccessionAttemptState::Refused {
+                            return Ok(SuccessionCoordinationOutcome::Refused);
+                        }
+                        let reason = match current.state {
+                            SuccessionAttemptState::Planned => {
+                                kontor_core::succession::SuccessionRefusalReason::RetirementRefused
+                            }
+                            SuccessionAttemptState::PredecessorRetired => {
+                                kontor_core::succession::SuccessionRefusalReason::LaunchRefused
+                            }
+                            SuccessionAttemptState::SuccessorObserved => {
+                                kontor_core::succession::SuccessionRefusalReason::ConfirmationRefused
+                            }
+                            SuccessionAttemptState::Deferred => {
+                                kontor_core::succession::SuccessionRefusalReason::EvidenceStale
+                            }
+                            SuccessionAttemptState::Confirmed | SuccessionAttemptState::Refused => {
+                                return Ok(SuccessionCoordinationOutcome::Unchanged);
+                            }
+                        };
+                        state
+                            .with_store(|store| {
+                                store.refuse_succession(
+                                    &kontor_core::succession::SuccessionRefusal {
+                                        project_id,
+                                        attempt_id,
+                                        expected_revision: current.revision,
+                                        reason,
+                                        refused_at: kontor_api::now(),
+                                    },
+                                )
+                            })
+                            .map_err(|_| SuccessionCoordinationError::Repository)?;
+                        Ok(SuccessionCoordinationOutcome::Refused)
+                    }
+                    Err(error) => Err(map_succession_api_error(error)),
+                }
+            }
+            SuccessionSupervisionIntent::EvaluateQuotaBlockedSeat(candidate) => {
+                if !self.supervision_candidate_is_current(&candidate)? {
+                    return Ok(SuccessionCoordinationOutcome::Unchanged);
+                }
+                let key = IdempotencyKey::parse(&format!(
+                    "quota-succession:{}:{}",
+                    candidate.agent_run_id, candidate.native_identity.generation
+                ))
+                .map_err(|_| SuccessionCoordinationError::Conflict)?;
+                match self
+                    .recover_quota_seat(
+                        &key,
+                        candidate.project_id,
+                        candidate.agent_run_id,
+                        None,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(readback) if readback.state == SuccessionAttemptState::Deferred.as_str() => {
+                        Ok(SuccessionCoordinationOutcome::Deferred)
+                    }
+                    Ok(readback) if readback.applied == AppliedDto::Unchanged => {
+                        Ok(SuccessionCoordinationOutcome::Unchanged)
+                    }
+                    Ok(_) => Ok(SuccessionCoordinationOutcome::Advanced),
+                    Err(error) if succession_error_is_durable_refusal(error.code) => {
+                        Ok(SuccessionCoordinationOutcome::Refused)
+                    }
+                    Err(error) => Err(map_succession_api_error(error)),
+                }
+            }
+        }
+    }
+}
+
+impl Services {
+    fn supervision_candidate_is_current(
+        &self,
+        candidate: &QuotaBlockedSeatIntent,
+    ) -> Result<bool, SuccessionCoordinationError> {
+        let state = self.state().map_err(map_succession_api_error)?;
+        let Some(run) = state
+            .with_store(|store| store.get_agent_run(candidate.project_id, candidate.agent_run_id))
+            .map_err(|_| SuccessionCoordinationError::Repository)?
+        else {
+            return Ok(false);
+        };
+        let Some(binding) = run.binding.as_ref() else {
+            return Ok(false);
+        };
+        if run.terminal.is_some()
+            || run.team_run_id != candidate.team_run_id
+            || run.role != candidate.role
+            || run.revision != candidate.expected_predecessor_revision
+            || run.projection.lifecycle != kontor_core::state::RunLifecycle::Blocked
+            || run.projection.observed != kontor_core::state::ObservedRunState::Blocked
+            || run.projection.last_cursor != Some(candidate.runtime_observation_cursor)
+            || binding.id != candidate.runtime_binding_id
+            || binding.identity != candidate.native_identity
+            || run.account_profile_id != Some(candidate.account_profile_id)
+        {
+            return Ok(false);
+        }
+        let rows = state
+            .with_store(|store| store.list_provider_quota_states(candidate.project_id))
+            .map_err(|_| SuccessionCoordinationError::Repository)?;
+        let Some(row) = rows.iter().find(|row| {
+            row.account_profile_id == candidate.account_profile_id
+                && row.provider == candidate.provider
+        }) else {
+            return Ok(false);
+        };
+        let Some(provenance) = state
+            .with_store(|store| {
+                store.get_quota_observation_provenance(
+                    candidate.project_id,
+                    candidate.quota_provenance_id,
+                )
+            })
+            .map_err(|_| SuccessionCoordinationError::Repository)?
+        else {
+            return Ok(false);
+        };
+        let record = &provenance.record;
+        Ok(row.revision == candidate.expected_quota_state_revision
+            && row.evidence_hash == candidate.quota_evidence_hash
+            && row.provenance_id == Some(candidate.quota_provenance_id)
+            && row.source == kontor_core::spec::ProviderQuotaSource::RuntimeObservation
+            && row.blocks_at(kontor_api::now())
+            && record.runtime_observation_cursor == Some(candidate.runtime_observation_cursor)
+            && record.agent_run_id == candidate.agent_run_id
+            && record.runtime_binding_id == candidate.runtime_binding_id
+            && record.native_id == candidate.native_identity.native_id
+            && record.binding_generation == candidate.native_identity.generation
+            && record.account_profile_id == candidate.account_profile_id
+            && record.provider == candidate.provider
+            && record.evidence_digest == candidate.quota_evidence_hash
+            && record.decided_state == row.state
+            && record.parsed_resets_at == row.resets_at
+            && record.decision_basis == kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal)
+    }
+}
+
+const fn succession_error_is_durable_refusal(code: ApiErrorCode) -> bool {
+    matches!(
+        code,
+        ApiErrorCode::RevisionConflict
+            | ApiErrorCode::UnsupportedCapability
+            | ApiErrorCode::PlacementBlocked
+            | ApiErrorCode::CapacityExhausted
+    )
+}
+
+fn map_succession_api_error(error: ApiError) -> SuccessionCoordinationError {
+    match error.code {
+        ApiErrorCode::RevisionConflict
+        | ApiErrorCode::IdempotencyConflict
+        | ApiErrorCode::StaleBinding
+        | ApiErrorCode::NotFound => SuccessionCoordinationError::Conflict,
+        ApiErrorCode::Unavailable
+        | ApiErrorCode::ProviderUnreachable
+        | ApiErrorCode::ReconciliationPending => SuccessionCoordinationError::Runtime,
+        _ => SuccessionCoordinationError::Conflict,
+    }
+}
+
 /// Render a pre-v47 immutable template only when it names the old closed scope
 /// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
 /// guessed into a native identity after the typed naming contract exists.
@@ -29303,7 +31996,7 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 mod tests {
     use super::{
         FrozenCommitteeRoute, QuotaOutlook, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
         re_review_remediation_identity, render_legacy_container_name, seat_block,
         select_committee_allocation, slot_prompt,
     };
@@ -29312,7 +32005,7 @@ mod tests {
         AccountProfileId, ContentHash, ExternalId, ExternalName, MiniProjectId, RealmId, TaskId,
         Timestamp,
     };
-    use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
+    use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
     use kontor_core::state::TaskState;
     use kontor_runtime::adapter::RuntimeError;
     use kontor_runtime::scope::{EpicScope, ExecutionScope};
@@ -29637,5 +32330,60 @@ mod tests {
         team.handoffs.clear();
         let roots = eligible_roots(&team);
         assert_eq!(roots.len(), team.slots.len(), "every slot leads");
+    }
+
+    /// A frozen run snapshot whose first slot declares `autonomy`, or does not.
+    fn snapshot_declaring(
+        autonomy: Option<SeatAutonomy>,
+    ) -> (
+        kontor_core::spec::TeamRunSnapshot,
+        kontor_core::id::RoleSlotId,
+    ) {
+        let mut template = kontor_teams::spec::bundled_teams()
+            .expect("the bundled team pack loads")
+            .teams
+            .into_iter()
+            .next()
+            .expect("the bundled pack declares a template");
+        let slot = template.slots[0].id.clone();
+        template.slots[0].autonomy = autonomy;
+        let revision = template.to_revision().expect("the template canonicalizes");
+        (
+            kontor_core::spec::TeamRunSnapshot::from_revision(&revision, super::SCHEMA_VERSION),
+            slot,
+        )
+    }
+
+    /// The three sources resolve most-specific-first, and a realm that declares
+    /// nothing at either level still gets exactly what it had before the plane
+    /// default existed.
+    #[test]
+    fn seat_autonomy_resolves_slot_then_plane_then_supervised() {
+        let (undeclared, slot) = snapshot_declaring(None);
+
+        assert_eq!(
+            freeze_seat_autonomy(&undeclared, &slot, None).expect("resolves"),
+            SeatAutonomy::Supervised,
+            "declaring nothing anywhere is the behaviour every seat already had"
+        );
+        assert_eq!(
+            freeze_seat_autonomy(&undeclared, &slot, Some(SeatAutonomy::Bounded))
+                .expect("resolves"),
+            SeatAutonomy::Bounded,
+            "a plane default reaches a slot that declared nothing"
+        );
+
+        // The slot is the more specific statement and is not overruled by a
+        // plane-wide default — including when the default is the wider one.
+        let (declared, slot) = snapshot_declaring(Some(SeatAutonomy::Advisory));
+        assert_eq!(
+            freeze_seat_autonomy(&declared, &slot, Some(SeatAutonomy::Bounded)).expect("resolves"),
+            SeatAutonomy::Advisory,
+            "a template that already decided keeps deciding"
+        );
+        assert_eq!(
+            freeze_seat_autonomy(&declared, &slot, None).expect("resolves"),
+            SeatAutonomy::Advisory,
+        );
     }
 }
