@@ -31933,6 +31933,62 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "Judge launched before findings"
     );
 
+    // Deployed Committees predating immutable per-slot admission provenance
+    // still freeze their exact template revision and each seat's exact route.
+    // Reproduce that historical row shape and prove recovery accepts only the
+    // route declared by the pinned template rather than abandoning the run.
+    let mut legacy_context = frozen_invocation.context.clone();
+    legacy_context
+        .as_object_mut()
+        .expect("the frozen Committee context is an object")
+        .remove("admission");
+    let legacy_context_document = CanonicalDocument::from_value(&legacy_context)
+        .expect("the legacy Committee context canonicalizes");
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    connection
+        .execute_batch("DROP TRIGGER consultation_run_inputs_are_frozen;")
+        .expect("the isolated fixture may reproduce the deployed legacy row");
+    connection
+        .execute(
+            "UPDATE consultation_runs
+             SET context = ?1, context_hash = ?2
+             WHERE project_id = ?3 AND run_id = ?4 AND family = 'committee'",
+            rusqlite::params![
+                legacy_context_document.json(),
+                legacy_context_document.hash().as_str(),
+                project,
+                run,
+            ],
+        )
+        .expect("the deployed pre-provenance Committee row is reproduced");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER consultation_run_inputs_are_frozen
+             BEFORE UPDATE ON consultation_runs
+             WHEN OLD.project_id <> NEW.project_id
+               OR OLD.mini_project_id <> NEW.mini_project_id
+               OR OLD.family <> NEW.family
+               OR OLD.profile_id <> NEW.profile_id
+               OR OLD.profile_version <> NEW.profile_version
+               OR OLD.definition_hash <> NEW.definition_hash
+               OR OLD.question <> NEW.question
+               OR OLD.question_hash <> NEW.question_hash
+               OR OLD.context <> NEW.context
+               OR OLD.context_hash <> NEW.context_hash
+               OR OLD.caller_seat_binding_id <> NEW.caller_seat_binding_id
+               OR OLD.topology_node_id <> NEW.topology_node_id
+               OR OLD.invoke_key <> NEW.invoke_key
+               OR OLD.invoke_intent_hash <> NEW.invoke_intent_hash
+               OR OLD.created_at <> NEW.created_at
+               OR OLD.result IS NOT NULL
+             BEGIN
+                 SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
+             END;",
+        )
+        .expect("the frozen-input guard is restored after fixture setup");
+    drop(connection);
+
     // An admin may replace an exact idle native filler without changing the
     // logical Committee seat or inventing a finding. Recovery advances the
     // Committee revision, archives and launches exactly once, and a replay of
