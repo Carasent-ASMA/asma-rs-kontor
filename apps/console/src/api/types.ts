@@ -131,6 +131,10 @@ export type RoleSelection = Schemas['RoleSelectionDto']
 export type RevisionRef = Schemas['RevisionRefDto']
 /** One provider/account quota projection. */
 export type ProviderQuotaState = Schemas['ProviderQuotaStateDto']
+/** One live delivery seat joined to its exact account and provider quota projections. */
+export type SeatQuotaState = Schemas['SeatQuotaStateDto']
+/** One bodyless, server-evidenced delivery-seat recovery result. */
+export type SeatRecovery = Schemas['SeatRecoveryDto']
 /** The runtime's evidence-backed result of settling one run. */
 export type RuntimeSettlement = Schemas['RuntimeSettlementDto']
 /** The exact Admin request to replace one terminal persistent delivery seat. */

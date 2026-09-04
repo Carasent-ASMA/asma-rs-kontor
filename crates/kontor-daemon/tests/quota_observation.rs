@@ -17,13 +17,18 @@
 #[allow(dead_code)]
 mod harness;
 
-use kontor_core::id::SpecVersion;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use kontor_core::id::{CanonicalDocument, ExternalId, SpecVersion};
 
 use harness::{Call, World, at};
 use kontor_accounts::{QuotaBasis, QuotaSignal};
 use kontor_core::id::AccountProfileId;
-use kontor_core::repository::CapacityRepository;
+use kontor_core::repository::{
+    CapacityRepository, NewObservation, NewProviderQuotaState, NewRuntimeEvent, RunRepository,
+};
 use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+use kontor_core::state::{Freshness, ObservedRunState, RuntimeContact};
 use kontor_daemon::quota_observation::{QuotaClassification, QuotaObservationError, decide};
 use kontor_runtime::refusal::{RefusalProvenance, TransientRefusal};
 
@@ -107,11 +112,61 @@ fn classify_and_record(
         return Ok(None);
     };
     if let Some(request) = decided.request.as_ref() {
-        state
-            .with_store(|store| store.set_provider_quota_state(request))
-            .map_err(QuotaObservationError::Repository)?;
+        record_quota_request(state, project, refusal, now, request)?;
     }
     Ok(Some(decided.classification))
+}
+
+fn record_quota_request(
+    state: &kontor_api::state::ApiState,
+    project: kontor_core::id::ProjectId,
+    refusal: &TransientRefusal,
+    now: kontor_core::id::Timestamp,
+    request: &NewProviderQuotaState,
+) -> Result<(), QuotaObservationError> {
+    static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(10_000);
+    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let run = state
+        .with_store(|store| store.get_agent_run(project, refusal.provenance().agent_run_id))
+        .map_err(QuotaObservationError::Repository)?
+        .expect("the refusal's run exists");
+    let identity = run
+        .binding
+        .as_ref()
+        .expect("the refusal's binding exists")
+        .identity
+        .clone();
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "blocked",
+        "contact": "reachable",
+        "native_sequence": sequence,
+        "observed_at": now.to_string(),
+    }))
+    .expect("control payload");
+    state
+        .with_store(|store| {
+            store.record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id: project,
+                    agent_run_id: run.id,
+                    identity,
+                    native_event_id: Some(
+                        ExternalId::parse(&format!("quota-test-{sequence}")).expect("event id"),
+                    ),
+                    native_sequence: sequence,
+                    payload,
+                    observed_at: now,
+                },
+                observed: ObservedRunState::Blocked,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: run.revision,
+                quota_state: Some(request.clone()),
+            })
+        })
+        .map_err(QuotaObservationError::Repository)?;
+    Ok(())
 }
 
 /// Provenance citing a seat the store actually holds.
@@ -191,7 +246,7 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
 }
 
 #[tokio::test]
-async fn the_same_limit_observed_three_times_writes_one_row() {
+async fn the_same_limit_observed_three_times_refreshes_one_row() {
     let world = World::open().await;
     let seat = seat(&world).await;
     let profile = account(&world, "codex-work-b", "codex-work").await;
@@ -214,7 +269,10 @@ async fn the_same_limit_observed_three_times_writes_one_row() {
         }
     }
 
-    assert_eq!(recorded, 1, "only the first observation may write");
+    assert_eq!(
+        recorded, 3,
+        "each newly reducible observation refreshes exact provenance"
+    );
     let stored = state
         .with_store(|store| store.list_provider_quota_states(world.project))
         .expect("quota states");
@@ -691,12 +749,10 @@ async fn a_vanished_account_is_a_no_op_and_not_an_error() {
     );
 }
 
-/// The exact-concurrent-winner boundary. The row already holds precisely the
-/// conclusion this call would write, so the call must report success with
-/// `recorded: false` -- the effect happened once, and this call is not what did
-/// it. Reporting `recorded: true` would claim a write that never happened.
+/// A new runtime observation remains new authority even when its semantic
+/// quota conclusion equals the row already present.
 #[tokio::test]
-async fn an_exact_row_already_present_succeeds_without_writing_again() {
+async fn an_exact_semantic_row_is_refreshed_by_a_new_runtime_observation() {
     let world = World::open().await;
     let seat = seat(&world).await;
     let profile = account(&world, "cas-exact", "codex-work").await;
@@ -737,8 +793,8 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
     .expect("the write settles")
     .expect("a quota refusal");
     assert!(
-        !second.proposes_write,
-        "an exact row already present is not a write this call performed",
+        second.proposes_write,
+        "a new observation proposes a fresh exact provenance link",
     );
 
     let revision_after_second = state
@@ -748,9 +804,9 @@ async fn an_exact_row_already_present_succeeds_without_writing_again() {
         .find(|row| row.account_profile_id == profile)
         .expect("a row")
         .revision;
-    assert_eq!(
-        revision_after_first, revision_after_second,
-        "no duplicate effect: the row is untouched",
+    assert!(
+        revision_after_second > revision_after_first,
+        "the one row advances to the new observation's authority",
     );
 }
 
@@ -916,9 +972,14 @@ async fn the_public_quota_projection_carries_the_exact_provenance() {
     .expect("the decision settles")
     .expect("a quota refusal");
     let request = decided.request.expect("a proposed write");
-    state
-        .with_store(|store| store.set_provider_quota_state(&request))
-        .expect("the decision is recorded");
+    record_quota_request(
+        &state,
+        world.project,
+        &refusal,
+        at("2026-08-21T10:00:00Z"),
+        &request,
+    )
+    .expect("the decision is recorded");
 
     let project = world.project;
     let listed = Call::get(format!("/v1/projects/{project}/provider-quota-states"))
@@ -1012,11 +1073,11 @@ fn pointer(
         .and_then(|row| row.provenance_id.map(|id| id.to_string()))
 }
 
-/// A true duplicate replay, through the production decision boundary: the same
-/// item observed again yields no write at all, so no record is appended and the
-/// pointer cannot move.
+/// Classification always proposes fresh provenance. The atomic observation
+/// writer, tested at the store layer, decides whether the runtime event is a
+/// newly reducible observation or an exact replay.
 #[tokio::test]
-async fn a_duplicate_replay_appends_no_provenance_and_moves_no_pointer() {
+async fn an_identical_semantic_refusal_still_proposes_exact_provenance() {
     let world = World::open().await;
     let seat = seat(&world).await;
     let profile = account(&world, "replay-cardinality", "codex-work").await;
@@ -1036,7 +1097,8 @@ async fn a_duplicate_replay_appends_no_provenance_and_moves_no_pointer() {
     assert_eq!(provenance_rows(&world), 1, "one accepted item, one record");
     let first = pointer(&state, &world, profile).expect("the pointer moved");
 
-    // The identical item, observed again.
+    // The identical semantic refusal may arrive on a new control event, which
+    // classification cannot know before the atomic append assigns its cursor.
     let replay = decide(
         &state,
         world.project,
@@ -1048,10 +1110,10 @@ async fn a_duplicate_replay_appends_no_provenance_and_moves_no_pointer() {
     .expect("the decision settles")
     .expect("still recognisably a refusal");
     assert!(
-        replay.request.is_none(),
-        "a replay proposes no write, so nothing can be appended",
+        replay.request.is_some(),
+        "the atomic observation writer must receive fresh provenance",
     );
-    assert!(!replay.classification.proposes_write);
+    assert!(replay.classification.proposes_write);
     assert_eq!(provenance_rows(&world), 1, "a replay appends nothing");
     assert_eq!(
         pointer(&state, &world, profile),

@@ -737,6 +737,10 @@ pub fn router(state: ApiState) -> Router {
                 get(applications::provider_quota_states),
             )
             .route(
+                "/v1/projects/{project_id}/seat-quota-states",
+                get(applications::seat_quota_states),
+            )
+            .route(
                 "/v1/projects/{project_id}/provider-quota-states:record",
                 post(applications::record_provider_quota),
             )
@@ -842,6 +846,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
                 post(applications::replace_seat),
+            )
+            .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+                post(applications::recover_seat),
             )
             // A declared slot that never got a seat is accounted for by an explicit,
             // authorized waiver — and by nothing else.

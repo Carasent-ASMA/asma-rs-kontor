@@ -3651,6 +3651,63 @@ pub struct ProviderQuotaStateDto {
     pub revision: AggregateRevision,
 }
 
+/// One provider route and the quota evidence currently joined to a live seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatProviderQuotaDto {
+    /// Provider alias declared by the seat's pinned account profile.
+    pub provider: String,
+    /// Current project quota projection, absent when this provider has not yet
+    /// produced any governed evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<ProviderQuotaStateDto>,
+}
+
+/// Observer projection joining one live logical seat to its runtime binding,
+/// pinned account and every selectable provider's current quota state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatQuotaStateDto {
+    /// Logical seat/run identity.
+    pub agent_run_id: String,
+    /// Task whose frozen team owns the seat.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Frozen team run identity.
+    pub team_run_id: String,
+    /// Exact role slot held by the seat.
+    pub role_slot: String,
+    /// Kontor runtime binding identity.
+    pub runtime_binding_id: String,
+    /// Runtime adapter family.
+    pub runtime_kind: String,
+    /// Native runtime identity.
+    pub native_id: String,
+    /// Immutable native binding generation.
+    pub binding_generation: u64,
+    /// Account pinned to the live seat.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// Reduced Kontor lifecycle; recovery refuses `running` even if an older
+    /// provider row happens to remain blocking.
+    pub lifecycle: String,
+    /// Latest runtime-observed state.
+    pub observed_state: String,
+    /// Cursor of the latest reduced runtime observation, when one exists.
+    #[schema(value_type = Option<i64>)]
+    pub runtime_observation_cursor: Option<kontor_core::id::EventCursor>,
+    /// True only when the latest blocked cursor, binding, native generation,
+    /// account and provider all match one current runtime-observation
+    /// provenance row. Clients must use this instead of deriving eligibility.
+    pub recovery_eligible: bool,
+    /// Exact provider proven by that current provenance match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_provider: Option<String>,
+    /// Exact immutable provenance proven by that current match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_provenance_id: Option<String>,
+    /// Selectable provider routes and their current quota projections.
+    pub providers: Vec<SeatProviderQuotaDto>,
+}
+
 /// One immutable, redacted successful provider-usage observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ProviderUsageObservationDto {
@@ -5500,6 +5557,53 @@ pub struct ReplacedSeatDto {
     pub applied: AppliedDto,
 }
 
+/// Readback of one bodyless, server-evidenced seat recovery operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SeatRecoveryDto {
+    /// Realm that owns the durable succession attempt.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Durable succession attempt identity.
+    pub attempt_id: String,
+    /// `deferred`, `confirmed` or `refused`.
+    pub state: String,
+    /// Task whose exact team slot is recovered.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Frozen team run identity.
+    pub team_run_id: String,
+    /// Exact role slot retained by the successor.
+    pub role_slot: String,
+    /// Immutable predecessor logical run.
+    pub predecessor_agent_run_id: String,
+    /// Installed successor when recovery has confirmed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor: Option<ReplacedSeatDto>,
+    /// Exact blocked runtime cursor that authorized the attempt.
+    #[schema(value_type = i64)]
+    pub authorizing_runtime_observation_cursor: kontor_core::id::EventCursor,
+    /// Immutable runtime-quota provenance linked to that cursor.
+    pub quota_provenance_id: String,
+    /// Canonical predecessor handoff digest once the attempt is planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_hash: Option<String>,
+    /// Summary digest; absent for an explicit degraded handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_hash: Option<String>,
+    /// Exact successor runtime observation cited by the final receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<i64>)]
+    pub successor_runtime_observation_cursor: Option<kontor_core::id::EventCursor>,
+    /// Immutable final receipt, present only after confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub succession_receipt_id: Option<String>,
+    /// Earliest exact quota reset while placement is deferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_until: Option<String>,
+    /// Whether this call created progress or replayed durable state.
+    pub applied: AppliedDto,
+}
+
 // ---------------------------------------------------------------------------
 // Catalogue registration
 // ---------------------------------------------------------------------------
@@ -5897,6 +6001,9 @@ pub trait ApplicationOperations: Send + Sync {
         &self,
         project_id: ProjectId,
     ) -> Result<Vec<ProviderQuotaStateDto>, ApiError>;
+
+    /// Every live seat joined to its pinned account and provider quota state.
+    fn seat_quota_states(&self, project_id: ProjectId) -> Result<Vec<SeatQuotaStateDto>, ApiError>;
 
     /// Record or replace one account's quota state for one provider.
     async fn record_provider_quota(
@@ -6769,6 +6876,14 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ReplaceSeatRequest,
     ) -> Result<ReplacedSeatDto, ApiError>;
 
+    /// Freshly observe and durably recover one quota-blocked seat.
+    async fn recover_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<SeatRecoveryDto, ApiError>;
+
     /// Settle one run against a fresh reading of its runtime.
     async fn settle_runtime(
         &self,
@@ -7175,6 +7290,22 @@ pub async fn provider_quota_states(
     Ok(Json(
         state.applications().provider_quota_states(project_id)?,
     ))
+}
+
+/// Every live seat joined to its exact account and provider quota projections.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/seat-quota-states", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    responses((status = 200, body = Vec<SeatQuotaStateDto>), (status = 401), (status = 403))
+)]
+pub async fn seat_quota_states(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<SeatQuotaStateDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(state.applications().seat_quota_states(project_id)?))
 }
 
 /// Record or replace one account's quota state for one provider.
@@ -10502,6 +10633,41 @@ pub async fn replace_seat(
         state
             .applications()
             .replace_seat(&key, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Observe, classify and durably recover one quota-blocked seat.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The predecessor run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = SeatRecoveryDto, description = "Confirmed, deferred, or replayed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The durable attempt or seat identity conflicts"),
+        (status = 422, description = "The fresh runtime/quota evidence refuses recovery")
+    )
+)]
+pub async fn recover_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<SeatRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_seat(&key, project_id, agent_run_id)
             .await?,
     ))
 }

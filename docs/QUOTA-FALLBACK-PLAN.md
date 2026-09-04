@@ -1,12 +1,13 @@
 # Provider quota routing: durable state behind the rung walk
 
-Status: **Synchronized with `origin/master` 2026-08-26 (database schema v66).**
-The v48 quota state, v50 live poller and v51 concurrent-window,
-credit-balance, account-before-rung and governed-pin work are shipped.
-Consultation launches now use the same headroom walk. Launch-time
-`Wait`/`NeedsHuman` actuation and mid-run quota succession are not shipped; the
-remaining gaps are listed under *Still open*.
-Date: 2026-08-21, extended 2026-08-22, synchronized 2026-08-26
+Status: **Historical shipped baseline plus a 2026-09-04 local candidate.** The
+v48 quota state, v50 live poller and v51 concurrent-window, credit-balance,
+account-before-rung and governed-pin work are on `origin/master`. The current
+candidate tree adds KON-OP-21 reactive evidence capture, durable succession and
+resident bounded recovery, with local tests only. Launch-time
+`Wait`/`NeedsHuman` actuation remains open. Merge, independent audit and
+live-runtime verification of succession are not claimed here.
+Date: 2026-08-21, extended 2026-08-22, candidate status 2026-09-04
 
 Ticket: **KON-OP-13 / ASMA-7882** owns this. The fleet-mechanics plan
 (`_docs/ai-orchestration/plans/2026-08-05-02-37-plan-agent-fleet-mechanics-layer.md`)
@@ -91,15 +92,14 @@ than by drift.
   plan allowance recovers on a clock; a credit balance recovers on money.
   `Drained` must **never** be requeued on a timer — retrying a dead OpenRouter
   key every five minutes forever is a new failure mode, not a fallback.
-- **Automatic handoff with receipts is the required outcome, not current
-  behavior.** The 3am save is the point. Every future hop must write a command
-  receipt and a `parent_agent_run_id` link; `KON-OP-21` owns the missing
-  mid-run detection, redacted handoff and successor launch.
-- **Seat titles reuse the existing suffix segment**, e.g.
-  `ARCHITECT · ASMA-7854 · R1/work`. The account appears as its profile *label*,
-  never as the account email — this codebase deliberately keeps provider identity
-  out of displayed and persisted text (`FailoverReason` carries no free-text
-  note; `ensure_account_profile` stores a `credential_alias_digest`).
+- **Automatic handoff with receipts is the required outcome.** At this 2026-08-21
+  decision point it was not current behavior; KON-OP-21 now implements the
+  candidate path with a durable attempt, redacted handoff, linked successor and
+  immutable receipt. Release and live proof remain pending.
+- **Seat titles come only from the pinned Team Definition.** Succession retains
+  the immutable role slot and therefore its exact configured role-only name,
+  for example `SA`, `SWE`, `QA` or `AUD`. Account, provider, rung and Jira key
+  remain evidence and routing fields and are never appended to the native title.
 - **Any enabled account in the project is eligible for rotation.** Registration
   into a project is the authorization; there is no separate scope field.
   `enabled: false` removes an account permanently and
@@ -161,7 +161,7 @@ controls, and it alone would have kept work moving on 2026-08-21.
 | --- | --- | --- |
 | New launch: `rung1 x work` -> `rung1 x personal` | account-before-rung resolver plus a declared provider alias per account | **yes**, when `provider_selects_account` is configured and read back |
 | New launch: `rung1` -> `rung2` | the same headroom walk | **yes** |
-| Running seat: exhausted account -> successor | runtime refusal detection, redacted handoff and successor-run path | **no** — `KON-OP-21`; `FailoverReason::AccountExhausted` still has no production caller |
+| Running seat: exhausted account -> successor | runtime refusal detection, redacted handoff and successor-run path | **candidate only** — KON-OP-21 is locally implemented and tested; merge/audit/live verification pending |
 
 ### Reuse, do not add
 
@@ -312,7 +312,7 @@ catalog — the snapshot is what that epic's gates are already judged against, a
 a later revision must not re-grade a grant. Explicit bounds may only narrow, and
 a stored `ExecutionAuthorization` now reports the bounds it was granted under.
 
-## Still open
+## Remaining and candidate-only work
 
 ### Enact launch-time `Wait` and `NeedsHuman`
 
@@ -355,24 +355,20 @@ Acceptance: the catalog endpoint serves stored rows; no provider or model
 identity remains a literal in `applications.rs`; a seeded row per vendor Kontor
 actually reaches.
 
-### Automatic detection
+### Automatic detection — candidate implemented, release pending
 
-**The pre-flight half landed in v51** — `kontor_runtime_codex::usage` asks a
-Codex account how much is left before a seat stops on it. What remains open is
-the *reactive* half below: turning a refusal a running seat hit into a recorded
-state without a human pasting it.
+The pre-flight half landed in v51. The current KON-OP-21 candidate also filters
+the runtime timeline to message events for the exact immutable binding/native
+generation, matches only configured provider signals eligible for the seat's
+account, and persists redacted runtime-observation quota provenance bound to the
+latest blocked cursor. It fails closed on gaps, mixed generations, stale or
+foreign provenance and contradictory evidence.
 
-A **new** `RuntimeError` variant carrying the provider and the parsed
-`LimitState`. Deliberately separate from `LimitExceeded` — conflating a provider
-quota with Kontor's own request bound is gap 1 above. `ProbeRefusal` gains the
-matching token and `is_pressure()` moves to it. Retires `COOLDOWN_SECONDS`.
-
-State is recorded per `(account_profile_id, provider)`, never per provider alone:
-with two Codex accounts, "Codex is exhausted" is not a fact that exists.
-
-Acceptance: the Codex message in the incident above parses to
-`Exhausted { resets_at: 2026-08-23T09:35 }` against the seeded pattern; a 402
-with no date parses to `Drained`; `Drained` yields no requeue instant.
+State remains recorded per `(account_profile_id, provider)`, never per provider
+alone: with two Codex accounts, "Codex is exhausted" is not a fact that exists.
+The parser and persistence path have focused local regressions; a captured live
+runtime refusal and exact installed-realm readback are still required release
+evidence.
 
 ### Persist which rung was chosen
 
@@ -384,36 +380,30 @@ the launch outcome is recorded, and one more migration.
 
 Igor asked for this explicitly as a UI signal; it is the next thing to build.
 
-### Watchdog producer and automatic handoff
+### Resident supervision and automatic handoff — candidate implemented, release pending
 
-Produce `SeatObservation` from the adapter (gap 3), adding
-`quota_exhausted: Option<LimitState>` and a `WakeReason::QuotaExhausted`. On that
-wake, rotate the account first and descend a rung second.
-
-The daemon's `replace_seat` application command already
-does the rest: it retires the predecessor, requires `TerminalOutcome::Cancelled`
-with `TerminalEvidenceSource::RuntimeObservation` — a quota-dead session
-qualifies, being runtime-observed — links `parent_agent_run_id`, bounds hops by
-`max_successor_depth`, and refuses on a terminal team run. Retired is not
-deleted: the predecessor keeps its transcript and its terminal evidence.
+The current candidate records a durable succession attempt before effects,
+builds a bounded redacted handoff from the exact binding generation, resolves
+account before rung, launches and freshly observes the successor, retires the
+predecessor without deleting its runtime-owned history, and confirms one
+immutable receipt. The bodyless Admin recovery command and schema-v2 resident
+loop both drive that same saga; neither accepts caller-supplied quota authority.
 
 Two hazards to get right:
 
-- **Idempotency.** Watchdog cadence is seconds and `replace_seat` is async.
-  Without a deterministic key two ticks create two successors, and
-  `allow_duplicate_seat: false` is enforced by policy *validation*, not by
-  construction, so it will not save you. Derive the key from
-  `(predecessor_agent_run_id, binding_generation)`; a double fire then replays
-  the original receipt through `replace_seat`'s existing replay branch.
+- **Idempotency.** Durable attempts are keyed to the exact predecessor slot and
+  act as both queue and slot lock. Startup, append wake, cadence and a manual
+  bodyless replay resume that attempt; they do not mint parallel successors.
 - **The successor budget is shared.** `max_successor_depth` also bounds
   hang-recovery replacements, so a team that spent its depth on hangs cannot fall
   back on quota. Keeping one budget is defensible — a seat replaced three times
   needs a human regardless — but the refusal must say which budget was spent.
 
-Acceptance: a seat whose provider exhausts mid-turn is replaced by a successor on
-the next available pair, titled with its rung and account; the predecessor is
-retired with its evidence intact; a watchdog firing twice produces exactly one
-successor.
+Local acceptance covers exact provenance, bounded handoff, replay and one
+successor under repeated supervision. Release acceptance still requires a live
+seat whose provider exhausts mid-turn to recover on the next admissible pair,
+retain its exact Team Definition role-only seat name, preserve predecessor
+evidence, and produce the same durable receipt when supervision fires again.
 
 ## Resolved: the fleet policy's adjacent Codex rungs
 

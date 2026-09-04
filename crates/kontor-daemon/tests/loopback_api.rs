@@ -64,9 +64,9 @@ use kontor_core::repository::{
     NewTicketLink, ProjectRepository, ProviderUsageObservation, RealmRepository, RunClosure,
     RunRepository, RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
     StoredConsultationProfileRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    StoredQuickSession, SuccessionRepository, TeamDefinitionMigrationObservation,
+    TeamDefinitionMigrationState, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TicketRepository, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
@@ -75,6 +75,11 @@ use kontor_core::spec::{
 use kontor_core::state::{
     Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalEvidence,
     TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+};
+use kontor_core::succession::NewSuccessionAttempt;
+use kontor_core::succession::SuccessionAttemptState;
+use kontor_daemon::succession_supervision::{
+    SuccessionSupervisionCoordinator, reconcile_once as reconcile_succession_once,
 };
 use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
@@ -15216,7 +15221,7 @@ fn record_runtime_state_without_quota(
     })
 }
 
-fn record_runtime_quota_refusal(
+async fn record_runtime_quota_refusal(
     world: &World,
     project_id: ProjectId,
     predecessor_id: AgentRunId,
@@ -15232,9 +15237,36 @@ fn record_runtime_quota_refusal(
             .expect("the predecessor exists before its refusal")
     });
     let now = kontor_api::now();
-    let native_sequence = u64::try_from(now.as_microsecond()).expect("a positive test instant");
-    let evidence_hash =
-        ContentHash::of(format!("quota-refusal:{predecessor_id}:{}", binding.id).as_bytes());
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            &format!("Usage limit reached; try again after {resets_at}"),
+            now,
+        )
+        .expect("the runtime records its own bounded refusal");
+    let observation = world
+        .fake
+        .inspect(&kontor_runtime::request::InspectRequest {
+            binding: held,
+            requested_at: now,
+        })
+        .await
+        .expect("the runtime returns the exact refusal");
+    assert_eq!(observation.state, ObservedRunState::Blocked);
+    assert_eq!(observation.contact, RuntimeContact::Reachable);
+    let refusal = observation
+        .refusal
+        .as_ref()
+        .expect("the blocked observation carries the native refusal");
+    let refusal_provenance = refusal.provenance();
+    let evidence_hash = refusal.digest();
     let quota_revision = world.daemon.state().with_store(|store| {
         store
             .list_provider_quota_states(project_id)
@@ -15247,7 +15279,7 @@ fn record_runtime_quota_refusal(
         "schema_version": 1,
         "observed_state": "blocked",
         "contact": "reachable",
-        "native_sequence": native_sequence,
+        "native_sequence": observation.native_sequence,
         "observed_at": now.to_string(),
     }))
     .expect("the runtime observation payload canonicalizes");
@@ -15257,9 +15289,9 @@ fn record_runtime_quota_refusal(
                 event: NewRuntimeEvent {
                     project_id,
                     agent_run_id: predecessor_id,
-                    identity: binding.identity.clone(),
-                    native_event_id: None,
-                    native_sequence,
+                    identity: observation.identity.clone(),
+                    native_event_id: observation.native_event_id.clone(),
+                    native_sequence: observation.native_sequence,
                     payload,
                     observed_at: now,
                 },
@@ -15289,12 +15321,12 @@ fn record_runtime_quota_refusal(
                         native_id: binding.identity.native_id.clone(),
                         binding_generation: binding.identity.generation,
                         runtime_observation_cursor: None,
-                        item_epoch: 1,
-                        item_seq_start: 1,
-                        item_seq_end: 1,
-                        source_sequences: vec![(1, 1)],
-                        item_kind: "assistant_message".to_owned(),
-                        item_observed_at: now,
+                        item_epoch: refusal_provenance.position.epoch,
+                        item_seq_start: refusal_provenance.position.sequence,
+                        item_seq_end: refusal_provenance.sequence_end,
+                        source_sequences: refusal_provenance.source_sequences.clone(),
+                        item_kind: refusal_provenance.item_type.clone(),
+                        item_observed_at: refusal_provenance.observed_at,
                         decision_basis: QuotaDecisionBasis::RuntimeRefusal,
                         decided_state: ProviderQuotaKind::Exhausted,
                         parsed_resets_at: Some(resets_at),
@@ -15330,6 +15362,18 @@ fn record_runtime_quota_refusal(
         }),
     )
 }
+
+const DUE_QUOTA_SIGNAL: &str = r#"
+schema_version: 1
+signals:
+  - id: due-codex-work
+    version: 1
+    provider: codex-work
+    basis: plan_allowance
+    markers: ['due quota refusal']
+    reset_prefix: 'try again at '
+    reset_zone: UTC
+"#;
 
 #[tokio::test]
 async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
@@ -15496,7 +15540,8 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         account,
         &provider,
         at("2099-01-01T00:00:00Z"),
-    );
+    )
+    .await;
 
     // A later refusal on another seat sharing the same account/provider moves
     // the quota row's provenance. The predecessor's older blocked projection
@@ -15523,7 +15568,8 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         sibling.account_profile_id.expect("the sibling is pinned"),
         &provider,
         at("2099-01-01T00:00:00Z"),
-    );
+    )
+    .await;
     let calls_before_foreign_provenance = world.fake.calls().len();
     let foreign_provenance = Call::post(
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
@@ -15556,7 +15602,8 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         account,
         &provider,
         at("2099-01-01T00:00:00Z"),
-    );
+    )
+    .await;
     let stale_cursor = Call::post(
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
@@ -15684,7 +15731,39 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     .await;
     assert_eq!(both.status, 400, "{}", both.body);
 
-    // (7) The authorized succession. Note the provider is *available* — the
+    // (7) A fresh reachable observation that is no longer Blocked must stop at
+    //     the last effect boundary, even when it still carries the previous
+    //     refusal. This kills the tempting `state != Running` weakening: Idle,
+    //     WaitingInput and Launching are not quota-retirement authority.
+    world.fake.push_step_for(
+        ScriptStep::InspectWaitingInput,
+        RequestKey::Binding(binding.id),
+    );
+    let calls_before_non_blocked = world.fake.calls().len();
+    let non_blocked = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-exact")
+    .send(&world)
+    .await;
+    assert_eq!(non_blocked.status, 422, "{}", non_blocked.body);
+    assert!(
+        world.fake.calls()[calls_before_non_blocked..]
+            .iter()
+            .all(|call| !matches!(call, AdapterCall::Retire(_) | AdapterCall::Launch(_))),
+        "a reachable non-Blocked readback performs no destructive effect",
+    );
+
+    // (8) The authorized retry resumes the same durable attempt. Note the
+    //     provider is *available* — the
     //     outage arm's own precondition is false here, which is the proof this
     //     arm is not riding that fence.
     assert!(
@@ -15796,6 +15875,503 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     );
 }
 
+/// One bodyless recovery performs the complete durable saga and a replay reads
+/// the same attempt/receipt without touching either native session again.
+#[tokio::test]
+async fn bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chain() {
+    let world = World::open_empty_with_quota_signals().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            kontor_api::now(),
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovered = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("bodyless-quota-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+    assert_eq!(recovered.json()["applied"], "created");
+    let successor_id = AgentRunId::parse(
+        recovered.json()["successor"]["successor_agent_run_id"]
+            .as_str()
+            .expect("successor id"),
+    )
+    .expect("canonical successor id");
+
+    let key = IdempotencyKey::parse("bodyless-quota-recovery").expect("idempotency key");
+    let (attempt, receipt, predecessor_after, successor_after) =
+        world.daemon.state().with_store(|store| {
+            let attempt = store
+                .succession_attempt_by_key(&key)
+                .expect("attempt reads")
+                .expect("attempt exists");
+            let receipt = store
+                .succession_receipt_for_attempt(project_id, attempt.request.id)
+                .expect("receipt reads")
+                .expect("receipt exists");
+            let predecessor = store
+                .get_agent_run(project_id, predecessor_id)
+                .expect("predecessor reads")
+                .expect("predecessor remains as lineage");
+            let successor = store
+                .get_agent_run(project_id, successor_id)
+                .expect("successor reads")
+                .expect("successor exists");
+            (attempt, receipt, predecessor, successor)
+        });
+    assert_eq!(attempt.state, SuccessionAttemptState::Confirmed);
+    assert!(attempt.handoff.is_some(), "handoff is durable");
+    let handoff_at = attempt.handoff.as_ref().expect("handoff").produced_at;
+    let retired_at = attempt
+        .predecessor_retired_at
+        .expect("predecessor retirement instant");
+    let confirmed_at = attempt.confirmed_at.expect("confirmation instant");
+    assert!(
+        handoff_at <= retired_at && retired_at <= confirmed_at,
+        "handoff precedes retirement and confirmation",
+    );
+    assert_eq!(
+        attempt
+            .handoff
+            .as_ref()
+            .expect("handoff")
+            .hash()
+            .expect("handoff hashes"),
+        attempt.handoff_hash.clone().expect("stored handoff hash"),
+    );
+    assert_eq!(receipt.attempt_id, attempt.request.id);
+    assert_eq!(receipt.predecessor_agent_run_id, predecessor_id);
+    assert_eq!(receipt.successor_agent_run_id, successor_id);
+    assert_eq!(
+        receipt.handoff_hash,
+        attempt.handoff_hash.expect("handoff hash")
+    );
+    assert_eq!(
+        receipt.successor_runtime_observation_cursor,
+        successor_after
+            .projection
+            .last_cursor
+            .expect("successor cursor"),
+    );
+    assert_eq!(
+        predecessor_after
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.outcome),
+        Some(TerminalOutcome::Cancelled),
+    );
+    let prompt = world
+        .fake
+        .launched_prompt(successor_id)
+        .expect("the successor prompt is inspectable");
+    assert!(prompt.as_str().contains("Predecessor handoff"));
+    assert!(
+        prompt
+            .as_str()
+            .contains("If you must proceed on an assumption")
+    );
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .latest_compaction_receipt(project_id, predecessor_id)
+                .expect("predecessor compaction reads")
+                .is_none(),
+            "succession handoff is not a compaction receipt",
+        );
+        assert!(
+            store
+                .latest_compaction_receipt(project_id, successor_id)
+                .expect("successor compaction reads")
+                .is_none(),
+            "successor confirmation mints no compaction receipt",
+        );
+    });
+
+    let calls_before_replay = world.fake.calls().len();
+    let replay = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("bodyless-quota-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["attempt_id"], recovered.json()["attempt_id"]);
+    assert_eq!(
+        replay.json()["succession_receipt_id"],
+        recovered.json()["succession_receipt_id"],
+    );
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_replay,
+        "confirmed replay performs no runtime effect",
+    );
+}
+
+/// A transport refusal after the successor row is durably linked resumes that
+/// same row. The retry may launch it, but may not create a second successor.
+#[tokio::test]
+async fn quota_recovery_retry_reuses_the_linked_successor_after_launch_refusal() {
+    let world = World::open_empty_with_quota_signals().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor.binding.as_ref().expect("predecessor binding");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the predecessor binding");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            kontor_api::now(),
+        )
+        .expect("the native session reaches a quota refusal");
+    let role_slot = kontor_core::id::RoleSlotId::new(predecessor.role.clone());
+    world.fake.refusing_launch_of(&role_slot);
+
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let first = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("quota-recovery-launch-retry")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 503, "{}", first.body);
+
+    let key = IdempotencyKey::parse("quota-recovery-launch-retry").expect("idempotency key");
+    let (attempt, linked_after_refusal) = world.daemon.state().with_store(|store| {
+        let attempt = store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt is durable before launch");
+        let linked = store
+            .list_agent_runs_for_team_run(project_id, predecessor.team_run_id)
+            .expect("team members read")
+            .into_iter()
+            .filter_map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("team member reads")
+            })
+            .filter(|run| run.parent_agent_run_id == Some(predecessor_id))
+            .collect::<Vec<_>>();
+        (attempt, linked)
+    });
+    assert_eq!(attempt.state, SuccessionAttemptState::PredecessorRetired);
+    assert_eq!(linked_after_refusal.len(), 1);
+    let linked_successor_id = linked_after_refusal[0].id;
+
+    world.fake.allowing_launch_of(&role_slot);
+    let retried = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("quota-recovery-launch-retry")
+        .send(&world)
+        .await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_eq!(retried.json()["state"], "confirmed");
+    assert_eq!(retried.json()["applied"], "unchanged");
+    assert_eq!(
+        retried.json()["successor"]["successor_agent_run_id"],
+        linked_successor_id.to_string(),
+    );
+    let linked_after_retry = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, predecessor.team_run_id)
+            .expect("team members read again")
+            .into_iter()
+            .filter_map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("team member reads again")
+            })
+            .filter(|run| run.parent_agent_run_id == Some(predecessor_id))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(linked_after_retry.len(), 1);
+    assert_eq!(linked_after_retry[0].id, linked_successor_id);
+}
+
+/// The production supervision scanner and the real Services coordinator share
+/// one durable attempt key, so a second scan cannot create a second successor.
+#[tokio::test]
+async fn automatic_quota_supervision_recovers_once_and_repeated_scan_is_inert() {
+    let world = World::open_empty_with_quota_signals().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor.binding.as_ref().expect("predecessor binding");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the predecessor binding");
+    let observed_at = kontor_api::now();
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            observed_at,
+        )
+        .expect("the native session reaches a quota refusal");
+    let observation = world
+        .fake
+        .inspect(&kontor_runtime::request::InspectRequest {
+            binding: held,
+            requested_at: observed_at,
+        })
+        .await
+        .expect("the refusal is freshly inspected");
+    world
+        .daemon
+        .state()
+        .applications()
+        .persist_session_observation(project_id, predecessor_id, &observation, observed_at)
+        .expect("the runtime refusal and quota provenance persist atomically");
+
+    let policy = kontor_daemon::supervision::parse(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/examples/paseo-supervision.yml"
+    )))
+    .expect("schema-v2 supervision policy");
+    let coordinator: Arc<dyn SuccessionSupervisionCoordinator> = world.daemon.jira_reconciler();
+    let state = world.daemon.state();
+    let first =
+        reconcile_succession_once(Arc::clone(&coordinator), &state, &policy, kontor_api::now())
+            .await
+            .expect("the production succession scan completes");
+    assert_eq!(first.evaluated, 1);
+    assert_eq!(first.advanced, 1, "supervision report: {first:?}");
+    assert_eq!(first.failed, 0, "supervision report: {first:?}");
+    let automatic_key = IdempotencyKey::parse(&format!(
+        "quota-succession:{predecessor_id}:{}",
+        binding.identity.generation
+    ))
+    .expect("automatic idempotency key");
+    let (first_members, attempt, receipt, successor) = world.daemon.state().with_store(|store| {
+        let members = store
+            .list_agent_runs_for_team_run(project_id, predecessor.team_run_id)
+            .expect("team members read");
+        let attempt = store
+            .succession_attempt_by_key(&automatic_key)
+            .expect("automatic attempt reads")
+            .expect("automatic attempt exists");
+        let receipt = store
+            .succession_receipt_for_attempt(project_id, attempt.request.id)
+            .expect("automatic receipt reads")
+            .expect("automatic receipt exists");
+        let successor = store
+            .get_agent_run(project_id, receipt.successor_agent_run_id)
+            .expect("successor reads")
+            .expect("successor exists");
+        (members, attempt, receipt, successor)
+    });
+    assert_eq!(attempt.state, SuccessionAttemptState::Confirmed);
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
+    assert_eq!(receipt.successor_agent_run_id, successor.id);
+
+    let calls_before_repeated_scan = world.fake.calls().len();
+    let second = reconcile_succession_once(coordinator, &state, &policy, kontor_api::now())
+        .await
+        .expect("the repeated production scan completes");
+    assert_eq!(second.evaluated + second.resumed, 0);
+    assert_eq!(second.advanced, 0);
+    assert_eq!(world.fake.calls().len(), calls_before_repeated_scan);
+    let second_members = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, predecessor.team_run_id)
+            .expect("team members read again")
+    });
+    assert_eq!(second_members.len(), first_members.len());
+}
+
+/// A route frozen by an initially-Planned attempt does not gain the special
+/// reset-boundary authority reserved for an actual Deferred -> Planned CAS.
+#[tokio::test]
+async fn initially_planned_succession_cannot_retire_after_its_quota_row_expires() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        personal,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("predecessor route")
+        .provider
+        .0;
+    let account = predecessor.account_profile_id.expect("predecessor account");
+    let reset = kontor_api::now() + jiff::SignedDuration::from_millis(1_000);
+    let (predecessor, _) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        account,
+        &provider,
+        reset,
+    )
+    .await;
+    let (task, team, quota) = world.daemon.state().with_store(|store| {
+        let team = store
+            .get_team_run(project_id, predecessor.team_run_id)
+            .expect("team reads")
+            .expect("team exists");
+        let task = store
+            .get_task(project_id, team.task_id)
+            .expect("task reads")
+            .expect("task exists");
+        let quota = store
+            .list_provider_quota_states(project_id)
+            .expect("quota rows read")
+            .into_iter()
+            .find(|row| row.account_profile_id == account && row.provider == provider)
+            .expect("exact quota row");
+        (task, team, quota)
+    });
+    let key = IdempotencyKey::parse("initial-plan-expiry").expect("idempotency key");
+    let created_at = kontor_api::now();
+    assert!(
+        created_at < reset,
+        "the row blocks when the attempt is frozen"
+    );
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .create_succession_attempt(&NewSuccessionAttempt {
+                id: kontor_core::id::SuccessionAttemptId::generate(),
+                project_id,
+                task_id: task.id,
+                team_run_id: team.id,
+                role: predecessor.role.clone(),
+                predecessor_agent_run_id: predecessor.id,
+                predecessor_runtime_binding_id: binding.id,
+                predecessor_native_identity: binding.identity.clone(),
+                expected_task_revision: task.revision,
+                expected_team_revision: team.revision,
+                expected_predecessor_revision: predecessor.revision,
+                runtime_observation_cursor: predecessor
+                    .projection
+                    .last_cursor
+                    .expect("blocked cursor"),
+                quota_provenance_id: quota.provenance_id.expect("runtime provenance"),
+                quota_state_revision: quota.revision,
+                quota_evidence_hash: quota.evidence_hash.clone(),
+                quota_provider: quota.provider.clone(),
+                successor_model_rung: Some(ModelRung {
+                    provider: ProviderRef("codex-personal".to_owned()),
+                    model: ModelRef("gpt-5.6-sol".to_owned()),
+                    effort: Some(EffortLevel::High),
+                }),
+                successor_account_profile_id: Some(
+                    AccountProfileId::parse(&personal).expect("personal account"),
+                ),
+                idempotency_key: key.clone(),
+                intent_hash: ContentHash::of(b"initial-plan-expiry-intent"),
+                deferred_until: None,
+                created_at,
+            })
+            .expect("the initially planned attempt is frozen while quota blocks")
+    });
+    assert_eq!(attempt.successor_planned_at, Some(created_at));
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    world.fake.take_calls();
+
+    let refused = Call::post_raw(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover"),
+        "",
+    )
+    .signed_as(&world, "admin")
+    .with_key("initial-plan-expiry")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert!(
+        world
+            .fake
+            .take_calls()
+            .into_iter()
+            .all(|call| !matches!(call, AdapterCall::Retire(_) | AdapterCall::Launch(_))),
+        "an expired initial plan performs no destructive runtime effect",
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor remains")
+    });
+    assert!(after.terminal.is_none());
+}
+
 /// A later Running observation supersedes an earlier quota refusal. The quota
 /// row may still steer placement, but it cannot authorize destroying a seat
 /// whose exact current runtime projection says it resumed work.
@@ -15836,7 +16412,8 @@ async fn a_running_seat_is_never_retired_by_stale_quota_authority() {
         account,
         &provider,
         at("2099-01-01T00:00:00Z"),
-    );
+    )
+    .await;
     let running = record_runtime_state_without_quota(
         &world,
         project_id,
@@ -16017,7 +16594,7 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
 /// out later that the preferred route should have waited.
 #[tokio::test]
 async fn a_waiting_quota_successor_has_zero_runtime_or_lineage_effects() {
-    let world = World::open_empty().await;
+    let world = World::open_empty_with_quota_signal_document(DUE_QUOTA_SIGNAL).await;
     world.daemon.reconcile().await;
     let CodexAliasEpic {
         project,
@@ -16054,7 +16631,8 @@ async fn a_waiting_quota_successor_has_zero_runtime_or_lineage_effects() {
         account,
         &provider,
         reset,
-    );
+    )
+    .await;
     let members_before = world.daemon.state().with_store(|store| {
         store
             .list_agent_runs_for_team_run(project_id, run.team_run_id)
@@ -16120,6 +16698,211 @@ async fn a_waiting_quota_successor_has_zero_runtime_or_lineage_effects() {
             .into_iter()
             .all(|call| !matches!(call, AdapterCall::Retire(_) | AdapterCall::Launch(_))),
         "a deferred successor never reaches retirement or launch",
+    );
+
+    let deferred = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(
+                &IdempotencyKey::parse("replace-quota-no-admissible").expect("a key"),
+            )
+            .expect("the deferred attempt reads")
+            .expect("the deferred attempt is durable")
+    });
+    assert_eq!(deferred.state, SuccessionAttemptState::Deferred);
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the deferred predecessor binding remains held");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "due quota refusal; try again at Jan 1st, 2020 12:00 AM.",
+            kontor_api::now(),
+        )
+        .expect("the runtime still reports its refusal after the reset boundary");
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+    let resumed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-no-admissible")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    let resumed_attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(
+                &IdempotencyKey::parse("replace-quota-no-admissible").expect("a key"),
+            )
+            .expect("the resumed attempt reads")
+            .expect("the resumed attempt remains durable")
+    });
+    assert_eq!(resumed_attempt.request.id, deferred.request.id);
+    assert_eq!(resumed_attempt.state, SuccessionAttemptState::Confirmed);
+    assert!(
+        resumed_attempt
+            .successor_planned_at
+            .is_some_and(|planned_at| planned_at > resumed_attempt.request.created_at),
+        "only the due Deferred CAS grants reset-boundary retirement authority",
+    );
+}
+
+/// A due attempt whose fresh refusal names another near reset stays on the
+/// same durable attempt and renews its deadline without retiring or launching.
+#[tokio::test]
+async fn a_due_quota_successor_renews_wait_from_fresh_runtime_evidence() {
+    let mut capacity = kontor_daemon::DEFAULT_CAPACITY;
+    capacity.headroom = Some(kontor_scheduler::headroom::HeadroomConfig {
+        thresholds: kontor_core::quota::HeadroomThresholds {
+            session_percent: 100,
+            daily_percent: 100,
+            weekly_percent: 100,
+            monthly_percent: 100,
+        },
+        control_plane_reserve_percent: 0,
+        short_horizon_seconds: 180,
+        escalation_horizon_seconds: 300,
+    });
+    let world =
+        World::open_empty_with_quota_signal_document_and_capacity(DUE_QUOTA_SIGNAL, capacity).await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = run.binding.as_ref().expect("the seat is bound").clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen route")
+        .provider
+        .0;
+    let account = run.account_profile_id.expect("a pinned seat");
+    let (run, quota_evidence) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        account,
+        &provider,
+        kontor_api::now() + jiff::SignedDuration::from_secs(1),
+    )
+    .await;
+    let members_before = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, run.team_run_id)
+            .expect("team members read")
+    });
+    let task_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("task revision");
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace");
+    let body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_predecessor_revision": run.revision,
+        "expected_task_revision": task_revision,
+        "binding_generation": binding.identity.generation,
+        "quota_exhausted": quota_evidence,
+    });
+    let first = Call::post(&route, &body)
+        .signed_as(&world, "admin")
+        .with_key("renew-quota-wait")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 429, "{}", first.body);
+    let key = IdempotencyKey::parse("renew-quota-wait").expect("a key");
+    let first_attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    assert_eq!(first_attempt.state, SuccessionAttemptState::Deferred);
+
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the deferred predecessor remains held");
+    let future_clock = (kontor_api::now() + jiff::SignedDuration::from_secs(90))
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .time();
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            &format!(
+                "due quota refusal; try again at {:02}:{:02}.",
+                future_clock.hour(),
+                future_clock.minute(),
+            ),
+            kontor_api::now(),
+        )
+        .expect("the runtime reports a later near reset");
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    world.fake.take_calls();
+
+    let renewed = Call::post(&route, &body)
+        .signed_as(&world, "admin")
+        .with_key("renew-quota-wait")
+        .send(&world)
+        .await;
+    assert_eq!(renewed.status, 429, "{}", renewed.body);
+    assert_eq!(renewed.code(), "capacity_exhausted", "{}", renewed.body);
+    let (renewed_attempt, members_after) = world.daemon.state().with_store(|store| {
+        let attempt = store
+            .succession_attempt_by_key(&key)
+            .expect("renewed attempt reads")
+            .expect("renewed attempt exists");
+        let members = store
+            .list_agent_runs_for_team_run(project_id, run.team_run_id)
+            .expect("team members read after renewal");
+        (attempt, members)
+    });
+    assert_eq!(renewed_attempt.request.id, first_attempt.request.id);
+    assert_eq!(renewed_attempt.state, SuccessionAttemptState::Deferred);
+    assert!(renewed_attempt.revision > first_attempt.revision);
+    assert!(
+        renewed_attempt.request.deferred_until > first_attempt.request.deferred_until,
+        "fresh headroom extends the same attempt's exact deadline",
+    );
+    assert_eq!(members_after, members_before);
+    assert!(
+        world
+            .fake
+            .take_calls()
+            .into_iter()
+            .all(|call| !matches!(call, AdapterCall::Retire(_) | AdapterCall::Launch(_))),
+        "renewing Wait performs no destructive or launch effect",
     );
 }
 
@@ -22448,6 +23231,12 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     .send(&world)
     .await;
     assert_eq!(settled.status, 200, "{}", settled.body);
+    let settled_predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the settled predecessor reads")
+            .expect("the settled predecessor exists")
+    });
     let epic_view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
         .send(&world)
@@ -22459,7 +23248,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
-            "expected_predecessor_revision": predecessor.revision,
+            "expected_predecessor_revision": settled_predecessor.revision,
             "expected_task_revision": task_revision,
             "binding_generation": predecessor_binding.identity.generation,
             "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}

@@ -1861,6 +1861,29 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Replace one runtime-terminal unusable seat with its linked successor.",
     },
     ToolSpec {
+        name: "kontor_seat_recover",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The quota-blocked predecessor run.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Recover one quota-blocked delivery seat under fresh server-derived evidence.",
+    },
+    ToolSpec {
         name: "kontor_session_labels_reconcile",
         tier: CallerTier::Admin,
         method: Method::Post,
@@ -4066,6 +4089,20 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Every recorded provider quota state, and whether each still holds a launch back.",
     },
     ToolSpec {
+        name: "kontor_seat_quota_states_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/seat-quota-states",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Each live delivery seat with its bound account and provider quota projections.",
+    },
+    ToolSpec {
         name: "kontor_provider_quota_record",
         tier: CallerTier::Admin,
         method: Method::Post,
@@ -5952,6 +5989,36 @@ mod tests {
                 .iter()
                 .any(|name| name == "expected_predecessor_revision")
         );
+    }
+
+    #[test]
+    fn seat_recovery_is_an_admin_resume_of_one_exact_predecessor() {
+        let recover = ToolSpec::find("kontor_seat_recover").expect("the seat recovery tool");
+        assert_eq!(recover.tier, CallerTier::Admin);
+        assert_eq!(recover.method, Method::Post);
+        assert_eq!(
+            recover.path,
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover"
+        );
+        assert_eq!(recover.args_in(Place::Body).count(), 0);
+        assert_eq!(
+            recover
+                .args_in(Place::Path)
+                .map(|argument| argument.name)
+                .collect::<Vec<_>>(),
+            ["project_id", "agent_run_id"]
+        );
+    }
+
+    #[test]
+    fn live_seat_quota_projection_is_observer_read_only() {
+        let list = ToolSpec::find("kontor_seat_quota_states_list")
+            .expect("the live-seat quota projection tool");
+        assert_eq!(list.tier, CallerTier::Observer);
+        assert_eq!(list.kind, OpKind::Read);
+        assert_eq!(list.method, Method::Get);
+        assert_eq!(list.path, "/v1/projects/{project_id}/seat-quota-states");
+        assert_eq!(list.args_in(Place::Body).count(), 0);
     }
 
     #[test]

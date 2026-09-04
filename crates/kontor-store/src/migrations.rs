@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 86;
+pub const SCHEMA_VERSION: i64 = 87;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -333,6 +333,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v86. Durable quota-blocked seat succession plus the missing exact
     // control-event cursor on runtime quota provenance.
     include_str!("../migrations/0086_quota_blocked_seat_succession.sql"),
+    // Schema v87. Deferred attempts refresh their exact authority and placement
+    // in one due-time CAS without changing attempt or idempotency identity.
+    include_str!("../migrations/0087_deferred_succession_refresh.sql"),
 ];
 
 const _: () = assert!(

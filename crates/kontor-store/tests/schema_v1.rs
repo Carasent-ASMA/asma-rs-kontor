@@ -519,8 +519,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v85 records why a runtime-observed quota decision was reached: which
     // exact item, on which run, under which immutable signal revision. v86
     // binds that provenance to the exact control-event cursor and adds the
-    // durable forward-only seat-succession attempt and receipt ledgers.
-    assert_eq!(SCHEMA_VERSION, 86);
+    // durable forward-only seat-succession attempt and receipt ledgers. v87
+    // permits a due deferred attempt to refresh its exact authority atomically.
+    assert_eq!(SCHEMA_VERSION, 87);
 }
 
 #[test]

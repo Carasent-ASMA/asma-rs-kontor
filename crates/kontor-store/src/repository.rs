@@ -101,9 +101,9 @@ use kontor_core::state::{
 };
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
-    SuccessionConfirmation, SuccessionHandoff, SuccessionHandoffRecord, SuccessionReceipt,
-    SuccessionRefusal, SuccessionRefusalReason, SuccessionSuccessorObservation,
-    SuccessionSuccessorPlan, SuccessionSuccessorRecord,
+    SuccessionConfirmation, SuccessionDeferredRefresh, SuccessionHandoff, SuccessionHandoffRecord,
+    SuccessionReceipt, SuccessionRefusal, SuccessionRefusalReason, SuccessionSuccessorObservation,
+    SuccessionSuccessorRecord,
 };
 use kontor_core::ticket::{
     EpicStatusConflict, EpicStatusTransitionIntent, ExternalCommentRevision,
@@ -13478,74 +13478,264 @@ impl SuccessionRepository for SqliteStore {
         )
     }
 
-    fn plan_succession_successor(
+    fn refresh_deferred_succession_evidence(
         &self,
-        request: &SuccessionSuccessorPlan,
+        request: &SuccessionDeferredRefresh,
     ) -> RepositoryResult<SuccessionAttempt> {
-        let route = succession_model_rung_document(&request.successor_model_rung)?;
+        let resulting_state = request.resulting_state()?;
+        let route = request
+            .successor_model_rung
+            .as_ref()
+            .map(succession_model_rung_document)
+            .transpose()?;
         let transaction = self.begin()?;
         let attempt =
             read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
                 .ok_or(RepositoryError::NotFound {
                     subject: "succession attempt",
                 })?;
-        if attempt.request.successor_model_rung.is_some()
-            || attempt.request.successor_account_profile_id.is_some()
-        {
-            if attempt.request.successor_model_rung.as_ref() == Some(&request.successor_model_rung)
-                && attempt.request.successor_account_profile_id
-                    == Some(request.successor_account_profile_id)
-            {
-                return Ok(attempt);
-            }
-            return Err(conflict(
-                "succession successor plan",
-                "the attempt already carries a different frozen route",
-            ));
-        }
         attempt
             .revision
             .expect("succession attempt", request.expected_revision)?;
-        attempt
-            .state
-            .ensure_advance_to(SuccessionAttemptState::Planned)?;
-        if !attempt.is_due(request.planned_at) {
+        if attempt.state != SuccessionAttemptState::Deferred {
             return Err(conflict(
-                "succession successor plan",
-                "the deferred placement is not due",
+                "succession deferred refresh",
+                "only a deferred attempt can refresh its authority",
             ));
         }
-        if read_account_profile_in(
+        if !attempt.is_due(request.refreshed_at) {
+            return Err(conflict(
+                "succession deferred refresh",
+                "the deferred attempt is not due",
+            ));
+        }
+
+        let predecessor = read_agent_run(
             &transaction,
             request.project_id,
-            request.successor_account_profile_id,
+            attempt.request.predecessor_agent_run_id,
         )?
-        .is_none()
+        .ok_or(RepositoryError::NotFound {
+            subject: "succession predecessor run",
+        })?;
+        predecessor.revision.expect(
+            "succession predecessor",
+            request.expected_predecessor_revision,
+        )?;
+        let predecessor_binding =
+            predecessor
+                .binding
+                .as_ref()
+                .ok_or(DomainError::MissingEvidence {
+                    subject: "succession predecessor",
+                    rule: "the due predecessor has no runtime binding",
+                })?;
+        if predecessor.team_run_id != attempt.request.team_run_id
+            || predecessor.role != attempt.request.role
+            || predecessor_binding.id != attempt.request.predecessor_runtime_binding_id
+            || predecessor_binding.identity != attempt.request.predecessor_native_identity
+            || predecessor.projection.observed != ObservedRunState::Blocked
+            || predecessor.projection.last_cursor != Some(request.runtime_observation_cursor)
+            || predecessor.terminal.is_some()
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor",
+                rule: "the refreshed cursor is not the latest blocked observation on the original slot and binding",
+            }
+            .into());
+        }
+        let predecessor_account =
+            predecessor
+                .account_profile_id
+                .ok_or(DomainError::MissingEvidence {
+                    subject: "succession predecessor",
+                    rule: "a quota-blocked predecessor must remain pinned to an account",
+                })?;
+
+        let exact_observation: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM runtime_events
+                 WHERE project_id = ?1 AND cursor = ?2
+                   AND event_kind = 'runtime_observation' AND agent_run_id = ?3
+                   AND runtime_kind = ?4 AND host = ?5 AND generation = ?6
+                   AND native_id = ?7 AND observed_state = 'blocked'",
+                params![
+                    request.project_id.to_string(),
+                    request.runtime_observation_cursor.get(),
+                    attempt.request.predecessor_agent_run_id.to_string(),
+                    attempt
+                        .request
+                        .predecessor_native_identity
+                        .runtime_kind
+                        .as_str(),
+                    attempt.request.predecessor_native_identity.host.as_str(),
+                    generation_column(attempt.request.predecessor_native_identity.generation)?,
+                    attempt
+                        .request
+                        .predecessor_native_identity
+                        .native_id
+                        .as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if exact_observation != 1 {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor",
+                rule: "the refreshed cursor is not an exact blocked observation on the original binding",
+            }
+            .into());
+        }
+
+        let evidence: Option<StoredSuccessionQuotaEvidence> = transaction
+            .query_row(
+                "SELECT p.account_profile_id, p.provider, p.agent_run_id,
+                        p.runtime_observation_cursor, p.runtime_binding_id, p.native_id,
+                        p.binding_generation, q.evidence_hash, q.state, q.resets_at
+                 FROM provider_quota_observation_provenance p
+                 JOIN provider_quota_states q
+                   ON q.project_id = p.project_id
+                  AND q.account_profile_id = p.account_profile_id
+                  AND q.provider = p.provider
+                  AND q.provenance_id = p.id
+                 WHERE p.project_id = ?1 AND p.id = ?2 AND q.revision = ?3
+                   AND p.decision_basis = 'runtime_refusal'
+                   AND p.decided_state = q.state
+                   AND p.parsed_resets_at IS q.resets_at
+                   AND p.evidence_digest = q.evidence_hash",
+                params![
+                    request.project_id.to_string(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                ],
+                |row| {
+                    Ok(StoredSuccessionQuotaEvidence {
+                        account_profile_id: row.get(0)?,
+                        provider: row.get(1)?,
+                        agent_run_id: row.get(2)?,
+                        runtime_observation_cursor: row.get(3)?,
+                        runtime_binding_id: row.get(4)?,
+                        native_id: row.get(5)?,
+                        binding_generation: row.get(6)?,
+                        evidence_hash: row.get(7)?,
+                        state: row.get(8)?,
+                        resets_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(evidence) = evidence else {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession quota",
+                rule: "the current quota row does not cite the refreshed provenance and revision",
+            }
+            .into());
+        };
+        if AccountProfileId::parse(&evidence.account_profile_id)? != predecessor_account
+            || evidence.provider != request.quota_provider
+            || AgentRunId::parse(&evidence.agent_run_id)?
+                != attempt.request.predecessor_agent_run_id
+            || EventCursor::parse(evidence.runtime_observation_cursor)?
+                != request.runtime_observation_cursor
+            || RuntimeBindingId::parse(&evidence.runtime_binding_id)?
+                != attempt.request.predecessor_runtime_binding_id
+            || ExternalId::parse(&evidence.native_id)?
+                != attempt.request.predecessor_native_identity.native_id
+            || u64::try_from(evidence.binding_generation).ok()
+                != Some(attempt.request.predecessor_native_identity.generation)
+            || ContentHash::parse(&evidence.evidence_hash)? != request.quota_evidence_hash
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession quota",
+                rule: "the refreshed quota evidence does not exactly match the predecessor observation",
+            }
+            .into());
+        }
+        // Deliberately do not require `evidence.state` to block at `refreshed_at`.
+        // At an exhausted reset boundary, the current row no longer blocks a
+        // new launch while the fresh reachable Blocked predecessor remains the
+        // authority for replanning this already-durable attempt.
+        let _ = ProviderQuotaKind::parse(&evidence.state)?;
+        let _ = evidence
+            .resets_at
+            .as_deref()
+            .map(read_timestamp)
+            .transpose()?;
+
+        if let Some(account_profile_id) = request.successor_account_profile_id
+            && read_account_profile_in(&transaction, request.project_id, account_profile_id)?
+                .is_none()
         {
             return Err(RepositoryError::NotFound {
                 subject: "succession successor account",
             });
         }
+
         let next = attempt.revision.next()?;
-        transaction
-            .execute(
+        let changed = match resulting_state {
+            SuccessionAttemptState::Deferred => transaction.execute(
                 "UPDATE succession_attempts
-                 SET state = 'planned', successor_model_rung = ?1,
-                     successor_model_rung_hash = ?2, successor_account_profile_id = ?3,
-                     successor_planned_at = ?4, revision = ?5, updated_at = ?4
-                 WHERE project_id = ?6 AND id = ?7 AND revision = ?8",
+                 SET expected_predecessor_revision = ?1, runtime_observation_cursor = ?2,
+                     quota_provenance_id = ?3, quota_state_revision = ?4,
+                     quota_evidence_hash = ?5, quota_provider = ?6,
+                     deferred_until = ?7, revision = ?8, updated_at = ?9
+                 WHERE project_id = ?10 AND id = ?11 AND revision = ?12
+                   AND state = 'deferred'",
                 params![
-                    route.json(),
-                    route.hash().as_str(),
-                    request.successor_account_profile_id.to_string(),
-                    text(request.planned_at),
+                    revision_column(request.expected_predecessor_revision)?,
+                    request.runtime_observation_cursor.get(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                    request.quota_evidence_hash.as_str(),
+                    request.quota_provider.as_str(),
+                    request.deferred_until.map(text),
+                    revision_column(next)?,
+                    text(request.refreshed_at),
+                    request.project_id.to_string(),
+                    request.attempt_id.to_string(),
+                    revision_column(attempt.revision)?,
+                ],
+            ),
+            SuccessionAttemptState::Planned => transaction.execute(
+                "UPDATE succession_attempts
+                 SET state = 'planned', expected_predecessor_revision = ?1,
+                     runtime_observation_cursor = ?2, quota_provenance_id = ?3,
+                     quota_state_revision = ?4, quota_evidence_hash = ?5,
+                     quota_provider = ?6, successor_model_rung = ?7,
+                     successor_model_rung_hash = ?8, successor_account_profile_id = ?9,
+                     deferred_until = NULL, successor_planned_at = ?10,
+                     revision = ?11, updated_at = ?10
+                 WHERE project_id = ?12 AND id = ?13 AND revision = ?14
+                   AND state = 'deferred'",
+                params![
+                    revision_column(request.expected_predecessor_revision)?,
+                    request.runtime_observation_cursor.get(),
+                    request.quota_provenance_id.to_string(),
+                    revision_column(request.quota_state_revision)?,
+                    request.quota_evidence_hash.as_str(),
+                    request.quota_provider.as_str(),
+                    route.as_ref().map(CanonicalDocument::json),
+                    route.as_ref().map(|document| document.hash().as_str()),
+                    request
+                        .successor_account_profile_id
+                        .map(|account| account.to_string()),
+                    text(request.refreshed_at),
                     revision_column(next)?,
                     request.project_id.to_string(),
                     request.attempt_id.to_string(),
                     revision_column(attempt.revision)?,
                 ],
-            )
-            .map_err(backend)?;
+            ),
+            _ => unreachable!("deferred refresh validates only Deferred or Planned"),
+        }
+        .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "succession deferred refresh",
+                "the attempt revision or state moved during the write",
+            ));
+        }
         let stored =
             read_succession_attempt_in(&transaction, request.project_id, request.attempt_id)?
                 .ok_or(RepositoryError::NotFound {

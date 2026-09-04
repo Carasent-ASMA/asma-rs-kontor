@@ -53,6 +53,8 @@ import type {
   RuntimeSettlement,
   SeatBindingOutcome,
   SeatBindingRequest,
+  SeatQuotaState,
+  SeatRecovery,
   StreamFrame,
   StreamRefusal,
   TaskSnapshot,
@@ -401,6 +403,13 @@ export class KontorClient {
     )
   }
 
+  /** Every live delivery seat joined to its exact account and provider quota projections. */
+  async seatQuotaStates(projectId: string): Promise<SeatQuotaState[]> {
+    return this.#json<SeatQuotaState[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/seat-quota-states`,
+    )
+  }
+
   /** Ask the runtime to settle one exact run; the caller supplies no outcome. */
   async runtimeSettle(
     projectId: string,
@@ -428,8 +437,21 @@ export class KontorClient {
     )
   }
 
-  /** Recover one idle Committee native filler while preserving its logical SeatBinding. */
+  /** Recover one quota-blocked delivery seat from fresh server-owned evidence. */
   async recoverSeat(
+    projectId: string,
+    agentRunId: string,
+    commandId: string,
+  ): Promise<SeatRecovery> {
+    return this.#command<SeatRecovery>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs/${encodeURIComponent(agentRunId)}/successors:recover`,
+      commandId,
+      undefined,
+    )
+  }
+
+  /** Recover one idle Committee native filler while preserving its logical SeatBinding. */
+  async recoverConsultationSeat(
     projectId: string,
     committeeRunId: string,
     seatBindingId: string,

@@ -467,6 +467,48 @@ mod tests {
     }
 
     #[test]
+    fn delivery_seat_recovery_and_quota_projection_are_generated_from_the_registry() {
+        let recovery = build()
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "admin",
+                "seat-recover",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--agent-run-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--idempotency-key",
+                "recover-1",
+            ])
+            .expect("the generated Admin CLI accepts delivery-seat recovery");
+        let (tool, sub) = resolve(&recovery).expect("the delivery-seat recovery tool");
+        let arguments = arguments(tool, sub).expect("the recovery payload is typed JSON");
+        assert_eq!(tool.name, "kontor_seat_recover");
+        assert!(
+            tool.args_in(kontor_mcp::Place::Body).next().is_none(),
+            "recovery derives every mutable fact from fresh server observations"
+        );
+        assert_eq!(arguments["idempotency_key"], "recover-1");
+
+        let quota = build()
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "seat-quota-states-list",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+            ])
+            .expect("the generated Observer CLI accepts live-seat quota reads");
+        let (tool, _) = resolve(&quota).expect("the live-seat quota projection tool");
+        assert_eq!(tool.name, "kontor_seat_quota_states_list");
+        assert_eq!(tool.tier, kontor_mcp::CallerTier::Observer);
+    }
+
+    #[test]
     fn a_declared_object_array_reaches_the_dispatcher_as_an_array() {
         let command = build();
         let matches = command

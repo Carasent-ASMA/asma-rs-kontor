@@ -8,13 +8,69 @@ use kontor_core::id::{
 use kontor_core::spec::{ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::succession::{
-    NewSuccessionAttempt, SuccessionAttemptState, SuccessionHandoff,
+    NewSuccessionAttempt, SuccessionAttemptState, SuccessionDeferredRefresh, SuccessionHandoff,
     SuccessionHandoffDegradedReason, SuccessionHandoffOutcome, SuccessionRedactionPass,
     SuccessionRedactionReceipt, SuccessionTimelineRange,
 };
 
 fn at(text: &str) -> Timestamp {
     text.parse().expect("valid timestamp")
+}
+
+#[test]
+fn deferred_refresh_accepts_exactly_admit_or_future_wait_shapes() {
+    let base = SuccessionDeferredRefresh {
+        project_id: ProjectId::generate(),
+        attempt_id: SuccessionAttemptId::generate(),
+        expected_revision: AggregateRevision::INITIAL,
+        expected_predecessor_revision: AggregateRevision::INITIAL,
+        runtime_observation_cursor: EventCursor::parse(42).expect("cursor"),
+        quota_provenance_id: QuotaObservationProvenanceId::generate(),
+        quota_state_revision: AggregateRevision::INITIAL,
+        quota_evidence_hash: ContentHash::of(b"refreshed quota"),
+        quota_provider: "openai".to_owned(),
+        successor_model_rung: None,
+        successor_account_profile_id: None,
+        deferred_until: Some(at("2026-09-04T10:00:00Z")),
+        refreshed_at: at("2026-09-04T09:00:00Z"),
+    };
+    assert_eq!(
+        base.resulting_state().expect("future Wait"),
+        SuccessionAttemptState::Deferred
+    );
+    assert_eq!(
+        SuccessionDeferredRefresh {
+            successor_model_rung: Some(ModelRung {
+                provider: ProviderRef("anthropic".to_owned()),
+                model: ModelRef("claude-sonnet".to_owned()),
+                effort: None,
+            }),
+            successor_account_profile_id: Some(AccountProfileId::generate()),
+            deferred_until: None,
+            ..base.clone()
+        }
+        .resulting_state()
+        .expect("admitted route"),
+        SuccessionAttemptState::Planned
+    );
+    assert!(
+        SuccessionDeferredRefresh {
+            deferred_until: Some(base.refreshed_at),
+            ..base.clone()
+        }
+        .resulting_state()
+        .is_err()
+    );
+    assert!(
+        SuccessionDeferredRefresh {
+            successor_model_rung: None,
+            successor_account_profile_id: Some(AccountProfileId::generate()),
+            deferred_until: None,
+            ..base
+        }
+        .resulting_state()
+        .is_err()
+    );
 }
 
 fn identity(native_id: &str, generation: u64) -> NativeRuntimeIdentity {

@@ -44,8 +44,12 @@ use tracing::debug;
 pub struct QuotaDecision {
     /// What the refusal was read as.
     pub classification: QuotaClassification,
-    /// The row to write, or `None` when the Realm already holds exactly this
-    /// conclusion and nothing needs to change.
+    /// The current-row upsert carrying this observation's fresh provenance.
+    ///
+    /// Every newly reducible runtime refusal proposes one, even when its
+    /// semantic state, reset and digest equal the current row. The atomic
+    /// observation writer owns replay detection and discards an exact runtime
+    /// event replay before this request can append provenance or move the row.
     pub request: Option<NewProviderQuotaState>,
 }
 
@@ -108,8 +112,10 @@ pub struct QuotaClassification {
     /// that had not happened yet was serialized into immutable raw evidence and
     /// told an operator a row had changed when none had.
     ///
-    /// `false` means the Realm already holds exactly this conclusion, so there
-    /// is nothing to propose.
+    /// A matched runtime refusal is `true`: even an unchanged conclusion must
+    /// refresh the row's exact control-event cursor and immutable provenance.
+    /// Exact event replays are suppressed later by the atomic observation
+    /// writer, before the proposed quota request is applied.
     pub proposes_write: bool,
 }
 
@@ -212,25 +218,6 @@ pub fn decide(
 
     let evidence_hash = refusal.digest();
     let existing = current_row(state, project_id, account_profile_id, &observed.provider)?;
-    if existing
-        .as_ref()
-        .is_some_and(|row| already_records(row, &observed, &evidence_hash))
-    {
-        // The Realm already holds exactly this conclusion. Nothing to write, and
-        // `recorded` says so: the effect happened once and this is not it.
-        return Ok(Some(QuotaDecision {
-            classification: QuotaClassification {
-                account_profile_id,
-                provider: observed.provider,
-                kind: observed.kind,
-                resets_at: observed.resets_at,
-                evidence_hash,
-                proposes_write: false,
-            },
-            request: None,
-        }));
-    }
-
     let expected_revision = existing
         .as_ref()
         .map_or(kontor_core::id::AggregateRevision::INITIAL, |row| {
@@ -327,22 +314,4 @@ fn current_row(
         .map_err(QuotaObservationError::Repository)?
         .into_iter()
         .find(|entry| entry.account_profile_id == account_profile_id && entry.provider == provider))
-}
-
-/// Whether a stored row already records exactly this conclusion.
-///
-/// Every field that distinguishes one runtime observation from another is
-/// compared. A row that merely *blocks* the same pair is not the same fact: the
-/// poller's `available`, an operator override, or a different refusal all
-/// differ here, and treating any of them as "already recorded" would drop a
-/// conclusion on the floor and report success.
-fn already_records(
-    row: &kontor_core::repository::ProviderQuotaState,
-    observed: &kontor_accounts::ObservedQuota,
-    evidence_hash: &ContentHash,
-) -> bool {
-    row.source == ProviderQuotaSource::RuntimeObservation
-        && row.state == observed.kind
-        && row.resets_at == observed.resets_at
-        && &row.evidence_hash == evidence_hash
 }

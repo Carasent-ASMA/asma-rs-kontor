@@ -320,7 +320,12 @@ impl SuccessionHandoff {
     }
 }
 
-/// Decision persisted before effects, with one optional due-time route freeze.
+/// Decision persisted before effects, with refreshable authority only while deferred.
+///
+/// Identity, task/team/slot, predecessor binding, task/team revisions,
+/// idempotency key, initial intent hash and creation instant never change. A
+/// due deferral may replace its predecessor/quota observation fields through
+/// [`SuccessionDeferredRefresh`] before any handoff or runtime effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSuccessionAttempt {
     /// Attempt identity.
@@ -402,21 +407,68 @@ impl NewSuccessionAttempt {
     }
 }
 
-/// Compare-and-swap command that freezes a due deferred attempt's real route.
+/// Deferred-only CAS that refreshes authority and the next placement decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SuccessionSuccessorPlan {
+pub struct SuccessionDeferredRefresh {
     /// Owning project.
     pub project_id: ProjectId,
-    /// Deferred attempt to plan.
+    /// Existing durable attempt; its identity and idempotency key are retained.
     pub attempt_id: SuccessionAttemptId,
-    /// Revision the caller observed.
+    /// Attempt revision observed by the caller.
     pub expected_revision: AggregateRevision,
-    /// Admissible model rung selected from fresh headroom.
-    pub successor_model_rung: ModelRung,
-    /// Admissible account selected from fresh headroom.
-    pub successor_account_profile_id: AccountProfileId,
-    /// Instant at which the deferred placement was reconsidered.
-    pub planned_at: Timestamp,
+    /// Current predecessor revision after the fresh blocked observation.
+    pub expected_predecessor_revision: AggregateRevision,
+    /// Current reduced reachable-blocked runtime observation.
+    pub runtime_observation_cursor: EventCursor,
+    /// Current immutable quota provenance joined to that observation.
+    pub quota_provenance_id: QuotaObservationProvenanceId,
+    /// Current quota projection revision.
+    pub quota_state_revision: AggregateRevision,
+    /// Digest shared by the current quota row and provenance.
+    pub quota_evidence_hash: ContentHash,
+    /// Provider route proved blocked by the refreshed evidence.
+    pub quota_provider: String,
+    /// Real successor route selected from fresh headroom, or absent for Wait.
+    pub successor_model_rung: Option<ModelRung>,
+    /// Real successor account selected from fresh headroom, or absent for Wait.
+    pub successor_account_profile_id: Option<AccountProfileId>,
+    /// Next exact Wait instant, absent when a successor is admitted.
+    pub deferred_until: Option<Timestamp>,
+    /// Instant at which the due attempt was re-observed and replanned.
+    pub refreshed_at: Timestamp,
+}
+
+impl SuccessionDeferredRefresh {
+    /// Validate the refreshed authority shape and return its resulting state.
+    pub fn resulting_state(&self) -> DomainResult<SuccessionAttemptState> {
+        if self.quota_provider.trim().is_empty() || self.quota_provider.len() > 128 {
+            return Err(DomainError::invalid(
+                "SuccessionDeferredRefresh",
+                "quota provider must be a bounded non-empty route",
+            ));
+        }
+        match (
+            self.successor_model_rung.as_ref(),
+            self.successor_account_profile_id,
+            self.deferred_until,
+        ) {
+            (Some(model_rung), Some(_), None) => {
+                model_rung.validate()?;
+                Ok(SuccessionAttemptState::Planned)
+            }
+            (None, None, Some(until)) if until > self.refreshed_at => {
+                Ok(SuccessionAttemptState::Deferred)
+            }
+            (None, None, Some(_)) => Err(DomainError::invalid(
+                "SuccessionDeferredRefresh",
+                "a renewed deferred_until must be later than refreshed_at",
+            )),
+            _ => Err(DomainError::invalid(
+                "SuccessionDeferredRefresh",
+                "admission requires one route/account pair and Wait requires only deferred_until",
+            )),
+        }
+    }
 }
 
 /// Exact successor readback captured before confirmation.
@@ -437,7 +489,7 @@ pub struct SuccessionSuccessorObservation {
 /// Complete durable state of one succession saga.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuccessionAttempt {
-    /// Immutable planning decision.
+    /// Planning decision; only deferred observation/placement fields may refresh.
     pub request: NewSuccessionAttempt,
     /// Forward-only state.
     pub state: SuccessionAttemptState,

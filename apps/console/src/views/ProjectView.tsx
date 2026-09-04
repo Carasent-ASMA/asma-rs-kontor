@@ -25,6 +25,8 @@ import type {
   RoleCatalogEntry,
   RemediationAction,
   RoleSelection,
+  SeatQuotaState,
+  SeatRecovery,
   TopologyProjection,
   TopologySeat,
 } from '../api/types'
@@ -44,6 +46,8 @@ type OperationalClient = Pick<
   | 'applyPromotion'
   | 'projectCapacity'
   | 'providerQuotaStates'
+  | 'seatQuotaStates'
+  | 'recoverSeat'
   | 'codeHelp'
   | 'advisorProfiles'
   | 'committeeTemplates'
@@ -69,6 +73,7 @@ interface ProjectData {
   roles: Read<QuickRoles>
   capacity: Read<ProjectCapacity>
   quota: Read<ProviderQuotaState[]>
+  seatQuota: Read<SeatQuotaState[]>
   help: Read<{ entries: CodeHelpEntry[] }>
   advisors: Read<ProfileCatalog>
   committees: Read<ProfileCatalog>
@@ -116,7 +121,7 @@ export function ProjectView({ client }: { client: OperationalClient }) {
     const epic = epicId.trim()
     if (!project || !epic) return
     setBusy(true)
-    const [epicRead, topology, coreTeam, roles, capacity, quota, help, advisors, committees, profiles, completion] =
+    const [epicRead, topology, coreTeam, roles, capacity, quota, seatQuota, help, advisors, committees, profiles, completion] =
       await Promise.all([
         settled(client.epic(project, epic)),
         settled(client.topology(project, epic)),
@@ -124,6 +129,7 @@ export function ProjectView({ client }: { client: OperationalClient }) {
         settled(client.quickRoles(project)),
         settled(client.projectCapacity(project)),
         settled(client.providerQuotaStates(project)),
+        settled(client.seatQuotaStates(project)),
         settled(client.codeHelp(project, epic)),
         settled(client.advisorProfiles(project)),
         settled(client.committeeTemplates(project)),
@@ -139,6 +145,7 @@ export function ProjectView({ client }: { client: OperationalClient }) {
       roles,
       capacity,
       quota,
+      seatQuota,
       help,
       advisors,
       committees,
@@ -202,7 +209,15 @@ export function ProjectView({ client }: { client: OperationalClient }) {
 
           <section aria-labelledby="provider-quota-states">
             <h3 id="provider-quota-states">Provider quota states</h3>
-            {data.quota.value ? <QuotaStrip states={data.quota.value} /> : <Unavailable read={data.quota} />}
+            {data.quota.value ? <QuotaStrip states={data.quota.value} help={help} /> : <Unavailable read={data.quota} />}
+            {data.seatQuota.value ? (
+              <SeatQuotaPanel
+                client={client}
+                projectId={data.projectId}
+                states={data.seatQuota.value}
+                help={help}
+              />
+            ) : <Unavailable read={data.seatQuota} />}
           </section>
 
           <section aria-labelledby="project-topology">
@@ -297,33 +312,139 @@ function CapacityPanel({ capacity }: { capacity: ProjectCapacity }) {
   )
 }
 
-/**
- * Provider/account quota observations exactly as the control plane reports them.
- *
- * This is deliberately separate from seat recovery. The current contract does
- * not associate a stopped delivery run with an account quota observation, and
- * its generated replacement request cannot carry quota-exhaustion evidence.
- * Rendering a Recover action from a provider name alone would therefore let the
- * browser invent the authority that only the server can prove.
- */
-function QuotaStrip({ states }: { states: readonly ProviderQuotaState[] }) {
+/** Provider quota observations grouped under their server-owned account identity. */
+function QuotaStrip({
+  states,
+  help,
+}: {
+  states: readonly ProviderQuotaState[]
+  help: readonly CodeHelpEntry[]
+}) {
   if (states.length === 0) return <p className="empty">No provider quota state is recorded.</p>
+  const accounts = [...new Set(states.map((state) => state.account_profile_id))]
   return (
     <ul className="quota-strip" aria-label="Provider quota states">
-      {states.map((state) => (
-        <li key={`${state.provider}/${state.account_profile_id}`} data-blocking={String(state.blocking)}>
-          <strong>{state.provider}</strong> · <code>{state.account_profile_id}</code>{' '}
-          <StateBadge state={state.state} label="quota state" />
-          {state.blocking ? <span className="quota-blocking">launch blocked</span> : null}
-          {state.resets_at ? <small className="block">resets {state.resets_at}</small> : null}
-          {state.windows.length > 0 ? (
-            <small className="block">
-              {state.windows.map((window) => `${window.kind} ${window.used_percent}%`).join(' · ')}
-            </small>
+      {accounts.map((account) => {
+        const accountStates = states.filter((state) => state.account_profile_id === account)
+        return (
+          <li key={account} data-blocking={String(accountStates.some((state) => state.blocking))}>
+            <strong><code>{account}</code></strong>
+            <ul className="compact-list" aria-label={`${account} provider quota`}>
+              {accountStates.map((state) => (
+                <li key={state.provider}>
+                  <strong>{state.provider}</strong>{' '}
+                  <CodeHelp code={state.state} entries={help} />
+                  {state.blocking ? <span className="quota-blocking">launch blocked</span> : null}
+                  {state.resets_at ? <small className="block">resets {state.resets_at}</small> : null}
+                  {state.windows.length > 0 ? (
+                    <small className="block">
+                      {state.windows.map((window) => `${window.kind} ${window.used_percent}%`).join(' · ')}
+                    </small>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/**
+ * Live-seat quota projection and its narrow recovery affordance.
+ *
+ * Eligibility is never inferred from lifecycle, provider state, or account.
+ * Only the server's exact current provenance check may expose the action.
+ */
+function SeatQuotaPanel({
+  client,
+  projectId,
+  states,
+  help,
+}: {
+  client: OperationalClient
+  projectId: string
+  states: readonly SeatQuotaState[]
+  help: readonly CodeHelpEntry[]
+}) {
+  if (states.length === 0) return <p className="empty">No live delivery seat is projected.</p>
+  return (
+    <ul className="quota-strip seat-quota-strip" aria-label="Live seat quota states">
+      {states.map((seat) => (
+        <li key={seat.agent_run_id} data-blocking={String(seat.recovery_eligible)}>
+          <strong>{seat.role_slot}</strong> · <code>{seat.account_profile_id}</code>
+          <small className="block">
+            lifecycle <CodeHelp code={seat.lifecycle} entries={help} /> · observed{' '}
+            <CodeHelp code={seat.observed_state} entries={help} />
+          </small>
+          <small className="block">
+            run <code>{seat.agent_run_id}</code> · binding <code>{seat.runtime_binding_id}</code>
+            {' '}generation {seat.binding_generation}
+          </small>
+          <small className="block">
+            providers {seat.providers.map((provider) => provider.provider).join(', ') || 'none'}
+            {seat.blocking_provider ? ` · blocking ${seat.blocking_provider}` : ''}
+          </small>
+          {seat.recovery_eligible ? (
+            <SeatRecoveryAction
+              client={client}
+              projectId={projectId}
+              seat={seat}
+              help={help}
+            />
           ) : null}
         </li>
       ))}
     </ul>
+  )
+}
+
+function SeatRecoveryAction({
+  client,
+  projectId,
+  seat,
+  help,
+}: {
+  client: OperationalClient
+  projectId: string
+  seat: SeatQuotaState
+  help: readonly CodeHelpEntry[]
+}) {
+  const [result, setResult] = useState<SeatRecovery | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const recover = useIntentKey()
+  const intent = { projectId, agentRunId: seat.agent_run_id }
+  return (
+    <div className="seat-recovery-action">
+      <button
+        type="button"
+        disabled={busy || result?.state === 'confirmed'}
+        onClick={() => void act(
+          () => client.recoverSeat(projectId, seat.agent_run_id, recover.keyFor(intent)),
+          (value: SeatRecovery) => {
+            if (value.state === 'confirmed') recover.release()
+            setResult(value)
+          },
+          setError,
+          setBusy,
+        )}
+      >
+        {result?.state === 'confirmed'
+          ? `Recovered seat ${seat.role_slot}`
+          : busy ? 'Recovering…' : `Recover seat ${seat.role_slot}`}
+      </button>
+      {result ? (
+        <p className="receipt" role="status">
+          Recovery <CodeHelp code={result.state} entries={help} /> · attempt{' '}
+          <code>{result.attempt_id}</code> · {result.applied} · provenance{' '}
+          <code>{result.quota_provenance_id}</code>
+          {result.succession_receipt_id ? <> · receipt <code>{result.succession_receipt_id}</code></> : null}
+        </p>
+      ) : null}
+      <Problem error={error} />
+    </div>
   )
 }
 

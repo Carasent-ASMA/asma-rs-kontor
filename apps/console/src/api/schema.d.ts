@@ -530,6 +530,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Observe, classify and durably recover one quota-blocked seat. */
+        post: operations["recover_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
         parameters: {
             query?: never;
@@ -1986,6 +2003,23 @@ export interface paths {
         put?: never;
         /** Retire and release one exact binding. */
         post: operations["retire_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/seat-quota-states": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every live seat joined to its exact account and provider quota projections. */
+        get: operations["seat_quota_states"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -7566,6 +7600,103 @@ export interface components {
             /** @description The runtime family that owns the session, if the run is bound. */
             runtime_kind?: string | null;
         };
+        /** @description One provider route and the quota evidence currently joined to a live seat. */
+        SeatProviderQuotaDto: {
+            /** @description Provider alias declared by the seat's pinned account profile. */
+            provider: string;
+            quota?: null | components["schemas"]["ProviderQuotaStateDto"];
+        };
+        /**
+         * @description Observer projection joining one live logical seat to its runtime binding,
+         *     pinned account and every selectable provider's current quota state.
+         */
+        SeatQuotaStateDto: {
+            /** @description Account pinned to the live seat. */
+            account_profile_id: string;
+            /** @description Logical seat/run identity. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description Immutable native binding generation.
+             */
+            binding_generation: number;
+            /** @description Exact provider proven by that current provenance match. */
+            blocking_provider?: string | null;
+            /**
+             * @description Reduced Kontor lifecycle; recovery refuses `running` even if an older
+             *     provider row happens to remain blocking.
+             */
+            lifecycle: string;
+            /** @description Native runtime identity. */
+            native_id: string;
+            /** @description Latest runtime-observed state. */
+            observed_state: string;
+            /** @description Selectable provider routes and their current quota projections. */
+            providers: components["schemas"]["SeatProviderQuotaDto"][];
+            /** @description Exact immutable provenance proven by that current match. */
+            quota_provenance_id?: string | null;
+            /**
+             * @description True only when the latest blocked cursor, binding, native generation,
+             *     account and provider all match one current runtime-observation
+             *     provenance row. Clients must use this instead of deriving eligibility.
+             */
+            recovery_eligible: boolean;
+            /** @description Exact role slot held by the seat. */
+            role_slot: string;
+            /** @description Kontor runtime binding identity. */
+            runtime_binding_id: string;
+            /** @description Runtime adapter family. */
+            runtime_kind: string;
+            /**
+             * Format: int64
+             * @description Cursor of the latest reduced runtime observation, when one exists.
+             */
+            runtime_observation_cursor?: number | null;
+            /** @description Task whose frozen team owns the seat. */
+            task_id: string;
+            /** @description Frozen team run identity. */
+            team_run_id: string;
+        };
+        /** @description Readback of one bodyless, server-evidenced seat recovery operation. */
+        SeatRecoveryDto: {
+            /** @description Whether this call created progress or replayed durable state. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Durable succession attempt identity. */
+            attempt_id: string;
+            /**
+             * Format: int64
+             * @description Exact blocked runtime cursor that authorized the attempt.
+             */
+            authorizing_runtime_observation_cursor: number;
+            /** @description Earliest exact quota reset while placement is deferred. */
+            deferred_until?: string | null;
+            /** @description Canonical predecessor handoff digest once the attempt is planned. */
+            handoff_hash?: string | null;
+            /** @description Immutable predecessor logical run. */
+            predecessor_agent_run_id: string;
+            /** @description Immutable runtime-quota provenance linked to that cursor. */
+            quota_provenance_id: string;
+            /** @description Realm that owns the durable succession attempt. */
+            realm_id: string;
+            /** @description Exact role slot retained by the successor. */
+            role_slot: string;
+            /** @description `deferred` or `confirmed`. */
+            state: string;
+            /** @description Immutable final receipt, present only after confirmation. */
+            succession_receipt_id?: string | null;
+            successor?: null | components["schemas"]["ReplacedSeatDto"];
+            /**
+             * Format: int64
+             * @description Exact successor runtime observation cited by the final receipt.
+             */
+            successor_runtime_observation_cursor?: number | null;
+            /** @description Summary digest; absent for an explicit degraded handoff. */
+            summary_hash?: string | null;
+            /** @description Task whose exact team slot is recovered. */
+            task_id: string;
+            /** @description Frozen team run identity. */
+            team_run_id: string;
+        };
         /** @description What a selection correction produced. */
         SelectionDto: {
             /** @description The provider-account profile now pinned. */
@@ -9983,6 +10114,66 @@ export interface operations {
             };
             /** @description The runtime could not be reached */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The predecessor run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Confirmed, deferred, or replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The durable attempt or seat identity conflicts */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The fresh runtime/quota evidence refuses recovery */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14453,6 +14644,40 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    seat_quota_states: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatQuotaStateDto"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

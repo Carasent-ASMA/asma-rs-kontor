@@ -15,10 +15,10 @@ use kontor_core::spec::{ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSou
 use kontor_core::state::{Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState, SuccessionConfirmation,
-    SuccessionHandoff, SuccessionHandoffDegradedReason, SuccessionHandoffOutcome,
-    SuccessionHandoffRecord, SuccessionReceipt, SuccessionRedactionPass,
+    SuccessionDeferredRefresh, SuccessionHandoff, SuccessionHandoffDegradedReason,
+    SuccessionHandoffOutcome, SuccessionHandoffRecord, SuccessionReceipt, SuccessionRedactionPass,
     SuccessionRedactionReceipt, SuccessionRefusal, SuccessionRefusalReason,
-    SuccessionSuccessorObservation, SuccessionSuccessorPlan, SuccessionSuccessorRecord,
+    SuccessionSuccessorObservation, SuccessionSuccessorRecord,
 };
 use kontor_store::SqliteStore;
 use kontor_store::backup::{ImportPlan, KontorExportV1, export_realm, import_export};
@@ -65,6 +65,7 @@ struct Fixture {
     team: TeamRunId,
     predecessor: AgentRunId,
     predecessor_binding: RuntimeBindingId,
+    predecessor_account: AccountProfileId,
     successor_account: AccountProfileId,
     quota_provenance: QuotaObservationProvenanceId,
     quota_hash: ContentHash,
@@ -242,10 +243,269 @@ fn fixture() -> Fixture {
         team,
         predecessor,
         predecessor_binding,
+        predecessor_account,
         successor_account,
         quota_provenance,
         quota_hash,
     }
+}
+
+struct RefreshedEvidence {
+    predecessor_revision: AggregateRevision,
+    cursor: kontor_core::id::EventCursor,
+    quota_provenance: QuotaObservationProvenanceId,
+    quota_revision: AggregateRevision,
+    quota_hash: ContentHash,
+}
+
+fn record_refreshed_blocked_evidence(
+    fixture: &Fixture,
+    observed_at: Timestamp,
+    state: ProviderQuotaKind,
+    resets_at: Option<Timestamp>,
+) -> RefreshedEvidence {
+    let predecessor = fixture
+        .store
+        .get_agent_run(fixture.project, fixture.predecessor)
+        .expect("predecessor read")
+        .expect("predecessor exists");
+    let quota_revision = fixture
+        .store
+        .list_provider_quota_states(fixture.project)
+        .expect("quota rows read")
+        .into_iter()
+        .find(|row| {
+            row.account_profile_id == fixture.predecessor_account && row.provider == "openai"
+        })
+        .expect("predecessor quota exists")
+        .revision;
+    let quota_provenance = QuotaObservationProvenanceId::generate();
+    let quota_hash = ContentHash::of(format!("quota-refresh-{observed_at}").as_bytes());
+    let projection = fixture
+        .store
+        .record_observation(&NewObservation {
+            event: NewRuntimeEvent {
+                project_id: fixture.project,
+                agent_run_id: fixture.predecessor,
+                identity: identity("predecessor"),
+                native_event_id: Some(ExternalId::parse("blocked-2").expect("event id")),
+                native_sequence: 2,
+                payload: document("blocked-again"),
+                observed_at,
+            },
+            observed: ObservedRunState::Blocked,
+            contact: RuntimeContact::Reachable,
+            freshness: Freshness::Fresh,
+            expected_revision: predecessor.revision,
+            quota_state: Some(NewProviderQuotaState {
+                project_id: fixture.project,
+                account_profile_id: fixture.predecessor_account,
+                provider: "openai".to_owned(),
+                state,
+                resets_at,
+                windows: Vec::new(),
+                credit: None,
+                evidence_hash: quota_hash.clone(),
+                provenance: Some(NewQuotaObservationProvenance {
+                    id: quota_provenance,
+                    project_id: fixture.project,
+                    account_profile_id: fixture.predecessor_account,
+                    provider: "openai".to_owned(),
+                    signal_id: "runtime-quota".to_owned(),
+                    signal_version: kontor_core::id::SpecVersion::FIRST,
+                    signal_definition_hash: ContentHash::of(b"signal"),
+                    agent_run_id: fixture.predecessor,
+                    runtime_binding_id: fixture.predecessor_binding,
+                    native_id: ExternalId::parse("predecessor").expect("native id"),
+                    binding_generation: 1,
+                    runtime_observation_cursor: None,
+                    item_epoch: 1,
+                    item_seq_start: 8,
+                    item_seq_end: 8,
+                    source_sequences: vec![(8, 8)],
+                    item_kind: "assistant_message".to_owned(),
+                    item_observed_at: observed_at,
+                    decision_basis: kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal,
+                    decided_state: state,
+                    parsed_resets_at: resets_at,
+                    reset_zone: None,
+                    evidence_digest: quota_hash.clone(),
+                    recorded_at: observed_at,
+                }),
+                source: ProviderQuotaSource::RuntimeObservation,
+                observed_at,
+                expected_revision: quota_revision,
+                updated_at: observed_at,
+            }),
+        })
+        .expect("fresh blocked observation and quota evidence commit together");
+    let predecessor = fixture
+        .store
+        .get_agent_run(fixture.project, fixture.predecessor)
+        .expect("predecessor read")
+        .expect("predecessor exists");
+    let refreshed_quota_revision = fixture
+        .store
+        .list_provider_quota_states(fixture.project)
+        .expect("quota rows read")
+        .into_iter()
+        .find(|row| {
+            row.account_profile_id == fixture.predecessor_account && row.provider == "openai"
+        })
+        .expect("refreshed predecessor quota exists")
+        .revision;
+    RefreshedEvidence {
+        predecessor_revision: predecessor.revision,
+        cursor: projection.last_cursor.expect("blocked cursor"),
+        quota_provenance,
+        quota_revision: refreshed_quota_revision,
+        quota_hash,
+    }
+}
+
+fn identical_refusal_observation(
+    fixture: &Fixture,
+    expected_predecessor_revision: AggregateRevision,
+    expected_quota_revision: AggregateRevision,
+    provenance_id: QuotaObservationProvenanceId,
+) -> NewObservation {
+    let observed_at = at("2026-09-04T08:02:00Z");
+    NewObservation {
+        event: NewRuntimeEvent {
+            project_id: fixture.project,
+            agent_run_id: fixture.predecessor,
+            identity: identity("predecessor"),
+            native_event_id: Some(ExternalId::parse("blocked-2").expect("event id")),
+            native_sequence: 2,
+            payload: document("blocked-again"),
+            observed_at,
+        },
+        observed: ObservedRunState::Blocked,
+        contact: RuntimeContact::Reachable,
+        freshness: Freshness::Fresh,
+        expected_revision: expected_predecessor_revision,
+        quota_state: Some(NewProviderQuotaState {
+            project_id: fixture.project,
+            account_profile_id: fixture.predecessor_account,
+            provider: "openai".to_owned(),
+            state: ProviderQuotaKind::Unknown,
+            resets_at: None,
+            windows: Vec::new(),
+            credit: None,
+            evidence_hash: fixture.quota_hash.clone(),
+            provenance: Some(NewQuotaObservationProvenance {
+                id: provenance_id,
+                project_id: fixture.project,
+                account_profile_id: fixture.predecessor_account,
+                provider: "openai".to_owned(),
+                signal_id: "runtime-quota".to_owned(),
+                signal_version: kontor_core::id::SpecVersion::FIRST,
+                signal_definition_hash: ContentHash::of(b"signal"),
+                agent_run_id: fixture.predecessor,
+                runtime_binding_id: fixture.predecessor_binding,
+                native_id: ExternalId::parse("predecessor").expect("native id"),
+                binding_generation: 1,
+                runtime_observation_cursor: None,
+                item_epoch: 1,
+                item_seq_start: 8,
+                item_seq_end: 8,
+                source_sequences: vec![(8, 8)],
+                item_kind: "assistant_message".to_owned(),
+                item_observed_at: observed_at,
+                decision_basis: kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal,
+                decided_state: ProviderQuotaKind::Unknown,
+                parsed_resets_at: None,
+                reset_zone: None,
+                evidence_digest: fixture.quota_hash.clone(),
+                recorded_at: observed_at,
+            }),
+            source: ProviderQuotaSource::RuntimeObservation,
+            observed_at,
+            expected_revision: expected_quota_revision,
+            updated_at: observed_at,
+        }),
+    }
+}
+
+#[test]
+fn identical_runtime_refusal_refreshes_the_current_cursor_once_and_replay_is_inert() {
+    let fixture = fixture();
+    let before_run = fixture
+        .store
+        .get_agent_run(fixture.project, fixture.predecessor)
+        .expect("run read")
+        .expect("run exists");
+    let before_rows = fixture
+        .store
+        .list_provider_quota_states(fixture.project)
+        .expect("quota rows");
+    assert_eq!(before_rows.len(), 1);
+    let before = &before_rows[0];
+    let fresh_provenance = QuotaObservationProvenanceId::generate();
+    let observation = identical_refusal_observation(
+        &fixture,
+        before_run.revision,
+        before.revision,
+        fresh_provenance,
+    );
+
+    let projection = fixture
+        .store
+        .record_observation(&observation)
+        .expect("new identical refusal commits atomically");
+    let fresh_cursor = projection.last_cursor.expect("fresh cursor");
+    assert!(fresh_cursor > before_run.projection.last_cursor.expect("old cursor"));
+    let after_rows = fixture
+        .store
+        .list_provider_quota_states(fixture.project)
+        .expect("quota rows");
+    assert_eq!(
+        after_rows.len(),
+        1,
+        "the projection remains one current row"
+    );
+    let after = &after_rows[0];
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.evidence_hash, before.evidence_hash);
+    assert!(after.revision > before.revision);
+    assert_eq!(after.provenance_id, Some(fresh_provenance));
+    let provenance = fixture
+        .store
+        .get_quota_observation_provenance(fixture.project, fresh_provenance)
+        .expect("provenance read")
+        .expect("fresh provenance exists");
+    assert_eq!(
+        provenance.record.runtime_observation_cursor,
+        Some(fresh_cursor)
+    );
+
+    let current_run = fixture
+        .store
+        .get_agent_run(fixture.project, fixture.predecessor)
+        .expect("run read")
+        .expect("run exists");
+    let replay_projection = fixture
+        .store
+        .record_observation(&NewObservation {
+            expected_revision: current_run.revision,
+            ..observation
+        })
+        .expect("exact runtime event replay is inert");
+    assert_eq!(replay_projection.last_cursor, Some(fresh_cursor));
+    let replay_rows = fixture
+        .store
+        .list_provider_quota_states(fixture.project)
+        .expect("quota rows");
+    assert_eq!(replay_rows, after_rows);
+    let provenance_count: i64 = Connection::open(&fixture.path)
+        .expect("raw connection")
+        .query_row(
+            "SELECT count(*) FROM provider_quota_observation_provenance",
+            [],
+            |row| row.get(0),
+        )
+        .expect("provenance count");
+    assert_eq!(provenance_count, 2, "the replay appends no provenance");
 }
 
 fn new_attempt(fixture: &Fixture, key: &str) -> NewSuccessionAttempt {
@@ -294,7 +554,7 @@ fn new_attempt(fixture: &Fixture, key: &str) -> NewSuccessionAttempt {
 }
 
 #[test]
-fn deferred_wait_freezes_no_route_until_due_replanning() {
+fn due_deferred_refresh_admits_at_the_elapsed_exhausted_reset_boundary() {
     let fixture = fixture();
     let mut request = new_attempt(&fixture, "succession:deferred");
     request.successor_model_rung = None;
@@ -308,54 +568,173 @@ fn deferred_wait_freezes_no_route_until_due_replanning() {
     assert!(deferred.request.successor_model_rung.is_none());
     assert!(deferred.request.successor_account_profile_id.is_none());
 
-    let plan = SuccessionSuccessorPlan {
+    let original_id = deferred.request.id;
+    let original_key = deferred.request.idempotency_key.clone();
+    let original_intent_hash = deferred.request.intent_hash.clone();
+    let evidence = record_refreshed_blocked_evidence(
+        &fixture,
+        at("2026-09-04T09:00:00Z"),
+        ProviderQuotaKind::Exhausted,
+        Some(at("2026-09-04T09:00:00Z")),
+    );
+    assert!(
+        !fixture
+            .store
+            .list_provider_quota_states(fixture.project)
+            .expect("quota rows")
+            .into_iter()
+            .find(|row| row.account_profile_id == fixture.predecessor_account)
+            .expect("predecessor quota")
+            .blocks_at(at("2026-09-04T09:00:00Z")),
+        "an exhausted allowance stops blocking exactly at reset"
+    );
+    let refresh = SuccessionDeferredRefresh {
         project_id: fixture.project,
         attempt_id: deferred.request.id,
         expected_revision: deferred.revision,
+        expected_predecessor_revision: evidence.predecessor_revision,
+        runtime_observation_cursor: evidence.cursor,
+        quota_provenance_id: evidence.quota_provenance,
+        quota_state_revision: evidence.quota_revision,
+        quota_evidence_hash: evidence.quota_hash,
+        quota_provider: "openai".to_owned(),
         successor_model_rung: ModelRung {
             provider: ProviderRef("anthropic".to_owned()),
             model: ModelRef("claude-sonnet".to_owned()),
             effort: None,
-        },
-        successor_account_profile_id: fixture.successor_account,
-        planned_at: at("2026-09-04T09:00:00Z"),
+        }
+        .into(),
+        successor_account_profile_id: Some(fixture.successor_account),
+        deferred_until: None,
+        refreshed_at: at("2026-09-04T09:00:00Z"),
     };
     assert!(
         fixture
             .store
-            .plan_succession_successor(&SuccessionSuccessorPlan {
-                planned_at: at("2026-09-04T08:59:59Z"),
-                ..plan.clone()
+            .refresh_deferred_succession_evidence(&SuccessionDeferredRefresh {
+                refreshed_at: at("2026-09-04T08:59:59Z"),
+                ..refresh.clone()
             })
             .is_err(),
-        "replanning before the exact wait deadline is refused"
+        "refresh before the exact wait deadline is refused"
     );
     let planned = fixture
         .store
-        .plan_succession_successor(&plan)
-        .expect("the due attempt freezes an admitted route");
+        .refresh_deferred_succession_evidence(&refresh)
+        .expect("fresh same-binding blocked readback admits a successor");
     assert_eq!(planned.state, SuccessionAttemptState::Planned);
+    assert_eq!(planned.request.id, original_id);
+    assert_eq!(planned.request.idempotency_key, original_key);
+    assert_eq!(planned.request.intent_hash, original_intent_hash);
+    assert_eq!(planned.request.runtime_observation_cursor, evidence.cursor);
+    assert_eq!(
+        planned.request.quota_provenance_id,
+        evidence.quota_provenance
+    );
+    assert!(planned.request.deferred_until.is_none());
     assert_eq!(
         planned.request.successor_account_profile_id,
         Some(fixture.successor_account)
     );
-    assert_eq!(
+    assert!(
         fixture
             .store
-            .plan_succession_successor(&plan)
-            .expect("exact stale-revision replay is idempotent"),
-        planned
+            .refresh_deferred_succession_evidence(&refresh)
+            .is_err(),
+        "a stale CAS cannot replay over the refreshed attempt"
+    );
+}
+
+#[test]
+fn due_deferred_refresh_can_record_another_exact_future_wait() {
+    let fixture = fixture();
+    let mut request = new_attempt(&fixture, "succession:wait-again");
+    request.successor_model_rung = None;
+    request.successor_account_profile_id = None;
+    request.deferred_until = Some(at("2026-09-04T09:00:00Z"));
+    let deferred = fixture
+        .store
+        .create_succession_attempt(&request)
+        .expect("first Wait is durable");
+    let evidence = record_refreshed_blocked_evidence(
+        &fixture,
+        at("2026-09-04T09:00:00Z"),
+        ProviderQuotaKind::Exhausted,
+        Some(at("2026-09-04T10:00:00Z")),
+    );
+    let renewed = fixture
+        .store
+        .refresh_deferred_succession_evidence(&SuccessionDeferredRefresh {
+            project_id: fixture.project,
+            attempt_id: deferred.request.id,
+            expected_revision: deferred.revision,
+            expected_predecessor_revision: evidence.predecessor_revision,
+            runtime_observation_cursor: evidence.cursor,
+            quota_provenance_id: evidence.quota_provenance,
+            quota_state_revision: evidence.quota_revision,
+            quota_evidence_hash: evidence.quota_hash,
+            quota_provider: "openai".to_owned(),
+            successor_model_rung: None,
+            successor_account_profile_id: None,
+            deferred_until: Some(at("2026-09-04T10:00:00Z")),
+            refreshed_at: at("2026-09-04T09:00:00Z"),
+        })
+        .expect("another exact Wait is durable");
+    assert_eq!(renewed.state, SuccessionAttemptState::Deferred);
+    assert_eq!(
+        renewed.request.deferred_until,
+        Some(at("2026-09-04T10:00:00Z"))
     );
     assert_eq!(
         fixture
             .store
-            .create_succession_attempt(&NewSuccessionAttempt {
-                id: SuccessionAttemptId::generate(),
-                ..request
-            })
-            .expect("the original deferred create remains idempotent after planning"),
-        planned
+            .list_due_succession_attempts(at("2026-09-04T09:59:59Z"), 10)
+            .expect("due inventory")
+            .len(),
+        0
     );
+}
+
+#[test]
+fn schema_rejects_route_only_mutation_that_bypasses_the_due_refresh_cas() {
+    let fixture = fixture();
+    let mut request = new_attempt(&fixture, "succession:raw-route");
+    request.successor_model_rung = None;
+    request.successor_account_profile_id = None;
+    request.deferred_until = Some(at("2026-09-04T09:00:00Z"));
+    let deferred = fixture
+        .store
+        .create_succession_attempt(&request)
+        .expect("Wait is durable");
+    let route = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "model_rung": {
+            "provider": "anthropic",
+            "model": "claude-sonnet",
+            "effort": null
+        }
+    }))
+    .expect("route document");
+    let error = Connection::open(&fixture.path)
+        .expect("raw connection")
+        .execute(
+            "UPDATE succession_attempts
+             SET state = 'planned', successor_model_rung = ?1,
+                 successor_model_rung_hash = ?2, successor_account_profile_id = ?3,
+                 deferred_until = NULL, successor_planned_at = ?4,
+                 revision = revision + 1, updated_at = ?4
+             WHERE project_id = ?5 AND id = ?6",
+            params![
+                route.json(),
+                route.hash().as_str(),
+                fixture.successor_account.to_string(),
+                "2026-09-04T09:00:00Z",
+                fixture.project.to_string(),
+                deferred.request.id.to_string(),
+            ],
+        )
+        .expect_err("route-only SQL cannot evade the deferred authority trigger");
+    assert!(error.to_string().contains("deferred succession authority"));
 }
 
 #[test]

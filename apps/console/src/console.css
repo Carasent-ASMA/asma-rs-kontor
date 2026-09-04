@@ -747,14 +747,14 @@ td {
   list-style: none;
 }
 
-.quota-strip li {
+.quota-strip > li {
   min-width: 0;
   padding: 0.5rem;
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
 
-.quota-strip li[data-blocking="true"] {
+.quota-strip > li[data-blocking="true"] {
   border-left: 3px solid var(--warn);
 }
 
@@ -762,6 +762,11 @@ td {
   margin-left: 0.35rem;
   color: var(--warn);
   font-weight: 600;
+}
+
+.quota-strip > li > .compact-list,
+.seat-recovery-action {
+  margin-top: 0.5rem;
 }
 
 .block {

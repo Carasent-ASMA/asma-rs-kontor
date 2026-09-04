@@ -20,9 +20,9 @@ use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, CanonicalDocument, CompactionReceiptId, ContentHash, ExternalId,
-    ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp,
-    TopologyNodeId, parse_utc_timestamp,
+    AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
+    ExternalId, ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
+    Timestamp, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::ModelRung;
@@ -55,6 +55,7 @@ use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationReport, reconcile, timestamp_control_sequence,
 };
+use crate::refusal::{RefusalProvenance, TransientRefusal};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
@@ -91,6 +92,9 @@ pub enum ScriptStep {
     /// The next inspect finds the bound session's native process missing while
     /// making no claim that the run itself finished.
     InspectProcessMissing,
+    /// The next inspect reports that the session is reachable but awaiting
+    /// input, even if its previous item was a refusal.
+    InspectWaitingInput,
     /// The next live subscription ends without the session reaching a terminal
     /// state.
     CloseStreamWithoutTerminal,
@@ -128,7 +132,7 @@ impl ScriptStep {
             Self::EchoCorrelation { .. } => RuntimeCapability::Launch,
             Self::LoseSendAck => RuntimeCapability::SendMessage,
             Self::CancelObservedTerminal => RuntimeCapability::Cancel,
-            Self::InspectProcessMissing => RuntimeCapability::Inspect,
+            Self::InspectProcessMissing | Self::InspectWaitingInput => RuntimeCapability::Inspect,
             Self::CloseStreamWithoutTerminal => RuntimeCapability::LiveEvents,
             Self::CompactPending
             | Self::CompactFailed
@@ -382,6 +386,8 @@ struct FakeSession {
     binding_id: RuntimeBindingId,
     correlation_text: Option<String>,
     state: ObservedRunState,
+    /// Bounded last-turn refusal exposed only while this session is Blocked.
+    refusal: Option<TransientRefusal>,
     epoch: u64,
     /// Every recorded event, in delivery order.
     content: Vec<SessionEvent>,
@@ -482,6 +488,7 @@ struct FakeState {
     calls: Vec<AdapterCall>,
     launched_models: BTreeMap<AgentRunId, ModelRung>,
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
+    launched_prompts: BTreeMap<AgentRunId, BoundedText>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
     unavailable_providers: BTreeSet<String>,
     provider_fallbacks: BTreeMap<String, ModelRung>,
@@ -862,6 +869,8 @@ impl FakeState {
         self.calls.push(AdapterCall::Launch(request.agent_run_id()));
         self.launched_models
             .insert(request.agent_run_id(), request.model_rung().clone());
+        self.launched_prompts
+            .insert(request.agent_run_id(), request.prompt().clone());
         if let Some(account) = request.account_profile_id() {
             self.launched_accounts
                 .insert(request.agent_run_id(), account);
@@ -904,6 +913,7 @@ impl FakeState {
             binding_id: request.binding_id(),
             correlation_text: Some(reported),
             state: ObservedRunState::Launching,
+            refusal: None,
             epoch,
             content,
             history_len,
@@ -978,6 +988,7 @@ impl ScriptedFakeRuntime {
                 calls: Vec::new(),
                 launched_models: BTreeMap::new(),
                 launched_accounts: BTreeMap::new(),
+                launched_prompts: BTreeMap::new(),
                 consultation_routes: BTreeMap::new(),
                 unavailable_providers: BTreeSet::new(),
                 provider_fallbacks: BTreeMap::new(),
@@ -1049,6 +1060,56 @@ impl ScriptedFakeRuntime {
     /// scheduler replay resumes the durable admission.
     pub fn allowing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.remove(slot.as_str());
+    }
+
+    /// Make one exact, already-issued binding report a reachable quota refusal.
+    ///
+    /// This is deliberately a runtime fact rather than a test writing a
+    /// `Blocked` projection directly into Kontor's store. The refusal is
+    /// attached to a real runtime-owned timeline item, so its digest and full
+    /// provenance exercise the same inspection boundary as a native adapter.
+    pub fn observe_blocked_refusal(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        refusal_text: &str,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the refusal",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            refusal_text,
+            observed_at,
+        )?;
+        let refusal = TransientRefusal::parse(
+            refusal_text,
+            RefusalProvenance {
+                agent_run_id: issued.agent_run_id(),
+                binding_generation: issued.identity().generation,
+                runtime_binding_id: issued.binding_id(),
+                native_id: issued.identity().native_id.clone(),
+                position,
+                sequence_end: position.sequence,
+                source_sequences: vec![(position.sequence, position.sequence)],
+                item_type: "assistant_message".to_owned(),
+                observed_at,
+            },
+        )
+        .ok_or(RuntimeError::ReplacementNotEvidenced {
+            rule: "the scripted refusal was empty or contained sensitive material",
+        })?;
+        session.state = ObservedRunState::Blocked;
+        session.refusal = Some(refusal);
+        Ok(())
     }
 
     /// Refuse recovery-successor validation for one exact provider spelling.
@@ -1424,6 +1485,12 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn launched_account(&self, run: AgentRunId) -> Option<AccountProfileId> {
         self.lock().launched_accounts.get(&run).copied()
+    }
+
+    /// Exact bounded prompt supplied for one launched delivery run.
+    #[must_use]
+    pub fn launched_prompt(&self, run: AgentRunId) -> Option<BoundedText> {
+        self.lock().launched_prompts.get(&run).cloned()
     }
 
     /// The route a consultation seat was launched on.
@@ -2867,9 +2934,18 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::Inspect(request.binding.binding_id()));
-        let observed = state.session(&request.binding)?.state;
-        let process_missing = matches!(step, Some(ScriptStep::InspectProcessMissing));
-        Self::observation(
+        let (observed, refusal) = {
+            let session = state.session(&request.binding)?;
+            (
+                session.state,
+                (session.state == ObservedRunState::Blocked)
+                    .then(|| session.refusal.clone())
+                    .flatten(),
+            )
+        };
+        let process_missing = matches!(&step, Some(ScriptStep::InspectProcessMissing));
+        let waiting_input = matches!(&step, Some(ScriptStep::InspectWaitingInput));
+        let observation = Self::observation(
             &request.binding,
             if process_missing {
                 RuntimeContact::ProcessMissing
@@ -2878,13 +2954,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             },
             if process_missing {
                 ObservedRunState::Unknown
+            } else if waiting_input {
+                ObservedRunState::WaitingInput
             } else {
                 observed
             },
             ObservationSource::Inspect,
             0,
             request.requested_at,
-        )
+        )?;
+        Ok(observation.with_refusal((!process_missing).then_some(refusal).flatten()))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -2962,6 +3041,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 binding_id: request.binding_id,
                 correlation_text: reported,
                 state: ObservedRunState::Running,
+                refusal: None,
                 epoch,
                 content,
                 history_len,
@@ -3343,6 +3423,81 @@ mod retitle_seat_generation_tests {
                 context_window: kontor_core::spec::ContextWindowBounds::unknown(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_refusal_is_runtime_owned_and_inspected_with_exact_provenance() {
+        let runtime = ScriptedFakeRuntime::new(capabilities());
+        let run_id = AgentRunId::generate();
+        let binding_id = RuntimeBindingId::generate();
+        let observed_at = "2026-09-04T09:15:00Z"
+            .parse::<Timestamp>()
+            .expect("timestamp");
+        let native_id = ExternalId::parse("native-quota-refusal").expect("native id");
+        let snapshot = {
+            let mut state = runtime.lock();
+            let identity = state.identity(native_id.clone());
+            let correlation = CorrelationLabel::for_run(run_id).to_string();
+            let snapshot = ScriptedFakeRuntime::bind(
+                &state,
+                run_id,
+                binding_id,
+                identity,
+                &correlation,
+                observed_at,
+            )
+            .expect("binding");
+            let epoch = state.epoch;
+            state.sessions.insert(
+                native_id,
+                FakeSession {
+                    agent_run_id: run_id,
+                    binding_id,
+                    correlation_text: Some(correlation),
+                    state: ObservedRunState::Running,
+                    refusal: None,
+                    epoch,
+                    content: Vec::new(),
+                    history_len: 0,
+                    messages: MessageLedger::new(),
+                },
+            );
+            state.bindings.insert(binding_id, snapshot.clone());
+            snapshot
+        };
+
+        runtime
+            .observe_blocked_refusal(
+                &snapshot,
+                "Usage limit reached; try again after 10:15 UTC",
+                observed_at,
+            )
+            .expect("the native refusal is recorded");
+        let observation = runtime
+            .inspect(&InspectRequest {
+                binding: snapshot.clone(),
+                requested_at: observed_at,
+            })
+            .await
+            .expect("the exact binding is inspectable");
+
+        assert_eq!(observation.contact, RuntimeContact::Reachable);
+        assert_eq!(observation.state, ObservedRunState::Blocked);
+        assert_eq!(observation.identity, *snapshot.identity());
+        let refusal = observation
+            .refusal
+            .expect("the blocked read carries refusal");
+        assert_eq!(refusal.provenance().agent_run_id, run_id);
+        assert_eq!(refusal.provenance().runtime_binding_id, binding_id);
+        assert_eq!(
+            refusal.provenance().native_id,
+            snapshot.identity().native_id
+        );
+        assert_eq!(refusal.provenance().binding_generation, 1);
+        assert_eq!(refusal.provenance().position.sequence, 1);
+        assert_eq!(refusal.provenance().source_sequences, vec![(1, 1)]);
+        assert_eq!(refusal.provenance().observed_at, observed_at);
+        assert_eq!(runtime.content(&snapshot).len(), 1);
     }
 
     #[tokio::test]

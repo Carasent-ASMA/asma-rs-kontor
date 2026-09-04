@@ -43,7 +43,31 @@ function operationalClient(overrides: Record<string, unknown> = {}) {
     previewPromotion: vi.fn(async () => ({ realm_id: 'realm-1', quick_session_id: 'quick-1', preview_hash: 'promotion-1', effects: [] })),
     applyPromotion: vi.fn(async () => ({ quick_session_id: 'quick-1', epic_id: 'epic-2', receipt: RECEIPT })),
     projectCapacity: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', snapshot_cursor: 20, accounts: [], active_team_runs: 4, adaptive_streak: 2, adaptive_width: 5, mission_ceiling: 7, last_observation_id: 'observation-1', last_refusal: 'eighth run refused' })),
-    providerQuotaStates: vi.fn(async () => [{ account_profile_id: 'codex-personal', provider: 'openai', state: 'exhausted', blocking: true, observed_at: '2026-09-04T10:00:00Z', resets_at: '2026-09-04T12:00:00Z', revision: 3, source: 'runtime_observation', windows: [{ kind: 'session', used_percent: 100, resets_at: '2026-09-04T12:00:00Z' }] }]),
+    providerQuotaStates: vi.fn(async () => [
+      { account_profile_id: 'codex-personal', provider: 'openai', state: 'exhausted', blocking: true, observed_at: '2026-09-04T10:00:00Z', resets_at: '2026-09-04T12:00:00Z', revision: 3, source: 'runtime_observation', windows: [{ kind: 'session', used_percent: 100, resets_at: '2026-09-04T12:00:00Z' }] },
+      { account_profile_id: 'codex-personal', provider: 'anthropic', state: 'available', blocking: false, observed_at: '2026-09-04T10:00:00Z', revision: 2, source: 'provider_report', windows: [] },
+    ]),
+    seatQuotaStates: vi.fn(async () => [
+      {
+        agent_run_id: 'run-blocked', task_id: 'task-1', team_run_id: 'team-1', role_slot: 'implementer',
+        runtime_binding_id: 'binding-1', runtime_kind: 'paseo', native_id: 'native-1', binding_generation: 2,
+        account_profile_id: 'codex-personal', lifecycle: 'blocked', observed_state: 'blocked',
+        runtime_observation_cursor: 41, recovery_eligible: true, blocking_provider: 'openai',
+        quota_provenance_id: 'quota-prov-1', providers: [{ provider: 'openai', quota: null }],
+      },
+      {
+        agent_run_id: 'run-running', task_id: 'task-1', team_run_id: 'team-1', role_slot: 'reviewer',
+        runtime_binding_id: 'binding-2', runtime_kind: 'paseo', native_id: 'native-2', binding_generation: 1,
+        account_profile_id: 'codex-personal', lifecycle: 'running', observed_state: 'running',
+        runtime_observation_cursor: 42, recovery_eligible: false, providers: [{ provider: 'openai', quota: null }],
+      },
+    ]),
+    recoverSeat: vi.fn(async () => ({
+      realm_id: 'realm-1', attempt_id: 'recovery-attempt-1', state: 'confirmed', task_id: 'task-1',
+      team_run_id: 'team-1', role_slot: 'implementer', predecessor_agent_run_id: 'run-blocked',
+      successor: null, authorizing_runtime_observation_cursor: 41, quota_provenance_id: 'quota-prov-1',
+      succession_receipt_id: 'succession-receipt-1', applied: 'created',
+    })),
     codeHelp: vi.fn(async () => ({ realm_id: 'realm-1', epic_id: 'epic-1', snapshot_cursor: 20, entries: [
       { category: 'role', code: 'LSA', full_name: 'Lead Software Architect', meaning: 'Owns architecture.', lifecycle: 'active', source: REVISION },
       { category: 'role', code: 'TPM', full_name: 'Technical Program Manager', meaning: 'Owns delivery.', lifecycle: 'active', source: REVISION },
@@ -90,8 +114,62 @@ describe('<ProjectView>', () => {
     const quota = screen.getByRole('list', { name: 'Provider quota states' })
     expect(quota).toHaveClass('quota-strip')
     expect(within(quota).getByText('openai')).toBeInTheDocument()
+    expect(within(quota).getByText('anthropic')).toBeInTheDocument()
     expect(within(quota).getByText('launch blocked')).toBeInTheDocument()
     expect(within(quota).getByText(/session 100%/)).toBeInTheDocument()
+    expect(within(quota).getAllByText('codex-personal')).toHaveLength(1)
+    const seats = screen.getByRole('list', { name: 'Live seat quota states' })
+    expect(within(seats).getByText('implementer', { selector: 'strong' })).toBeInTheDocument()
+    expect(within(seats).getByRole('button', { name: 'Recover seat implementer' })).toBeInTheDocument()
+  })
+
+  it('offers bodyless recovery only when the server marks the stopped seat eligible', async () => {
+    const client = await open()
+    const seats = screen.getByRole('list', { name: 'Live seat quota states' })
+
+    expect(within(seats).getAllByRole('button', { name: /Recover seat/ })).toHaveLength(1)
+    expect(within(seats).queryByRole('button', { name: 'Recover seat reviewer' })).not.toBeInTheDocument()
+    fireEvent.click(within(seats).getByRole('button', { name: 'Recover seat implementer' }))
+
+    await waitFor(() => expect(client.recoverSeat).toHaveBeenCalledTimes(1))
+    expect(client.recoverSeat).toHaveBeenCalledWith(
+      'project-1',
+      'run-blocked',
+      expect.any(String),
+    )
+    const result = await within(seats).findByRole('status')
+    expect(result).toHaveTextContent('recovery-attempt-1')
+    expect(result).toHaveTextContent('confirmed')
+    expect(within(seats).getByRole('button', { name: 'Recovered seat implementer' })).toBeDisabled()
+  })
+
+  it('retries a deferred recovery under the original idempotency key', async () => {
+    let attempt = 0
+    const recoverSeat = vi.fn(async (
+      _projectId: string,
+      _agentRunId: string,
+      _commandId: string,
+    ) => {
+      attempt += 1
+      return {
+        realm_id: 'realm-1', attempt_id: 'recovery-attempt-1', state: attempt === 1 ? 'deferred' : 'confirmed',
+        task_id: 'task-1', team_run_id: 'team-1', role_slot: 'implementer',
+        predecessor_agent_run_id: 'run-blocked', successor: null,
+        authorizing_runtime_observation_cursor: 41, quota_provenance_id: 'quota-prov-1',
+        succession_receipt_id: attempt === 1 ? null : 'succession-receipt-1', applied: attempt === 1 ? 'created' : 'unchanged',
+      }
+    })
+    await open(operationalClient({ recoverSeat }))
+    const seats = screen.getByRole('list', { name: 'Live seat quota states' })
+    const recover = within(seats).getByRole('button', { name: 'Recover seat implementer' })
+
+    fireEvent.click(recover)
+    await waitFor(() => expect(recoverSeat).toHaveBeenCalledTimes(1))
+    expect(recover).toBeEnabled()
+    fireEvent.click(recover)
+    await waitFor(() => expect(recoverSeat).toHaveBeenCalledTimes(2))
+
+    expect(recoverSeat.mock.calls[1]?.[2]).toBe(recoverSeat.mock.calls[0]?.[2])
   })
 
   it('groups catalog roles and cannot apply a Core Team before preview confirmation', async () => {

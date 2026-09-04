@@ -61,7 +61,7 @@ use crate::state::{
 };
 use crate::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionConfirmation,
-    SuccessionHandoffRecord, SuccessionReceipt, SuccessionRefusal, SuccessionSuccessorPlan,
+    SuccessionDeferredRefresh, SuccessionHandoffRecord, SuccessionReceipt, SuccessionRefusal,
     SuccessionSuccessorRecord,
 };
 use crate::ticket::{
@@ -4394,10 +4394,10 @@ pub trait SuccessionRepository {
         limit: u32,
     ) -> RepositoryResult<Vec<SuccessionAttempt>>;
 
-    /// Freeze a real route/account pair after a deferred placement becomes due.
-    fn plan_succession_successor(
+    /// Refresh a due deferred attempt's exact authority and placement atomically.
+    fn refresh_deferred_succession_evidence(
         &self,
-        request: &SuccessionSuccessorPlan,
+        request: &SuccessionDeferredRefresh,
     ) -> RepositoryResult<SuccessionAttempt>;
 
     /// Attach summary-or-degraded evidence before retirement.

@@ -18,7 +18,7 @@ system behaviour instead of instructions somebody has to remember.
 | --- | --- |
 | `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence |
 | `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases and the plane's default seat posture. Schema generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
-| `<state-root>/supervision.yml` | Seat supervision policy (optional; see below) |
+| `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
 | `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
@@ -205,28 +205,54 @@ child work.
 ## Seat supervision
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)
-to `<state-root>/supervision.yml` to publish the intended policy for validation
-and inspection. This does **not** enable runtime watchdog behavior today. If the
-file is absent, Kontor invents no timeout or watchdog behavior; if it is present,
-Kontor reads and validates it but does not act on it yet.
+to `<state-root>/supervision.yml` only when this Realm should opt into the
+candidate resident succession engine. Enablement is deliberately explicit:
 
-Normal completion is notification-first: the orchestrator yields after dispatch
-and the runtime wakes it on completion, error or permission. The watchdog is an
-independent bounded observer for a turn that never completes. It may classify a
-suspected hang only when both active-turn age and missing-progress evidence are
-stale. Recovery reconciles the same seat first; it never duplicates a seat or
-cancels running work.
+- with no file, no supervisor starts;
+- schema v1 remains readable for legacy classification and starts no automatic
+  succession;
+- schema v2 requires `recovery.max_concurrent_successions`, rejects zero and
+  values above the process safety bound, and starts the supervisor only when
+  `watchdog.enabled` is `true`;
+- a disabled schema-v2 watchdog starts no supervisor even when the concurrency
+  field is present.
 
-The YAML contains prompt paths and required skill names. Kontor validates and
-exposes those references but does not interpret their names. The intended
-consumer will have the selected runtime adapter load their contents, keeping
-Paseo, AO, Codex and future adapters on the same policy shape without hard-coded
-provider behavior; no adapter is dispatched from this policy today.
+This prevents a daemon upgrade from silently assigning a cadence or concurrency
+ceiling to an existing Realm. The shipped example selects schema v2, a
+300-second cadence and five concurrent succession sagas; those are deployment
+choices, not kernel defaults.
 
-> **Status:** the policy is read and validated, and has **no consumer yet** —
-> nothing currently acts on a configured watchdog. Absent configuration correctly
-> invents no behaviour; present configuration also does nothing until
-> `KON-OP-21` wires it. This is recorded rather than implied.
+The declared normal mode is notification-first: the orchestrator yields after
+dispatch and the configured orchestration surface is expected to wake it on
+completion, error or permission. The watchdog is an independent bounded observer
+for a turn that never completes. It may classify a suspected hang only when both
+active-turn age and missing-progress evidence are stale. Recovery reconciles the
+same seat first; it never duplicates a seat or cancels running work.
+
+The `completion` block remains the orchestration policy contract; KON-OP-21 does
+not add a notification transport. Its resident supervisor is the bounded
+durable-recovery backstop described below, not a replacement event bus.
+
+The resident loop waits for the startup reconciliation barrier, first resumes
+due durable attempts, then rebuilds its inventory on the configured cadence and
+on committed append signals when `runtime_error` is configured as a wake
+condition. It evaluates only nonterminal active TeamRuns and only a blocked seat
+whose latest reachable runtime observation,
+binding generation, account, provider quota row and immutable
+runtime-observation provenance match exactly. Durable attempts are both queue
+and slot lock; restart and replay resume them rather than creating another
+successor. Hang classification remains read-only and is not silently converted
+into quota succession.
+
+The YAML also contains prompt paths and required skill names. Kontor validates
+and exposes those references but does not reinterpret or execute them in the
+resident loop. They remain orchestration-surface metadata; the selected runtime
+adapter remains responsible for native inspection and placement.
+
+> **Release status:** these KON-OP-21 paths are implemented and covered by local
+> contract/regression tests in the current candidate tree. Merge, independent
+> audit and live-runtime verification are still pending; a local green test is
+> not a claim that an installed Realm is already running them.
 
 ## Seat permission posture
 
@@ -487,7 +513,7 @@ is inert:
 
 | The document is… | Kontor… |
 | --- | --- |
-| absent | leaves classification inert; the 300-second poll stays the sole source of truth, exactly as before the file existed |
+| absent | leaves refusal-message classification inert; pre-flight provider polling is unchanged, and a schema-v2 supervisor can resume existing durable attempts but cannot derive a new quota decision from unconfigured wording |
 | present but unreadable | refuses to start, with a typed `Read` naming the path |
 | present but unparsable or schema-invalid | refuses to start, with a typed `Document` or `Invalid` naming the stable rule |
 
@@ -528,6 +554,13 @@ inspection/response. A response uses a canonical UUIDv7 `Idempotency-Key` and is
 persisted in schema v75 before the runtime effect. Confirmed replay is inert;
 confirmation-unknown dispatch fails closed instead of guessing or answering a
 second time.
+
+Quota succession is exposed separately. `kontor_seat_quota_states_list` is an
+Observer read joining each live delivery seat to its exact account and provider
+quota projections. `kontor_seat_recover` is an Admin, bodyless command addressed
+only by project, predecessor run and `Idempotency-Key`; the server fresh-reads
+and freezes every binding, revision and quota-provenance fact rather than
+accepting an eligibility claim from the caller.
 
 ## Other deployment data
 

@@ -99,6 +99,13 @@ Kontor never invents suffixes.
 Committee cardinality remains template-defined; these three labels are the
 recommended Independent Review setup, not a universal kernel law.
 
+Quota-driven succession does not create a naming exception. A successor keeps
+the same immutable TeamRun role slot and is rendered again from that slot's
+exact pinned Team Definition mapping. Provider, account, rung, predecessor id
+and Jira key remain authority/evidence fields; none is appended to the native
+seat title. For example, the successor of an `SA` seat is still named `SA`, not
+an account-, rung-, Jira- or predecessor-decorated variant.
+
 ## Recommended definition shape
 
 This is the implemented snake-case v1 wire shape. Templates are typed segment

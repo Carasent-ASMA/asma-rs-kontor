@@ -1269,6 +1269,71 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Observe, classify and durably recover one quota-blocked seat.",
+        "operationId": "recover_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The predecessor run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmed, deferred, or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeatRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The durable attempt or seat identity conflicts"
+          },
+          "422": {
+            "description": "The fresh runtime/quota evidence refuses recovery"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace": {
       "post": {
         "tags": [
@@ -6640,6 +6705,47 @@
             "description": ""
           },
           "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/seat-quota-states": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every live seat joined to its exact account and provider quota projections.",
+        "operationId": "seat_quota_states",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SeatQuotaStateDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
             "description": ""
           }
         }
@@ -19295,6 +19401,236 @@
               "null"
             ],
             "description": "The runtime family that owns the session, if the run is bound."
+          }
+        }
+      },
+      "SeatProviderQuotaDto": {
+        "type": "object",
+        "description": "One provider route and the quota evidence currently joined to a live seat.",
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Provider alias declared by the seat's pinned account profile."
+          },
+          "quota": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProviderQuotaStateDto",
+                "description": "Current project quota projection, absent when this provider has not yet\nproduced any governed evidence."
+              }
+            ]
+          }
+        }
+      },
+      "SeatQuotaStateDto": {
+        "type": "object",
+        "description": "Observer projection joining one live logical seat to its runtime binding,\npinned account and every selectable provider's current quota state.",
+        "required": [
+          "agent_run_id",
+          "task_id",
+          "team_run_id",
+          "role_slot",
+          "runtime_binding_id",
+          "runtime_kind",
+          "native_id",
+          "binding_generation",
+          "account_profile_id",
+          "lifecycle",
+          "observed_state",
+          "recovery_eligible",
+          "providers"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "Account pinned to the live seat."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "Logical seat/run identity."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Immutable native binding generation.",
+            "minimum": 0
+          },
+          "blocking_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact provider proven by that current provenance match."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Reduced Kontor lifecycle; recovery refuses `running` even if an older\nprovider row happens to remain blocking."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Native runtime identity."
+          },
+          "observed_state": {
+            "type": "string",
+            "description": "Latest runtime-observed state."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeatProviderQuotaDto"
+            },
+            "description": "Selectable provider routes and their current quota projections."
+          },
+          "quota_provenance_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact immutable provenance proven by that current match."
+          },
+          "recovery_eligible": {
+            "type": "boolean",
+            "description": "True only when the latest blocked cursor, binding, native generation,\naccount and provider all match one current runtime-observation\nprovenance row. Clients must use this instead of deriving eligibility."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "Exact role slot held by the seat."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "Kontor runtime binding identity."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime adapter family."
+          },
+          "runtime_observation_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Cursor of the latest reduced runtime observation, when one exists."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task whose frozen team owns the seat."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Frozen team run identity."
+          }
+        }
+      },
+      "SeatRecoveryDto": {
+        "type": "object",
+        "description": "Readback of one bodyless, server-evidenced seat recovery operation.",
+        "required": [
+          "realm_id",
+          "attempt_id",
+          "state",
+          "task_id",
+          "team_run_id",
+          "role_slot",
+          "predecessor_agent_run_id",
+          "authorizing_runtime_observation_cursor",
+          "quota_provenance_id",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call created progress or replayed durable state."
+          },
+          "attempt_id": {
+            "type": "string",
+            "description": "Durable succession attempt identity."
+          },
+          "authorizing_runtime_observation_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact blocked runtime cursor that authorized the attempt."
+          },
+          "deferred_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Earliest exact quota reset while placement is deferred."
+          },
+          "handoff_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical predecessor handoff digest once the attempt is planned."
+          },
+          "predecessor_agent_run_id": {
+            "type": "string",
+            "description": "Immutable predecessor logical run."
+          },
+          "quota_provenance_id": {
+            "type": "string",
+            "description": "Immutable runtime-quota provenance linked to that cursor."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that owns the durable succession attempt."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "Exact role slot retained by the successor."
+          },
+          "state": {
+            "type": "string",
+            "description": "`deferred`, `confirmed` or `refused`."
+          },
+          "succession_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immutable final receipt, present only after confirmation."
+          },
+          "successor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReplacedSeatDto",
+                "description": "Installed successor when recovery has confirmed one."
+              }
+            ]
+          },
+          "successor_runtime_observation_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Exact successor runtime observation cited by the final receipt."
+          },
+          "summary_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Summary digest; absent for an explicit degraded handoff."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task whose exact team slot is recovered."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Frozen team run identity."
           }
         }
       },
