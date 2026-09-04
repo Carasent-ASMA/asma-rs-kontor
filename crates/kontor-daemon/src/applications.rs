@@ -15217,9 +15217,17 @@ impl ApplicationOperations for Services {
                     .prepare_plane()
                     .await
                     .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-                let cwd = match leaf.task_id {
-                    Some(task_id) => self.task_root(project_id, task_id)?,
-                    None => self.runtime_root(project_id, leaf.mini_project_id)?,
+                let cwd = if matches!(
+                    leaf.kind.as_str(),
+                    kind if kind == self.domain.delivery.advisor_kind.as_str()
+                        || kind == self.domain.delivery.committee_kind.as_str()
+                ) {
+                    self.consultation_root(project.root_path.as_str(), leaf.id)?
+                } else {
+                    match leaf.task_id {
+                        Some(task_id) => self.task_root(project_id, task_id)?,
+                        None => self.runtime_root(project_id, leaf.mini_project_id)?,
+                    }
                 };
                 self.ensure_container(project_id, &leaf, &cwd, adapter.as_ref())
                     .await?;

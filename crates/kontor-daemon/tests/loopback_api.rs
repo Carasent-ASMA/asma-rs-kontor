@@ -30741,6 +30741,68 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         .expect("reviewer-a");
     assert!(stuck_seat.get("observed_binding").is_none());
 
+    // A generic topology recovery must use the same consultation-specific
+    // directory as the original Committee invocation. Reproduce a historical
+    // lost container binding without changing the durable run or its logical
+    // seats, then recover through the public semantic topology route. Using
+    // the epic runtime root here collides with the ECP in real Paseo and leaves
+    // an otherwise recoverable materializing Committee stranded forever.
+    let stuck_node = stuck.topology_node_id;
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    connection
+        .execute(
+            "DELETE FROM topology_node_containers
+             WHERE project_id = ?1 AND topology_node_id = ?2",
+            rusqlite::params![project, stuck_node.to_string()],
+        )
+        .expect("the legacy missing binding is reproduced");
+    connection
+        .execute(
+            "UPDATE topology_nodes
+             SET placement = 'unbound', revision = revision + 1, updated_at = ?3
+             WHERE project_id = ?1 AND id = ?2",
+            rusqlite::params![project, stuck_node.to_string(), "2026-09-04T18:00:00Z"],
+        )
+        .expect("the logical node records the missing binding");
+    drop(connection);
+
+    let recovered_container = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {
+                "scope": "committee_consultation",
+                "committee_run_id": stuck_id,
+            },
+            "expected_revision": composed.project_revision,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-generic-topology-recovery")
+    .send(world)
+    .await;
+    assert_eq!(
+        recovered_container.status, 200,
+        "{}",
+        recovered_container.body
+    );
+    let recovered_cwd = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node_container(
+                ProjectId::parse(project).expect("the project"),
+                stuck_node,
+            )
+            .expect("the recovered container reads")
+            .expect("the recovered container exists")
+            .canonical_cwd
+            .expect("the recovered container has a canonical directory")
+    });
+    assert_eq!(
+        recovered_cwd.as_str(),
+        format!("/tmp/kontor-committee-initial-recovery/.worktrees/consultation-{stuck_node}"),
+        "generic topology recovery placed the Committee outside its stable consultation directory"
+    );
+
     let reroute_body = serde_json::json!({
         "expected_revision": stuck.revision,
         "expected_occupancy_generation": 1,
