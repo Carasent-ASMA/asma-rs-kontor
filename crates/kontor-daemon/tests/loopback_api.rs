@@ -34673,7 +34673,36 @@ async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
             "the Claude account alias advertises its governed default: {}",
             catalog.body
         );
+        assert!(
+            body["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["provider"] == alias && model["id"] == "claude-fable-5-1"),
+            "the Claude account alias advertises Fable 5.1: {}",
+            catalog.body
+        );
     }
+    assert!(
+        body["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["provider"] == "claude"
+                && model["id"] == "claude-fable-5-1"
+                && model["label"] == "Claude Fable 5.1"),
+        "the Claude catalog advertises Fable 5.1: {}",
+        catalog.body
+    );
+    assert!(
+        !body["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["id"] == "claude-fable-5"),
+        "the previous Fable release is removed from active routing: {}",
+        catalog.body
+    );
     assert!(providers.contains(&"opencode"), "{}", catalog.body);
     assert!(
         body["models"]

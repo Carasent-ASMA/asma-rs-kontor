@@ -10462,7 +10462,9 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
         ("claude" | "claude-work" | "claude-personal", "claude-opus-5") => {
             effort_is(&["off", "low", "medium", "high", "xhigh", "max", "ultracode"])
         }
-        ("claude" | "claude-work" | "claude-personal", "claude-fable-5") => {
+        // Historical frozen routes remain admissible during recovery. Only the
+        // current catalog below advertises the replacement release.
+        ("claude" | "claude-work" | "claude-personal", "claude-fable-5" | "claude-fable-5-1") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultracode"])
         }
         ("opencode", "deepseek/deepseek-v4-flash") => effort_is(&["low", "high", "max"]),
@@ -13638,7 +13640,7 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }),
             serde_json::json!({
-                "id": "claude-fable-5", "label": "Claude Fable 5", "provider": "claude",
+                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": "claude",
                 "isDefault": false,
                 "contextWindow": { "value": 1000000, "provenance": provenance },
                 "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
@@ -13679,7 +13681,7 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }));
             models.push(serde_json::json!({
-                "id": "claude-fable-5", "label": "Claude Fable 5", "provider": alias,
+                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": alias,
                 "isDefault": false,
                 "contextWindow": { "value": 1000000, "provenance": provenance },
                 "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
