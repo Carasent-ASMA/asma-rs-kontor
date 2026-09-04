@@ -15950,6 +15950,13 @@ async fn bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chai
             (attempt, receipt, predecessor, successor)
         });
     assert_eq!(attempt.state, SuccessionAttemptState::Confirmed);
+    assert!(
+        matches!(
+            successor_after.projection.observed,
+            ObservedRunState::Running | ObservedRunState::WaitingInput
+        ),
+        "confirmation requires a fresh live successor readback, not its launch acknowledgement",
+    );
     assert!(attempt.handoff.is_some(), "handoff is durable");
     let handoff_at = attempt.handoff.as_ref().expect("handoff").produced_at;
     let retired_at = attempt
@@ -16034,6 +16041,27 @@ async fn bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chai
         world.fake.calls().len(),
         calls_before_replay,
         "confirmed replay performs no runtime effect",
+    );
+
+    let other_predecessor = seats[1]["agent_run_id"]
+        .as_str()
+        .expect("other predecessor id");
+    let other_route =
+        format!("/v1/projects/{project}/agent-runs/{other_predecessor}/successors:recover");
+    let conflicting_replay = Call::post_raw(&other_route, "")
+        .signed_as(&world, "admin")
+        .with_key("bodyless-quota-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(
+        conflicting_replay.status, 409,
+        "one key cannot be replayed for another predecessor: {}",
+        conflicting_replay.body,
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_replay,
+        "a conflicting composite replay performs no runtime effect",
     );
 }
 

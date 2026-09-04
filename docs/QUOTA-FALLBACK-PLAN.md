@@ -405,6 +405,37 @@ seat whose provider exhausts mid-turn to recover on the next admissible pair,
 retain its exact Team Definition role-only seat name, preserve predecessor
 evidence, and produce the same durable receipt when supervision fires again.
 
+### Local mutation ledger — 2026-09-04
+
+Fourteen deliberate defects were introduced one at a time against checkpoint
+`3d1caa6`, exercised by the narrowest relevant test, and removed before the
+restored baseline was rerun. All fourteen were **KILLED**:
+
+| Mutated safety rule | Test that rejected the mutant |
+| --- | --- |
+| suppress runtime-refusal classification | `a_usage_limit_refusal_records_the_instant_the_vendor_stated` |
+| drop the parsed quota reset | `a_usage_limit_refusal_records_the_instant_the_vendor_stated` |
+| include tool-call events in the handoff | `transport_receives_only_redacted_messages_and_summary_readback_is_exact` |
+| send source content before input redaction | `transport_receives_only_redacted_messages_and_summary_readback_is_exact` |
+| hash the pre-redaction summary | `transport_receives_only_redacted_messages_and_summary_readback_is_exact` |
+| make a Running seat a supervisor candidate | `a_running_seat_on_the_same_account_is_never_a_candidate` |
+| ignore `max_concurrent_successions` | `the_configured_five_seat_cap_leaves_the_remainder_for_another_scan` |
+| suppress fresh provenance for a new refusal on an existing quota row | `an_identical_semantic_refusal_still_proposes_exact_provenance` |
+| accept provenance from another native generation | `provenance_from_another_native_generation_is_never_a_candidate` |
+| treat an elapsed reset as current retirement authority | `an_elapsed_quota_reset_is_not_current_retirement_authority` |
+| confirm from a launch acknowledgement instead of a fresh live inspect | `bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chain` |
+| replay one composite key against another predecessor | `bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chain` |
+| advance retirement without runtime-observed cancellation | `handoff_retirement_successor_readback_and_receipt_advance_once` |
+| bypass deferred CAS with route-only SQL | `schema_rejects_route_only_mutation_that_bypasses_the_due_refresh_cas` |
+
+The last two rows cover two layers of the same destructive boundary: the
+repository independently requires runtime-observed `Cancelled`, and the schema
+trigger watches route fields even when an attempted SQL mutation does not also
+change state or revision. The restored focused baseline is 9/9 supervisor unit
+tests, 8/8 succession-store tests, 3/3 handoff tests and the bodyless composite
+recovery integration. This is local verification evidence, not deployment or a
+live provider-exhaustion receipt.
+
 ## Resolved: the fleet policy's adjacent Codex rungs
 
 Correcting `codex.pooledUsage` proved the standard builder's rung 3 unreachable —

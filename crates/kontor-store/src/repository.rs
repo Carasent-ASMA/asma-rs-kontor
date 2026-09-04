@@ -13831,6 +13831,33 @@ impl SuccessionRepository for SqliteStore {
         attempt
             .state
             .ensure_advance_to(SuccessionAttemptState::PredecessorRetired)?;
+        let predecessor = read_agent_run(
+            &transaction,
+            attempt.request.project_id,
+            attempt.request.predecessor_agent_run_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "succession predecessor run",
+        })?;
+        let terminal = predecessor
+            .terminal
+            .as_ref()
+            .ok_or(DomainError::MissingEvidence {
+                subject: "succession predecessor retirement",
+                rule: "the predecessor must carry runtime-observed cancellation before the attempt advances",
+            })?;
+        if terminal.outcome != TerminalOutcome::Cancelled
+            || !matches!(
+                terminal.source,
+                TerminalEvidenceSource::RuntimeObservation { .. }
+            )
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "succession predecessor retirement",
+                rule: "only runtime-observed cancellation may advance the attempt",
+            }
+            .into());
+        }
         if attempt.handoff.is_none() {
             return Err(DomainError::MissingEvidence {
                 subject: "succession predecessor retirement",

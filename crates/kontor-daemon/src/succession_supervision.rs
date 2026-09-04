@@ -759,6 +759,27 @@ mod tests {
     }
 
     #[test]
+    fn provenance_from_another_native_generation_is_never_a_candidate() {
+        let blocked = seat(4, ObservedRunState::Blocked, now());
+        let (quota, mut provenance) = quota_authority(&blocked, "codex", 100);
+        provenance.record.binding_generation += 1;
+
+        assert!(candidate_for(&blocked, &quota, &provenance, true, now(), 1_200,).is_none());
+    }
+
+    #[test]
+    fn an_elapsed_quota_reset_is_not_current_retirement_authority() {
+        let blocked = seat(4, ObservedRunState::Blocked, now());
+        let (mut quota, mut provenance) = quota_authority(&blocked, "codex", 100);
+        quota.state = ProviderQuotaKind::Exhausted;
+        quota.resets_at = Some(now());
+        provenance.record.decided_state = ProviderQuotaKind::Exhausted;
+        provenance.record.parsed_resets_at = Some(now());
+
+        assert!(candidate_for(&blocked, &quota, &provenance, true, now(), 1_200,).is_none());
+    }
+
+    #[test]
     fn the_configured_five_seat_cap_leaves_the_remainder_for_another_scan() {
         let inventory = SuccessionInventory {
             active_team_runs: 6,

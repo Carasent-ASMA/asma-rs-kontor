@@ -9,10 +9,13 @@ use kontor_core::id::{
 use kontor_core::repository::{
     CapacityRepository, CredentialReference, CredentialReferenceKind, NewAccountProfile,
     NewObservation, NewProject, NewProviderQuotaState, NewQuotaObservationProvenance,
-    NewRuntimeEvent, ProjectRepository, RunRepository, SuccessionRepository,
+    NewRuntimeEvent, ProjectRepository, RunClosure, RunRepository, SuccessionRepository,
 };
 use kontor_core::spec::{ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource, ProviderRef};
-use kontor_core::state::{Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::state::{
+    Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalEvidence,
+    TerminalEvidenceSource, TerminalOutcome,
+};
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState, SuccessionConfirmation,
     SuccessionDeferredRefresh, SuccessionHandoff, SuccessionHandoffDegradedReason,
@@ -719,10 +722,9 @@ fn schema_rejects_route_only_mutation_that_bypasses_the_due_refresh_cas() {
         .expect("raw connection")
         .execute(
             "UPDATE succession_attempts
-             SET state = 'planned', successor_model_rung = ?1,
+             SET successor_model_rung = ?1,
                  successor_model_rung_hash = ?2, successor_account_profile_id = ?3,
-                 deferred_until = NULL, successor_planned_at = ?4,
-                 revision = revision + 1, updated_at = ?4
+                 deferred_until = NULL, successor_planned_at = ?4
              WHERE project_id = ?5 AND id = ?6",
             params![
                 route.json(),
@@ -886,6 +888,72 @@ fn handoff_retirement_successor_readback_and_receipt_advance_once() {
             recorded_at: at("2026-09-04T08:03:00Z"),
         })
         .expect("handoff is durable");
+    assert!(
+        fixture
+            .store
+            .mark_succession_predecessor_retired(&SuccessionAttemptAdvance {
+                project_id: fixture.project,
+                attempt_id: attempt.request.id,
+                expected_revision: attempt.revision,
+                occurred_at: at("2026-09-04T08:04:00Z"),
+            })
+            .is_err(),
+        "a handoff alone cannot claim the predecessor was cancelled",
+    );
+    let predecessor = fixture
+        .store
+        .get_agent_run(fixture.project, fixture.predecessor)
+        .expect("predecessor reads")
+        .expect("predecessor exists");
+    fixture
+        .store
+        .record_observation(&NewObservation {
+            event: NewRuntimeEvent {
+                project_id: fixture.project,
+                agent_run_id: fixture.predecessor,
+                identity: identity("predecessor"),
+                native_event_id: Some(
+                    ExternalId::parse("predecessor-cancelled-2").expect("event id"),
+                ),
+                native_sequence: 2,
+                payload: document("predecessor-cancelled"),
+                observed_at: at("2026-09-04T08:03:30Z"),
+            },
+            observed: ObservedRunState::Cancelled,
+            contact: RuntimeContact::Reachable,
+            freshness: Freshness::Fresh,
+            expected_revision: predecessor.revision,
+            quota_state: None,
+        })
+        .expect("runtime cancellation observation commits");
+    let cancellation = fixture
+        .store
+        .read_runtime_events(fixture.project, fixture.predecessor, None)
+        .expect("predecessor events read")
+        .into_iter()
+        .next_back()
+        .expect("cancellation event exists");
+    let observed_predecessor = fixture
+        .store
+        .get_agent_run(fixture.project, fixture.predecessor)
+        .expect("observed predecessor reads")
+        .expect("observed predecessor exists");
+    fixture
+        .store
+        .close_agent_run(&RunClosure {
+            project_id: fixture.project,
+            agent_run_id: fixture.predecessor,
+            expected_revision: observed_predecessor.revision,
+            evidence: TerminalEvidence {
+                outcome: TerminalOutcome::Cancelled,
+                source: TerminalEvidenceSource::RuntimeObservation {
+                    cursor: cancellation.cursor,
+                },
+                evidence_hash: cancellation.payload.hash().clone(),
+                closed_at: at("2026-09-04T08:03:30Z"),
+            },
+        })
+        .expect("runtime-observed cancellation closes the predecessor");
     attempt = fixture
         .store
         .mark_succession_predecessor_retired(&SuccessionAttemptAdvance {
