@@ -886,23 +886,6 @@ fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewritin
             )
         })
         .expect("fixture reproduces a legacy tail fragment");
-    let duplicate_epic_item_id = external(uuid::Uuid::now_v7().to_string());
-    connection
-        .execute(
-            "INSERT INTO jira_materialization_items
-                 (id, batch_id, project_id, epic_id, task_id, link_id, ordinal,
-                  item_kind, intent_kind, requested_key, marker, status)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0,
-                     'epic', 'link', 'ASMA-8049', ?5, 'planned')",
-            rusqlite::params![
-                duplicate_epic_item_id.as_str(),
-                fragment_batch_id.as_str(),
-                project_id.to_string(),
-                epic_id.to_string(),
-                epic_marker.as_str(),
-            ],
-        )
-        .expect("fixture adds an overlapping link fragment");
     drop(connection);
 
     let store = SqliteStore::open(&path).expect("store reopens");
@@ -936,7 +919,7 @@ fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewritin
             item_kind: JiraItemKind::Epic,
             task_id: None,
             requested_key: external("ASMA-8049"),
-            marker: epic_marker,
+            marker: epic_marker.clone(),
         },
         JiraMaterializationRecoveryItem {
             ordinal: 1,
@@ -953,6 +936,61 @@ fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewritin
             marker: second_task_marker,
         },
     ];
+    assert!(
+        store
+            .recover_pending_jira_materialization(
+                project_id,
+                epic_id,
+                recovery_receipt_id,
+                &recovery_preview_hash,
+                &recovery[..2],
+                now,
+            )
+            .is_err(),
+        "incomplete fragments must fail closed"
+    );
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).expect("incomplete refusal readback");
+    let incomplete_recovery_rows: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_recoveries
+             WHERE recovery_receipt_id = ?1",
+            [recovery_receipt_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("incomplete recovery row count");
+    let incomplete_batches: (i64, i64) = connection
+        .query_row(
+            "SELECT
+                 (SELECT count(*) FROM jira_materialization_items WHERE batch_id = ?1),
+                 (SELECT count(*) FROM jira_materialization_items WHERE batch_id = ?2)",
+            rusqlite::params![canonical_batch_id.as_str(), fragment_batch_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("unchanged incomplete batch ownership");
+    assert_eq!(incomplete_recovery_rows, 0);
+    assert_eq!(incomplete_batches, (1, 2));
+
+    let duplicate_epic_item_id = external(uuid::Uuid::now_v7().to_string());
+    connection
+        .execute(
+            "INSERT INTO jira_materialization_items
+                 (id, batch_id, project_id, epic_id, task_id, link_id, ordinal,
+                  item_kind, intent_kind, requested_key, marker, status)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0,
+                     'epic', 'link', 'ASMA-8049', ?5, 'planned')",
+            rusqlite::params![
+                duplicate_epic_item_id.as_str(),
+                fragment_batch_id.as_str(),
+                project_id.to_string(),
+                epic_id.to_string(),
+                epic_marker.as_str(),
+            ],
+        )
+        .expect("fixture adds an overlapping link fragment");
+    drop(connection);
+
+    let store = SqliteStore::open(&path).expect("store reopens with overlap");
     assert!(
         store
             .recover_pending_jira_materialization(
@@ -1071,6 +1109,127 @@ fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewritin
     assert_eq!(
         provenance_batches, 2,
         "the immutable recovery ledger retains both original batch identities"
+    );
+}
+
+#[test]
+fn recovery_postcondition_failure_rolls_back_ledger_and_legacy_items() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, _task_id, now) = seed_graph(&store);
+    let batch_id = external(uuid::Uuid::now_v7().to_string());
+    let item_id = external(uuid::Uuid::now_v7().to_string());
+    let marker = external("kontor-epic-atomic-recovery");
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: batch_id.clone(),
+                project_id,
+                epic_id,
+                idempotency_key: "atomic-recovery-original".to_owned(),
+                preview_hash: ContentHash::of(b"atomic-recovery-original"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[NewJiraMaterializationItem {
+                id: item_id.clone(),
+                batch_id: batch_id.clone(),
+                project_id,
+                epic_id,
+                task_id: None,
+                link_id: None,
+                ordinal: 0,
+                item_kind: JiraItemKind::Epic,
+                intent_kind: JiraIntentKind::Create,
+                requested_key: None,
+                marker: marker.clone(),
+            }],
+        )
+        .expect("original plan");
+    let recovery_receipt_id = CommandReceiptId::generate();
+    let recovery_preview_hash = ContentHash::of(b"atomic-recovery-preview");
+    store
+        .record_local_command(&NewLocalCommand {
+            project_id,
+            receipt_id: recovery_receipt_id,
+            idempotency_key: IdempotencyKey::parse("atomic-recovery-command")
+                .expect("recovery key"),
+            kind: CommandKind::MaterializeJira,
+            target: AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "jira_materialization_apply",
+                "project_id": project_id.to_string(),
+                "epic_id": epic_id.to_string(),
+                "preview_hash": recovery_preview_hash.as_str(),
+            }))
+            .expect("recovery intent"),
+            created_at: now,
+        })
+        .expect("recovery command");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).expect("fixture database opens");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER corrupt_recovery_postcondition
+             AFTER INSERT ON jira_materialization_recoveries
+             BEGIN
+               UPDATE jira_materialization_items
+               SET marker = 'kontor-epic-corrupted-after-ledger'
+               WHERE id = NEW.item_id;
+             END;",
+        )
+        .expect("fixture injects a postcondition mismatch");
+    drop(connection);
+
+    let store = SqliteStore::open(&path).expect("store reopens");
+    let recovery = [JiraMaterializationRecoveryItem {
+        ordinal: 0,
+        item_kind: JiraItemKind::Epic,
+        task_id: None,
+        requested_key: external("ASMA-8049"),
+        marker: marker.clone(),
+    }];
+    assert!(
+        store
+            .recover_pending_jira_materialization(
+                project_id,
+                epic_id,
+                recovery_receipt_id,
+                &recovery_preview_hash,
+                &recovery,
+                now,
+            )
+            .is_err(),
+        "a postcondition mismatch must refuse recovery"
+    );
+    drop(store);
+
+    let connection = rusqlite::Connection::open(path).expect("rollback readback");
+    let stored_marker: String = connection
+        .query_row(
+            "SELECT marker FROM jira_materialization_items WHERE id = ?1",
+            [item_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("item marker");
+    let recovery_rows: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM jira_materialization_recoveries
+             WHERE recovery_receipt_id = ?1",
+            [recovery_receipt_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("recovery row count");
+    assert_eq!(stored_marker, marker.as_str());
+    assert_eq!(
+        recovery_rows, 0,
+        "a refused postcondition must roll back the recovery ledger"
     );
 }
 
