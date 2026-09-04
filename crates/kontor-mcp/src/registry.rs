@@ -426,6 +426,11 @@ const UNAVAILABLE_PROVIDER_SEAT: &[FieldSpec] = &[
 /// ran and then hit the wall.
 const QUOTA_EXHAUSTED_SEAT: &[FieldSpec] = &[
     field(
+        "runtime_observation_cursor",
+        ArgType::I64,
+        "The exact current runtime observation cursor carrying the quota refusal.",
+    ),
+    field(
         "runtime_binding_id",
         ArgType::Text,
         "Kontor's immutable runtime binding id.",
