@@ -46,7 +46,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 6;
+pub const EXPORT_SCHEMA_VERSION: u32 = 7;
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -97,6 +97,18 @@ const EPIC_JIRA_RECONCILIATION_EXPORT_VERSION: u32 = 6;
 /// Record arrays introduced together in generation 6.
 const EPIC_JIRA_RECONCILIATION_RECORD_FIELDS: [&str; 2] =
     ["epic_status_conflicts", "epic_jira_transition_intents"];
+
+/// Database generation that introduced immutable legacy naming/container recovery.
+const LEGACY_NAMING_RECOVERY_SCHEMA_VERSION: i64 = 84;
+
+/// The export generation that first carried legacy naming/container recovery evidence.
+const LEGACY_NAMING_RECOVERY_EXPORT_VERSION: u32 = 7;
+
+/// Record arrays introduced together in generation 7.
+const LEGACY_NAMING_RECOVERY_RECORD_FIELDS: [&str; 2] = [
+    "epic_backlog_code_corrections",
+    "topology_container_recoveries",
+];
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -207,6 +219,12 @@ impl KontorExportV1 {
             })?;
             remove_epic_jira_reconciliation_record_fields(records)?;
         }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_legacy_naming_recovery_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -225,6 +243,9 @@ impl KontorExportV1 {
         }
         if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
             remove_epic_jira_reconciliation_record_fields(&mut value)?;
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            remove_legacy_naming_recovery_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -296,6 +317,21 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation carries epic Jira reconciliation records it did not define",
+            });
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION
+            && self.database_schema_version >= LEGACY_NAMING_RECOVERY_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove legacy naming recovery completeness",
+            });
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION
+            && !(self.records.epic_backlog_code_corrections.is_empty()
+                && self.records.topology_container_recoveries.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries legacy naming recovery records it did not define",
             });
         }
         if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
@@ -403,6 +439,19 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -446,6 +495,19 @@ fn remove_epic_jira_reconciliation_record_fields(
         detail: "the export records are not an object",
     })?;
     for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-7 arrays from a supported legacy record object.
+fn remove_legacy_naming_recovery_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -975,6 +1037,25 @@ exported_tables! {
         last_readback_at: String,
         revision: i64,
     }
+    topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
+        receipt_id: String,
+        project_id: String,
+        topology_node_id: String,
+        container_binding_id: String,
+        prior_runtime_kind: String,
+        prior_host: String,
+        prior_generation: i64,
+        prior_native_id: String,
+        next_runtime_kind: String,
+        next_host: String,
+        next_generation: i64,
+        next_native_id: String,
+        parent_native_id: String,
+        observed_kind: String,
+        canonical_cwd: Option<String>,
+        observed_title: String,
+        recovered_at: String,
+    }
     adaptive_admission_state: AdaptiveAdmissionStateRow from "adaptive_admission_state" key(mini_project_id) {
         project_id: String,
         mini_project_id: String,
@@ -1018,6 +1099,15 @@ exported_tables! {
         provenance: String,
         status: String,
         assigned_at: String,
+    }
+    epic_backlog_code_corrections: EpicBacklogCodeCorrectionsRow from "epic_backlog_code_corrections" key(project_id, mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        prior_code: String,
+        corrected_code: String,
+        reason: String,
+        receipt_id: String,
+        corrected_at: String,
     }
     task_ai_short_names: TaskAiShortNamesRow from "task_ai_short_names" key(project_id, task_id) {
         project_id: String,
@@ -1855,6 +1945,11 @@ impl ExportedRecords {
         }
         if schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
             for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

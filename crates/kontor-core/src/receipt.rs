@@ -153,6 +153,17 @@ closed_enum! {
         UpgradeTopology => "upgrade_topology",
         /// Migrate one epic to another immutable Team Definition revision.
         UpgradeTeamDefinition => "upgrade_team_definition",
+        /// Correct one legacy-imported epic backlog code before that epic pins
+        /// its first Team Definition revision.
+        ///
+        /// Ordinary automatic and manual codes stay immutable. This distinct
+        /// authority exists only for legacy rows whose imported value is known
+        /// to be wrong, and records both values permanently.
+        CorrectEpicBacklogCode => "correct_epic_backlog_code",
+        /// Recover one topology node whose persisted native container identity
+        /// is stale, after an exact parent/path census proves the sole live
+        /// replacement.
+        RecoverTopologyContainer => "recover_topology_container",
         /// Correct the visible title of one bound native container.
         ///
         /// It carries no title, because the title is not the caller's: the
@@ -529,6 +540,7 @@ impl CommandKind {
             }
             Self::UpgradeTopology
             | Self::UpgradeTeamDefinition
+            | Self::CorrectEpicBacklogCode
             | Self::ReconcileNativeNames => {
                 witness(matches!(target, A::MiniProject))
             }
@@ -536,7 +548,9 @@ impl CommandKind {
             // aggregate a command may name, and the epic is too wide: a retitle
             // touches one node's container. The project is the one aggregate it
             // certainly has, exactly as for `ObserveSeat`.
-            Self::RetitleContainer => witness(matches!(target, A::Project)),
+            Self::RetitleContainer | Self::RecoverTopologyContainer => {
+                witness(matches!(target, A::Project))
+            }
             // The project, and only the project. A Core Team is project
             // configuration: allowing an epic here would let a receipt claim
             // that publishing a roster changed one running epic, which is the

@@ -79,19 +79,23 @@ use kontor_api::applications::{
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
-    AppliedContainerRetitleDto, AppliedNativeNamesDto, AppliedProjectTeamDefinitionSelectionDto,
+    AppliedContainerRecoveryDto, AppliedContainerRetitleDto, AppliedEpicBacklogCodeCorrectionDto,
+    AppliedNativeNamesDto, AppliedProjectTeamDefinitionSelectionDto,
     AppliedProjectTopologySelectionDto, AppliedTeamDefinitionUpgradeDto, AppliedTopologyUpgradeDto,
-    CodeHelpEntryDto, ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
-    JiraMaterializationAppliedDto, JiraMaterializationApplyRequest, JiraMaterializationIntentDto,
-    JiraMaterializationItemDto, JiraMaterializationModeDto, JiraMaterializationPreviewDto,
-    JiraMaterializationPreviewRequest, NativeNameSubjectKindDto, NativeNameTargetDto,
-    NativeNamesApplyRequest, NativeNamesPreviewDto, NativeNamesPreviewRequest, PinnedSpecDto,
-    PinnedTeamDefinitionDto, ProjectTeamDefinitionSelectionApplyRequest,
-    ProjectTeamDefinitionSelectionPreviewDto, ProjectTeamDefinitionSelectionPreviewRequest,
-    ProjectTopologySelectionApplyRequest, ProjectTopologySelectionPreviewDto,
-    ProjectTopologySelectionPreviewRequest, SemanticTopologyRequest, SemanticTopologyTargetDto,
-    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
-    TeamDefinitionRefDto, TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
+    CodeHelpEntryDto, ContainerRecoveryApplyRequest, ContainerRecoveryPreviewDto,
+    ContainerRecoveryPreviewRequest, ContainerRetitlePreviewDto, ContainerRetitleRequest,
+    DesiredBindingDto, EpicBacklogCodeCorrectionApplyRequest, EpicBacklogCodeCorrectionPreviewDto,
+    EpicBacklogCodeCorrectionPreviewRequest, JiraMaterializationAppliedDto,
+    JiraMaterializationApplyRequest, JiraMaterializationIntentDto, JiraMaterializationItemDto,
+    JiraMaterializationModeDto, JiraMaterializationPreviewDto, JiraMaterializationPreviewRequest,
+    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
+    NativeNamesPreviewRequest, PinnedSpecDto, PinnedTeamDefinitionDto,
+    ProjectTeamDefinitionSelectionApplyRequest, ProjectTeamDefinitionSelectionPreviewDto,
+    ProjectTeamDefinitionSelectionPreviewRequest, ProjectTopologySelectionApplyRequest,
+    ProjectTopologySelectionPreviewDto, ProjectTopologySelectionPreviewRequest,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
+    SessionLabelsReconciledDto, ShareabilityDto, TeamDefinitionRefDto,
+    TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
     TeamDefinitionUpgradePreviewRequest, TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest,
     TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto,
     TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
@@ -147,8 +151,8 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, MigrationObjectKind, MiniProject,
-    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    IntakeOutcome, IntakeRepository, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
+    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
     NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
@@ -164,7 +168,7 @@ use kontor_core::repository::{
     TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
     TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyRepository, WorkflowRepository,
+    TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -176,9 +180,9 @@ use kontor_core::spec::{
     TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
-    DerivedRunState, Freshness, GateVerdict, ImportedTaskState, ObservedContainerKind,
-    RuntimeContact, SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    DerivedRunState, Freshness, GateVerdict, ImportedTaskState, NativeContainerBinding,
+    ObservedContainerKind, RuntimeContact, SeatBinding, SessionTopologyNode, TaskState,
+    TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::ticket::{
     CommentPolicy, EpicCompletionEvidence, EpicReconciliationInput, EpicStatusConflict,
@@ -211,7 +215,7 @@ use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
-    ContainerRequest, RetitleContainerRequest,
+    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
@@ -477,6 +481,12 @@ enum NativeNameAction {
 struct PreparedNativeNames {
     preview: NativeNamesPreviewDto,
     actions: Vec<NativeNameAction>,
+}
+
+struct PreparedContainerRecovery {
+    preview: ContainerRecoveryPreviewDto,
+    expected: NativeContainerBinding,
+    replacement: NewNativeContainerBinding,
 }
 
 struct CoreTeamRoutePlan {
@@ -6469,6 +6479,165 @@ impl Services {
             },
             adapter,
         ))
+    }
+
+    /// Build the complete read-only proof for replacing one stale child binding.
+    async fn prepare_container_recovery(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        expected_revision: AggregateRevision,
+    ) -> Result<PreparedContainerRecovery, ApiError> {
+        let state = self.state()?;
+        let request = ContainerRetitleRequest { expected_revision };
+        let (retitle, adapter) = self.retitle_request(project_id, topology_node_id, &request)?;
+        if retitle.projection != ContainerProjection::NativeChild {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a stale native child workspace may use container recovery",
+            ));
+        }
+        let expected = state
+            .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this topology node holds no native container to recover",
+                )
+            })?;
+        let canonical_cwd = expected.canonical_cwd.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stale child binding has no canonical working directory",
+            )
+        })?;
+        let canonical_root = WorkspaceRoot::parse(canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let parent_native_id = retitle.bound_project_native_id.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stale child has no persisted native project ancestor",
+            )
+        })?;
+        let recovery_request = ContainerRecoveryRequest {
+            topology_node_id,
+            container_binding_id: retitle.container_binding_id,
+            stale_identity: expected.identity.clone(),
+            bound_project_native_id: parent_native_id.clone(),
+            canonical_cwd: canonical_root,
+            expected_title: retitle.desired_title,
+            requested_at: kontor_api::now(),
+        };
+        let outcome = adapter
+            .preview_container_recovery(&recovery_request)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_node(topology_node_id)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_correlated()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_root(&recovery_request.canonical_cwd)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.id != recovery_request.container_binding_id
+            || outcome.snapshot.binding.projection != ContainerProjection::NativeChild
+            || outcome.snapshot.binding.identity == expected.identity
+            || outcome.observed_title != recovery_request.expected_title.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the runtime recovery census did not preserve the logical binding and exact rendered title",
+            ));
+        }
+
+        // The candidate must not already belong to another logical node. This
+        // is repeated by the store CAS so a race between preview and apply is
+        // still refused.
+        let nodes = state
+            .with_store(|store| store.list_topology_nodes(project_id, None))
+            .map_err(|error| self.refuse(&error))?;
+        let mut all_nodes = nodes;
+        if let Some(epic_id) = state
+            .with_store(|store| store.get_topology_node(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|node| node.mini_project_id)
+        {
+            all_nodes.extend(
+                state
+                    .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+                    .map_err(|error| self.refuse(&error))?,
+            );
+        }
+        for node in all_nodes {
+            if node.id == topology_node_id {
+                continue;
+            }
+            if state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .is_some_and(|binding| binding.identity == outcome.snapshot.binding.identity)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the recovery candidate is already bound to another topology node",
+                ));
+            }
+        }
+
+        let replacement = NewNativeContainerBinding {
+            topology_node_id,
+            project_id,
+            container_binding_id: expected.container_binding_id.clone(),
+            identity: outcome.snapshot.binding.identity.clone(),
+            observed_kind: ObservedContainerKind::Workspace,
+            canonical_cwd: Some(canonical_cwd.clone()),
+            observed_at: recovery_request.requested_at,
+        };
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "project_revision": expected_revision.get(),
+            "topology_node_id": topology_node_id.to_string(),
+            "container_binding_id": expected.container_binding_id.as_str(),
+            "stale_identity": {
+                "runtime_kind": expected.identity.runtime_kind.as_str(),
+                "host": expected.identity.host.as_str(),
+                "generation": expected.identity.generation,
+                "native_id": expected.identity.native_id.as_str(),
+                "binding_revision": expected.revision.get(),
+            },
+            "replacement_identity": {
+                "runtime_kind": replacement.identity.runtime_kind.as_str(),
+                "host": replacement.identity.host.as_str(),
+                "generation": replacement.identity.generation,
+                "native_id": replacement.identity.native_id.as_str(),
+            },
+            "parent_native_id": parent_native_id.as_str(),
+            "canonical_cwd": canonical_cwd.as_str(),
+            "observed_title": outcome.observed_title,
+        }))?;
+        Ok(PreparedContainerRecovery {
+            preview: ContainerRecoveryPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id,
+                stale_native_id: expected.identity.native_id.clone(),
+                replacement_native_id: replacement.identity.native_id.clone(),
+                parent_native_id,
+                canonical_cwd,
+                observed_title: outcome.observed_title,
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            expected,
+            replacement,
+        })
     }
 
     /// Preflight every existing native container and persistent seat in one
@@ -15650,6 +15819,315 @@ impl ApplicationOperations for Services {
                     AppliedDto::Created
                 },
                 revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    fn preview_epic_backlog_code_correction(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionPreviewRequest,
+    ) -> Result<EpicBacklogCodeCorrectionPreviewDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let source = state
+            .with_store(|store| store.epic_backlog_code_origin(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic has no active backlog code to correct",
+                )
+            })?;
+        if source.1 != "legacy" {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a legacy-imported epic backlog code may be corrected",
+            ));
+        }
+        if source.2.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this legacy epic backlog code has already been corrected",
+            ));
+        }
+        if source.0 != request.expected_prior_code {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the active legacy epic code differs from the caller's preview basis",
+            ));
+        }
+        if request.corrected_code == request.expected_prior_code {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the corrected epic code must differ from the legacy value",
+            ));
+        }
+        if state
+            .with_store(|store| {
+                store.epic_backlog_code_is_reserved(project_id, &request.corrected_code)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the corrected epic code is already reserved in this project",
+            ));
+        }
+        if state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "an epic that already pins a Team Definition cannot change its item-code namespace",
+            ));
+        }
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "project_revision": project.revision.get(),
+            "epic_id": epic_id.to_string(),
+            "epic_revision": epic.revision.get(),
+            "prior_code": request.expected_prior_code.as_str(),
+            "corrected_code": request.corrected_code.as_str(),
+            "reason": request.reason.as_str(),
+        }))?;
+        Ok(EpicBacklogCodeCorrectionPreviewDto {
+            realm_id: state.realm_id(),
+            project_id,
+            epic_id,
+            prior_code: request.expected_prior_code.clone(),
+            corrected_code: request.corrected_code.clone(),
+            preview_hash,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn apply_epic_backlog_code_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionApplyRequest,
+    ) -> Result<AppliedEpicBacklogCodeCorrectionDto, ApiError> {
+        let state = self.state()?;
+        self.project_at(project_id, request.expected_revision)?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_epic_backlog_code",
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "prior_code": request.expected_prior_code.as_str(),
+            "corrected_code": request.corrected_code.as_str(),
+            "reason": request.reason.as_str(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        if replayed.is_none() {
+            let preview = self.preview_epic_backlog_code_correction(
+                project_id,
+                epic_id,
+                &EpicBacklogCodeCorrectionPreviewRequest {
+                    expected_revision: request.expected_revision,
+                    expected_prior_code: request.expected_prior_code.clone(),
+                    corrected_code: request.corrected_code.clone(),
+                    reason: request.reason.clone(),
+                },
+            )?;
+            if preview.preview_hash != request.preview_hash {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the legacy epic-code correction changed since preview",
+                ));
+            }
+        }
+        let now = kontor_api::now();
+        let target_revision = replayed
+            .as_ref()
+            .map_or(epic.revision, |receipt| receipt.target_revision);
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::CorrectEpicBacklogCode,
+                target,
+                target_revision,
+                intent: intent.clone(),
+                created_at: now,
+            },
+        );
+        let (_, receipt, applied) = state
+            .with_store(|store| {
+                store.correct_legacy_epic_backlog_code_with_intent(
+                    &LegacyEpicBacklogCodeCorrection {
+                        project_id,
+                        mini_project_id: epic_id,
+                        expected_prior_code: request.expected_prior_code.clone(),
+                        corrected_code: request.corrected_code.clone(),
+                        reason: request.reason.clone(),
+                        corrected_at: now,
+                    },
+                    target_revision,
+                    &envelope,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(AppliedEpicBacklogCodeCorrectionDto {
+            correction: EpicBacklogCodeCorrectionPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                epic_id,
+                prior_code: request.expected_prior_code.clone(),
+                corrected_code: request.corrected_code.clone(),
+                preview_hash: request.preview_hash.clone(),
+                snapshot_cursor: self.cursor()?,
+            },
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: applied_dto(applied),
+                revision: target_revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn preview_container_recovery(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryPreviewRequest,
+    ) -> Result<ContainerRecoveryPreviewDto, ApiError> {
+        Ok(self
+            .prepare_container_recovery(project_id, topology_node_id, request.expected_revision)
+            .await?
+            .preview)
+    }
+
+    async fn apply_container_recovery(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryApplyRequest,
+    ) -> Result<AppliedContainerRecoveryDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let target = AggregateRef::Project { project_id };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "recover_topology_container",
+            "project_id": project_id.to_string(),
+            "topology_node_id": topology_node_id.to_string(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+        let prepared = if replayed.is_none() {
+            let prepared = self
+                .prepare_container_recovery(project_id, topology_node_id, request.expected_revision)
+                .await?;
+            if prepared.preview.preview_hash != request.preview_hash {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the stale-container recovery candidate changed since preview",
+                ));
+            }
+            Some(prepared)
+        } else {
+            None
+        };
+        let current = state
+            .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this topology node holds no native container binding",
+                )
+            })?;
+        let target_revision = replayed
+            .as_ref()
+            .map_or(project.revision, |receipt| receipt.target_revision);
+        let now = kontor_api::now();
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecoverTopologyContainer,
+                target,
+                target_revision,
+                intent,
+                created_at: now,
+            },
+        );
+        let recovery = prepared.as_ref().map_or_else(
+            || TopologyContainerRecovery {
+                expected: current.clone(),
+                replacement: NewNativeContainerBinding {
+                    topology_node_id,
+                    project_id,
+                    container_binding_id: current.container_binding_id.clone(),
+                    identity: current.identity.clone(),
+                    observed_kind: current.observed_kind,
+                    canonical_cwd: current.canonical_cwd.clone(),
+                    observed_at: now,
+                },
+                parent_native_id: current.identity.native_id.clone(),
+                observed_title: ExternalName::parse("replay")
+                    .expect("the replay marker is a valid external name"),
+            },
+            |prepared| TopologyContainerRecovery {
+                expected: prepared.expected.clone(),
+                replacement: prepared.replacement.clone(),
+                parent_native_id: prepared.preview.parent_native_id.clone(),
+                observed_title: ExternalName::parse(&prepared.preview.observed_title)
+                    .expect("runtime titles were parsed by the recovery contract"),
+            },
+        );
+        let (evidence, receipt, applied) = state
+            .with_store(|store| {
+                store.recover_topology_container_with_intent(&recovery, target_revision, &envelope)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        let canonical_cwd = evidence.canonical_cwd.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the stored child recovery evidence has no canonical working directory",
+            )
+        })?;
+        Ok(AppliedContainerRecoveryDto {
+            recovery: ContainerRecoveryPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id,
+                stale_native_id: evidence.prior_identity.native_id,
+                replacement_native_id: evidence.replacement_identity.native_id,
+                parent_native_id: evidence.parent_native_id,
+                canonical_cwd,
+                observed_title: evidence.observed_title.as_str().to_owned(),
+                preview_hash: request.preview_hash.clone(),
+                snapshot_cursor: self.cursor()?,
+            },
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: applied_dto(applied),
+                revision: target_revision,
                 snapshot_cursor: self.cursor()?,
             },
         })

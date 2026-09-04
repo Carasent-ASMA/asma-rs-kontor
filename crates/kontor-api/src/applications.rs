@@ -2947,6 +2947,144 @@ pub struct AppliedContainerRetitleDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Read-only request for a one-time legacy epic-code correction.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EpicBacklogCodeCorrectionPreviewRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact active legacy value expected in the store.
+    #[schema(value_type = String)]
+    pub expected_prior_code: EpicBacklogCode,
+    /// Correct project-unique value to make effective.
+    #[schema(value_type = String)]
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained with the immutable correction.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// Apply request bound to the exact code-correction preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EpicBacklogCodeCorrectionApplyRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact active legacy value expected in the store.
+    #[schema(value_type = String)]
+    pub expected_prior_code: EpicBacklogCode,
+    /// Correct project-unique value to make effective.
+    #[schema(value_type = String)]
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained with the immutable correction.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+    /// Hash returned by the preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Exact, no-write plan for correcting one legacy epic code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct EpicBacklogCodeCorrectionPreviewDto {
+    /// Realm that produced the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Epic whose effective code would change.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Immutable legacy source value.
+    #[schema(value_type = String)]
+    pub prior_code: EpicBacklogCode,
+    /// Proposed effective value.
+    #[schema(value_type = String)]
+    pub corrected_code: EpicBacklogCode,
+    /// Hash binding every previewed input and identity.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Snapshot position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Result of the one-time legacy epic-code correction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedEpicBacklogCodeCorrectionDto {
+    /// Exact correction plan that is now durable.
+    pub correction: EpicBacklogCodeCorrectionPreviewDto,
+    /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Read-only request to identify the sole live replacement for a stale binding.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRecoveryPreviewRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Apply request bound to an exact stale-container preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRecoveryApplyRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Hash returned by the recovery preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Exact before/after identity proved by a read-only recovery census.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRecoveryPreviewDto {
+    /// Realm that performed the census.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Topology node whose logical binding is preserved.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Native identity currently persisted and proved absent.
+    #[schema(value_type = String)]
+    pub stale_native_id: ExternalId,
+    /// Sole live parent/path/title candidate.
+    #[schema(value_type = String)]
+    pub replacement_native_id: ExternalId,
+    /// Exact native parent in which the census ran.
+    #[schema(value_type = String)]
+    pub parent_native_id: ExternalId,
+    /// Preserved canonical working directory.
+    #[schema(value_type = String)]
+    pub canonical_cwd: ExternalName,
+    /// Runtime-reported candidate title.
+    pub observed_title: String,
+    /// Hash binding the complete preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Snapshot position.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Result of one atomic stale-container identity recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedContainerRecoveryDto {
+    /// Exact recovery evidence retained by the command.
+    pub recovery: ContainerRecoveryPreviewDto,
+    /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// One subject in an epic-wide native-name plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -5909,6 +6047,40 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ContainerRetitleRequest,
     ) -> Result<AppliedContainerRetitleDto, ApiError>;
 
+    /// Preview the one-time correction of a legacy-imported epic code.
+    fn preview_epic_backlog_code_correction(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionPreviewRequest,
+    ) -> Result<EpicBacklogCodeCorrectionPreviewDto, ApiError>;
+
+    /// Apply the exact legacy epic-code correction atomically.
+    fn apply_epic_backlog_code_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &EpicBacklogCodeCorrectionApplyRequest,
+    ) -> Result<AppliedEpicBacklogCodeCorrectionDto, ApiError>;
+
+    /// Preview the sole live parent/path replacement for a stale container.
+    async fn preview_container_recovery(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryPreviewRequest,
+    ) -> Result<ContainerRecoveryPreviewDto, ApiError>;
+
+    /// Atomically replace the exact stale binding with the previewed identity.
+    async fn apply_container_recovery(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRecoveryApplyRequest,
+    ) -> Result<AppliedContainerRecoveryDto, ApiError>;
+
     /// Preview a complete epic container/seat name repair with no writes.
     async fn preview_native_names(
         &self,
@@ -7804,6 +7976,126 @@ pub async fn apply_container_retitle(
         state
             .applications()
             .apply_container_retitle(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview one legacy-imported epic backlog-code correction.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose legacy code is corrected")
+    ),
+    request_body = EpicBacklogCodeCorrectionPreviewRequest,
+    responses((status = 200, body = EpicBacklogCodeCorrectionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422))
+)]
+pub async fn preview_epic_backlog_code_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<EpicBacklogCodeCorrectionPreviewRequest>,
+) -> Result<Json<EpicBacklogCodeCorrectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_epic_backlog_code_correction(project_id, epic_id, &request)?,
+    ))
+}
+
+/// Apply the exact previewed legacy epic backlog-code correction.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose legacy code is corrected"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = EpicBacklogCodeCorrectionApplyRequest,
+    responses((status = 200, body = AppliedEpicBacklogCodeCorrectionDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422))
+)]
+pub async fn apply_epic_backlog_code_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<EpicBacklogCodeCorrectionApplyRequest>,
+) -> Result<Json<AppliedEpicBacklogCodeCorrectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_epic_backlog_code_correction(&key, project_id, epic_id, &request)?,
+    ))
+}
+
+/// Preview the sole live replacement for one stale topology container binding.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose binding is stale")
+    ),
+    request_body = ContainerRecoveryPreviewRequest,
+    responses((status = 200, body = ContainerRecoveryPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 501))
+)]
+pub async fn preview_container_recovery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    Json(request): Json<ContainerRecoveryPreviewRequest>,
+) -> Result<Json<ContainerRecoveryPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_container_recovery(project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply the exact previewed stale-container recovery.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose binding is stale"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ContainerRecoveryApplyRequest,
+    responses((status = 200, body = AppliedContainerRecoveryDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 501))
+)]
+pub async fn apply_container_recovery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ContainerRecoveryApplyRequest>,
+) -> Result<Json<AppliedContainerRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_container_recovery(&key, project_id, topology_node_id, &request)
             .await?,
     ))
 }

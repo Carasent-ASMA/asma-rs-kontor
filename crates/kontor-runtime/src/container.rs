@@ -484,6 +484,39 @@ pub struct RetitleContainerOutcome {
     pub changed: bool,
 }
 
+/// Prove the sole live native child that replaces one stale persisted binding.
+///
+/// This is a recovery read, not ordinary reconciliation. The old identity must
+/// be absent from the exact persisted parent, and exactly one child in that
+/// parent must carry both the canonical working directory and the current
+/// daemon-rendered title. No field authorises creation, movement or renaming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRecoveryRequest {
+    /// The logical topology node whose durable binding is stale.
+    pub topology_node_id: TopologyNodeId,
+    /// The stable logical container-binding identity to preserve.
+    pub container_binding_id: ContainerBindingId,
+    /// The complete stale identity Kontor currently persists.
+    pub stale_identity: NativeRuntimeIdentity,
+    /// The exact persisted native project ancestor.
+    pub bound_project_native_id: ExternalId,
+    /// The canonical working directory stored with the stale binding.
+    pub canonical_cwd: WorkspaceRoot,
+    /// The current title rendered from the epic's existing naming authority.
+    pub expected_title: ExternalName,
+    /// When the recovery census was requested.
+    pub requested_at: Timestamp,
+}
+
+/// The sole candidate proved by a read-only stale-container recovery census.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRecoveryOutcome {
+    /// A read-back binding snapshot preserving the logical binding and node.
+    pub snapshot: ContainerBindingSnapshot,
+    /// The candidate's runtime-reported title.
+    pub observed_title: String,
+}
+
 /// A container binding together with the evidence quality it was created under.
 ///
 /// The capability snapshot is frozen exactly as it is for a session or workspace

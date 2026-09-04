@@ -458,6 +458,22 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_container_retitle),
             )
             .route(
+                "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
+                post(applications::preview_container_recovery),
+            )
+            .route(
+                "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply",
+                post(applications::apply_container_recovery),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
+                post(applications::preview_epic_backlog_code_correction),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply",
+                post(applications::apply_epic_backlog_code_correction),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview",
                 post(applications::preview_native_names),
             )

@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::backlog_identity::EpicBacklogCode;
+
 use crate::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExecutionAuthorization,
     HolidayImportBatch, HolidaySourceRevision, OverrideRevocation, ScheduleOverride,
@@ -918,6 +920,63 @@ pub struct NewNativeContainerBinding {
     pub canonical_cwd: Option<ExternalName>,
     /// When the binding was established or last confirmed.
     pub observed_at: Timestamp,
+}
+
+/// One explicitly authorized correction of a legacy-imported epic backlog code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyEpicBacklogCodeCorrection {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose effective namespace changes.
+    pub mini_project_id: MiniProjectId,
+    /// Exact active legacy value the caller previewed.
+    pub expected_prior_code: EpicBacklogCode,
+    /// Correct, project-unique value to render after this command.
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained as immutable evidence.
+    pub reason: ExternalName,
+    /// When the correction was authorized.
+    pub corrected_at: Timestamp,
+}
+
+/// Compare-and-swap replacement of one stale native container identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyContainerRecovery {
+    /// The complete stored binding the caller proved stale.
+    pub expected: NativeContainerBinding,
+    /// The sole live replacement returned by the runtime census.
+    pub replacement: NewNativeContainerBinding,
+    /// Exact native project in which the replacement was proved.
+    pub parent_native_id: ExternalId,
+    /// Runtime-reported title observed during the census.
+    pub observed_title: ExternalName,
+}
+
+/// Immutable before/after evidence for one completed container recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTopologyContainerRecovery {
+    /// Receipt that authorized the compare-and-swap.
+    pub receipt_id: CommandReceiptId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Recovered topology node.
+    pub topology_node_id: TopologyNodeId,
+    /// Preserved logical binding identity.
+    pub container_binding_id: ExternalId,
+    /// Identity that was proved absent.
+    pub prior_identity: NativeRuntimeIdentity,
+    /// Sole live identity adopted by the compare-and-swap.
+    pub replacement_identity: NativeRuntimeIdentity,
+    /// Exact native project in which the replacement was proved.
+    pub parent_native_id: ExternalId,
+    /// Native shape read back for the replacement.
+    pub observed_kind: ObservedContainerKind,
+    /// Preserved canonical working directory.
+    pub canonical_cwd: Option<ExternalName>,
+    /// Runtime-reported title observed during the recovery census.
+    pub observed_title: ExternalName,
+    /// Recovery instant.
+    pub recovered_at: Timestamp,
 }
 
 /// Initial persisted adaptive-admission state.

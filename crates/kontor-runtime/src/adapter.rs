@@ -28,7 +28,9 @@ use crate::admission::AdmissionRequest;
 use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
-use crate::container::ContainerBindingSnapshot;
+use crate::container::{
+    ContainerBindingSnapshot, ContainerRecoveryOutcome, ContainerRecoveryRequest,
+};
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -1122,6 +1124,21 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PrepareProject,
+        })
+    }
+
+    /// Read the one exact-parent/exact-path native child that may replace a
+    /// stale persisted container binding.
+    ///
+    /// The default refuses. Implementations must perform no native mutation:
+    /// this method is the preview used again immediately before the store CAS.
+    async fn preview_container_recovery(
+        &self,
+        request: &ContainerRecoveryRequest,
+    ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace,
         })
     }
 

@@ -807,6 +807,8 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         "canonical_jira_task_links",
         "epic_status_conflicts",
         "epic_jira_transition_intents",
+        "epic_backlog_code_corrections",
+        "topology_container_recoveries",
         "team_definitions",
         "project_team_definition_defaults",
         "mini_project_team_definition_snapshots",

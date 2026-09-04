@@ -70,8 +70,8 @@ use kontor_core::id::{ContentHash, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRequest,
-    RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRecoveryRequest,
+    ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
@@ -5123,6 +5123,105 @@ fn retitle(node_id: TopologyNodeId) -> RetitleContainerRequest {
         generation: 1,
         desired_title: name(CANONICAL_NODE_TITLE),
         requested_at: at("2026-08-17T09:00:00Z"),
+    }
+}
+
+fn stale_container_recovery(stale_native_id: &str) -> ContainerRecoveryRequest {
+    ContainerRecoveryRequest {
+        topology_node_id: node(NODE_A),
+        container_binding_id: ContainerBindingId::generate(),
+        stale_identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(stale_native_id),
+        },
+        bound_project_native_id: external(PROJECT_ID),
+        canonical_cwd: root(),
+        expected_title: name(CANONICAL_NODE_TITLE),
+        requested_at: at("2026-09-04T08:00:00Z"),
+    }
+}
+
+#[tokio::test]
+async fn stale_container_recovery_requires_one_exact_parent_path_and_title_candidate() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let outcome = plane
+        .adapter
+        .preview_container_recovery(&stale_container_recovery("wks_stale"))
+        .await
+        .expect("the sole exact candidate is recoverable");
+
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+    assert_eq!(outcome.snapshot.binding.root.as_ref(), Some(&root()));
+    assert_eq!(outcome.observed_title, CANONICAL_NODE_TITLE);
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "a recovery preview must produce no native effect"
+    );
+}
+
+#[tokio::test]
+async fn stale_container_recovery_refuses_a_still_live_old_identity() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let error = plane
+        .adapter
+        .preview_container_recovery(&stale_container_recovery(WORKSPACE_ID))
+        .await
+        .expect_err("a live old identity is not a stale-binding recovery");
+    assert!(matches!(error, RuntimeError::StaleBinding { .. }));
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn stale_container_recovery_refuses_zero_multiple_and_wrong_title_candidates() {
+    let mut duplicates = v(WORKSPACE_LIST_NODE);
+    let mut second = duplicates["entries"][0].clone();
+    second["id"] = serde_json::json!("wks_duplicate");
+    duplicates["entries"]
+        .as_array_mut()
+        .expect("entries are an array")
+        .push(second);
+
+    for (answer, expected) in [
+        (v(WORKSPACE_LIST_EMPTY), "zero"),
+        (duplicates, "multiple"),
+        (v(WORKSPACE_LIST_NODE_STALE_TITLE), "wrong title"),
+    ] {
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", answer);
+        let plane = Plane::fresh(recorded);
+        let error = plane
+            .adapter
+            .preview_container_recovery(&stale_container_recovery("wks_stale"))
+            .await
+            .expect_err(expected);
+        assert!(
+            matches!(
+                error,
+                RuntimeError::StaleBinding { .. } | RuntimeError::WorkspaceMismatch { .. }
+            ),
+            "{expected} must fail closed: {error:?}"
+        );
+        assert!(plane.daemon.mutations().is_empty());
     }
 }
 

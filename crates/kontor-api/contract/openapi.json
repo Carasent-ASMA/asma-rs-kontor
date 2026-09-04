@@ -3056,6 +3056,147 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the exact previewed legacy epic backlog-code correction.",
+        "operationId": "apply_epic_backlog_code_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose legacy code is corrected",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicBacklogCodeCorrectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedEpicBacklogCodeCorrectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview one legacy-imported epic backlog-code correction.",
+        "operationId": "preview_epic_backlog_code_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose legacy code is corrected",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpicBacklogCodeCorrectionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EpicBacklogCodeCorrectionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/code-help": {
       "get": {
         "tags": [
@@ -8243,6 +8384,153 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the exact previewed stale-container recovery.",
+        "operationId": "apply_container_recovery",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose binding is stale",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRecoveryApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedContainerRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview the sole live replacement for one stale topology container binding.",
+        "operationId": "preview_container_recovery",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose binding is stale",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRecoveryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRecoveryPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
       "post": {
         "tags": [
@@ -9807,6 +10095,24 @@
           }
         }
       },
+      "AppliedContainerRecoveryDto": {
+        "type": "object",
+        "description": "Result of one atomic stale-container identity recovery.",
+        "required": [
+          "recovery",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/ContainerRecoveryPreviewDto",
+            "description": "Exact recovery evidence retained by the command."
+          }
+        }
+      },
       "AppliedContainerRetitleDto": {
         "type": "object",
         "description": "What a container retitle produced.",
@@ -9848,6 +10154,24 @@
           "updated",
           "unchanged"
         ]
+      },
+      "AppliedEpicBacklogCodeCorrectionDto": {
+        "type": "object",
+        "description": "Result of the one-time legacy epic-code correction.",
+        "required": [
+          "correction",
+          "receipt"
+        ],
+        "properties": {
+          "correction": {
+            "$ref": "#/components/schemas/EpicBacklogCodeCorrectionPreviewDto",
+            "description": "Exact correction plan that is now durable."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
+          }
+        }
       },
       "AppliedEpicDto": {
         "type": "object",
@@ -12481,6 +12805,102 @@
           "non_compliant"
         ]
       },
+      "ContainerRecoveryApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to an exact stale-container preview.",
+        "required": [
+          "expected_revision",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the recovery preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContainerRecoveryPreviewDto": {
+        "type": "object",
+        "description": "Exact before/after identity proved by a read-only recovery census.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "topology_node_id",
+          "stale_native_id",
+          "replacement_native_id",
+          "parent_native_id",
+          "canonical_cwd",
+          "observed_title",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": "string",
+            "description": "Preserved canonical working directory."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "Runtime-reported candidate title."
+          },
+          "parent_native_id": {
+            "type": "string",
+            "description": "Exact native parent in which the census ran."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash binding the complete preview."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that performed the census."
+          },
+          "replacement_native_id": {
+            "type": "string",
+            "description": "Sole live parent/path/title candidate."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Snapshot position."
+          },
+          "stale_native_id": {
+            "type": "string",
+            "description": "Native identity currently persisted and proved absent."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Topology node whose logical binding is preserved."
+          }
+        }
+      },
+      "ContainerRecoveryPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request to identify the sole live replacement for a stale binding.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "ContainerRetitlePreviewDto": {
         "type": "object",
         "description": "What one bound container's title is, and what it should be.\n\nA preview is a read: it takes no idempotency key, reaches nothing that writes,\nand answers the two titles a human needs to compare. The runtime is asked, so\n`observed_title` is what the container actually carries rather than what Kontor\nonce recorded.",
@@ -13620,6 +14040,117 @@
           "role": {
             "$ref": "#/components/schemas/RoleSelectionDto",
             "description": "The standard role the session's seat fills."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EpicBacklogCodeCorrectionApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to the exact code-correction preview.",
+        "required": [
+          "expected_revision",
+          "expected_prior_code",
+          "corrected_code",
+          "reason",
+          "preview_hash"
+        ],
+        "properties": {
+          "corrected_code": {
+            "type": "string",
+            "description": "Correct project-unique value to make effective."
+          },
+          "expected_prior_code": {
+            "type": "string",
+            "description": "Exact active legacy value expected in the store."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the preview."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EpicBacklogCodeCorrectionPreviewDto": {
+        "type": "object",
+        "description": "Exact, no-write plan for correcting one legacy epic code.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "prior_code",
+          "corrected_code",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "corrected_code": {
+            "type": "string",
+            "description": "Proposed effective value."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Epic whose effective code would change."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash binding every previewed input and identity."
+          },
+          "prior_code": {
+            "type": "string",
+            "description": "Immutable legacy source value."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that produced the plan."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Snapshot position."
+          }
+        }
+      },
+      "EpicBacklogCodeCorrectionPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request for a one-time legacy epic-code correction.",
+        "required": [
+          "expected_revision",
+          "expected_prior_code",
+          "corrected_code",
+          "reason"
+        ],
+        "properties": {
+          "corrected_code": {
+            "type": "string",
+            "description": "Correct project-unique value to make effective."
+          },
+          "expected_prior_code": {
+            "type": "string",
+            "description": "Exact active legacy value expected in the store."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
           }
         },
         "additionalProperties": false

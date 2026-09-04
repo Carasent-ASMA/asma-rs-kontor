@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
+use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExceptionKind,
     ExceptionProvenance, ExecutionAuthorization, HolidayImportBatch, HolidayImportKind,
@@ -66,16 +67,18 @@ use kontor_core::repository::{
     StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
     StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
     StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredTopologyContainerRecovery, Task, TaskInspection, TaskTransitionRequest, TaskWorkflow,
+    TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink, TicketRepository, TopologyRepository,
+    WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
-    LiveNativeSubject, MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, NativePlacement,
-    NewTeamDefinitionMigration, ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
+    LegacyEpicBacklogCodeCorrection, LiveNativeSubject, MigrationObjectKind,
+    MiniProjectTeamDefinitionSnapshot, NativePlacement, NewTeamDefinitionMigration,
+    ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
@@ -10416,6 +10419,435 @@ fn ensure_atomic_intent_matches(
         .into());
     }
     Ok(())
+}
+
+fn topology_container_recovery_by_receipt(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<StoredTopologyContainerRecovery> {
+    transaction
+        .query_row(
+            "SELECT receipt_id, project_id, topology_node_id, container_binding_id,
+                    prior_runtime_kind, prior_host, prior_generation, prior_native_id,
+                    next_runtime_kind, next_host, next_generation, next_native_id,
+                    parent_native_id, observed_kind, canonical_cwd, observed_title,
+                    recovered_at
+             FROM topology_container_recoveries
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![project_id.to_string(), receipt_id.to_string()],
+            |row| {
+                let prior_generation: i64 = row.get(6)?;
+                let next_generation: i64 = row.get(10)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    prior_generation,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    next_generation,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, String>(16)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?
+        .ok_or(RepositoryError::NotFound {
+            subject: "topology container recovery evidence",
+        })
+        .and_then(
+            |(
+                receipt_id,
+                project_id,
+                topology_node_id,
+                container_binding_id,
+                prior_runtime_kind,
+                prior_host,
+                prior_generation,
+                prior_native_id,
+                next_runtime_kind,
+                next_host,
+                next_generation,
+                next_native_id,
+                parent_native_id,
+                observed_kind,
+                canonical_cwd,
+                observed_title,
+                recovered_at,
+            )| {
+                Ok(StoredTopologyContainerRecovery {
+                    receipt_id: CommandReceiptId::parse(&receipt_id)?,
+                    project_id: ProjectId::parse(&project_id)?,
+                    topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
+                    container_binding_id: ExternalId::parse(&container_binding_id)?,
+                    prior_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&prior_runtime_kind)?,
+                        host: ExternalName::parse(&prior_host)?,
+                        generation: u64::try_from(prior_generation).map_err(|_| {
+                            DomainError::invalid(
+                                "prior native generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&prior_native_id)?,
+                    },
+                    replacement_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&next_runtime_kind)?,
+                        host: ExternalName::parse(&next_host)?,
+                        generation: u64::try_from(next_generation).map_err(|_| {
+                            DomainError::invalid(
+                                "replacement native generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&next_native_id)?,
+                    },
+                    parent_native_id: ExternalId::parse(&parent_native_id)?,
+                    observed_kind: ObservedContainerKind::parse(&observed_kind)?,
+                    canonical_cwd: canonical_cwd
+                        .as_deref()
+                        .map(ExternalName::parse)
+                        .transpose()?,
+                    observed_title: ExternalName::parse(&observed_title)?,
+                    recovered_at: read_timestamp(&recovered_at)?,
+                })
+            },
+        )
+}
+
+impl SqliteStore {
+    /// Correct one legacy-imported epic code and record the authority atomically.
+    pub fn correct_legacy_epic_backlog_code_with_intent(
+        &self,
+        correction: &LegacyEpicBacklogCodeCorrection,
+        expected_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(EpicBacklogCode, CommandReceipt, crate::graph::Applied)> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: correction.mini_project_id,
+        };
+        if intent.project_id != correction.project_id
+            || intent.kind != CommandKind::CorrectEpicBacklogCode
+            || intent.target != target
+            || intent.target_revision != expected_revision
+        {
+            return Err(DomainError::invalid(
+                "CommandReceipt",
+                "the local command authority does not match the epic-code correction",
+            )
+            .into());
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
+        {
+            let code: String = transaction
+                .query_row(
+                    "SELECT corrected_code FROM epic_backlog_code_corrections
+                     WHERE project_id = ?1 AND receipt_id = ?2",
+                    params![correction.project_id.to_string(), existing.id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            return Ok((
+                EpicBacklogCode::parse(code)?,
+                existing,
+                crate::graph::Applied::Unchanged,
+            ));
+        }
+
+        let source: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT code, provenance FROM epic_backlog_codes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                params![
+                    correction.project_id.to_string(),
+                    correction.mini_project_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((prior_code, provenance)) = source else {
+            return Err(RepositoryError::NotFound {
+                subject: "active epic backlog code",
+            });
+        };
+        if provenance != "legacy" {
+            return Err(conflict(
+                "epic backlog code correction",
+                "only a legacy-imported code may be corrected",
+            ));
+        }
+        if prior_code != correction.expected_prior_code.as_str() {
+            return Err(conflict(
+                "epic backlog code correction",
+                "the active legacy code moved since preview",
+            ));
+        }
+        let pinned: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM mini_project_team_definition_snapshots
+                 WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![
+                    correction.project_id.to_string(),
+                    correction.mini_project_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if pinned != 0 {
+            return Err(conflict(
+                "epic backlog code correction",
+                "an epic that already pins a Team Definition cannot change its item-code namespace",
+            ));
+        }
+        let collision: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM (
+                     SELECT code AS value FROM epic_backlog_codes
+                      WHERE project_id = ?1 AND status = 'active'
+                     UNION ALL
+                     SELECT corrected_code AS value FROM epic_backlog_code_corrections
+                      WHERE project_id = ?1
+                 ) WHERE value = ?2 COLLATE NOCASE",
+                params![
+                    correction.project_id.to_string(),
+                    correction.corrected_code.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if collision != 0 {
+            return Err(conflict(
+                "epic backlog code correction",
+                "the corrected code is already reserved in this project",
+            ));
+        }
+
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO epic_backlog_code_corrections
+                     (project_id, mini_project_id, prior_code, corrected_code,
+                      reason, receipt_id, corrected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    correction.project_id.to_string(),
+                    correction.mini_project_id.to_string(),
+                    correction.expected_prior_code.as_str(),
+                    correction.corrected_code.as_str(),
+                    correction.reason.as_str(),
+                    receipt.id.to_string(),
+                    text(correction.corrected_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((
+            correction.corrected_code.clone(),
+            receipt,
+            crate::graph::Applied::Created,
+        ))
+    }
+
+    /// Replace one stale native container identity and record the authority atomically.
+    pub fn recover_topology_container_with_intent(
+        &self,
+        recovery: &TopologyContainerRecovery,
+        expected_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(
+        StoredTopologyContainerRecovery,
+        CommandReceipt,
+        crate::graph::Applied,
+    )> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::Project {
+            project_id: recovery.expected.project_id,
+        };
+        if intent.project_id != recovery.expected.project_id
+            || intent.kind != CommandKind::RecoverTopologyContainer
+            || intent.target != target
+            || intent.target_revision != expected_revision
+        {
+            return Err(DomainError::invalid(
+                "CommandReceipt",
+                "the local command authority does not match the container recovery",
+            )
+            .into());
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
+        {
+            let evidence = topology_container_recovery_by_receipt(
+                &transaction,
+                recovery.expected.project_id,
+                existing.id,
+            )?;
+            return Ok((evidence, existing, crate::graph::Applied::Unchanged));
+        }
+        if recovery.replacement.project_id != recovery.expected.project_id
+            || recovery.replacement.topology_node_id != recovery.expected.topology_node_id
+            || recovery.replacement.container_binding_id != recovery.expected.container_binding_id
+            || recovery.replacement.identity == recovery.expected.identity
+        {
+            return Err(DomainError::invalid(
+                "topology container recovery",
+                "the replacement must preserve project, node and logical binding while changing native identity",
+            )
+            .into());
+        }
+
+        let collision: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM topology_node_containers
+                 WHERE project_id = ?1 AND topology_node_id <> ?2
+                   AND runtime_kind = ?3 AND host = ?4 AND generation = ?5 AND native_id = ?6",
+                params![
+                    recovery.expected.project_id.to_string(),
+                    recovery.expected.topology_node_id.to_string(),
+                    recovery.replacement.identity.runtime_kind.as_str(),
+                    recovery.replacement.identity.host.as_str(),
+                    i64::try_from(recovery.replacement.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "replacement native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.replacement.identity.native_id.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if collision != 0 {
+            return Err(conflict(
+                "topology container recovery",
+                "the replacement native container is already bound to another topology node",
+            ));
+        }
+
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE topology_node_containers
+                 SET runtime_kind = ?1, host = ?2, generation = ?3, native_id = ?4,
+                     observed_kind = ?5, canonical_cwd = ?6, bound_at = ?7,
+                     last_readback_at = ?7, revision = revision + 1
+                 WHERE project_id = ?8 AND topology_node_id = ?9
+                   AND container_binding_id = ?10
+                   AND runtime_kind = ?11 AND host = ?12 AND generation = ?13
+                   AND native_id = ?14 AND revision = ?15",
+                params![
+                    recovery.replacement.identity.runtime_kind.as_str(),
+                    recovery.replacement.identity.host.as_str(),
+                    i64::try_from(recovery.replacement.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "replacement native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.replacement.identity.native_id.as_str(),
+                    recovery.replacement.observed_kind.as_str(),
+                    recovery
+                        .replacement
+                        .canonical_cwd
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    text(recovery.replacement.observed_at),
+                    recovery.expected.project_id.to_string(),
+                    recovery.expected.topology_node_id.to_string(),
+                    recovery.expected.container_binding_id.as_str(),
+                    recovery.expected.identity.runtime_kind.as_str(),
+                    recovery.expected.identity.host.as_str(),
+                    i64::try_from(recovery.expected.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "prior native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.expected.identity.native_id.as_str(),
+                    revision_column(recovery.expected.revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "topology container recovery",
+                "the stale binding moved since preview",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO topology_container_recoveries
+                     (receipt_id, project_id, topology_node_id, container_binding_id,
+                      prior_runtime_kind, prior_host, prior_generation, prior_native_id,
+                      next_runtime_kind, next_host, next_generation, next_native_id,
+                      parent_native_id, observed_kind, canonical_cwd, observed_title,
+                      recovered_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                         ?13, ?14, ?15, ?16, ?17)",
+                params![
+                    receipt.id.to_string(),
+                    recovery.expected.project_id.to_string(),
+                    recovery.expected.topology_node_id.to_string(),
+                    recovery.expected.container_binding_id.as_str(),
+                    recovery.expected.identity.runtime_kind.as_str(),
+                    recovery.expected.identity.host.as_str(),
+                    i64::try_from(recovery.expected.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "prior native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.expected.identity.native_id.as_str(),
+                    recovery.replacement.identity.runtime_kind.as_str(),
+                    recovery.replacement.identity.host.as_str(),
+                    i64::try_from(recovery.replacement.identity.generation).map_err(|_| {
+                        DomainError::invalid(
+                            "replacement native generation",
+                            "is outside the storable range",
+                        )
+                    })?,
+                    recovery.replacement.identity.native_id.as_str(),
+                    recovery.parent_native_id.as_str(),
+                    recovery.replacement.observed_kind.as_str(),
+                    recovery
+                        .replacement
+                        .canonical_cwd
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    recovery.observed_title.as_str(),
+                    text(recovery.replacement.observed_at),
+                ],
+            )
+            .map_err(backend)?;
+        let evidence = topology_container_recovery_by_receipt(
+            &transaction,
+            recovery.expected.project_id,
+            receipt.id,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((evidence, receipt, crate::graph::Applied::Created))
+    }
 }
 
 impl WorkflowRepository for SqliteStore {

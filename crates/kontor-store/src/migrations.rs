@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 83;
+pub const SCHEMA_VERSION: i64 = 84;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -323,6 +323,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v83. Reopened completion eras own distinct remediation evidence
     // and replay claims even though their round numbers restart at one.
     include_str!("../migrations/0083_completion_remediation_generations.sql"),
+    // Schema v84. Explicit, append-only recovery for a legacy-imported epic
+    // backlog code and for a stale topology-container identity. Both retain
+    // exact before/after evidence under their own command authority.
+    include_str!("../migrations/0084_legacy_naming_recovery.sql"),
 ];
 
 const _: () = assert!(

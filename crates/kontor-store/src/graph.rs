@@ -454,14 +454,77 @@ impl SqliteStore {
         let found: Option<String> = self
             .connection
             .query_row(
-                "SELECT code FROM epic_backlog_codes
-                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                "SELECT COALESCE(c.corrected_code, b.code)
+                 FROM epic_backlog_codes b
+                 LEFT JOIN epic_backlog_code_corrections c
+                   ON c.project_id = b.project_id
+                  AND c.mini_project_id = b.mini_project_id
+                 WHERE b.project_id = ?1 AND b.mini_project_id = ?2
+                   AND b.status = 'active'",
                 params![project_id.to_string(), mini_project_id.to_string()],
                 |row| row.get(0),
             )
             .optional()
             .map_err(backend)?;
         Ok(found.as_deref().map(EpicBacklogCode::parse).transpose()?)
+    }
+
+    /// Read the immutable source row and any one-time effective correction.
+    pub fn epic_backlog_code_origin(
+        &self,
+        project_id: ProjectId,
+        mini_project_id: MiniProjectId,
+    ) -> RepositoryResult<Option<(EpicBacklogCode, String, Option<EpicBacklogCode>)>> {
+        let found: Option<(String, String, Option<String>)> = self
+            .connection
+            .query_row(
+                "SELECT b.code, b.provenance, c.corrected_code
+                 FROM epic_backlog_codes b
+                 LEFT JOIN epic_backlog_code_corrections c
+                   ON c.project_id = b.project_id
+                  AND c.mini_project_id = b.mini_project_id
+                 WHERE b.project_id = ?1 AND b.mini_project_id = ?2
+                   AND b.status = 'active'",
+                params![project_id.to_string(), mini_project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(source, provenance, corrected)| {
+                Ok((
+                    EpicBacklogCode::parse(source)?,
+                    provenance,
+                    corrected
+                        .as_deref()
+                        .map(EpicBacklogCode::parse)
+                        .transpose()?,
+                ))
+            })
+            .transpose()
+    }
+
+    /// Whether a source or corrected epic code is already reserved in a project.
+    pub fn epic_backlog_code_is_reserved(
+        &self,
+        project_id: ProjectId,
+        code: &EpicBacklogCode,
+    ) -> RepositoryResult<bool> {
+        let count: i64 = self
+            .connection
+            .query_row(
+                "SELECT count(*) FROM (
+                     SELECT code AS value FROM epic_backlog_codes
+                      WHERE project_id = ?1 AND status = 'active'
+                     UNION ALL
+                     SELECT corrected_code AS value FROM epic_backlog_code_corrections
+                      WHERE project_id = ?1
+                 ) WHERE value = ?2 COLLATE NOCASE",
+                params![project_id.to_string(), code.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        Ok(count != 0)
     }
 
     /// Every reconciliation conflict recorded against one task's links.
@@ -2485,8 +2548,13 @@ fn ensure_epic_backlog_code(
 ) -> RepositoryResult<EpicBacklogCode> {
     let existing: Option<String> = transaction
         .query_row(
-            "SELECT code FROM epic_backlog_codes
-             WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+            "SELECT COALESCE(c.corrected_code, b.code)
+             FROM epic_backlog_codes b
+             LEFT JOIN epic_backlog_code_corrections c
+               ON c.project_id = b.project_id
+              AND c.mini_project_id = b.mini_project_id
+             WHERE b.project_id = ?1 AND b.mini_project_id = ?2
+               AND b.status = 'active'",
             params![project_id.to_string(), mini_project_id.to_string()],
             |row| row.get(0),
         )
@@ -2517,7 +2585,11 @@ fn ensure_epic_backlog_code(
     let mut statement = transaction
         .prepare(
             "SELECT code FROM epic_backlog_codes
-             WHERE project_id = ?1 AND status = 'active' ORDER BY code COLLATE NOCASE",
+             WHERE project_id = ?1 AND status = 'active'
+             UNION ALL
+             SELECT corrected_code FROM epic_backlog_code_corrections
+             WHERE project_id = ?1
+             ORDER BY 1 COLLATE NOCASE",
         )
         .map_err(backend)?;
     let used = statement

@@ -76,7 +76,8 @@ use kontor_runtime::capability::{
 };
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerProjection, ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest,
+    RetitleContainerOutcome, RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -5034,6 +5035,10 @@ impl RuntimeAdapter for PaseoAdapter {
             .get(&request.topology_node_id)
             .cloned()
             && existing.binding.identity.generation == generation
+            && request
+                .bound_native_id
+                .as_ref()
+                .is_none_or(|persisted| persisted == &existing.binding.identity.native_id)
         {
             return Ok(ContainerOutcome {
                 snapshot: existing,
@@ -5132,6 +5137,85 @@ impl RuntimeAdapter for PaseoAdapter {
             .containers
             .insert(request.topology_node_id, snapshot.clone());
         Ok(ContainerOutcome { snapshot, created })
+    }
+
+    async fn preview_container_recovery(
+        &self,
+        request: &ContainerRecoveryRequest,
+    ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::PrepareWorkspace) {
+            return Err(self.refuse(RuntimeCapability::PrepareWorkspace, &declared));
+        }
+        let generation = self.generation();
+        if request.stale_identity.runtime_kind != self.config.runtime_kind
+            || request.stale_identity.host != self.config.host_key
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the stale container binding belongs to another runtime host",
+            });
+        }
+
+        let workspaces = self
+            .fetch_workspaces(request.bound_project_native_id.as_str())
+            .await?;
+        if workspaces
+            .iter()
+            .any(|workspace| workspace.id == request.stale_identity.native_id.as_str())
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recovered as another identity",
+            });
+        }
+
+        let candidates = workspaces
+            .iter()
+            .filter(|workspace| {
+                workspace.project_id == request.bound_project_native_id.as_str()
+                    && WorkspaceRoot::parse(&workspace.workspace_directory)
+                        .is_ok_and(|root| root == request.canonical_cwd)
+            })
+            .collect::<Vec<_>>();
+        let candidate = match candidates.as_slice() {
+            [candidate] => *candidate,
+            [] => {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "no live workspace occupies the stale container's exact parent and canonical path",
+                });
+            }
+            [_, _, ..] => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "several live workspaces occupy the stale container's exact parent and canonical path",
+                });
+            }
+        };
+        if candidate.visible_title() != request.expected_title.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
+            });
+        }
+
+        let identity = self.identity(ExternalId::parse(&candidate.id)?, generation);
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection: ContainerProjection::NativeChild,
+                identity: identity.clone(),
+                root: Some(request.canonical_cwd.clone()),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared,
+            correlation: ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity,
+                request.requested_at,
+            ),
+        };
+        Ok(ContainerRecoveryOutcome {
+            snapshot,
+            observed_title: candidate.visible_title().to_owned(),
+        })
     }
 
     async fn prepare_workspace(
