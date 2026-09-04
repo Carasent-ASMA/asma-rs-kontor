@@ -17466,6 +17466,7 @@
         "type": "object",
         "description": "Exact identity and quota evidence for succeeding one usage-limited seat.",
         "required": [
+          "runtime_observation_cursor",
           "runtime_binding_id",
           "native_id",
           "provider",
@@ -17487,6 +17488,11 @@
           "runtime_binding_id": {
             "type": "string",
             "description": "Kontor's immutable runtime binding id."
+          },
+          "runtime_observation_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The exact stored runtime observation that reduced this predecessor to\nthe blocked state authorizing succession."
           }
         },
         "additionalProperties": false
@@ -18228,6 +18234,7 @@
         "description": "What the Admin-only unusable-seat replacement is asked for.",
         "required": [
           "role_slot",
+          "expected_predecessor_revision",
           "expected_task_revision",
           "binding_generation"
         ],
@@ -18236,6 +18243,12 @@
             "type": "integer",
             "format": "int64",
             "description": "The immutable binding generation of the terminal predecessor.",
+            "minimum": 0
+          },
+          "expected_predecessor_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The predecessor revision the replacement was authorized against.\n\nSeparate from the task revision: runtime observation reduction moves\nthe run without moving its task, so the task CAS cannot fence stale\nquota evidence on its own.",
             "minimum": 0
           },
           "expected_task_revision": {

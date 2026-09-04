@@ -50,19 +50,19 @@ use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
     CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
     ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, ProviderUsageObservationId,
-    QuickSessionId, RoleCode, RoleSlotId, RuntimeBindingId, SCHEMA_VERSION, SeatBindingId,
-    SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp,
-    TopologyKindKey, TopologyNodeId,
+    QuickSessionId, QuotaObservationProvenanceId, RoleCode, RoleSlotId, RuntimeBindingId,
+    SCHEMA_VERSION, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId,
+    TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
 };
 use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
     CapacityRepository, CommandRepository, ConnectorSpecSelector, NewAgentRun,
     NewConsultationMaterializationReroute, NewLocalCommand, NewMiniProject, NewObservation,
-    NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent,
-    NewSeatBinding, NewSessionTopologyNode, NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    ProjectRepository, ProviderUsageObservation, RealmRepository, RunClosure, RunRepository,
-    RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
+    NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewQuotaObservationProvenance,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewTask, NewTaskWorkflow, NewTeamRun,
+    NewTicketLink, ProjectRepository, ProviderUsageObservation, RealmRepository, RunClosure,
+    RunRepository, RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
     StoredConsultationProfileRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
     StoredQuickSession, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
@@ -70,7 +70,7 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::{
     CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
-    ProviderRef, TeamRunSnapshot,
+    ProviderRef, QuotaDecisionBasis, TeamRunSnapshot,
 };
 use kontor_core::state::{
     Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalEvidence,
@@ -14363,6 +14363,7 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
         .expect("the task revision");
     let body = serde_json::json!({
         "role_slot": role_slot,
+        "expected_predecessor_revision": before.revision,
         "expected_task_revision": task_revision,
         "binding_generation": old_binding.identity.generation,
         "model_route": {
@@ -14466,6 +14467,7 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
     });
     let retry_body = serde_json::json!({
         "role_slot": retry_role_slot,
+        "expected_predecessor_revision": retry_before.revision,
         "expected_task_revision": task_revision,
         "binding_generation": retry_before
             .binding
@@ -14599,6 +14601,7 @@ async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successo
         .expect("the task revision");
     let body = serde_json::json!({
         "role_slot": role_slot,
+        "expected_predecessor_revision": before.revision,
         "expected_task_revision": task_revision,
         "binding_generation": old_binding.identity.generation,
     });
@@ -14837,6 +14840,7 @@ async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": before.revision,
             "expected_task_revision": task_revision,
             "binding_generation": old_binding.identity.generation,
         }),
@@ -15029,6 +15033,7 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": before.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "unavailable_provider": {
@@ -15162,6 +15167,170 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
 /// blocking quota row is the *only* thing that authorizes it: without one the
 /// original refusal must still stand, or the arm is a general "replace
 /// anything" hatch.
+fn record_runtime_state_without_quota(
+    world: &World,
+    project_id: ProjectId,
+    predecessor_id: AgentRunId,
+    binding: &RuntimeBinding,
+    observed: ObservedRunState,
+) -> kontor_core::repository::AgentRun {
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads before its runtime observation")
+            .expect("the predecessor exists before its runtime observation")
+    });
+    let now = kontor_api::now();
+    let native_sequence = u64::try_from(now.as_microsecond()).expect("a positive test instant");
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": observed.as_str(),
+        "contact": "reachable",
+        "native_sequence": native_sequence,
+        "observed_at": now.to_string(),
+    }))
+    .expect("the runtime observation payload canonicalizes");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id,
+                    agent_run_id: predecessor_id,
+                    identity: binding.identity.clone(),
+                    native_event_id: None,
+                    native_sequence,
+                    payload,
+                    observed_at: now,
+                },
+                observed,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: before.revision,
+                quota_state: None,
+            })
+            .expect("the runtime observation commits");
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads after its runtime observation")
+            .expect("the predecessor exists after its runtime observation")
+    })
+}
+
+fn record_runtime_quota_refusal(
+    world: &World,
+    project_id: ProjectId,
+    predecessor_id: AgentRunId,
+    binding: &RuntimeBinding,
+    account_profile_id: AccountProfileId,
+    provider: &str,
+    resets_at: Timestamp,
+) -> (kontor_core::repository::AgentRun, serde_json::Value) {
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads before its refusal")
+            .expect("the predecessor exists before its refusal")
+    });
+    let now = kontor_api::now();
+    let native_sequence = u64::try_from(now.as_microsecond()).expect("a positive test instant");
+    let evidence_hash =
+        ContentHash::of(format!("quota-refusal:{predecessor_id}:{}", binding.id).as_bytes());
+    let quota_revision = world.daemon.state().with_store(|store| {
+        store
+            .list_provider_quota_states(project_id)
+            .expect("quota states read before the runtime observation")
+            .into_iter()
+            .find(|row| row.account_profile_id == account_profile_id && row.provider == provider)
+            .map_or(AggregateRevision::INITIAL, |row| row.revision)
+    });
+    let payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "blocked",
+        "contact": "reachable",
+        "native_sequence": native_sequence,
+        "observed_at": now.to_string(),
+    }))
+    .expect("the runtime observation payload canonicalizes");
+    let projection = world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id,
+                    agent_run_id: predecessor_id,
+                    identity: binding.identity.clone(),
+                    native_event_id: None,
+                    native_sequence,
+                    payload,
+                    observed_at: now,
+                },
+                observed: ObservedRunState::Blocked,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: before.revision,
+                quota_state: Some(NewProviderQuotaState {
+                    project_id,
+                    account_profile_id,
+                    provider: provider.to_owned(),
+                    state: ProviderQuotaKind::Exhausted,
+                    resets_at: Some(resets_at),
+                    windows: Vec::new(),
+                    credit: None,
+                    evidence_hash: evidence_hash.clone(),
+                    provenance: Some(NewQuotaObservationProvenance {
+                        id: QuotaObservationProvenanceId::generate(),
+                        project_id,
+                        account_profile_id,
+                        provider: provider.to_owned(),
+                        signal_id: "test-runtime-refusal".to_owned(),
+                        signal_version: SpecVersion::parse(1).expect("a signal version"),
+                        signal_definition_hash: ContentHash::of(b"test-runtime-signal-v1"),
+                        agent_run_id: predecessor_id,
+                        runtime_binding_id: binding.id,
+                        native_id: binding.identity.native_id.clone(),
+                        binding_generation: binding.identity.generation,
+                        runtime_observation_cursor: None,
+                        item_epoch: 1,
+                        item_seq_start: 1,
+                        item_seq_end: 1,
+                        source_sequences: vec![(1, 1)],
+                        item_kind: "assistant_message".to_owned(),
+                        item_observed_at: now,
+                        decision_basis: QuotaDecisionBasis::RuntimeRefusal,
+                        decided_state: ProviderQuotaKind::Exhausted,
+                        parsed_resets_at: Some(resets_at),
+                        reset_zone: None,
+                        evidence_digest: evidence_hash,
+                        recorded_at: now,
+                    }),
+                    source: ProviderQuotaSource::RuntimeObservation,
+                    observed_at: now,
+                    expected_revision: quota_revision,
+                    updated_at: now,
+                }),
+            })
+            .expect("the runtime observation and quota projection commit atomically")
+    });
+    let cursor = projection
+        .last_cursor
+        .expect("the blocked observation has a cursor");
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads after its refusal")
+            .expect("the predecessor exists after its refusal")
+    });
+    (
+        after,
+        serde_json::json!({
+            "runtime_observation_cursor": cursor,
+            "runtime_binding_id": binding.id,
+            "native_id": binding.identity.native_id,
+            "provider": provider,
+            "account_profile_id": account_profile_id,
+        }),
+    )
+}
+
 #[tokio::test]
 async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     let world = World::open_empty().await;
@@ -15206,6 +15375,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     let team_runs_before = view.json()["tasks"][0]["team_runs"].clone();
 
     let quota_evidence = serde_json::json!({
+        "runtime_observation_cursor": run.projection.last_cursor.expect("the launch cursor"),
         "runtime_binding_id": binding.id,
         "native_id": binding.identity.native_id,
         "provider": provider,
@@ -15217,6 +15387,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "quota_exhausted": quota_evidence,
@@ -15226,7 +15397,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     .with_key("replace-quota-no-row")
     .send(&world)
     .await;
-    assert_eq!(unauthorized.status, 422, "{}", unauthorized.body);
+    assert_eq!(unauthorized.status, 409, "{}", unauthorized.body);
     assert!(
         !world
             .fake
@@ -15236,7 +15407,8 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         "an unauthorized quota claim never reaches the runtime"
     );
 
-    // (2) Record the limit this seat hit.
+    // (2) A manually asserted row is routing input, not authority to destroy a
+    //     reachable seat. It must still fail before the runtime is touched.
     let recorded = Call::post(
         format!("/v1/projects/{project}/provider-quota-states:record"),
         &serde_json::json!({
@@ -15252,8 +15424,198 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     .send(&world)
     .await;
     assert_eq!(recorded.status, 200, "{}", recorded.body);
+    let manual_observed_at = kontor_api::now();
+    let manual_native_sequence =
+        u64::try_from(manual_observed_at.as_microsecond()).expect("a positive test instant");
+    let manual_payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "blocked",
+        "contact": "reachable",
+        "native_sequence": manual_native_sequence,
+        "observed_at": manual_observed_at.to_string(),
+    }))
+    .expect("the manual-row inverse observation canonicalizes");
+    let manual_projection = world.daemon.state().with_store(|store| {
+        store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id,
+                    agent_run_id: predecessor_id,
+                    identity: binding.identity.clone(),
+                    native_event_id: None,
+                    native_sequence: manual_native_sequence,
+                    payload: manual_payload,
+                    observed_at: manual_observed_at,
+                },
+                observed: ObservedRunState::Blocked,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: run.revision,
+                quota_state: None,
+            })
+            .expect("the blocked observation commits without rewriting the Admin quota row")
+    });
+    let manual_run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads after the blocked observation")
+            .expect("the predecessor remains")
+    });
+    let mut manual_evidence = quota_evidence.clone();
+    manual_evidence["runtime_observation_cursor"] = serde_json::json!(
+        manual_projection
+            .last_cursor
+            .expect("the blocked observation cursor")
+    );
+    let calls_before_manual = world.fake.calls().len();
+    let manual_only = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": manual_run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": manual_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-manual-row")
+    .send(&world)
+    .await;
+    assert_eq!(manual_only.status, 422, "{}", manual_only.body);
+    assert_eq!(world.fake.calls().len(), calls_before_manual);
 
-    // (3) Evidence that names another binding is refused before the runtime is
+    // (3) The runtime's reachable Blocked observation writes its quota row and
+    //     immutable provenance in the same transaction. This is the authority
+    //     the positive case must cite; an Admin row above is never substituted.
+    let (run, quota_evidence) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    );
+
+    // A later refusal on another seat sharing the same account/provider moves
+    // the quota row's provenance. The predecessor's older blocked projection
+    // does not authorize retirement against that foreign provenance.
+    let sibling_id =
+        AgentRunId::parse(seats[1]["agent_run_id"].as_str().expect("a sibling run id"))
+            .expect("a canonical sibling id");
+    let sibling = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, sibling_id)
+            .expect("the sibling reads")
+            .expect("the sibling exists")
+    });
+    let sibling_binding = sibling
+        .binding
+        .as_ref()
+        .expect("the sibling is bound")
+        .clone();
+    record_runtime_quota_refusal(
+        &world,
+        project_id,
+        sibling_id,
+        &sibling_binding,
+        sibling.account_profile_id.expect("the sibling is pinned"),
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    );
+    let calls_before_foreign_provenance = world.fake.calls().len();
+    let foreign_provenance = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-foreign-provenance")
+    .send(&world)
+    .await;
+    assert_eq!(
+        foreign_provenance.status, 409,
+        "{}",
+        foreign_provenance.body
+    );
+    assert_eq!(world.fake.calls().len(), calls_before_foreign_provenance);
+
+    let stale_revision = run.revision;
+    let stale_evidence = quota_evidence;
+    let (run, quota_evidence) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    );
+    let stale_cursor = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": stale_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-stale-cursor")
+    .send(&world)
+    .await;
+    assert_eq!(stale_cursor.status, 409, "{}", stale_cursor.body);
+    let stale_run = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": stale_revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-stale-predecessor")
+    .send(&world)
+    .await;
+    assert_eq!(stale_run.status, 409, "{}", stale_run.body);
+    assert_eq!(
+        stale_run.json()["current_revision"],
+        serde_json::json!(run.revision),
+        "the run CAS returns the revision needed for a new decision",
+    );
+
+    let calls_before_stale_generation = world.fake.calls().len();
+    let stale_generation = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation + 1,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-stale-generation")
+    .send(&world)
+    .await;
+    assert_eq!(stale_generation.status, 409, "{}", stale_generation.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_stale_generation,
+        "a stale native generation is refused before contacting the runtime",
+    );
+
+    // (4) Evidence that names another binding is refused before the runtime is
     //     contacted, exactly as the outage arm is.
     let calls_before_mismatch = world.fake.calls().len();
     let mut mismatched_evidence = quota_evidence.clone();
@@ -15262,6 +15624,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "quota_exhausted": mismatched_evidence,
@@ -15278,7 +15641,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         "identity mismatch is refused before contacting the runtime"
     );
 
-    // (4) An account this seat does not hold is refused, so one account's limit
+    // (5) An account this seat does not hold is refused, so one account's limit
     //     cannot retire a seat running on another.
     let mut wrong_account = quota_evidence.clone();
     wrong_account["account_profile_id"] =
@@ -15287,6 +15650,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "quota_exhausted": wrong_account,
@@ -15298,11 +15662,12 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     .await;
     assert_eq!(foreign.status, 409, "{}", foreign.body);
 
-    // (5) Both evidence arms at once is a story, not evidence.
+    // (6) Both evidence arms at once is a story, not evidence.
     let both = Call::post(
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "quota_exhausted": quota_evidence,
@@ -15319,7 +15684,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     .await;
     assert_eq!(both.status, 400, "{}", both.body);
 
-    // (6) The authorized succession. Note the provider is *available* — the
+    // (7) The authorized succession. Note the provider is *available* — the
     //     outage arm's own precondition is false here, which is the proof this
     //     arm is not riding that fence.
     assert!(
@@ -15330,6 +15695,7 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "quota_exhausted": quota_evidence,
@@ -15430,6 +15796,95 @@ async fn a_quota_blocked_reachable_seat_is_succeeded_only_on_a_blocking_row() {
     );
 }
 
+/// A later Running observation supersedes an earlier quota refusal. The quota
+/// row may still steer placement, but it cannot authorize destroying a seat
+/// whose exact current runtime projection says it resumed work.
+#[tokio::test]
+async fn a_running_seat_is_never_retired_by_stale_quota_authority() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        epic,
+        seats,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let seat = seats[0].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let initial = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = initial.binding.as_ref().expect("the seat is bound").clone();
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen route")
+        .provider
+        .0;
+    let account = initial.account_profile_id.expect("a pinned seat");
+    let (_, quota_evidence) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    );
+    let running = record_runtime_state_without_quota(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        ObservedRunState::Running,
+    );
+    world.fake.take_calls();
+
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": running.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": quota_evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-quota-running-refusal")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the run reads after refusal")
+            .expect("the run remains after refusal")
+    });
+    assert_eq!(after, running, "the running predecessor remains unchanged");
+    assert!(
+        world
+            .fake
+            .take_calls()
+            .into_iter()
+            .all(|call| !matches!(call, AdapterCall::Retire(_) | AdapterCall::Launch(_))),
+        "running refusal has no destructive native effect",
+    );
+}
+
 /// An idempotency key names one command, and the quota evidence *is* the
 /// command's authority: it is what permits retiring a seat that is still
 /// reachable and still answering.
@@ -15477,6 +15932,7 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
         .expect("the task revision");
 
     let evidence = serde_json::json!({
+        "runtime_observation_cursor": run.projection.last_cursor.expect("the launch cursor"),
         "runtime_binding_id": binding.id,
         "native_id": binding.identity.native_id,
         "provider": provider,
@@ -15485,6 +15941,7 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
     let body = |quota: serde_json::Value| {
         serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "quota_exhausted": quota,
@@ -15499,7 +15956,7 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
         .with_key("replace-quota-intent")
         .send(&world)
         .await;
-    assert_eq!(first.status, 422, "{}", first.body);
+    assert_eq!(first.status, 409, "{}", first.body);
 
     // The identical intent replays.
     let replayed = Call::post(&route, &body(evidence.clone()))
@@ -15507,7 +15964,7 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
         .with_key("replace-quota-intent")
         .send(&world)
         .await;
-    assert_eq!(replayed.status, 422, "{}", replayed.body);
+    assert_eq!(replayed.status, 409, "{}", replayed.body);
 
     // Each field of the evidence is authority. Changing any one of them under
     // the same key is a different command.
@@ -15521,6 +15978,10 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
         (
             "runtime_binding_id",
             serde_json::json!(kontor_core::id::RuntimeBindingId::generate().to_string()),
+        ),
+        (
+            "runtime_observation_cursor",
+            serde_json::json!(9_999_999_i64),
         ),
     ] {
         let mut changed = evidence.clone();
@@ -15552,21 +16013,17 @@ async fn a_reused_key_with_different_quota_evidence_conflicts_before_any_effect(
     }
 }
 
-/// When *no* account is admissible the succession must not quietly fall back to
-/// the exhausted one. The walk answers with no placement, so no account is
-/// claimed at all and the adapter is left to emit its own provider refusal —
-/// which is honest. Silently reusing the blocked account would re-refuse while
-/// reporting success, and is exactly what inheriting the predecessor's pin did.
+/// A near reset is a typed deferral, never permission to retire first and find
+/// out later that the preferred route should have waited.
 #[tokio::test]
-async fn a_succession_with_no_admissible_account_claims_none_rather_than_reusing_the_blocked_one() {
+async fn a_waiting_quota_successor_has_zero_runtime_or_lineage_effects() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let CodexAliasEpic {
         project,
         epic,
         seats,
-        work,
-        personal,
+        ..
     } = codex_alias_epic(&world, false, true).await;
     let seat = seats[0].clone();
     let predecessor = seat["agent_run_id"].as_str().expect("the run id");
@@ -15588,24 +16045,22 @@ async fn a_succession_with_no_admissible_account_claims_none_rather_than_reusing
         .0;
     let account = run.account_profile_id.expect("a pinned seat");
 
-    // Both logins are spent, so the walk has nowhere to go.
-    for (id, alias) in [(&work, "codex-work"), (&personal, "codex-personal")] {
-        let exhausted = Call::post(
-            format!("/v1/projects/{project}/provider-quota-states:record"),
-            &serde_json::json!({
-                "account_profile_id": id,
-                "provider": alias,
-                "state": "exhausted",
-                "resets_at": "2099-01-01T00:00:00Z",
-                "expected_revision": 1
-            }),
-        )
-        .signed_as(&world, "admin")
-        .with_key(format!("no-account-exhaust-{alias}"))
-        .send(&world)
-        .await;
-        assert_eq!(exhausted.status, 200, "{}", exhausted.body);
-    }
+    let reset = kontor_api::now() + jiff::SignedDuration::from_secs(1);
+    let (run, quota_evidence) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        account,
+        &provider,
+        reset,
+    );
+    let members_before = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, run.team_run_id)
+            .expect("the team members read before deferral")
+    });
+    world.fake.take_calls();
 
     let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -15619,46 +16074,52 @@ async fn a_succession_with_no_admissible_account_claims_none_rather_than_reusing
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
-            "quota_exhausted": {
-                "runtime_binding_id": binding.id,
-                "native_id": binding.identity.native_id,
-                "provider": provider,
-                "account_profile_id": account.to_string(),
-            },
+            "quota_exhausted": quota_evidence,
         }),
     )
     .signed_as(&world, "admin")
     .with_key("replace-quota-no-admissible")
     .send(&world)
     .await;
-    assert_eq!(replaced.status, 200, "{}", replaced.body);
-    let successor_id = AgentRunId::parse(
-        replaced.json()["successor_agent_run_id"]
-            .as_str()
-            .expect("the successor id"),
-    )
-    .expect("a successor id");
-    let successor = world.daemon.state().with_store(|store| {
-        store
-            .get_agent_run(project_id, successor_id)
-            .expect("the run reads")
-            .expect("the successor exists")
+    assert_eq!(replaced.status, 429, "{}", replaced.body);
+    assert_eq!(replaced.code(), "capacity_exhausted", "{}", replaced.body);
+    let (after, members_after, receipt) = world.daemon.state().with_store(|store| {
+        let after = store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads after deferral")
+            .expect("the predecessor remains after deferral");
+        let members = store
+            .list_agent_runs_for_team_run(project_id, run.team_run_id)
+            .expect("the team members read after deferral");
+        let receipt = store
+            .get_receipt_by_key(
+                &IdempotencyKey::parse("replace-quota-no-admissible").expect("a key"),
+            )
+            .expect("the deferred receipt lookup succeeds");
+        (after, members, receipt)
     });
     assert_eq!(
-        successor.account_profile_id, None,
-        "no admissible account means no claim, never a silent reuse of the blocked one",
-    );
-    assert_ne!(
-        successor.account_profile_id,
-        Some(account),
-        "the exhausted account is emphatically not inherited",
+        after, run,
+        "the predecessor is byte-identical after deferral"
     );
     assert_eq!(
-        world.fake.launched_account(successor_id),
-        None,
-        "the launch claims no account either, so the receipt cannot lie",
+        members_after, members_before,
+        "no successor lineage is created"
+    );
+    assert!(
+        receipt.is_none(),
+        "a pure deferral records no command effect"
+    );
+    assert!(
+        world
+            .fake
+            .take_calls()
+            .into_iter()
+            .all(|call| !matches!(call, AdapterCall::Retire(_) | AdapterCall::Launch(_))),
+        "a deferred successor never reaches retirement or launch",
     );
 }
 
@@ -15713,6 +16174,7 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
         }),
@@ -15744,6 +16206,7 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "unavailable_provider": {
@@ -15776,6 +16239,7 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "unavailable_provider": {
@@ -21995,6 +22459,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
         format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": predecessor.revision,
             "expected_task_revision": task_revision,
             "binding_generation": predecessor_binding.identity.generation,
             "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}
@@ -33425,6 +33890,7 @@ async fn a_replacement_seat_walks_onto_the_other_account_once_aliases_are_declar
         format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
         &serde_json::json!({
             "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
             "expected_task_revision": task_revision,
             "binding_generation": binding.identity.generation,
             "unavailable_provider": {

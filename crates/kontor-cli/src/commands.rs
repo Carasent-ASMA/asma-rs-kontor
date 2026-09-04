@@ -427,6 +427,8 @@ mod tests {
                 "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
                 "--role-slot",
                 "builder",
+                "--expected-predecessor-revision",
+                "18446744073709551615",
                 "--expected-task-revision",
                 "2",
                 "--binding-generation",
@@ -441,6 +443,11 @@ mod tests {
             .expect("a well-formed command line");
         let (tool, sub) = resolve(&matches).expect("the seat replacement tool");
         let arguments = arguments(tool, sub).expect("well-formed arguments");
+        assert_eq!(
+            arguments["expected_predecessor_revision"],
+            serde_json::json!(u64::MAX),
+            "the generated CLI must preserve the full unsigned revision domain"
+        );
         assert_eq!(
             arguments["model_route"],
             serde_json::json!({

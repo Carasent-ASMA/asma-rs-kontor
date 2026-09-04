@@ -24266,6 +24266,14 @@ impl ApplicationOperations for Services {
                     "no such predecessor run exists in this project",
                 )
             })?;
+        if predecessor.revision != request.expected_predecessor_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the predecessor moved since the replacement was authorized",
+                )
+                .with_revision(Some(predecessor.revision)));
+        }
         let binding = predecessor.binding.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::StaleBinding,
@@ -24316,6 +24324,82 @@ impl ApplicationOperations for Services {
             ));
         }
 
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this daemon is not configured with the predecessor's runtime",
+                )
+            })?;
+
+        // Resolve the quota successor before the command intent, predecessor
+        // retirement or any native call. A Wait/NeedsHuman answer is a
+        // side-effect-free deferral, never permission to archive first and
+        // discover afterwards that nowhere can accept the work.
+        let quota_successor_route = if request.quota_exhausted.is_some() {
+            let quota_states = state
+                .with_store(|store| store.list_provider_quota_states(project_id))
+                .map_err(|error| self.refuse(&error))?;
+            let eligible = self.eligible_accounts(project_id)?;
+            let task_pin = state
+                .with_store(|store| store.task_account_selection(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?
+                .map(|(account_profile_id, _)| account_profile_id);
+            let outlook = QuotaOutlook {
+                states: &quota_states,
+                account: task_pin,
+                accounts: &eligible,
+                headroom: self.headroom_policy(),
+                now,
+            };
+            let declared = if let Some(route) = request.model_route.as_ref() {
+                vec![parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?]
+            } else {
+                let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                let chain = template
+                    .slot(&role_slot)
+                    .and_then(|seat| seat.model_chain.as_ref())
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::UnsupportedCapability,
+                            "the role slot has no declared successor route",
+                        )
+                    })?;
+                outlook
+                    .effective_rungs(&chain.rungs)
+                    .map_err(|error| self.refuse_domain(&error))?
+            };
+            match resolve_chain_placement(
+                adapter.as_ref(),
+                &declared,
+                kontor_scheduler::headroom::SeatClass::Delivery,
+                &outlook,
+            )
+            .map_err(|error| self.refuse_domain(&error))?
+            {
+                kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                    Some((rung, Some(account)))
+                }
+                kontor_scheduler::headroom::Placement::Wait { .. } => {
+                    return Err(self.deny(
+                        ApiErrorCode::CapacityExhausted,
+                        "the quota successor is deferred until recorded headroom returns",
+                    ));
+                }
+                kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "no governed successor route has admissible headroom",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
         let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "replace_seat",
@@ -24323,6 +24407,7 @@ impl ApplicationOperations for Services {
             "team_run_id": predecessor.team_run_id.to_string(),
             "role_slot": role_slot.as_role_key().as_str(),
             "task_revision": task.revision.get(),
+            "predecessor_revision": predecessor.revision.get(),
             "binding_generation": binding.identity.generation,
         });
         if let Some(evidence) = &request.unavailable_provider {
@@ -24345,6 +24430,7 @@ impl ApplicationOperations for Services {
                 "native_id": evidence.native_id,
                 "provider": evidence.provider,
                 "account_profile_id": evidence.account_profile_id,
+                "runtime_observation_cursor": evidence.runtime_observation_cursor.get(),
             });
         }
         // The desired route is an operator decision that changes where the
@@ -24477,15 +24563,6 @@ impl ApplicationOperations for Services {
         );
         let binding_id = kontor_core::id::RuntimeBindingId::parse(&binding_id)
             .map_err(|error| self.refuse_domain(&error))?;
-        let adapter = state
-            .runtimes()
-            .get(&binding.identity.runtime_kind)
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "this daemon is not configured with the predecessor's runtime",
-                )
-            })?;
         if recorded_successor_id.is_none() {
             // Unpinned on purpose. The walk that selects this successor's
             // account has not run yet, and inheriting the predecessor's would
@@ -24544,13 +24621,18 @@ impl ApplicationOperations for Services {
         // account, so claiming the predecessor's would be exactly the
         // unverified attestation `freeze_seat_model_rung` refuses to invent on
         // its own no-placement arm.
-        let (model_rung, routed_account) = match request.model_route.as_ref() {
-            Some(route) => (
-                parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
-                None,
-            ),
-            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
-                .map_err(|error| self.refuse_domain(&error))?,
+        let (model_rung, routed_account) = match quota_successor_route {
+            Some(preplanned) => preplanned,
+            None => match request.model_route.as_ref() {
+                Some(route) => (
+                    parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
+                    None,
+                ),
+                None => {
+                    freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
+                        .map_err(|error| self.refuse_domain(&error))?
+                }
+            },
         };
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
@@ -26333,6 +26415,152 @@ impl Services {
         report
     }
 
+    /// Prove a quota succession was authorized by this run's exact current
+    /// runtime refusal and the quota projection written from it.
+    fn validate_quota_succession_evidence(
+        &self,
+        project_id: ProjectId,
+        predecessor: &kontor_core::repository::AgentRun,
+        binding: &RuntimeBinding,
+        evidence: &kontor_api::applications::QuotaExhaustedSeatRequest,
+        now: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        if predecessor.projection.lifecycle == kontor_core::state::RunLifecycle::Running
+            || predecessor.projection.observed == kontor_core::state::ObservedRunState::Running
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "a running seat is never retired for quota succession",
+            ));
+        }
+        if predecessor.terminal.is_some()
+            || predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Blocked
+            || predecessor.projection.observed != kontor_core::state::ObservedRunState::Blocked
+            || predecessor.projection.derived != DerivedRunState::Confirmed
+            || predecessor.projection.last_cursor != Some(evidence.runtime_observation_cursor)
+            || Freshness::evaluate(
+                predecessor.projection.last_confirmed_at,
+                now,
+                jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+            ) != Freshness::Fresh
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "quota succession requires the exact current fresh blocked runtime projection",
+            ));
+        }
+        if evidence.runtime_binding_id != binding.id.to_string()
+            || evidence.native_id != binding.identity.native_id.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the quota evidence names another immutable binding",
+            ));
+        }
+        ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
+        let claimed = kontor_core::id::AccountProfileId::parse(&evidence.account_profile_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if predecessor.account_profile_id != Some(claimed) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the quota evidence names an account this seat does not hold",
+            ));
+        }
+
+        let events = state
+            .with_store(|store| store.read_runtime_events(project_id, predecessor.id, None))
+            .map_err(|error| self.refuse(&error))?;
+        let event = events
+            .iter()
+            .find(|event| event.cursor == evidence.runtime_observation_cursor)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the cited quota runtime observation does not belong to this predecessor",
+                )
+            })?;
+        if event.identity != binding.identity {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the cited quota runtime observation names another native generation",
+            ));
+        }
+        let payload: serde_json::Value = event
+            .payload
+            .deserialize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if payload
+            .get("observed_state")
+            .and_then(serde_json::Value::as_str)
+            != Some("blocked")
+            || payload.get("contact").and_then(serde_json::Value::as_str) != Some("reachable")
+        {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the cited runtime observation is not a reachable blocked refusal",
+            ));
+        }
+
+        let states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let row = states
+            .iter()
+            .find(|row| {
+                row.account_profile_id == claimed
+                    && row.provider == evidence.provider
+                    && row.blocks_at(now)
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "no recorded quota state blocks this account and provider now",
+                )
+            })?;
+        if row.source != kontor_core::spec::ProviderQuotaSource::RuntimeObservation {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "quota succession requires a runtime-observed quota state",
+            ));
+        }
+        let provenance_id = row.provenance_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "the runtime-observed quota state has no immutable provenance",
+            )
+        })?;
+        let provenance = state
+            .with_store(|store| store.get_quota_observation_provenance(project_id, provenance_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the runtime-observed quota provenance is absent",
+                )
+            })?;
+        let provenance = &provenance.record;
+        if provenance.runtime_observation_cursor != Some(evidence.runtime_observation_cursor)
+            || provenance.project_id != project_id
+            || provenance.account_profile_id != claimed
+            || provenance.provider != row.provider
+            || provenance.agent_run_id != predecessor.id
+            || provenance.runtime_binding_id != binding.id
+            || provenance.native_id != binding.identity.native_id
+            || provenance.binding_generation != binding.identity.generation
+            || provenance.decided_state != row.state
+            || provenance.parsed_resets_at != row.resets_at
+            || provenance.evidence_digest != row.evidence_hash
+            || provenance.decision_basis != kontor_core::spec::QuotaDecisionBasis::RuntimeRefusal
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the current quota provenance does not match this observation and binding",
+            ));
+        }
+        Ok(())
+    }
+
     /// Retire one still-bound predecessor under the Admin replacement command
     /// and persist the runtime's fresh archive readback as its cancellation.
     ///
@@ -26393,45 +26621,17 @@ impl Services {
             }
         }
         if let Some(evidence) = quota {
-            if evidence.runtime_binding_id != binding.id.to_string()
-                || evidence.native_id != binding.identity.native_id.as_str()
-            {
-                return Err(self.deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the quota evidence names another immutable binding",
-                ));
-            }
-            ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
-            let claimed = kontor_core::id::AccountProfileId::parse(&evidence.account_profile_id)
-                .map_err(|error| self.refuse_domain(&error))?;
-            // The caller states which account it believes is blocked, and it
-            // must be the account this run actually claims. Deriving it instead
-            // would let a stale caller succeed against whichever account the
-            // run happened to hold.
-            if predecessor.account_profile_id != Some(claimed) {
-                return Err(self.deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the quota evidence names an account this seat does not hold",
-                ));
-            }
-            // The whole authorization. A reachable seat is retired only because
-            // a recorded state says its account is refusing work *now* -- not
-            // because a reset already passed, and not because someone asked.
-            // Without this the arm is a general "replace anything" hatch.
-            let states = state
-                .with_store(|store| store.list_provider_quota_states(project_id))
-                .map_err(|error| self.refuse(&error))?;
-            let blocking = states.iter().any(|row| {
-                row.account_profile_id == claimed
-                    && row.provider == evidence.provider
-                    && row.blocks_at(now)
-            });
-            if !blocking {
-                return Err(self.deny(
-                    ApiErrorCode::UnsupportedCapability,
-                    "no recorded quota state blocks this account and provider now",
-                ));
-            }
+            // Re-prove immediately before the first awaited runtime read. The
+            // earlier proof protects the route walk; this one protects the
+            // destructive native boundary if another request moved either the
+            // run projection or its quota authority in between.
+            self.validate_quota_succession_evidence(
+                project_id,
+                predecessor,
+                binding,
+                evidence,
+                now,
+            )?;
         }
         let issued = adapter
             .issued_binding(&held)
@@ -26444,64 +26644,78 @@ impl Services {
             })
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let observation =
-            if liveness.terminal_evidence(&issued, now, state.evidence_window_seconds())
-                == Some(TerminalOutcome::Cancelled)
+        let observation = if liveness.terminal_evidence(
+            &issued,
+            now,
+            state.evidence_window_seconds(),
+        ) == Some(TerminalOutcome::Cancelled)
+        {
+            // A previous attempt may have archived the native seat and crashed
+            // before persisting that readback. The fresh archive evidence is
+            // sufficient; repeating the native effect is unnecessary.
+            liveness
+        } else if let Some(evidence) = unavailable {
+            adapter
+                .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        } else if quota.is_some() {
+            if liveness.state == kontor_core::state::ObservedRunState::Running {
+                return Err(self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "a runtime that currently reports running is never retired for quota succession",
+                    ));
+            }
+            if liveness.contact != RuntimeContact::Reachable {
+                return Err(self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "quota succession requires a fresh reachable runtime readback before retirement",
+                    ));
+            }
+            // The one arm that retires a *reachable* predecessor. A seat
+            // that hit a usage limit is still there and still answering; the
+            // generic path below refuses exactly that, which is what made
+            // the 2026-08-22 incident unrecoverable. The `Launching`-only
+            // fence of the `unavailable_provider` arm is deliberately not
+            // copied here: that fence means "never started", and this seat
+            // ran for an hour first.
+            //
+            // Nothing is relaxed downstream. The archive still has to come
+            // back runtime-observed `Cancelled` below, exactly as every
+            // other arm does, so the succession is evidenced rather than
+            // asserted.
+            adapter
+                .retire(issued.snapshot(), now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        } else {
+            if liveness.contact != RuntimeContact::ProcessMissing {
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the predecessor is still reachable and must be reused",
+                ));
+            }
+            // A closed process is normally only between turns. Give the runtime
+            // one chance to prove same-seat continuity before retirement; only
+            // a process it both reports missing and cannot resume is unusable.
+            if adapter
+                .resume(&kontor_runtime::request::ResumeRequest {
+                    binding: issued.snapshot().clone(),
+                    requested_at: now,
+                })
+                .await
+                .is_ok()
             {
-                // A previous attempt may have archived the native seat and crashed
-                // before persisting that readback. The fresh archive evidence is
-                // sufficient; repeating the native effect is unnecessary.
-                liveness
-            } else if let Some(evidence) = unavailable {
-                adapter
-                    .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            } else if quota.is_some() {
-                // The one arm that retires a *reachable* predecessor. A seat
-                // that hit a usage limit is still there and still answering; the
-                // generic path below refuses exactly that, which is what made
-                // the 2026-08-22 incident unrecoverable. The `Launching`-only
-                // fence of the `unavailable_provider` arm is deliberately not
-                // copied here: that fence means "never started", and this seat
-                // ran for an hour first.
-                //
-                // Nothing is relaxed downstream. The archive still has to come
-                // back runtime-observed `Cancelled` below, exactly as every
-                // other arm does, so the succession is evidenced rather than
-                // asserted.
-                adapter
-                    .retire(issued.snapshot(), now)
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            } else {
-                if liveness.contact != RuntimeContact::ProcessMissing {
-                    return Err(self.deny(
-                        ApiErrorCode::UnsupportedCapability,
-                        "the predecessor is still reachable and must be reused",
-                    ));
-                }
-                // A closed process is normally only between turns. Give the runtime
-                // one chance to prove same-seat continuity before retirement; only
-                // a process it both reports missing and cannot resume is unusable.
-                if adapter
-                    .resume(&kontor_runtime::request::ResumeRequest {
-                        binding: issued.snapshot().clone(),
-                        requested_at: now,
-                    })
-                    .await
-                    .is_ok()
-                {
-                    return Err(self.deny(
-                        ApiErrorCode::UnsupportedCapability,
-                        "the predecessor resumed in place and must be reused",
-                    ));
-                }
-                adapter
-                    .retire(issued.snapshot(), now)
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-            };
+                return Err(self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "the predecessor resumed in place and must be reused",
+                ));
+            }
+            adapter
+                .retire(issued.snapshot(), now)
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+        };
         let Some(outcome) =
             observation.terminal_evidence(&issued, now, state.evidence_window_seconds())
         else {

@@ -5181,6 +5181,13 @@ pub struct AttestLateHandoffRequest {
 pub struct ReplaceSeatRequest {
     /// The role slot whose terminal attempt is being replaced.
     pub role_slot: String,
+    /// The predecessor revision the replacement was authorized against.
+    ///
+    /// Separate from the task revision: runtime observation reduction moves
+    /// the run without moving its task, so the task CAS cannot fence stale
+    /// quota evidence on its own.
+    #[schema(value_type = u64)]
+    pub expected_predecessor_revision: AggregateRevision,
     /// The task revision the replacement is reconciled against.
     #[schema(value_type = u64)]
     pub expected_task_revision: AggregateRevision,
@@ -5214,6 +5221,10 @@ pub struct ReplaceSeatRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QuotaExhaustedSeatRequest {
+    /// The exact stored runtime observation that reduced this predecessor to
+    /// the blocked state authorizing succession.
+    #[schema(value_type = i64)]
+    pub runtime_observation_cursor: kontor_core::id::EventCursor,
     /// Kontor's immutable runtime binding id.
     pub runtime_binding_id: String,
     /// The exact native session id behind that binding.

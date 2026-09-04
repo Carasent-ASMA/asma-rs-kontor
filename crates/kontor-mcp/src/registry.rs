@@ -1821,6 +1821,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The predecessor's immutable role slot.",
             ),
             req(
+                "expected_predecessor_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The predecessor revision the replacement was authorized against.",
+            ),
+            req(
                 "expected_task_revision",
                 Place::Body,
                 ArgType::Revision,
@@ -5920,6 +5926,31 @@ mod tests {
             settle.args_in(Place::Body).count(),
             0,
             "a client that could name an outcome could decide how a run ended"
+        );
+    }
+
+    #[test]
+    fn seat_replacement_requires_the_exact_predecessor_revision_as_u64() {
+        let replace = ToolSpec::find("kontor_seat_replace").expect("the seat replacement tool");
+        let predecessor_revision = replace
+            .args
+            .iter()
+            .find(|argument| argument.name == "expected_predecessor_revision")
+            .expect("seat replacement must fence the predecessor revision");
+
+        assert_eq!(predecessor_revision.place, Place::Body);
+        assert_eq!(predecessor_revision.ty, ArgType::Revision);
+        assert!(predecessor_revision.required);
+        assert_eq!(
+            replace.input_schema()["properties"]["expected_predecessor_revision"]["type"],
+            "integer"
+        );
+        assert!(
+            replace.input_schema()["required"]
+                .as_array()
+                .expect("required arguments")
+                .iter()
+                .any(|name| name == "expected_predecessor_revision")
         );
     }
 

@@ -430,6 +430,7 @@ impl Modify for RealmBearer {
         crate::applications::AttestLateHandoffRequest,
         crate::applications::LateHandoffAttestationDto,
         crate::applications::ReplaceSeatRequest,
+        crate::applications::QuotaExhaustedSeatRequest,
         crate::applications::UnavailableProviderSeatRequest,
         crate::applications::SessionLabelsReconcileRequest,
         crate::applications::SessionLabelsReconciledDto,

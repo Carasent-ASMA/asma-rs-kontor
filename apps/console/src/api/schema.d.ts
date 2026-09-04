@@ -1028,6 +1028,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the exact previewed legacy epic backlog-code correction. */
+        post: operations["apply_epic_backlog_code_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview one legacy-imported epic backlog-code correction. */
+        post: operations["preview_epic_backlog_code_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/code-help": {
         parameters: {
             query?: never;
@@ -2467,6 +2501,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the exact previewed stale-container recovery. */
+        post: operations["apply_container_recovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview the sole live replacement for one stale topology container binding. */
+        post: operations["preview_container_recovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply": {
         parameters: {
             query?: never;
@@ -3106,6 +3174,13 @@ export interface components {
              */
             subject?: string | null;
         };
+        /** @description Result of one atomic stale-container identity recovery. */
+        AppliedContainerRecoveryDto: {
+            /** @description Durable command receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Exact recovery evidence retained by the command. */
+            recovery: components["schemas"]["ContainerRecoveryPreviewDto"];
+        };
         /** @description What a container retitle produced. */
         AppliedContainerRetitleDto: {
             /** @description The native container, read back after the change. The same one. */
@@ -3128,6 +3203,13 @@ export interface components {
          * @enum {string}
          */
         AppliedDto: "created" | "updated" | "unchanged";
+        /** @description Result of the one-time legacy epic-code correction. */
+        AppliedEpicBacklogCodeCorrectionDto: {
+            /** @description Exact correction plan that is now durable. */
+            correction: components["schemas"]["EpicBacklogCodeCorrectionPreviewDto"];
+            /** @description Durable command receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+        };
         /** @description One epic after it was applied. */
         AppliedEpicDto: {
             /** @description Whether this call created it. */
@@ -4326,6 +4408,50 @@ export interface components {
          * @enum {string}
          */
         ConsultationVerdictDto: "compliant" | "non_compliant";
+        /** @description Apply request bound to an exact stale-container preview. */
+        ContainerRecoveryApplyRequest: {
+            /**
+             * Format: int64
+             * @description Project revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Hash returned by the recovery preview. */
+            preview_hash: string;
+        };
+        /** @description Exact before/after identity proved by a read-only recovery census. */
+        ContainerRecoveryPreviewDto: {
+            /** @description Preserved canonical working directory. */
+            canonical_cwd: string;
+            /** @description Runtime-reported candidate title. */
+            observed_title: string;
+            /** @description Exact native parent in which the census ran. */
+            parent_native_id: string;
+            /** @description Hash binding the complete preview. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that performed the census. */
+            realm_id: string;
+            /** @description Sole live parent/path/title candidate. */
+            replacement_native_id: string;
+            /**
+             * Format: int64
+             * @description Snapshot position.
+             */
+            snapshot_cursor: number;
+            /** @description Native identity currently persisted and proved absent. */
+            stale_native_id: string;
+            /** @description Topology node whose logical binding is preserved. */
+            topology_node_id: string;
+        };
+        /** @description Read-only request to identify the sole live replacement for a stale binding. */
+        ContainerRecoveryPreviewRequest: {
+            /**
+             * Format: int64
+             * @description Project revision the caller read.
+             */
+            expected_revision: number;
+        };
         /**
          * @description What one bound container's title is, and what it should be.
          *
@@ -4885,6 +5011,56 @@ export interface components {
             purpose: string;
             /** @description The standard role the session's seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
+        };
+        /** @description Apply request bound to the exact code-correction preview. */
+        EpicBacklogCodeCorrectionApplyRequest: {
+            /** @description Correct project-unique value to make effective. */
+            corrected_code: string;
+            /** @description Exact active legacy value expected in the store. */
+            expected_prior_code: string;
+            /**
+             * Format: int64
+             * @description Project revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Hash returned by the preview. */
+            preview_hash: string;
+            /** @description Operator rationale retained with the immutable correction. */
+            reason: string;
+        };
+        /** @description Exact, no-write plan for correcting one legacy epic code. */
+        EpicBacklogCodeCorrectionPreviewDto: {
+            /** @description Proposed effective value. */
+            corrected_code: string;
+            /** @description Epic whose effective code would change. */
+            epic_id: string;
+            /** @description Hash binding every previewed input and identity. */
+            preview_hash: string;
+            /** @description Immutable legacy source value. */
+            prior_code: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that produced the plan. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description Snapshot position.
+             */
+            snapshot_cursor: number;
+        };
+        /** @description Read-only request for a one-time legacy epic-code correction. */
+        EpicBacklogCodeCorrectionPreviewRequest: {
+            /** @description Correct project-unique value to make effective. */
+            corrected_code: string;
+            /** @description Exact active legacy value expected in the store. */
+            expected_prior_code: string;
+            /**
+             * Format: int64
+             * @description Project revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Operator rationale retained with the immutable correction. */
+            reason: string;
         };
         /** @description One recorded disagreement about an epic's own Jira status. */
         EpicConflictDto: {
@@ -6290,6 +6466,7 @@ export interface components {
             credit?: null | components["schemas"]["CreditBalanceDto"];
             /** @description When it was concluded. */
             observed_at: string;
+            provenance?: null | components["schemas"]["QuotaProvenanceDto"];
             /** @description The provider, spelled as the model catalog spells it. */
             provider: string;
             /** @description When an exhausted allowance returns. Absent for every other state. */
@@ -6431,6 +6608,111 @@ export interface components {
             role: components["schemas"]["ResolvedRoleRefDto"];
             /** @description The topology node hosting it. */
             topology_node_id: string;
+        };
+        /** @description Exact identity and quota evidence for succeeding one usage-limited seat. */
+        QuotaExhaustedSeatRequest: {
+            /**
+             * @description The account whose recorded quota state authorizes the succession.
+             *
+             *     Named rather than derived: the caller states which account it believes
+             *     is blocked, and the server refuses if that is not the account the run
+             *     actually claims. Deriving it would let a stale caller succeed against
+             *     whichever account the run happened to hold.
+             */
+            account_profile_id: string;
+            /** @description The exact native session id behind that binding. */
+            native_id: string;
+            /** @description The provider whose allowance was exhausted. */
+            provider: string;
+            /** @description Kontor's immutable runtime binding id. */
+            runtime_binding_id: string;
+            /**
+             * Format: int64
+             * @description The exact stored runtime observation that reduced this predecessor to
+             *     the blocked state authorizing succession.
+             */
+            runtime_observation_cursor: number;
+        };
+        /**
+         * @description Which exact item, on which run, under which signal revision authorized a
+         *     runtime-observed quota decision.
+         *
+         *     Modeled scalars only. There is deliberately no refusal text and no open map
+         *     here — the digest identifies the sentence without the projection ever
+         *     carrying one.
+         */
+        QuotaProvenanceDto: {
+            /** @description The run whose session carried the item. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description The binding generation, so evidence cannot be read across one.
+             */
+            binding_generation: number;
+            /** @description What kind of evidence this was. */
+            decision_basis: string;
+            /**
+             * @description The digest the quota row cites. Covers the bounded refusal *and* the
+             *     item provenance that carried it, so the same sentence from a different
+             *     item, run or generation digests differently. Never the text itself.
+             */
+            evidence_digest: string;
+            /** @description The provenance record's id. */
+            id: string;
+            /**
+             * Format: int64
+             * @description Canonical epoch of the item.
+             */
+            item_epoch: number;
+            /** @description The runtime's own item type. */
+            item_kind: string;
+            /** @description When the item was emitted, never when Kontor read it. */
+            item_observed_at: string;
+            /**
+             * Format: int64
+             * @description Last native sequence the item covers.
+             */
+            item_seq_end: number;
+            /**
+             * Format: int64
+             * @description First native sequence the item covers.
+             */
+            item_seq_start: number;
+            /** @description The native session behind the binding. */
+            native_id: string;
+            /** @description When the record was written. */
+            recorded_at: string;
+            /** @description The zone the signal declared for a bare wall clock, if any. */
+            reset_zone?: string | null;
+            /** @description That run's immutable binding. */
+            runtime_binding_id: string;
+            /** @description Digest of that signal's complete definition when it matched. */
+            signal_definition_hash: string;
+            /** @description Stable logical id of the signal that matched. */
+            signal_id: string;
+            /**
+             * Format: int32
+             * @description That signal's revision.
+             */
+            signal_version: number;
+            /**
+             * @description Exactly which native sequences the item covered, in order. An envelope
+             *     would claim sequences a collapsed entry never carried.
+             */
+            source_sequences: components["schemas"]["QuotaSourceRangeDto"][];
+        };
+        /** @description One inclusive native-sequence range an item covered. */
+        QuotaSourceRangeDto: {
+            /**
+             * Format: int64
+             * @description Last native sequence, inclusive.
+             */
+            seq_end: number;
+            /**
+             * Format: int64
+             * @description First native sequence, inclusive.
+             */
+            seq_start: number;
         };
         /** @description One concurrent quota window, on the wire. */
         QuotaWindowDto: {
@@ -6776,10 +7058,20 @@ export interface components {
             binding_generation: number;
             /**
              * Format: int64
+             * @description The predecessor revision the replacement was authorized against.
+             *
+             *     Separate from the task revision: runtime observation reduction moves
+             *     the run without moving its task, so the task CAS cannot fence stale
+             *     quota evidence on its own.
+             */
+            expected_predecessor_revision: number;
+            /**
+             * Format: int64
              * @description The task revision the replacement is reconciled against.
              */
             expected_task_revision: number;
             model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
+            quota_exhausted?: null | components["schemas"]["QuotaExhaustedSeatRequest"];
             /** @description The role slot whose terminal attempt is being replaced. */
             role_slot: string;
             unavailable_provider?: null | components["schemas"]["UnavailableProviderSeatRequest"];
@@ -11239,6 +11531,125 @@ export interface operations {
             };
         };
     };
+    apply_epic_backlog_code_correction: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose legacy code is corrected */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicBacklogCodeCorrectionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedEpicBacklogCodeCorrectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_epic_backlog_code_correction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose legacy code is corrected */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EpicBacklogCodeCorrectionPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicBacklogCodeCorrectionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     code_help: {
         parameters: {
             query?: never;
@@ -15444,6 +15855,137 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_container_recovery: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node whose binding is stale */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContainerRecoveryApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedContainerRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_container_recovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The node whose binding is stale */
+                topology_node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContainerRecoveryPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContainerRecoveryPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };
