@@ -157,6 +157,42 @@ describe('client requests', () => {
     expect(calls[6]?.init?.body).toBeUndefined()
   })
 
+  it('keeps quota reads and seat recovery commands on their contract routes', async () => {
+    const { client, calls } = clientWith(() => json({ realm_id: REALM }))
+    const replace = {
+      role_slot: 'implementer',
+      expected_task_revision: 8,
+      binding_generation: 2,
+    }
+    const recover = {
+      expected_revision: 5,
+      expected_native_id: 'native-seat-1',
+      reason: 'provider_unavailable' as const,
+      recovery_profile: [],
+    }
+    const attention = { expected_revision: 4, reason: 'inspect stopped seat' }
+
+    await client.providerQuotaStates('p')
+    await client.runtimeSettle('p', 'run-1', 'settle-1')
+    await client.replaceSeat('p', 'run-1', replace, 'replace-1')
+    await client.recoverSeat('p', 'committee-1', 'seat-1', recover, 'recover-1')
+    await client.seatAttention('p', 'seat-1', attention, 'attention-1')
+
+    expect(calls.map((call) => `${call.init?.method ?? 'GET'} ${new URL(call.url).pathname}`)).toEqual([
+      'GET /v1/projects/p/provider-quota-states',
+      'POST /v1/projects/p/agent-runs/run-1/runtime:settle',
+      'POST /v1/projects/p/agent-runs/run-1/successors:replace',
+      'POST /v1/projects/p/committee-runs/committee-1/seats/seat-1/recover',
+      'POST /v1/projects/p/seat-bindings/seat-1/attention',
+    ])
+    expect(calls[1]?.init?.body).toBeUndefined()
+    expect(calls[2]?.init?.body).toBe(JSON.stringify(replace))
+    expect(calls[3]?.init?.body).toBe(JSON.stringify(recover))
+    expect(calls[4]?.init?.body).toBe(JSON.stringify(attention))
+    expect(calls.slice(1).map((call) => new Headers(call.init?.headers).get('Idempotency-Key')))
+      .toEqual(['settle-1', 'replace-1', 'recover-1', 'attention-1'])
+  })
+
   it('reports a refusal with the contract code rather than as a channel failure', async () => {
     const { client } = clientWith(() =>
       json(

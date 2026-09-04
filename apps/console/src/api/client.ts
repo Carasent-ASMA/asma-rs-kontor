@@ -22,6 +22,7 @@ import type {
   CommitteeRun,
   CompletionOutcome,
   CompletionState,
+  ConsultationSeatRecovery,
   CoreTeam,
   CoreTeamApplyRequest,
   CoreTeamOutcome,
@@ -39,12 +40,19 @@ import type {
   PromotedSession,
   PromotionApplyRequest,
   PromotionPreview,
+  ProviderQuotaState,
   QuickRoles,
   QuickSession,
   Realm,
+  RecoverConsultationSeatRequest,
+  ReplacedSeat,
+  ReplaceSeatRequest,
   RemediateCompletionRequest,
   Refusal,
   RunSnapshot,
+  RuntimeSettlement,
+  SeatBindingOutcome,
+  SeatBindingRequest,
   StreamFrame,
   StreamRefusal,
   TaskSnapshot,
@@ -384,6 +392,69 @@ export class KontorClient {
   /** The server-owned admission picture for one project. */
   async projectCapacity(projectId: string): Promise<ProjectCapacity> {
     return this.#json<ProjectCapacity>(`/v1/projects/${encodeURIComponent(projectId)}/capacity`)
+  }
+
+  /** Every recorded provider/account quota state in this project. */
+  async providerQuotaStates(projectId: string): Promise<ProviderQuotaState[]> {
+    return this.#json<ProviderQuotaState[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/provider-quota-states`,
+    )
+  }
+
+  /** Ask the runtime to settle one exact run; the caller supplies no outcome. */
+  async runtimeSettle(
+    projectId: string,
+    agentRunId: string,
+    commandId: string,
+  ): Promise<RuntimeSettlement> {
+    return this.#command<RuntimeSettlement>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs/${encodeURIComponent(agentRunId)}/runtime:settle`,
+      commandId,
+      undefined,
+    )
+  }
+
+  /** Replace one terminal persistent delivery seat under the server's exact CAS request. */
+  async replaceSeat(
+    projectId: string,
+    agentRunId: string,
+    request: ReplaceSeatRequest,
+    commandId: string,
+  ): Promise<ReplacedSeat> {
+    return this.#command<ReplacedSeat>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs/${encodeURIComponent(agentRunId)}/successors:replace`,
+      commandId,
+      request,
+    )
+  }
+
+  /** Recover one idle Committee native filler while preserving its logical SeatBinding. */
+  async recoverSeat(
+    projectId: string,
+    committeeRunId: string,
+    seatBindingId: string,
+    request: RecoverConsultationSeatRequest,
+    commandId: string,
+  ): Promise<ConsultationSeatRecovery> {
+    return this.#command<ConsultationSeatRecovery>(
+      `/v1/projects/${encodeURIComponent(projectId)}/committee-runs/${encodeURIComponent(committeeRunId)}/seats/${encodeURIComponent(seatBindingId)}/recover`,
+      commandId,
+      request,
+    )
+  }
+
+  /** Ask Kontor to observe one exact topology SeatBinding. */
+  async seatAttention(
+    projectId: string,
+    seatBindingId: string,
+    request: SeatBindingRequest,
+    commandId: string,
+  ): Promise<SeatBindingOutcome> {
+    return this.#command<SeatBindingOutcome>(
+      `/v1/projects/${encodeURIComponent(projectId)}/seat-bindings/${encodeURIComponent(seatBindingId)}/attention`,
+      commandId,
+      request,
+    )
   }
 
   /** Help for the controlled codes pinned by one epic. */

@@ -17,6 +17,7 @@ import type {
   ProfileRevision,
   ProjectCapacity,
   PromotedSession,
+  ProviderQuotaState,
   PromotionPreview,
   QuickRoles,
   QuickSession,
@@ -42,6 +43,7 @@ type OperationalClient = Pick<
   | 'previewPromotion'
   | 'applyPromotion'
   | 'projectCapacity'
+  | 'providerQuotaStates'
   | 'codeHelp'
   | 'advisorProfiles'
   | 'committeeTemplates'
@@ -66,6 +68,7 @@ interface ProjectData {
   coreTeam: Read<CoreTeam>
   roles: Read<QuickRoles>
   capacity: Read<ProjectCapacity>
+  quota: Read<ProviderQuotaState[]>
   help: Read<{ entries: CodeHelpEntry[] }>
   advisors: Read<ProfileCatalog>
   committees: Read<ProfileCatalog>
@@ -113,13 +116,14 @@ export function ProjectView({ client }: { client: OperationalClient }) {
     const epic = epicId.trim()
     if (!project || !epic) return
     setBusy(true)
-    const [epicRead, topology, coreTeam, roles, capacity, help, advisors, committees, profiles, completion] =
+    const [epicRead, topology, coreTeam, roles, capacity, quota, help, advisors, committees, profiles, completion] =
       await Promise.all([
         settled(client.epic(project, epic)),
         settled(client.topology(project, epic)),
         settled(client.coreTeam(project)),
         settled(client.quickRoles(project)),
         settled(client.projectCapacity(project)),
+        settled(client.providerQuotaStates(project)),
         settled(client.codeHelp(project, epic)),
         settled(client.advisorProfiles(project)),
         settled(client.committeeTemplates(project)),
@@ -134,6 +138,7 @@ export function ProjectView({ client }: { client: OperationalClient }) {
       coreTeam,
       roles,
       capacity,
+      quota,
       help,
       advisors,
       committees,
@@ -193,6 +198,11 @@ export function ProjectView({ client }: { client: OperationalClient }) {
           <section aria-labelledby="project-capacity">
             <h3 id="project-capacity">Project capacity</h3>
             {data.capacity.value ? <CapacityPanel capacity={data.capacity.value} /> : <Unavailable read={data.capacity} />}
+          </section>
+
+          <section aria-labelledby="provider-quota-states">
+            <h3 id="provider-quota-states">Provider quota states</h3>
+            {data.quota.value ? <QuotaStrip states={data.quota.value} /> : <Unavailable read={data.quota} />}
           </section>
 
           <section aria-labelledby="project-topology">
@@ -284,6 +294,36 @@ function CapacityPanel({ capacity }: { capacity: ProjectCapacity }) {
         </p>
       ) : <p className="empty">No admission refusal reported.</p>}
     </>
+  )
+}
+
+/**
+ * Provider/account quota observations exactly as the control plane reports them.
+ *
+ * This is deliberately separate from seat recovery. The current contract does
+ * not associate a stopped delivery run with an account quota observation, and
+ * its generated replacement request cannot carry quota-exhaustion evidence.
+ * Rendering a Recover action from a provider name alone would therefore let the
+ * browser invent the authority that only the server can prove.
+ */
+function QuotaStrip({ states }: { states: readonly ProviderQuotaState[] }) {
+  if (states.length === 0) return <p className="empty">No provider quota state is recorded.</p>
+  return (
+    <ul className="quota-strip" aria-label="Provider quota states">
+      {states.map((state) => (
+        <li key={`${state.provider}/${state.account_profile_id}`} data-blocking={String(state.blocking)}>
+          <strong>{state.provider}</strong> · <code>{state.account_profile_id}</code>{' '}
+          <StateBadge state={state.state} label="quota state" />
+          {state.blocking ? <span className="quota-blocking">launch blocked</span> : null}
+          {state.resets_at ? <small className="block">resets {state.resets_at}</small> : null}
+          {state.windows.length > 0 ? (
+            <small className="block">
+              {state.windows.map((window) => `${window.kind} ${window.used_percent}%`).join(' · ')}
+            </small>
+          ) : null}
+        </li>
+      ))}
+    </ul>
   )
 }
 

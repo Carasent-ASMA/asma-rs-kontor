@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ProjectView } from './ProjectView'
+import { setViewport } from '../test/viewport'
 
 const REVISION = { id: 'standard-roles', version: 1 }
 const RECEIPT = {
@@ -42,6 +43,7 @@ function operationalClient(overrides: Record<string, unknown> = {}) {
     previewPromotion: vi.fn(async () => ({ realm_id: 'realm-1', quick_session_id: 'quick-1', preview_hash: 'promotion-1', effects: [] })),
     applyPromotion: vi.fn(async () => ({ quick_session_id: 'quick-1', epic_id: 'epic-2', receipt: RECEIPT })),
     projectCapacity: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', snapshot_cursor: 20, accounts: [], active_team_runs: 4, adaptive_streak: 2, adaptive_width: 5, mission_ceiling: 7, last_observation_id: 'observation-1', last_refusal: 'eighth run refused' })),
+    providerQuotaStates: vi.fn(async () => [{ account_profile_id: 'codex-personal', provider: 'openai', state: 'exhausted', blocking: true, observed_at: '2026-09-04T10:00:00Z', resets_at: '2026-09-04T12:00:00Z', revision: 3, source: 'runtime_observation', windows: [{ kind: 'session', used_percent: 100, resets_at: '2026-09-04T12:00:00Z' }] }]),
     codeHelp: vi.fn(async () => ({ realm_id: 'realm-1', epic_id: 'epic-1', snapshot_cursor: 20, entries: [
       { category: 'role', code: 'LSA', full_name: 'Lead Software Architect', meaning: 'Owns architecture.', lifecycle: 'active', source: REVISION },
       { category: 'role', code: 'TPM', full_name: 'Technical Program Manager', meaning: 'Owns delivery.', lifecycle: 'active', source: REVISION },
@@ -80,6 +82,16 @@ describe('<ProjectView>', () => {
     expect(screen.getByRole('button', { name: 'PSW' })).toHaveAttribute('aria-describedby')
     expect(screen.getAllByRole('tooltip').some((tooltip) => tooltip.textContent?.includes('Project Session Workspace'))).toBe(true)
     expect(screen.getAllByText(/Member count and protocol are not exposed/)).toHaveLength(2)
+  })
+
+  it('keeps the server quota strip readable on a phone-width console', async () => {
+    setViewport('phone')
+    await open()
+    const quota = screen.getByRole('list', { name: 'Provider quota states' })
+    expect(quota).toHaveClass('quota-strip')
+    expect(within(quota).getByText('openai')).toBeInTheDocument()
+    expect(within(quota).getByText('launch blocked')).toBeInTheDocument()
+    expect(within(quota).getByText(/session 100%/)).toBeInTheDocument()
   })
 
   it('groups catalog roles and cannot apply a Core Team before preview confirmation', async () => {

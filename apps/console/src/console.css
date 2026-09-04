@@ -738,6 +738,32 @@ td {
   margin-left: 0.5rem;
 }
 
+.quota-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quota-strip li {
+  min-width: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.quota-strip li[data-blocking="true"] {
+  border-left: 3px solid var(--warn);
+}
+
+.quota-blocking {
+  margin-left: 0.35rem;
+  color: var(--warn);
+  font-weight: 600;
+}
+
 .block {
   display: block;
   color: var(--ink-soft);
@@ -859,5 +885,9 @@ td {
 
   .project-sections > section {
     padding: 0.6rem;
+  }
+
+  .quota-strip {
+    grid-template-columns: 1fr;
   }
 }
