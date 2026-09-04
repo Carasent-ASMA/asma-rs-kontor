@@ -1,0 +1,64 @@
+{
+  "compatibility": {
+    "plan": {
+      "tool": "kontor_ticket_reconcile_plan",
+      "status": 200,
+      "body": {
+        "converged": false,
+        "diff": [
+          {
+            "external": "DRAFT",
+            "kontor": "On hold",
+            "milestone": "terminal_hold"
+          }
+        ],
+        "links": [
+          "01a06e1b-aa20-73b2-be50-5ec281002746"
+        ],
+        "projection_hash": "90d023015bd5df0f46bcaa1b1c4c5fcdf53522ad38f7029c303a79cc4b883781",
+        "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+        "task_id": "01a06e13-878b-77e1-885e-7187ffc97b6d"
+      }
+    },
+    "apply": {
+      "tool": "kontor_ticket_reconcile_apply",
+      "status": 200,
+      "body": {
+        "converged": [
+          "01a06e1b-aa20-73b2-be50-5ec281002746"
+        ],
+        "projection_hash": "90d023015bd5df0f46bcaa1b1c4c5fcdf53522ad38f7029c303a79cc4b883781",
+        "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+        "receipt_id": "01a06e32-a0b8-7a70-aac2-09a6ce072e21",
+        "task_id": "01a06e13-878b-77e1-885e-7187ffc97b6d"
+      }
+    },
+    "readback": {
+      "tool": "kontor_ticket_reconcile_plan",
+      "status": 200,
+      "body": {
+        "converged": true,
+        "diff": [],
+        "links": [
+          "01a06e1b-aa20-73b2-be50-5ec281002746"
+        ],
+        "projection_hash": "946b5952cda5831261d9fd9b49d285510aa28b916574f71d8afc99e0a3677af5",
+        "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+        "task_id": "01a06e13-878b-77e1-885e-7187ffc97b6d"
+      }
+    }
+  },
+  "documentation": {
+    "tool": "kontor_ticket_reconcile_plan",
+    "status": 422,
+    "body": {
+      "action": "read the runtime's capabilities and use an operation it declares",
+      "code": "unsupported_capability",
+      "current_revision": null,
+      "newest_cursor": null,
+      "oldest_retained_cursor": null,
+      "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+      "rule": "this build does not contain exactly one Jira workflow specification for the entity kind and frozen profile"
+    }
+  }
+}
