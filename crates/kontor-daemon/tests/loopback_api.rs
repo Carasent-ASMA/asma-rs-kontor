@@ -30802,6 +30802,24 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         format!("/tmp/kontor-committee-initial-recovery/.worktrees/consultation-{stuck_node}"),
         "generic topology recovery placed the Committee outside its stable consultation directory"
     );
+    let recovered_slots = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_bindings(ProjectId::parse(project).expect("the project"), stuck_node)
+            .expect("the Committee seats read")
+            .into_iter()
+            .filter(|seat| seat.lifecycle != TopologyLifecycle::Retired)
+            .map(|seat| seat.role_slot_id.to_string())
+            .collect::<BTreeSet<_>>()
+    });
+    assert_eq!(
+        recovered_slots,
+        BTreeSet::from([
+            "judge".to_owned(),
+            "reviewer-a".to_owned(),
+            "reviewer-b".to_owned(),
+        ]),
+        "generic topology recovery invented a control seat inside the Committee"
+    );
 
     let reroute_body = serde_json::json!({
         "expected_revision": stuck.revision,

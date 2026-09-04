@@ -15241,9 +15241,11 @@ impl ApplicationOperations for Services {
             // go.
             // Ticket materialization binds the durable TSW container but does
             // not admit a TeamRun or pre-create a delivery seat. Scheduler
-            // start owns delivery-seat creation. Structural session hosts keep
-            // their control seat.
-            if scope.task_id.is_none()
+            // start owns delivery-seat creation. The ECP alone owns the
+            // persistent control seat: Advisor and Committee containers are
+            // already populated from their pinned consultation definitions,
+            // so adding the ECP control slot there invents an undeclared seat.
+            if leaf.kind == self.domain.delivery.control_kind
                 && declared
                     .projection_capabilities
                     .contains(&NodeProjectionCapability::SessionHost)
