@@ -38,6 +38,7 @@
 
 pub mod adapter;
 pub mod admission;
+pub mod binding_timeline;
 pub mod capability;
 pub mod container;
 pub mod fake;
@@ -62,6 +63,9 @@ pub use adapter::{
 pub use admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, AdmissionTicket, ClaimedSeat,
     LaunchAuthority, OccupiedSeat, ReplacedBinding, RoleSlotKey, SeatFacts,
+};
+pub use binding_timeline::{
+    BindingMessageTimeline, BindingTimelineEvent, BindingTimelineProjectionError,
 };
 pub use capability::{
     IssuedBinding, IssuedBindingRegistry, LimitDemand, OperationContext, RuntimeBindingSnapshot,
