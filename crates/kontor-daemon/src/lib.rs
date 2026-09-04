@@ -801,10 +801,18 @@ impl Daemon {
             // registry here was the whole of the restart defect: a fresh process
             // holds nothing, so the census was taken over an empty list and
             // classified none of the realm's open bindings.
-            let claimed: Vec<_> = bindings
+            let family_bindings: Vec<_> = bindings
                 .iter()
                 .filter(|binding| binding.binding.identity.runtime_kind == family)
+                .collect();
+            let mut claimed: Vec<_> = family_bindings
+                .iter()
                 .filter_map(|binding| persisted.get(&binding.binding.id).cloned())
+                .collect();
+            let unfrozen: Vec<_> = family_bindings
+                .iter()
+                .filter(|binding| !persisted.contains_key(&binding.binding.id))
+                .map(|binding| binding.binding.clone())
                 .collect();
             // The plane's own container has to exist before a census can be
             // taken inside it. A runtime that holds one answers "the project has
@@ -822,6 +830,94 @@ impl Daemon {
                 );
                 settled = BarrierState::Failed;
                 continue;
+            }
+            // Bindings written before snapshot persistence was introduced are
+            // still immutable ownership records, but this process cannot drive
+            // them until the runtime re-proves their exact native correlation
+            // and placement. That compatibility proof freezes capabilities at
+            // recovery time; there is no historical capability document to
+            // reconstruct. Persist the proof before exposing it in-process so
+            // the following restart uses ordinary verbatim restoration.
+            if !unfrozen.is_empty() {
+                let recovered = match adapter.recover_unfrozen_bindings(&unfrozen).await {
+                    Ok(recovered) => recovered,
+                    Err(error) => {
+                        warn!(
+                            realm_id = %self.realm_id(),
+                            runtime = %family,
+                            detail = %error,
+                            "runtime could not recover this realm's legacy bindings; scheduling stays shut"
+                        );
+                        settled = BarrierState::Failed;
+                        continue;
+                    }
+                };
+                let mut expected: BTreeMap<_, _> = unfrozen
+                    .iter()
+                    .map(|binding| (binding.id, binding))
+                    .collect();
+                let exact = recovered.iter().all(|snapshot| {
+                    snapshot.ensure_correlated().is_ok()
+                        && expected
+                            .remove(&snapshot.binding_id())
+                            .is_some_and(|binding| binding == &snapshot.binding)
+                }) && expected.is_empty();
+                if !exact {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        runtime = %family,
+                        expected = unfrozen.len(),
+                        recovered = recovered.len(),
+                        "runtime did not recover the exact legacy binding set; scheduling stays shut"
+                    );
+                    settled = BarrierState::Failed;
+                    continue;
+                }
+                let mut documents = Vec::with_capacity(recovered.len());
+                for snapshot in &recovered {
+                    let Ok(document) = serde_json::to_string(snapshot) else {
+                        warn!(
+                            realm_id = %self.realm_id(),
+                            runtime = %family,
+                            binding = %snapshot.binding_id(),
+                            "a recovered binding snapshot could not be serialized; scheduling stays shut"
+                        );
+                        settled = BarrierState::Failed;
+                        documents.clear();
+                        break;
+                    };
+                    documents.push((snapshot.clone(), document));
+                }
+                if documents.len() != recovered.len() {
+                    continue;
+                }
+                let persisted_all = documents.iter().all(|(snapshot, document)| {
+                    self.state
+                        .with_store(|store| {
+                            store.persist_binding_snapshot(
+                                snapshot.binding_id(),
+                                snapshot.agent_run_id(),
+                                document,
+                            )
+                        })
+                        .is_ok()
+                });
+                if !persisted_all {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        runtime = %family,
+                        "a recovered binding snapshot could not be persisted; scheduling stays shut"
+                    );
+                    settled = BarrierState::Failed;
+                    continue;
+                }
+                info!(
+                    realm_id = %self.realm_id(),
+                    runtime = %family,
+                    recovered = recovered.len(),
+                    "runtime recovered legacy bindings without creating replacement sessions"
+                );
+                claimed.extend(recovered);
             }
             // Hand the claims back to the runtime that issued them. It confirms
             // each session still exists in the same generation and re-records
