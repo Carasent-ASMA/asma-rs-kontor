@@ -46,7 +46,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 8;
+pub const EXPORT_SCHEMA_VERSION: u32 = 9;
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -140,6 +140,16 @@ const QUOTA_CHAIN_RECORD_FIELDS: [&str; 4] = [
     "provider_quota_states",
     "provider_quota_windows",
 ];
+
+/// Database generation that introduced resumable seat succession and bound
+/// runtime quota provenance to its exact control-event cursor.
+const SUCCESSION_SCHEMA_VERSION: i64 = 86;
+
+/// Export generation that first carries succession and provenance cursors.
+const SUCCESSION_EXPORT_VERSION: u32 = 9;
+
+/// Record arrays introduced together in generation 9.
+const SUCCESSION_RECORD_FIELDS: [&str; 2] = ["succession_attempts", "succession_receipts"];
 
 /// How deep an embedded document is followed by the canary scan.
 ///
@@ -262,6 +272,13 @@ impl KontorExportV1 {
             })?;
             remove_quota_chain_record_fields(records)?;
         }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_succession_record_fields(records)?;
+            remove_quota_runtime_cursor_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -286,6 +303,10 @@ impl KontorExportV1 {
         }
         if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
             remove_quota_chain_record_fields(&mut value)?;
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION {
+            remove_succession_record_fields(&mut value)?;
+            remove_quota_runtime_cursor_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -404,6 +425,39 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove quota chain completeness",
+            });
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION
+            && self.database_schema_version >= SUCCESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove succession completeness",
+            });
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION
+            && (!self.records.succession_attempts.is_empty()
+                || !self.records.succession_receipts.is_empty()
+                || self
+                    .records
+                    .provider_quota_observation_provenance
+                    .iter()
+                    .any(|record| record.runtime_observation_cursor.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries succession evidence it did not define",
+            });
+        }
+        if self.database_schema_version < SUCCESSION_SCHEMA_VERSION
+            && (!self.records.succession_attempts.is_empty()
+                || !self.records.succession_receipts.is_empty()
+                || self
+                    .records
+                    .provider_quota_observation_provenance
+                    .iter()
+                    .any(|record| record.runtime_observation_cursor.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries succession evidence its database generation could not hold",
             });
         }
         // And the converses, which are claims rather than omissions. Each limb of
@@ -822,6 +876,19 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < SUCCESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in SUCCESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -890,6 +957,37 @@ fn remove_quota_chain_record_fields(records: &mut serde_json::Value) -> Result<(
     })?;
     for field in QUOTA_CHAIN_RECORD_FIELDS {
         records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-9 succession arrays from a supported legacy record object.
+fn remove_succession_record_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-9 field added to the existing provenance row shape.
+fn remove_quota_runtime_cursor_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    let Some(provenance) = records.get_mut("provider_quota_observation_provenance") else {
+        return Ok(());
+    };
+    let provenance = provenance.as_array_mut().ok_or(BackupError::Verification {
+        detail: "the export quota provenance records are not an array",
+    })?;
+    for record in provenance {
+        let record = record.as_object_mut().ok_or(BackupError::Verification {
+            detail: "an export quota provenance record is not an object",
+        })?;
+        record.remove("runtime_observation_cursor");
     }
     Ok(())
 }
@@ -2328,6 +2426,9 @@ exported_tables! {
         runtime_binding_id: String,
         native_id: String,
         binding_generation: i64,
+        /// Exact control-plane observation cursor; absent only on legacy v85 rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_observation_cursor: Option<i64>,
         item_epoch: i64,
         item_seq_start: i64,
         item_seq_end: i64,
@@ -2395,6 +2496,66 @@ exported_tables! {
         resets_at: Option<String>,
         used_percent: i64,
     }
+
+    /// Forward-only quota-blocked seat succession attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    succession_attempts: SuccessionAttemptsRow from "succession_attempts" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_key: String,
+        predecessor_agent_run_id: String,
+        predecessor_runtime_binding_id: String,
+        predecessor_runtime_kind: String,
+        predecessor_host: String,
+        predecessor_native_id: String,
+        predecessor_generation: i64,
+        expected_task_revision: i64,
+        expected_team_revision: i64,
+        expected_predecessor_revision: i64,
+        runtime_observation_cursor: i64,
+        quota_provenance_id: String,
+        quota_state_revision: i64,
+        quota_evidence_hash: String,
+        quota_provider: String,
+        successor_model_rung: Option<String>,
+        successor_model_rung_hash: Option<String>,
+        successor_account_profile_id: Option<String>,
+        idempotency_key: String,
+        intent_hash: String,
+        state: String,
+        deferred_until: Option<String>,
+        handoff: Option<String>,
+        handoff_hash: Option<String>,
+        successor_agent_run_id: Option<String>,
+        successor_runtime_binding_id: Option<String>,
+        successor_runtime_kind: Option<String>,
+        successor_host: Option<String>,
+        successor_native_id: Option<String>,
+        successor_generation: Option<i64>,
+        successor_observation_cursor: Option<i64>,
+        successor_observed_at: Option<String>,
+        refusal_reason: Option<String>,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+        predecessor_retired_at: Option<String>,
+        confirmed_at: Option<String>,
+        refused_at: Option<String>,
+        successor_planned_at: Option<String>,
+    }
+
+    /// Immutable receipts for confirmed succession attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    succession_receipts: SuccessionReceiptsRow from "succession_receipts" key(id) {
+        id: String,
+        project_id: String,
+        attempt_id: String,
+        receipt: String,
+        receipt_hash: String,
+        confirmed_at: String,
+    }
 }
 
 impl ExportedRecords {
@@ -2425,6 +2586,11 @@ impl ExportedRecords {
         }
         if schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
             for field in QUOTA_CHAIN_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < SUCCESSION_EXPORT_VERSION {
+            for field in SUCCESSION_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

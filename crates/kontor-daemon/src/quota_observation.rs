@@ -271,6 +271,10 @@ pub fn decide(
                 runtime_binding_id: where_from.runtime_binding_id,
                 native_id: where_from.native_id.clone(),
                 binding_generation: where_from.binding_generation,
+                // The observation append owns the control-plane cursor. The
+                // store fills it from that append in the same transaction
+                // before inserting the provenance row.
+                runtime_observation_cursor: None,
                 item_epoch: where_from.position.epoch,
                 item_seq_start: where_from.position.sequence,
                 item_seq_end: where_from.sequence_end,

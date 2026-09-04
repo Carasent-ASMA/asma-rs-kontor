@@ -1688,6 +1688,7 @@ fn provenance_for(
         runtime_binding_id: fixture.binding,
         native_id: external("session-1"),
         binding_generation: 1,
+        runtime_observation_cursor: None,
         item_epoch: 1,
         item_seq_start: 2,
         item_seq_end: 2,

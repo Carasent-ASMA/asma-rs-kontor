@@ -203,6 +203,10 @@ entity_ids! {
     CommandReceiptId,
     /// Identifies one recorded attempt to compact a seat's context.
     CompactionReceiptId,
+    /// Identifies one durable attempt to replace a quota-blocked seat.
+    SuccessionAttemptId,
+    /// Identifies the immutable confirmation of one completed succession.
+    SuccessionReceiptId,
     /// Identifies one canonical inbound source event.
     SourceEventId,
     /// Identifies one intake decision for a source event.

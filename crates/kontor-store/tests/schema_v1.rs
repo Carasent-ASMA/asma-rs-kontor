@@ -172,6 +172,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "source_events",
     "status_conflicts",
     "status_transition_receipts",
+    "succession_attempts",
+    "succession_receipts",
     "subject_authority_receipts",
     "subject_import_manifests",
     "seat_bindings",
@@ -515,8 +517,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // attributes remediation evidence and replay claims to a completion era;
     // v84 adds append-only legacy code and stale-container recovery evidence;
     // v85 records why a runtime-observed quota decision was reached: which
-    // exact item, on which run, under which immutable signal revision.
-    assert_eq!(SCHEMA_VERSION, 85);
+    // exact item, on which run, under which immutable signal revision. v86
+    // binds that provenance to the exact control-event cursor and adds the
+    // durable forward-only seat-succession attempt and receipt ledgers.
+    assert_eq!(SCHEMA_VERSION, 86);
 }
 
 #[test]

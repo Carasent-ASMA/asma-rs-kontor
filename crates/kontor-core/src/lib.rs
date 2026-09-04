@@ -104,6 +104,7 @@ pub mod receipt;
 pub mod repository;
 pub mod spec;
 pub mod state;
+pub mod succession;
 pub mod ticket;
 
 /// Every domain rejection in this crate.

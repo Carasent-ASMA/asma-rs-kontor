@@ -59,6 +59,11 @@ use crate::state::{
     TeamTerminalEvidence, TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
     TopologyLifecycle,
 };
+use crate::succession::{
+    NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionConfirmation,
+    SuccessionHandoffRecord, SuccessionReceipt, SuccessionRefusal, SuccessionSuccessorPlan,
+    SuccessionSuccessorRecord,
+};
 use crate::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
     StatusTransitionReceipt, TicketFieldSpec, TicketSyncProjection,
@@ -1623,6 +1628,14 @@ pub struct NewQuotaObservationProvenance {
     pub native_id: ExternalId,
     /// The binding generation, so evidence cannot be transplanted.
     pub binding_generation: u64,
+    /// Store-assigned control-plane cursor of the exact reduced blocked
+    /// observation. `None` is accepted only on the pre-insert request nested in
+    /// [`NewObservation`]; the atomic observation writer fills it before the
+    /// provenance row is inserted, and every new readback carries `Some`.
+    ///
+    /// This is not an item/content sequence. Runtime-owned item positions and
+    /// the control-plane event cursor are independent orderings.
+    pub runtime_observation_cursor: Option<EventCursor>,
     /// Canonical epoch of the item.
     pub item_epoch: u64,
     /// First native sequence the item covers.
@@ -4337,6 +4350,90 @@ pub trait RunRepository {
         agent_run_id: AgentRunId,
         after: Option<EventCursor>,
     ) -> RepositoryResult<Vec<RuntimeEvent>>;
+}
+
+/// Durable, resumable quota-driven seat succession.
+pub trait SuccessionRepository {
+    /// Persist the complete decision before contacting the runtime.
+    fn create_succession_attempt(
+        &self,
+        request: &NewSuccessionAttempt,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Read one attempt in one project.
+    fn get_succession_attempt(
+        &self,
+        project_id: ProjectId,
+        id: crate::id::SuccessionAttemptId,
+    ) -> RepositoryResult<Option<SuccessionAttempt>>;
+
+    /// Resolve a globally unique retry key before producing another effect.
+    fn succession_attempt_by_key(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<SuccessionAttempt>>;
+
+    /// The active attempt occupying one exact team/role slot.
+    fn active_succession_attempt(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role: &RoleKey,
+    ) -> RepositoryResult<Option<SuccessionAttempt>>;
+
+    /// Realm-wide startup inventory of all resumable attempts.
+    fn list_nonterminal_succession_attempts(
+        &self,
+        limit: u32,
+    ) -> RepositoryResult<Vec<SuccessionAttempt>>;
+
+    /// Realm-wide deterministic inventory whose delay has elapsed.
+    fn list_due_succession_attempts(
+        &self,
+        now: Timestamp,
+        limit: u32,
+    ) -> RepositoryResult<Vec<SuccessionAttempt>>;
+
+    /// Freeze a real route/account pair after a deferred placement becomes due.
+    fn plan_succession_successor(
+        &self,
+        request: &SuccessionSuccessorPlan,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Attach summary-or-degraded evidence before retirement.
+    fn record_succession_handoff(
+        &self,
+        request: &SuccessionHandoffRecord,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Record confirmed retirement of the exact predecessor.
+    fn mark_succession_predecessor_retired(
+        &self,
+        request: &SuccessionAttemptAdvance,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Attach the exact observed successor binding and runtime cursor.
+    fn mark_succession_successor_observed(
+        &self,
+        request: &SuccessionSuccessorRecord,
+    ) -> RepositoryResult<SuccessionAttempt>;
+
+    /// Confirm the attempt and insert its immutable receipt atomically.
+    fn confirm_succession(
+        &self,
+        request: &SuccessionConfirmation,
+    ) -> RepositoryResult<SuccessionReceipt>;
+
+    /// Stop a nonterminal attempt with a typed refusal.
+    fn refuse_succession(&self, request: &SuccessionRefusal)
+    -> RepositoryResult<SuccessionAttempt>;
+
+    /// Read the immutable receipt, if the attempt confirmed.
+    fn succession_receipt_for_attempt(
+        &self,
+        project_id: ProjectId,
+        attempt_id: crate::id::SuccessionAttemptId,
+    ) -> RepositoryResult<Option<SuccessionReceipt>>;
 }
 
 /// Inbound source events and intake decisions.

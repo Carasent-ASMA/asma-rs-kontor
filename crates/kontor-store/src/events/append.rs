@@ -685,7 +685,7 @@ pub(crate) fn record_observation(
     // evidence is append-only history; current quota is current state, and only
     // the observation that is actually authoritative right now may change it.
     if let Some(quota) = request.quota_state.as_ref() {
-        crate::repository::set_provider_quota_state_in(&transaction, quota)?;
+        crate::repository::set_provider_quota_state_in(&transaction, quota, Some(cursor))?;
     }
 
     let projection = reduce_observation(
