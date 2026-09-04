@@ -50,14 +50,14 @@ function operationalClient(overrides: Record<string, unknown> = {}) {
     seatQuotaStates: vi.fn(async () => [
       {
         agent_run_id: 'run-blocked', task_id: 'task-1', team_run_id: 'team-1', role_slot: 'implementer',
-        runtime_binding_id: 'binding-1', runtime_kind: 'paseo', native_id: 'native-1', binding_generation: 2,
+        runtime_binding_id: 'binding-1', runtime_kind: 'native.session', native_id: 'native-1', binding_generation: 2,
         account_profile_id: 'codex-personal', lifecycle: 'blocked', observed_state: 'blocked',
         runtime_observation_cursor: 41, recovery_eligible: true, blocking_provider: 'openai',
         quota_provenance_id: 'quota-prov-1', providers: [{ provider: 'openai', quota: null }],
       },
       {
         agent_run_id: 'run-running', task_id: 'task-1', team_run_id: 'team-1', role_slot: 'reviewer',
-        runtime_binding_id: 'binding-2', runtime_kind: 'paseo', native_id: 'native-2', binding_generation: 1,
+        runtime_binding_id: 'binding-2', runtime_kind: 'native.session', native_id: 'native-2', binding_generation: 1,
         account_profile_id: 'codex-personal', lifecycle: 'running', observed_state: 'running',
         runtime_observation_cursor: 42, recovery_eligible: false, providers: [{ provider: 'openai', quota: null }],
       },
