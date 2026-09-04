@@ -100,7 +100,7 @@ The current repository includes:
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 150 tools — exposed through the stdio MCP server and
+- one capability catalogue — 166 tools — exposed through the stdio MCP server and
   a `kontor` CLI *generated from the same registry*, with credential tiers and
   narrow serve profiles;
 - a responsive React operator console and Tauri desktop shell.
@@ -220,7 +220,7 @@ is intentionally explicit and remains local to the state root.
 
 Reading and writing are also separate processes on the MCP side: a server runs at
 one credential tier and optionally one narrow serve profile, so a delivery seat
-is given the eighteen tools it works with rather than all 146. See
+is given the narrow tools it works with rather than all 166. See
 [`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
 
 Seat lifecycle policy has a checked example

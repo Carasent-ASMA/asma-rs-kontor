@@ -7680,7 +7680,7 @@ export interface components {
             realm_id: string;
             /** @description Exact role slot retained by the successor. */
             role_slot: string;
-            /** @description `deferred` or `confirmed`. */
+            /** @description `deferred`, `confirmed` or `refused`. */
             state: string;
             /** @description Immutable final receipt, present only after confirmation. */
             succession_receipt_id?: string | null;

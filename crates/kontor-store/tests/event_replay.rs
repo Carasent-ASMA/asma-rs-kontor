@@ -13,6 +13,7 @@
 //! * persisting transcript, message or token data in the durable log.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use kontor_core::id::{
     AgentRunId, AggregateRevision, CanonicalDocument, EventCursor, ExternalId, ExternalName,
@@ -1806,7 +1807,11 @@ fn observe_with_quota(
                 payload: document(marker),
                 observed_at: now(),
             },
-            observed: ObservedRunState::Running,
+            observed: if quota_state.is_some() {
+                ObservedRunState::Blocked
+            } else {
+                ObservedRunState::Running
+            },
             contact: RuntimeContact::Reachable,
             freshness: Freshness::Fresh,
             expected_revision: fixture.revision(fixture.run),
@@ -2150,7 +2155,6 @@ fn write_runtime_quota(
     revision: AggregateRevision,
     mutate: impl FnOnce(&mut NewQuotaObservationProvenance),
 ) -> Result<(), kontor_core::repository::RepositoryError> {
-    use kontor_core::repository::CapacityRepository;
     use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
 
     let evidence = document("refusal").hash().clone();
@@ -2163,9 +2167,13 @@ fn write_runtime_quota(
         now(),
     );
     mutate(&mut record);
-    fixture
-        .store
-        .set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
+    static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(20_000);
+    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    observe_with_quota(
+        fixture,
+        sequence,
+        &format!("runtime-quota-{sequence}"),
+        Some(kontor_core::repository::NewProviderQuotaState {
             project_id: fixture.project,
             account_profile_id: id,
             provider: "codex-work".to_owned(),
@@ -2179,8 +2187,8 @@ fn write_runtime_quota(
             observed_at: now(),
             expected_revision: revision,
             updated_at: now(),
-        })
-        .map(|_| ())
+        }),
+    )
 }
 
 /// The readback an operator's "why is this blocked?" resolves to. This is also
@@ -2443,8 +2451,6 @@ fn no_refusal_text_reaches_the_database() {
 /// `(id, project)` from `id`.
 #[test]
 fn a_quota_row_cannot_cite_another_projects_provenance() {
-    use kontor_core::repository::CapacityRepository;
-
     let fixture = fixture();
     let id = account(&fixture);
     write_runtime_quota(&fixture, id, AggregateRevision::INITIAL, |_| {})
@@ -2498,22 +2504,43 @@ fn a_quota_row_cannot_cite_another_projects_provenance() {
             .expect("B's binding");
     record_b.native_id = external("session-b");
     let foreign_id = record_b.id.to_string();
+    let run_b = record_b.agent_run_id;
     fixture
         .store
-        .set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
-            project_id: project_b,
-            account_profile_id: account_b,
-            provider: "codex-work".to_owned(),
-            state: kontor_core::spec::ProviderQuotaKind::Unknown,
-            resets_at: None,
-            windows: Vec::new(),
-            credit: None,
-            evidence_hash: evidence_b,
-            provenance: Some(record_b),
-            source: kontor_core::spec::ProviderQuotaSource::RuntimeObservation,
-            observed_at: now(),
+        .record_observation(&NewObservation {
+            event: NewRuntimeEvent {
+                project_id: project_b,
+                agent_run_id: run_b,
+                identity: NativeRuntimeIdentity {
+                    runtime_kind: RuntimeKindKey::parse("generic.runtime").expect("runtime"),
+                    host: ExternalName::parse("host-2").expect("host"),
+                    generation: 1,
+                    native_id: external("session-b"),
+                },
+                native_event_id: Some(external("project-b-refusal")),
+                native_sequence: 1,
+                payload: document("project-b-refusal"),
+                observed_at: now(),
+            },
+            observed: ObservedRunState::Blocked,
+            contact: RuntimeContact::Reachable,
+            freshness: Freshness::Fresh,
             expected_revision: AggregateRevision::INITIAL,
-            updated_at: now(),
+            quota_state: Some(kontor_core::repository::NewProviderQuotaState {
+                project_id: project_b,
+                account_profile_id: account_b,
+                provider: "codex-work".to_owned(),
+                state: kontor_core::spec::ProviderQuotaKind::Unknown,
+                resets_at: None,
+                windows: Vec::new(),
+                credit: None,
+                evidence_hash: evidence_b,
+                provenance: Some(record_b),
+                source: kontor_core::spec::ProviderQuotaSource::RuntimeObservation,
+                observed_at: now(),
+                expected_revision: AggregateRevision::INITIAL,
+                updated_at: now(),
+            }),
         })
         .expect("project B records its own decision");
 
@@ -2772,9 +2799,7 @@ fn chain() -> (Fixture, serde_json::Value) {
         resets_at: at("2026-08-09T22:40:00Z"),
         used_percent: 100,
     }];
-    fixture
-        .store
-        .set_provider_quota_state(&runtime)
+    observe_with_quota(&fixture, 80, "chain-runtime-refusal", Some(runtime))
         .expect("the runtime observation is stored with its provenance");
 
     let credit = kontor_core::repository::NewProviderQuotaState {
@@ -3264,6 +3289,15 @@ fn without_quota(document: &mut serde_json::Value) {
             .expect("record counts are an object")
             .remove(key);
     }
+    // This fixture is rewritten as export generation 7. Succession counts
+    // arrived later too, and although both arrays are empty their count keys
+    // are not part of generation 7's continuity vocabulary.
+    for key in ["succession_attempts", "succession_receipts"] {
+        document["continuity_summary"]["record_counts"]
+            .as_object_mut()
+            .expect("record counts are an object")
+            .remove(key);
+    }
 }
 
 /// Set the stated database generation and re-read.
@@ -3308,7 +3342,14 @@ fn a_document_may_only_claim_the_quota_chain_its_generation_had() {
 
     // And the converses: a document cannot carry a limb its stated database had
     // no table for.
-    let mut no_windows = current.clone();
+    // Re-express the chain as the v85 shape for the older limb boundaries.
+    // The exact control cursor arrived in v86 and is tested separately below.
+    let mut historical = current.clone();
+    historical["records"]["provider_quota_observation_provenance"][0]
+        .as_object_mut()
+        .expect("provenance is an object")
+        .remove("runtime_observation_cursor");
+    let mut no_windows = historical.clone();
     no_windows["records"]["provider_quota_windows"] = serde_json::json!([]);
     no_windows["continuity_summary"]["record_counts"]["provider_quota_windows"] =
         serde_json::json!(0);
@@ -3316,12 +3357,12 @@ fn a_document_may_only_claim_the_quota_chain_its_generation_had() {
     for (generation, document, expected) in [
         (
             47,
-            &current,
+            &historical,
             "the export carries provider_quota_states rows its database generation could not hold",
         ),
         (
             50,
-            &current,
+            &historical,
             "the export carries provider_quota_windows rows its database generation could not hold",
         ),
         (
@@ -3331,8 +3372,13 @@ fn a_document_may_only_claim_the_quota_chain_its_generation_had() {
         ),
         (
             84,
-            &current,
+            &historical,
             "the export carries quota provenance its database generation could not hold",
+        ),
+        (
+            85,
+            &current,
+            "the export carries succession evidence its database generation could not hold",
         ),
     ] {
         match at_database(document, generation) {
@@ -3343,7 +3389,9 @@ fn a_document_may_only_claim_the_quota_chain_its_generation_had() {
         }
     }
 
-    at_database(&current, 85).expect("the generation that holds the whole chain verifies");
+    at_database(&historical, 85).expect("the generation that holds the historical chain verifies");
+    at_database(&current, 86)
+        .expect("the generation that links quota provenance to its control cursor verifies");
 }
 
 /// The child range collection is sealed when its record is written.
@@ -3361,9 +3409,11 @@ fn a_source_range_cannot_be_appended_after_its_record_is_written() {
 
     let fixture = fixture();
     let id = account(&fixture);
-    fixture
-        .store
-        .set_provider_quota_state(&quota_at(
+    observe_with_quota(
+        &fixture,
+        90,
+        "sealed-range-refusal",
+        Some(quota_at(
             &fixture,
             id,
             ProviderQuotaKind::Exhausted,
@@ -3372,8 +3422,9 @@ fn a_source_range_cannot_be_appended_after_its_record_is_written() {
             AggregateRevision::INITIAL,
             ProviderQuotaSource::RuntimeObservation,
             at("2026-08-09T10:05:00Z"),
-        ))
-        .expect("the runtime observation is stored with its provenance");
+        )),
+    )
+    .expect("the runtime observation is stored with its provenance");
 
     let connection = Connection::open(&fixture.path).expect("a raw connection");
     let (provenance, declared): (String, i64) = connection
