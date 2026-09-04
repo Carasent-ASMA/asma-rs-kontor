@@ -868,6 +868,42 @@ fn an_epic_closes_only_from_completion_and_child_evidence() {
 }
 
 #[test]
+fn an_external_hold_with_unfinished_epic_work_is_an_incompatible_human_move() {
+    for mut spec in workflows() {
+        let target = spec.milestones[0].target.clone();
+        spec.milestones[0].predicate = InternalPredicate::EpicCompletionIs {
+            state: EpicCompletionEvidence::Active,
+        };
+        let held = ExternalEpicObservation {
+            status: hold_status(&spec),
+            assignee_account_id: Some(principal().account_id),
+            external_version: Some(external("1")),
+            observed_at: at("2026-08-09T10:00:00Z"),
+            payload_hash: ContentHash::of(b"held-epic-observation"),
+        };
+        let facts = InternalEpicFacts {
+            epic_id: MiniProjectId::generate(),
+            epic_revision: AggregateRevision::INITIAL,
+            completion: EpicCompletionEvidence::Active,
+            all_child_tasks_terminal: false,
+        };
+
+        assert_eq!(
+            reconcile_epic(&EpicReconciliationInput {
+                spec: &spec,
+                observation: &held,
+                freshness: Freshness::Fresh,
+                facts: &facts,
+                live_transitions: &[route("unsafe-reopen", &target)],
+                principal: &principal(),
+            }),
+            ReconciliationOutcome::Conflict(StatusConflictKind::IncompatibleHumanMove),
+            "a live transition must not let automatic reconciliation undo an external hold"
+        );
+    }
+}
+
+#[test]
 fn an_epic_route_selects_only_the_configured_next_hop() {
     let mut spec = workflows().remove(0);
     let target = spec.milestones[0].target.clone();
