@@ -112,3 +112,21 @@ the correction does not weaken refusal for a genuinely live team. The complete
 `team_definition_migration_completeness` suite passes all 14 tests, and
 `cargo clippy -p kontor-store --all-targets -- -D warnings` passes. No mutation
 remains in the tree.
+
+## 2026-09-06 — exact archived-seat retirement mutation
+
+The archived Advisor recovery adds one deliberately narrow exception to the
+otherwise absolute in-flight migration lifecycle fence. The runtime-state
+condition was inverted temporarily so a live exact native was admitted and an
+archived/missing native was refused. The public daemon regression
+`an_archived_rename_pending_advisor_can_retire_and_complete_the_same_migration`
+failed at the live-seat control: retirement returned HTTP 200 where the test
+requires HTTP 409 `placement_blocked`. Restoring the condition killed the
+mutation.
+
+The restored regression proves both sides in one workflow: a second, live
+Advisor target cannot retire; the exact archived Advisor can retire; replaying
+the original migration key advances the pin; and no retitle call targets the
+archived identity. The focused store test independently proves that generic
+release remains fenced and only the exact migration-authorized transaction can
+retire the target. No mutation remains in the tree.

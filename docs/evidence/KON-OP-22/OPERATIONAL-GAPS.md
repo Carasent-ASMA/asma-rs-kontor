@@ -381,3 +381,38 @@ authority.
 - Owner/status: source implementation, full local qualification and mutation
   proof complete; merge, fleet promotion and live guarded-kickoff readback are
   the remaining release checkpoints.
+
+## 2026-09-06 — archived Advisor and the migration fence formed a lifecycle deadlock
+
+- Intended Kontor operation: complete the in-flight Team Definition v2 upgrade
+  for epic `01a0074f-6719-7570-adf7-95ee3ec69875` without rewriting or
+  replacing any native identity. Apply key
+  `01a07350-8090-7a11-8b22-123456789abc` had already renamed 16 available
+  targets and retained Advisor SeatBinding
+  `01a02d6e-4dba-7ab2-9534-cc1b20df6917` as `rename_pending` because exact
+  native `64233745-6091-4b8d-a184-407c785dac0e` was archived.
+- Failure class: lifecycle deadlock. Confirmation correctly refused while the
+  target's logical seat was still active, but generic seat retirement correctly
+  refused every lifecycle mutation while the same migration census was frozen.
+  The migration therefore had no governed way to turn the proven non-live seat
+  into immutable history. The project remains unpinned to v2; no direct SQLite
+  or Paseo mutation was used to bypass the fence.
+- Correction: a narrow repository transaction now permits only the exact
+  `rename_pending` SeatBinding of the exact in-flight migration to retire, and
+  only after the runtime adapter freshly proves the frozen native identity is
+  `archived` or `missing`. A live native, a different seat, a different native
+  identity, a different migration or any generic lifecycle operation remains
+  fenced. Migration confirmation then proves exact bidirectional parity for
+  every still-live native; the retired target remains immutable
+  `rename_pending` history rather than being rewritten to success. Same-key
+  replay reuses the durable migration intent even though the fresh live census
+  is smaller.
+- Evidence: the store regression proves the generic fence and exact atomic
+  exception; the Paseo contract proves archived identity inspection; the daemon
+  end-to-end test proves a live Advisor is refused, an archived Advisor retires,
+  and the same migration confirms without a retitle. Inverting the live-state
+  guard made the daemon test fail and was restored.
+- Owner/status: source correction and focused local verification are complete.
+  Merge and a single newest-master deployment by the designated runtime owner
+  remain pending. Live apply remains paused until that owner returns the exact
+  deployed commit and safe-resume health receipt.
