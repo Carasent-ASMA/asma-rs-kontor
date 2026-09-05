@@ -735,6 +735,74 @@ fn a_live_delivery_session_with_no_seat_at_its_slot_fails_closed() {
 }
 
 #[test]
+fn a_terminal_team_run_makes_legacy_seatless_bound_sessions_history() {
+    let w = world();
+    // Legacy OP-01/OP-02 teams closed successfully before SeatBindings existed,
+    // leaving their bound child runs nonterminal. The immutable parent TeamRun
+    // is the authority that makes those otherwise-unnameable sessions history.
+    let legacy_run = AgentRunId::generate();
+    w.store
+        .create_agent_run(&NewAgentRun {
+            id: legacy_run,
+            project_id: w.project_id,
+            team_run_id: w.team_run,
+            parent_agent_run_id: None,
+            role: RoleSlotId::parse("delivery.legacy")
+                .expect("a slot")
+                .as_role_key()
+                .clone(),
+            account_profile_id: None,
+            binding: Some(RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: legacy_run,
+                identity: identity("agent_delivery_legacy"),
+                bound_at: at("2026-09-02T10:41:00Z"),
+            }),
+            created_at: at("2026-09-02T10:41:00Z"),
+        })
+        .expect("the legacy seatless session is bound");
+
+    let connection = rusqlite::Connection::open(&w.database).expect("the fixture database opens");
+    connection
+        .execute(
+            "UPDATE team_runs
+             SET lifecycle = 'succeeded',
+                 terminal_outcome = 'succeeded',
+                 terminal_source_kind = 'settled_turns',
+                 terminal_evidence_hash = ?1,
+                 closed_at = ?2,
+                 revision = revision + 1
+             WHERE project_id = ?3 AND id = ?4",
+            rusqlite::params![
+                "a".repeat(64),
+                "2026-09-02T10:42:00Z",
+                w.project_id.to_string(),
+                w.team_run.to_string()
+            ],
+        )
+        .expect("the historical TeamRun is terminal");
+    drop(connection);
+
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("a terminal TeamRun's seatless child session is history");
+    assert!(
+        census
+            .iter()
+            .all(|subject| subject.identity.native_id.as_str() != "agent_delivery_legacy"),
+        "the stale child run must not become a live migration subject"
+    );
+    w.store
+        .record_team_definition_migration(&migration(
+            &w,
+            "terminal-team-seatless-history",
+            complete_targets(&w),
+        ))
+        .expect("historical seatless children cannot block the migration");
+}
+
+#[test]
 fn an_inactive_delivery_seat_is_history_and_does_not_block_apply() {
     let w = world();
     w.store
