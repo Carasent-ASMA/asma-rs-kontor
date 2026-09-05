@@ -257,7 +257,7 @@ use kontor_store::{
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
     JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
-    RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
+    RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
     StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
     TeamTemplateSource, TurnDispatch,
 };
@@ -13363,6 +13363,112 @@ fn needs_human_dto(payload: &NeedsHumanPayload) -> NeedsHumanDto {
 }
 
 impl Services {
+    /// Serve an exact role-turn idempotency replay entirely from durable facts.
+    ///
+    /// The persistent seat may already have completed a later turn. Re-reading
+    /// its current timeline would then make the original proof look stale and,
+    /// worse, could derive a follow-up from the wrong current state. The key is
+    /// therefore checked before any runtime call or fan-out.
+    fn replay_settled_turn(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &SettleTurnRequest,
+    ) -> Result<Option<SettledTurnDto>, ApiError> {
+        let state = self.state()?;
+        let Some(RoleTurnReplay {
+            project_id: recorded_project,
+            task_revision,
+            authority_tier,
+            account_profile,
+            settled,
+        }) = state
+            .with_store(|store| store.get_settled_turn_by_idempotency_key(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let role_slot =
+            RoleSlotId::parse(&request.role_slot).map_err(|error| self.refuse_domain(&error))?;
+        let artifacts = self.artifact_keys(&request.artifacts)?;
+        let claimed = request.runtime_proof.as_ref();
+        let recorded = settled.runtime_proof.as_ref();
+        let proof_matches = matches!((claimed, recorded), (Some(claimed), Some(recorded))
+            if claimed.message_id == recorded.message_id
+                && claimed.message_position.epoch == recorded.timeline_epoch
+                && claimed.message_position.sequence == recorded.message_sequence
+                && claimed.response_position.epoch == recorded.timeline_epoch
+                && claimed.response_position.sequence == recorded.response_sequence);
+        if recorded_project != project_id
+            || settled.agent_run_id != agent_run_id
+            || settled.role_slot_id != role_slot
+            || task_revision != request.expected_task_revision
+            || settled.artifacts != artifacts
+            || authority_tier != authority.as_str()
+            || !proof_matches
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "this key already settled a turn with different content",
+            ));
+        }
+
+        let run = state
+            .with_store(|store| store.get_agent_run(project_id, agent_run_id))
+            .map_err(|error| self.refuse(&error))?;
+        let seat_live = run
+            .as_ref()
+            .and_then(|run| run.binding.as_ref())
+            .is_some_and(|binding| state.sessions().get(binding.id).is_some());
+        let team_run_closed = state
+            .with_store(|store| store.get_team_run(project_id, settled.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|team| team.lifecycle.is_terminal())
+            .map(|_| settled.team_run_id.to_string());
+        let follow_ups = state
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|dispatch| dispatch.settled_turn_id == settled.id)
+            .map(|dispatch| {
+                let after_phase = self
+                    .handoff_for(project_id, &settled, &dispatch.to_role_slot_id)?
+                    .and_then(|handoff| handoff.after_phase)
+                    .map(|phase| phase.as_str().to_owned());
+                Ok(TurnFollowUpDto {
+                    to_role_slot: dispatch.to_role_slot_id.as_role_key().as_str().to_owned(),
+                    target_agent_run_id: dispatch.target_agent_run.map(|id| id.to_string()),
+                    dispatched: dispatch.dispatched,
+                    after_phase,
+                })
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
+
+        Ok(Some(SettledTurnDto {
+            realm_id: state.realm_id(),
+            turn_id: settled.id.to_string(),
+            task_id: settled.task_id,
+            agent_run_id: settled.agent_run_id.to_string(),
+            role_slot: settled.role_slot_id.as_role_key().as_str().to_owned(),
+            turn_ordinal: settled.turn_ordinal,
+            binding_generation: settled.binding_generation,
+            artifacts: settled
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.as_str().to_owned())
+                .collect(),
+            settled_by: authority_tier,
+            account_profile: account_profile.map(|id| id.to_string()),
+            evidence_hash: settled.evidence_hash.as_str().to_owned(),
+            applied: applied_dto(Applied::Unchanged),
+            seat_live,
+            team_run_closed,
+            follow_ups,
+        }))
+    }
+
     /// Re-read the exact bound session and prove that the message named by the
     /// caller is the current completed turn, not a delayed prior notification.
     async fn prove_current_turn(
@@ -13434,7 +13540,7 @@ impl Services {
         let mut cursor: Option<HistoryCursor> = None;
         let mut message_matches = 0usize;
         let mut response_matches = 0usize;
-        let mut last_position = None;
+        let mut last_turn_position = None;
         let mut exhausted = false;
         let page_size = issued
             .snapshot()
@@ -13470,7 +13576,12 @@ impl Services {
                 {
                     response_matches += 1;
                 }
-                last_position = Some(event.position);
+                if !matches!(
+                    event.kind,
+                    SessionEventKind::StateChange | SessionEventKind::Log
+                ) {
+                    last_turn_position = Some(event.position);
+                }
             }
             match page.next {
                 Some(next) => cursor = Some(next),
@@ -13483,7 +13594,7 @@ impl Services {
         if !exhausted
             || message_matches != 1
             || response_matches != 1
-            || last_position != Some(response_position)
+            || last_turn_position != Some(response_position)
         {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
@@ -24303,6 +24414,11 @@ impl ApplicationOperations for Services {
         request: &SettleTurnRequest,
     ) -> Result<SettledTurnDto, ApiError> {
         let state = self.state()?;
+        if let Some(replayed) =
+            self.replay_settled_turn(key, authority, project_id, agent_run_id, request)?
+        {
+            return Ok(replayed);
+        }
         let now = kontor_api::now();
 
         // The seat, and the binding that makes it a seat. A run that was never

@@ -3966,6 +3966,22 @@ pub struct SettledTurn {
     pub settled_at: Timestamp,
 }
 
+/// Immutable request context needed to serve a role-turn idempotency replay
+/// without consulting the runtime again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleTurnReplay {
+    /// The project named by the original request.
+    pub project_id: ProjectId,
+    /// The task revision the original turn was taken against.
+    pub task_revision: AggregateRevision,
+    /// The authority tier authenticated on the original request.
+    pub authority_tier: String,
+    /// The account derived from the original bound run.
+    pub account_profile: Option<AccountProfileId>,
+    /// The durable settlement receipt.
+    pub settled: SettledTurn,
+}
+
 /// Runtime-owned evidence binding one role-turn settlement to the exact
 /// current message rather than a delayed prior-turn notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4005,6 +4021,60 @@ pub struct TurnDispatch {
 }
 
 impl SqliteStore {
+    /// Read the settlement already owned by one idempotency key.
+    ///
+    /// This is deliberately a store-only read. A delayed retry may arrive after
+    /// the same persistent seat has completed a later turn, so replaying the
+    /// original receipt must not re-inspect the runtime or derive another
+    /// follow-up.
+    ///
+    /// # Errors
+    /// Backend or persisted-domain decoding failures only.
+    pub fn get_settled_turn_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> RepositoryResult<Option<RoleTurnReplay>> {
+        let transaction = self.begin()?;
+        let context: Option<(String, String, i64, String, Option<String>)> = transaction
+            .query_row(
+                "SELECT id, project_id, task_revision, authority_tier, account_profile
+                 FROM role_turns WHERE idempotency_key = ?1",
+                params![idempotency_key],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((id, project_id, task_revision, authority_tier, account_profile)) = context else {
+            transaction.commit().map_err(backend)?;
+            return Ok(None);
+        };
+        let settled = read_turn(&transaction, &id)?.ok_or(RepositoryError::NotFound {
+            subject: "settled role turn",
+        })?;
+        let replay = RoleTurnReplay {
+            project_id: ProjectId::parse(&project_id)?,
+            task_revision: AggregateRevision::parse(u64::try_from(task_revision).map_err(
+                |_| DomainError::invalid("settled role turn", "has an invalid task revision"),
+            )?)?,
+            authority_tier,
+            account_profile: account_profile
+                .as_deref()
+                .map(AccountProfileId::parse)
+                .transpose()?,
+            settled,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(Some(replay))
+    }
+
     /// Settle one bounded role turn, or return the turn that key already
     /// settled.
     ///

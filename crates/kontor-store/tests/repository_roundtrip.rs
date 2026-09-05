@@ -6461,6 +6461,16 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
         .settle_role_turn(&request)
         .expect("the turn settles");
     assert_eq!(settled.runtime_proof, Some(runtime_turn_proof()));
+    let replay = fixture
+        .store
+        .get_settled_turn_by_idempotency_key(&request.idempotency_key)
+        .expect("the replay context reads")
+        .expect("the settled key exists");
+    assert_eq!(replay.project_id, fixture.project);
+    assert_eq!(replay.task_revision, request.task_revision);
+    assert_eq!(replay.authority_tier, request.authority_tier);
+    assert_eq!(replay.account_profile, request.account_profile);
+    assert_eq!(replay.settled, settled);
 
     let keys = fixture
         .store

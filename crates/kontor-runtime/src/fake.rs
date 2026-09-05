@@ -1157,6 +1157,36 @@ impl ScriptedFakeRuntime {
         Ok((message_position, response_position))
     }
 
+    /// Append one canonical non-content status event after a completed turn.
+    ///
+    /// Native runtimes may report the transition to waiting after emitting the
+    /// terminal assistant message. The status advances the timeline but does
+    /// not become a newer turn or invalidate the exact message/response pair.
+    pub fn observe_post_turn_state_change(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the state change",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::StateChange,
+            EventSubject::None,
+            "waiting for input",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        Ok(position)
+    }
+
     /// Refuse recovery-successor validation for one exact provider spelling.
     ///
     /// This is opt-in evidence for the pre-effect route-validation boundary:

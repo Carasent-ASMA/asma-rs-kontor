@@ -17566,6 +17566,28 @@ fn observe_current_turn(world: &World, project: &str, agent_run: &str) -> serde_
     })
 }
 
+fn observe_post_turn_status(world: &World, project: &str, agent_run: &str) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let agent_run_id = AgentRunId::parse(agent_run).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the settling run reads")
+            .expect("the settling run exists")
+    });
+    let binding = run.binding.expect("the settling run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact settling binding");
+    world
+        .fake
+        .observe_post_turn_state_change(&held, kontor_api::now())
+        .expect("the runtime records the post-turn status");
+}
+
 #[tokio::test]
 async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     let world = World::open_empty_with_a_plane().await;
@@ -17636,6 +17658,7 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
 
     let stale_runtime_proof = observe_current_turn(&world, &project, &agent_run);
     let runtime_proof = observe_current_turn(&world, &project, &agent_run);
+    observe_post_turn_status(&world, &project, &agent_run);
     let calls_before_stale = world.fake.calls().len();
     let stale_completion = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
@@ -17835,14 +17858,15 @@ async fn the_next_turn_on_a_settled_slot_reuses_the_same_seat() {
         .as_u64()
         .expect("a revision");
 
+    let first_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": revision,
+        "runtime_proof": observe_current_turn(&world, &project, &agent_run),
+        "artifacts": ["change-set"]
+    });
     let first = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
-        &serde_json::json!({
-            "role_slot": role_slot,
-            "expected_task_revision": revision,
-            "runtime_proof": observe_current_turn(&world, &project, &agent_run),
-            "artifacts": ["change-set"]
-        }),
+        &first_body,
     )
     .signed_as(&world, "operator")
     .with_key("turn-reuse-1")
@@ -17874,6 +17898,40 @@ async fn the_next_turn_on_a_settled_slot_reuses_the_same_seat() {
         2,
         "a second turn takes the next position in the seat's sequence: {}",
         second.body
+    );
+
+    // A delayed transport retry of the first request is still the first
+    // receipt. The seat's runtime now points at turn two, so consulting it here
+    // would either falsely reject the retry as stale or risk fan-out from the
+    // wrong current turn. Durable key replay performs neither.
+    let calls_before_delayed_replay = world.fake.calls().len();
+    let dispatches_before_delayed_replay = world.daemon.state().with_store(|store| {
+        store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")
+    });
+    let delayed_replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &first_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-reuse-1")
+    .send(&world)
+    .await;
+    assert_eq!(delayed_replay.status, 200, "{}", delayed_replay.body);
+    assert_eq!(delayed_replay.json()["applied"], "unchanged");
+    assert_eq!(delayed_replay.json()["turn_id"], first.json()["turn_id"]);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_delayed_replay,
+        "a durable replay performs no fresh runtime operation",
+    );
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")),
+        dispatches_before_delayed_replay,
+        "a durable replay derives or fans out no follow-up",
     );
 
     // The identity assertions BLK-010 asks for.
