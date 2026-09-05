@@ -3572,11 +3572,23 @@ impl Services {
             .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
             .map_err(|error| self.refuse(&error))?;
         for (team_run_id, _) in runs.into_iter().rev() {
+            let Some(team_run) = state
+                .with_store(|store| store.get_team_run(project_id, team_run_id))
+                .map_err(|error| self.refuse(&error))?
+            else {
+                continue;
+            };
+            let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            let evaluator_slots = template.slots_of(evaluator_role);
             let seats = state
                 .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
                 .map_err(|error| self.refuse(&error))?;
             for seat in seats {
-                if seat.role != *evaluator_role {
+                if !evaluator_slots
+                    .iter()
+                    .any(|slot| slot.id.as_role_key() == &seat.role)
+                {
                     continue;
                 }
                 let run = state
