@@ -1002,11 +1002,10 @@ impl PaseoRpc {
         let posture = crate::posture::render_posture(provider, parts.autonomy, parts.allowances)?;
 
         // Derived from the launch, never generated: a retry must ask about the
-        // same message the first attempt sent.
-        let client_message_id = format!(
-            "kontor-first-turn-{}-{}",
-            parts.agent_run_id, parts.binding_id
-        );
+        // same message the first attempt sent. Runtime binding ids are UUIDv7,
+        // so the echoed clientMessageId is also a canonical Kontor MessageId
+        // that can durably correlate settlement of this first turn.
+        let client_message_id = parts.binding_id.to_owned();
 
         // The envelope is the one `PaseoRpc::agent_create` already uses against
         // the live daemon: `initialPrompt` and `labels` are siblings of `config`,
@@ -2953,7 +2952,7 @@ mod tests {
         }
         assert_eq!(delivery.rpc.message["initialPrompt"], "go");
         assert_eq!(
-            delivery.rpc.message["clientMessageId"], "kontor-first-turn-run-1-bind-1",
+            delivery.rpc.message["clientMessageId"], "bind-1",
             "derived from the launch, so a retry asks about the same turn"
         );
         assert!(

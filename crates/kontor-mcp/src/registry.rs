@@ -348,6 +348,35 @@ const BUDGET_BOUNDS: &[FieldSpec] = &[
     ),
 ];
 
+/// One runtime-owned position in the exact bound session timeline.
+const TURN_TIMELINE_POSITION: &[FieldSpec] = &[
+    field("epoch", ArgType::U64, "The native timeline epoch."),
+    field(
+        "sequence",
+        ArgType::U64,
+        "The one-based sequence inside that epoch.",
+    ),
+];
+
+/// Proof that the response belongs to the currently dispatched turn.
+const TURN_RUNTIME_PROOF: &[FieldSpec] = &[
+    field(
+        "message_id",
+        ArgType::Text,
+        "The current Kontor message identity echoed by the runtime.",
+    ),
+    field(
+        "message_position",
+        ArgType::Object(TURN_TIMELINE_POSITION),
+        "The canonical position of that exact user message.",
+    ),
+    field(
+        "response_position",
+        ArgType::Object(TURN_TIMELINE_POSITION),
+        "The canonical position of the provider's terminal response.",
+    ),
+];
+
 /// The durable runtime-facing identity optionally declared by an epic apply.
 const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
     field(
@@ -1716,6 +1745,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::TextArray,
                 "The artifacts the turn produced.",
+            ),
+            opt(
+                "runtime_proof",
+                Place::Body,
+                ArgType::Object(TURN_RUNTIME_PROOF),
+                "Exact current runtime message and terminal response positions. Absence is refused by the daemon.",
             ),
             IDEMPOTENCY,
         ],
