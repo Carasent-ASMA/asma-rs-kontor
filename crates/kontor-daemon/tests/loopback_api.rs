@@ -18588,6 +18588,58 @@ fn observe_post_turn_status(world: &World, project: &str, agent_run: &str) {
 }
 
 #[tokio::test]
+async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-current-window").await;
+
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // Exceed the fake runtime's 64-event history page before producing the
+    // turn being settled. An origin read needs several pages; a current-turn
+    // proof needs only the message and its terminal response.
+    for _ in 0..40 {
+        let _ = observe_current_turn(&world, &project, &agent_run);
+    }
+    let runtime_proof = observe_current_turn(&world, &project, &agent_run);
+    let calls_before = world.fake.calls().len();
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": runtime_proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-current-window-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+
+    let calls = world.fake.calls();
+    assert_eq!(
+        calls[calls_before..]
+            .iter()
+            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+            .count(),
+        1,
+        "settlement must not crawl unrelated history before the claimed current message: {calls:?}",
+    );
+}
+
+#[tokio::test]
 async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
