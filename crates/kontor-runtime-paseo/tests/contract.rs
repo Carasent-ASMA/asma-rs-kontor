@@ -3518,11 +3518,24 @@ async fn lost_launch_ack_with_no_match_stays_unknown_rather_than_relaunching() {
         .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
         .await
         .expect_err("whether Paseo created an agent is not known");
-    assert!(matches!(error, RuntimeError::Transport { .. }));
+    assert!(matches!(
+        error,
+        RuntimeError::DeliveryConfirmationUnknown { .. }
+    ));
     assert_eq!(
         plane.daemon.count("agent run"),
         1,
         "a blind relaunch is how one seat acquires two agents"
+    );
+    let retry = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect_err("the unresolved launch still owns this seat claim");
+    assert!(matches!(retry, RuntimeError::SlotAlreadyAdmitted { .. }));
+    assert_eq!(
+        plane.daemon.count("agent run"),
+        1,
+        "the held claim refuses a second create"
     );
 }
 
@@ -3900,6 +3913,37 @@ async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
     assert_eq!(
         closes(&restarted.adapter, &observed, &binding).await,
         Some(TerminalOutcome::Cancelled)
+    );
+}
+
+#[tokio::test]
+async fn continuity_an_unfrozen_legacy_binding_recovers_only_by_exact_native_readback() {
+    let (_, original) = launched().await;
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
+    let (restarted, _) = Plane::prepared(recorded).await;
+
+    let recovered = restarted
+        .adapter
+        .recover_unfrozen_bindings(std::slice::from_ref(&original.binding))
+        .await
+        .expect("the exact live legacy seat is recoverable");
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(
+        recovered[0].binding, original.binding,
+        "recovery observes new evidence but never rewrites binding authority"
+    );
+    assert_eq!(recovered[0].identity(), original.identity());
+    restarted
+        .adapter
+        .issued_binding(&recovered[0])
+        .await
+        .expect("the recovered snapshot is now held by this adapter");
+    assert_eq!(
+        restarted.daemon.count("agent run"),
+        0,
+        "recovery is readback only and never launches a replacement"
     );
 }
 

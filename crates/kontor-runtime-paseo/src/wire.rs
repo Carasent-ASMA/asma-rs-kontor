@@ -1808,6 +1808,40 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_notification_from_an_old_turn_is_not_current_turn_evidence() {
+        let old = PaseoStreamFrame {
+            agent_id: "agt_1".to_owned(),
+            event: PaseoStreamEvent {
+                event_type: "finished".to_owned(),
+                ..PaseoStreamEvent::default()
+            },
+            timestamp: "2026-08-10T09:00:00.000Z".to_owned(),
+            seq: None,
+            epoch: None,
+        };
+        assert!(
+            old.as_entry().is_none(),
+            "a turn-level notification has no canonical position and cannot settle a handoff"
+        );
+        assert_eq!(
+            classify_stream_event(&old.event.event_type),
+            None,
+            "finished is neither content nor a control-plane completion fact"
+        );
+
+        let current_id = MessageId::generate();
+        let mut current = entry(8, "user_message");
+        current.item.client_message_id = Some(current_id.to_string());
+        assert_eq!(
+            normalize_entry(&current, 2)
+                .expect("the current turn message is canonical content")
+                .subject,
+            EventSubject::Message(current_id),
+            "only the exact current clientMessageId names the turn's message"
+        );
+    }
+
+    #[test]
     fn a_page_declares_its_own_break() {
         let mut page = PaseoTimelinePage {
             agent_id: "agt_1".to_owned(),
