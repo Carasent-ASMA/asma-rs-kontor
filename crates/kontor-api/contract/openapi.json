@@ -10323,6 +10323,17 @@
               }
             ]
           },
+          "initial_hold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuthorizationProjectionDto",
+                "description": "The covering revoked authorization created as part of this apply, when\nthe caller requested an initial kickoff hold."
+              }
+            ]
+          },
           "project_id": {
             "type": "string",
             "description": "The project."
@@ -10661,7 +10672,7 @@
       },
       "ApplyEpicRequest": {
         "type": "object",
-        "description": "What `epics:apply` is asked for.\n\nOne request, one epic, all of it. The profile category is resolved and frozen\nonto every task in the same transaction the tasks are created in, so there is\nno window in which a task exists without the workflow it will be judged\nagainst.",
+        "description": "What `epics:apply` is asked for.\n\nOne request, one epic, all of it. The profile category is resolved and frozen\nonto every task in the same transaction the tasks are created in. When\n`initial_hold` is present, apply also persists and revokes one covering\nauthorization before the epic becomes governable.",
         "required": [
           "expected_revision",
           "name",
@@ -10700,6 +10711,17 @@
             "format": "int64",
             "description": "The revision the caller read the project at.",
             "minimum": 0
+          },
+          "initial_hold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InitialExecutionHoldRequest",
+                "description": "Optional covering kickoff hold persisted before the epic becomes\ngovernable. Omission preserves default-allow admission."
+              }
+            ]
           },
           "name": {
             "type": "string",
@@ -10896,7 +10918,9 @@
           "selected_tasks",
           "allowed_start",
           "allowed_end",
-          "max_concurrency"
+          "max_concurrency",
+          "capability_receipt_id",
+          "created_by"
         ],
         "properties": {
           "allowed_end": {
@@ -10924,11 +10948,33 @@
               }
             ]
           },
+          "capability_receipt_id": {
+            "type": "string",
+            "description": "The immutable command receipt that granted this authorization."
+          },
+          "created_by": {
+            "type": "string",
+            "description": "The account profile that granted it."
+          },
           "max_concurrency": {
             "type": "integer",
             "format": "int32",
             "description": "Maximum concurrent runs it authorizes.",
             "minimum": 0
+          },
+          "revocation_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The recorded reason for revocation."
+          },
+          "revocation_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The immutable command receipt that revoked it."
           },
           "revoked_at": {
             "type": [
@@ -10937,6 +10983,13 @@
             ],
             "format": "date-time",
             "description": "Whether it has been disarmed, and when."
+          },
+          "revoked_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account profile that revoked it."
           },
           "scope": {
             "type": "string",
@@ -15092,6 +15145,52 @@
         },
         "additionalProperties": false
       },
+      "InitialExecutionHoldPreviewDto": {
+        "type": "object",
+        "description": "The no-write projection of a requested covering kickoff hold.",
+        "required": [
+          "scope",
+          "state",
+          "held_by",
+          "reason"
+        ],
+        "properties": {
+          "held_by": {
+            "type": "string",
+            "description": "The account profile that will record the hold."
+          },
+          "reason": {
+            "type": "string",
+            "description": "The durable reason apply will record."
+          },
+          "scope": {
+            "type": "string",
+            "description": "The hold always covers the whole epic."
+          },
+          "state": {
+            "type": "string",
+            "description": "Apply persists the authorization already revoked."
+          }
+        }
+      },
+      "InitialExecutionHoldRequest": {
+        "type": "object",
+        "description": "A covering revoked authorization created before a new epic becomes\ngovernable by the scheduler.",
+        "required": [
+          "held_by",
+          "reason"
+        ],
+        "properties": {
+          "held_by": {
+            "type": "string",
+            "description": "The account profile recording the kickoff hold."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why work must remain ineligible after the graph is created."
+          }
+        }
+      },
       "InstallWorkflowSpecRequest": {
         "type": "object",
         "description": "The exact shipped external-workflow revision an Admin wants to pin.",
@@ -16256,6 +16355,17 @@
               {
                 "$ref": "#/components/schemas/EpicExecutionScopeDto",
                 "description": "The runtime-facing identity apply would preserve or create."
+              }
+            ]
+          },
+          "initial_hold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InitialExecutionHoldPreviewDto",
+                "description": "The covering revoked authorization disposition apply would persist."
               }
             ]
           },

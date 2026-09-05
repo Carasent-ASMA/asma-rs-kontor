@@ -3994,12 +3994,39 @@ pub struct EpicExecutionScopeDto {
     pub ai_short_name: Option<AiShortName>,
 }
 
+/// A covering revoked authorization created before a new epic becomes
+/// governable by the scheduler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct InitialExecutionHoldRequest {
+    /// The account profile recording the kickoff hold.
+    #[schema(value_type = String)]
+    pub held_by: AccountProfileId,
+    /// Why work must remain ineligible after the graph is created.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// The no-write projection of a requested covering kickoff hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct InitialExecutionHoldPreviewDto {
+    /// The hold always covers the whole epic.
+    pub scope: String,
+    /// Apply persists the authorization already revoked.
+    pub state: String,
+    /// The account profile that will record the hold.
+    #[schema(value_type = String)]
+    pub held_by: AccountProfileId,
+    /// The durable reason apply will record.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
 /// What `epics:apply` is asked for.
 ///
 /// One request, one epic, all of it. The profile category is resolved and frozen
-/// onto every task in the same transaction the tasks are created in, so there is
-/// no window in which a task exists without the workflow it will be judged
-/// against.
+/// onto every task in the same transaction the tasks are created in. When
+/// `initial_hold` is present, apply also persists and revokes one covering
+/// authorization before the epic becomes governable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEpicRequest {
     /// The revision the caller read the project at.
@@ -4029,6 +4056,10 @@ pub struct ApplyEpicRequest {
     /// The provider-account profile to pin, if any.
     #[schema(value_type = Option<String>)]
     pub account_profile_id: Option<AccountProfileId>,
+    /// Optional covering kickoff hold persisted before the epic becomes
+    /// governable. Omission preserves default-allow admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_hold: Option<InitialExecutionHoldRequest>,
     /// The tasks, in the order they should be created.
     pub tasks: Vec<EpicTaskRequest>,
 }
@@ -4180,6 +4211,10 @@ pub struct AppliedEpicDto {
     /// On first apply this is the bootstrapped candidate. On reapply after a
     /// daemon upgrade it remains the historical immutable stored hash.
     pub team_template_hash: Option<String>,
+    /// The covering revoked authorization created as part of this apply, when
+    /// the caller requested an initial kickoff hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_hold: Option<AuthorizationProjectionDto>,
     /// A stable digest of the graph this call applied.
     ///
     /// It covers the *content* — the epic and its revision, the pinned profile
@@ -4246,6 +4281,9 @@ pub struct PreviewEpicDto {
     pub team_template: Option<RevisionRefDto>,
     /// Canonical hash of the exact stored team revision apply would execute.
     pub team_template_hash: Option<String>,
+    /// The covering revoked authorization disposition apply would persist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_hold: Option<InitialExecutionHoldPreviewDto>,
     /// Every task, in request order.
     pub tasks: Vec<PreviewEpicTaskDto>,
 }
@@ -4385,9 +4423,22 @@ pub struct AuthorizationProjectionDto {
     /// omitted a ceiling. Quota headroom and capacity govern unconstrained arms.
     #[schema(nullable)]
     pub budget: Option<BudgetBoundsDto>,
+    /// The immutable command receipt that granted this authorization.
+    pub capability_receipt_id: String,
+    /// The account profile that granted it.
+    #[schema(value_type = String)]
+    pub created_by: AccountProfileId,
     /// Whether it has been disarmed, and when.
     #[schema(value_type = Option<String>, format = DateTime)]
     pub revoked_at: Option<Timestamp>,
+    /// The immutable command receipt that revoked it.
+    pub revocation_receipt_id: Option<String>,
+    /// The account profile that revoked it.
+    #[schema(value_type = Option<String>)]
+    pub revoked_by: Option<AccountProfileId>,
+    /// The recorded reason for revocation.
+    #[schema(value_type = Option<String>)]
+    pub revocation_reason: Option<ExternalName>,
 }
 
 /// The resource bounds one grant was taken under, on the wire.

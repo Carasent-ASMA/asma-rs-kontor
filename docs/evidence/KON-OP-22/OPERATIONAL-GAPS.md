@@ -335,3 +335,22 @@ authority.
   fixture proves the behavior and no native update.
 - Owner/status: implementation and focused regression are complete; deployment
   and the resumed live migration remain the closeout checkpoint.
+
+## 2026-09-05 — kickoff could not persist ineligibility atomically
+
+- Intended Kontor operation: create the publication-identity enforcement epic
+  and all initial tasks ineligible until explicit handoff.
+- Failure class: admission control gap. `epics:apply` used default-allow
+  admission and exposed no atomic initial-hold input; arming and disarming after
+  creation would leave a runnable interval.
+- Containment: preview only. No epic, task, Jira issue, runtime container, seat
+  or authorization was created, and no Paseo fallback was used.
+- Correction: optional `initial_hold` on epic preview/apply persists a covering
+  authorization already revoked before governance makes the graph schedulable.
+  Stable child command keys make crash recovery and replay converge on the same
+  grant and revocation receipts. Fresh-key attempts against governed epics fail
+  closed.
+- Evidence: [ATOMIC-KICKOFF-HOLD.md](ATOMIC-KICKOFF-HOLD.md).
+- Owner/status: source implementation, full local qualification and mutation
+  proof complete; merge, fleet promotion and live guarded-kickoff readback are
+  the remaining release checkpoints.

@@ -5015,6 +5015,172 @@ async fn an_unarmed_epic_is_ready_without_a_grant() {
     );
 }
 
+/// A kickoff hold is part of applying the epic. The call must never expose a
+/// governed, default-allow epic between graph creation and the disarm that
+/// keeps delivery stopped for handoff.
+#[tokio::test]
+async fn an_epic_can_be_created_with_a_replay_safe_covering_hold() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "held-epic", "Kontor", "/tmp/kontor-held-epic").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("held-epic-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let mut body = epic_body(
+        revision,
+        "Held epic",
+        &category,
+        serde_json::json!([{"title": "First"}, {"title": "Second"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": account_id,
+        "reason": "Kickoff hold until handoff"
+    });
+
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["initial_hold"]["scope"], "epic");
+    assert_eq!(preview.json()["initial_hold"]["state"], "revoked");
+    assert_eq!(preview.json()["initial_hold"]["held_by"], account_id);
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("held-epic-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["applied"], "created");
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let hold = &applied.json()["initial_hold"];
+    assert_eq!(hold["scope"], "epic");
+    assert!(hold["revoked_at"].is_string(), "{}", applied.body);
+    assert!(
+        hold["capability_receipt_id"].is_string(),
+        "{}",
+        applied.body
+    );
+    assert!(
+        hold["revocation_receipt_id"].is_string(),
+        "{}",
+        applied.body
+    );
+    assert_ne!(
+        hold["capability_receipt_id"], hold["revocation_receipt_id"],
+        "grant and revocation remain distinct receipts: {}",
+        applied.body
+    );
+    let authorization = hold["authorization_id"].clone();
+    let capability_receipt = hold["capability_receipt_id"].clone();
+    let revocation_receipt = hold["revocation_receipt_id"].clone();
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert!(plan.json()["ready"].as_array().expect("ready").is_empty());
+    assert!(
+        plan.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .all(|task| task["code"] == "authorization_blocked"),
+        "every task is covered by the revoked hold: {}",
+        plan.body
+    );
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let projected = projection.json();
+    let projected_hold = projected["authorizations"]
+        .as_array()
+        .expect("authorizations")
+        .iter()
+        .find(|candidate| candidate["authorization_id"] == authorization)
+        .expect("the kickoff hold is projected");
+    assert_eq!(projected_hold["capability_receipt_id"], capability_receipt);
+    assert_eq!(projected_hold["revocation_receipt_id"], revocation_receipt);
+
+    let replay = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("held-epic-apply")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["epic_id"], epic);
+    assert_eq!(
+        replay.json()["initial_hold"]["authorization_id"],
+        authorization,
+        "replay returns the original hold: {}",
+        replay.body
+    );
+    assert_eq!(
+        replay.json()["initial_hold"]["capability_receipt_id"],
+        capability_receipt
+    );
+    assert_eq!(
+        replay.json()["initial_hold"]["revocation_receipt_id"],
+        revocation_receipt
+    );
+
+    let late_preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(late_preview.status, 400, "{}", late_preview.body);
+    assert_eq!(late_preview.code(), "invalid_request");
+
+    let late_apply = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("held-epic-late-second-apply")
+        .send(&world)
+        .await;
+    assert_eq!(late_apply.status, 400, "{}", late_apply.body);
+    assert_eq!(late_apply.code(), "invalid_request");
+
+    let after = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert!(after.json()["ready"].as_array().expect("ready").is_empty());
+}
+
 /// A narrowing grant may omit the window and concurrency; omitted budget is
 /// unconstrained rather than a profile ceiling.
 #[tokio::test]

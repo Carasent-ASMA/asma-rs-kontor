@@ -79,3 +79,14 @@ passed when rerun with loopback permission (nine Jira-filtered passes plus the
 one separately filtered resident-controller case, with one superseded test
 ignored). Formatting and daemon all-target Clippy with warnings denied also
 pass. No mutation remains in the tree.
+
+## 2026-09-05 — initial-hold admission mutation
+
+The new `ensure_initial_hold` path was temporarily changed to return the live
+epic-wide grant without invoking `execution:disarm`. The focused regression
+`an_epic_can_be_created_with_a_replay_safe_covering_hold` failed on the absent
+revocation timestamp and printed the live authorization projection. Restoring
+the disarm call made the same test pass. This kills the failure mode that would
+make kickoff appear held while leaving its ready tasks admissible. No mutation
+remains in the tree; the full receipt and scheduler proof is in
+[ATOMIC-KICKOFF-HOLD.md](ATOMIC-KICKOFF-HOLD.md).
