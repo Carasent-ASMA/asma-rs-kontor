@@ -37,15 +37,15 @@ use kontor_api::applications::{
     BacklogImportApplyRequest, BacklogImportPreviewDto, BacklogImportRequest, BlockedTaskDto,
     BudgetBoundsDto, BudgetBoundsRequest, CreditBalanceDto, DisarmRequest,
     EnsureAccountProfileRequest, EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto,
-    EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, LifecycleAction,
-    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
-    ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
-    PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto,
-    ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
-    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, SeatProviderQuotaDto,
-    SeatQuotaStateDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
-    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, InitialExecutionHoldPreviewDto,
+    InitialExecutionHoldRequest, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest,
+    ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto, ProbeProviderQuotaRequest, ProjectDto,
+    ProviderQuotaStateDto, ProviderUsageObservationDto, PublishedTeamRevisionDto,
+    QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
+    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
+    SeatProjectionDto, SeatProviderQuotaDto, SeatQuotaStateDto, StartRequest, StartedSeatDto,
+    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
+    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -1366,6 +1366,17 @@ impl Services {
                     )
                 })?;
         }
+        if let Some(hold) = &request.initial_hold {
+            state
+                .with_store(|store| store.get_account_profile(project_id, hold.held_by))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the account profile recording the initial hold does not exist in this project",
+                    )
+                })?;
+        }
 
         let (bundle, team_source) =
             self.bundle_with_team_source(&request.work_profile_category, now)?;
@@ -1624,6 +1635,7 @@ impl Services {
             work_profile: stored_policy.profile,
             team_template: stored_policy.team,
             team_template_hash: stored_policy.team_hash,
+            initial_hold: None,
             // Sealed below, from the finished shape, exactly as the fresh apply
             // is. Reporting the resolved bundle's digest here is what made a
             // receipt-served replay of an unchanged graph disagree with the
@@ -1631,6 +1643,77 @@ impl Services {
             bundle_hash: String::new(),
             tasks: applied,
         })
+    }
+
+    /// Derive one bounded child key from an epic-apply key.
+    ///
+    /// The arm and disarm are ordinary, independently receipted commands. Their
+    /// keys must remain stable across a retry after any process interruption so
+    /// the retry converges the same authorization instead of minting another.
+    fn epic_apply_child_key(
+        &self,
+        parent: &IdempotencyKey,
+        suffix: &str,
+    ) -> Result<IdempotencyKey, ApiError> {
+        let digest = ContentHash::of(format!("{}\0{suffix}", parent.as_str()).as_bytes());
+        IdempotencyKey::parse(&format!("epic-apply-{suffix}-{}", digest.as_str()))
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Whether this exact apply key already started its initial-hold command.
+    fn initial_hold_started(&self, parent: &IdempotencyKey) -> Result<bool, ApiError> {
+        let key = self.epic_apply_child_key(parent, "initial-hold-arm")?;
+        self.state()?
+            .with_store(|store| store.get_receipt_by_key(&key))
+            .map(|receipt| receipt.is_some())
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// Persist a covering authorization already revoked for a new epic.
+    ///
+    /// Epic graph creation initially leaves the graph ungoverned, which is a
+    /// scheduler barrier. Apply calls this before governance is installed. At
+    /// every crash boundary the graph is therefore either ungoverned or covered
+    /// by this revoked authorization; it is never governable and default-allow.
+    async fn ensure_initial_hold(
+        &self,
+        parent_key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        epic_revision: AggregateRevision,
+        request: &InitialExecutionHoldRequest,
+    ) -> Result<AuthorizationProjectionDto, ApiError> {
+        let arm_key = self.epic_apply_child_key(parent_key, "initial-hold-arm")?;
+        let authorization = <Self as ApplicationOperations>::arm(
+            self,
+            &arm_key,
+            project_id,
+            epic_id,
+            &ArmRequest {
+                expected_revision: epic_revision,
+                tasks: Vec::new(),
+                allowed_start: None,
+                allowed_end: None,
+                max_concurrency: Some(1),
+                budget: None,
+                granted_by: request.held_by,
+                reason: request.reason.clone(),
+            },
+        )
+        .await?;
+        let disarm_key = self.epic_apply_child_key(parent_key, "initial-hold-disarm")?;
+        <Self as ApplicationOperations>::disarm(
+            self,
+            &disarm_key,
+            project_id,
+            epic_id,
+            &DisarmRequest {
+                authorization_id: authorization.authorization_id,
+                revoked_by: request.held_by,
+                reason: request.reason.clone(),
+            },
+        )
+        .await
     }
 
     /// Every agent run in one team run, loaded whole.
@@ -10384,10 +10467,24 @@ fn authorization_dto(stored: &kontor_store::StoredAuthorization) -> Authorizatio
                     .to_owned(),
             })
         },
+        capability_receipt_id: stored.authorization.capability_receipt.to_string(),
+        created_by: stored.authorization.created_by,
         revoked_at: stored
             .revocation
             .as_ref()
             .map(|revocation| revocation.revoked_at),
+        revocation_receipt_id: stored
+            .revocation
+            .as_ref()
+            .map(|revocation| revocation.receipt.to_string()),
+        revoked_by: stored
+            .revocation
+            .as_ref()
+            .map(|revocation| revocation.revoked_by),
+        revocation_reason: stored
+            .revocation
+            .as_ref()
+            .map(|revocation| revocation.reason.clone()),
     }
 }
 
@@ -22818,6 +22915,18 @@ impl ApplicationOperations for Services {
                     serde_json::json!(backlog_code),
                 );
         }
+        if let Some(hold) = &request.initial_hold {
+            intent_document
+                .as_object_mut()
+                .expect("an epic intent is an object")
+                .insert(
+                    "initial_hold".to_owned(),
+                    serde_json::json!({
+                        "held_by": hold.held_by.to_string(),
+                        "reason": hold.reason.as_str(),
+                    }),
+                );
+        }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
             let AggregateRef::MiniProject { mini_project_id } = receipt.target else {
@@ -22826,12 +22935,20 @@ impl ApplicationOperations for Services {
                     "the idempotency key was already used for a different operation",
                 ));
             };
-            // Also on replay. The governed structure is written after the graph,
-            // so an apply whose process died in between recorded a receipt for
-            // an epic that has none — and the replay is the only call that ever
-            // comes back for it.
+            let epic = self.epic_row(project_id, mini_project_id)?;
+            let initial_hold = match &request.initial_hold {
+                Some(hold) => Some(
+                    self.ensure_initial_hold(key, project_id, mini_project_id, epic.revision, hold)
+                        .await?,
+                ),
+                None => None,
+            };
+            // Also on replay. Governance is installed only after a requested
+            // hold has converged, so recovery preserves the admission barrier.
             self.govern_epic(project_id, mini_project_id)?;
-            return self.applied_epic_replay(project_id, mini_project_id);
+            let mut replay = self.applied_epic_replay(project_id, mini_project_id)?;
+            replay.initial_hold = initial_hold;
+            return Ok(replay);
         }
 
         let PreparedEpic {
@@ -22842,6 +22959,41 @@ impl ApplicationOperations for Services {
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
+
+        // A fresh key must not retrofit an "initial" hold onto an already
+        // governed epic. Preflight before any write; the only admitted retry is
+        // an interrupted apply whose graph is still ungoverned or whose stable
+        // child arm receipt proves this same apply already started the hold.
+        if request.initial_hold.is_some() {
+            let preview = state
+                .with_store(|store| {
+                    store.preview_epic(&EpicApplication {
+                        project_id,
+                        name: request.name.clone(),
+                        epic_backlog_code: epic_backlog_code.as_ref(),
+                        execution_scope: execution_scope.as_ref(),
+                        tasks: &tasks,
+                        profile: &bundle.profile,
+                        definition: &bundle.profile.definition,
+                        team: bundle.team.as_ref(),
+                        team_source,
+                        applied_at: now,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if preview.applied != Applied::Created
+                && matches!(
+                    self.roster_governance(project_id, preview.mini_project_id)?,
+                    RosterGovernance::Seated
+                )
+                && !self.initial_hold_started(key)?
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "an initial hold is valid only while a newly created epic remains ungoverned",
+                ));
+            }
+        }
 
         // The epic and the admission position it starts at are written under one
         // hold of the store. An epic that existed without a position would be
@@ -22883,10 +23035,39 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
-        // An epic is born governed. The scheduler refuses work under an epic
-        // with no frozen roster or no bound leadership seat, and that refusal is
-        // an invariant rather than a workflow step precisely because this call
-        // creates the structure it checks for.
+        // Before governance can remove the scheduler's ungoverned barrier,
+        // persist the optional covering authorization already revoked.
+        let initial_hold = match &request.initial_hold {
+            Some(hold) => {
+                if applied.applied != Applied::Created
+                    && matches!(
+                        self.roster_governance(project_id, applied.mini_project_id)?,
+                        RosterGovernance::Seated
+                    )
+                    && !self.initial_hold_started(key)?
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "an initial hold is valid only while a newly created epic remains ungoverned",
+                    ));
+                }
+                Some(
+                    self.ensure_initial_hold(
+                        key,
+                        project_id,
+                        applied.mini_project_id,
+                        applied.revision,
+                        hold,
+                    )
+                    .await?,
+                )
+            }
+            None => None,
+        };
+
+        // An epic is born governed only after any requested kickoff hold is
+        // durable. The scheduler refuses an ungoverned graph at every earlier
+        // crash boundary.
         self.govern_epic(project_id, applied.mini_project_id)?;
 
         // The receipt is recorded *after* the graph, because the goal it targets
@@ -22931,6 +23112,7 @@ impl ApplicationOperations for Services {
             team_template_hash: effective_team
                 .as_ref()
                 .map(|team| team.definition.hash().as_str().to_owned()),
+            initial_hold,
             bundle_hash: String::new(),
             tasks: applied
                 .tasks
@@ -22993,6 +23175,13 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
+        if request.initial_hold.is_some() && preview.applied != Applied::Created {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "an initial hold may be previewed only as part of creating a new epic",
+            ));
+        }
+
         Ok(PreviewEpicDto {
             realm_id: state.realm_id(),
             project_id,
@@ -23016,6 +23205,14 @@ impl ApplicationOperations for Services {
             team_template_hash: effective_team
                 .as_ref()
                 .map(|team| team.definition.hash().as_str().to_owned()),
+            initial_hold: request.initial_hold.as_ref().map(|hold| {
+                InitialExecutionHoldPreviewDto {
+                    scope: "epic".to_owned(),
+                    state: "revoked".to_owned(),
+                    held_by: hold.held_by,
+                    reason: hold.reason.clone(),
+                }
+            }),
             tasks: preview
                 .tasks
                 .into_iter()

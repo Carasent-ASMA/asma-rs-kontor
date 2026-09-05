@@ -59,3 +59,14 @@ archived snapshot before provider-session or workspace correlation; the same
 test passes and proves no `agent update` command was emitted. Whole-epic naming
 therefore retains the logical seat as `rename_pending` without rewriting
 archived native history.
+
+## 2026-09-05 — initial-hold admission mutation
+
+The new `ensure_initial_hold` path was temporarily changed to return the live
+epic-wide grant without invoking `execution:disarm`. The focused regression
+`an_epic_can_be_created_with_a_replay_safe_covering_hold` failed on the absent
+revocation timestamp and printed the live authorization projection. Restoring
+the disarm call made the same test pass. This kills the failure mode that would
+make kickoff appear held while leaving its ready tasks admissible. No mutation
+remains in the tree; the full receipt and scheduler proof is in
+[ATOMIC-KICKOFF-HOLD.md](ATOMIC-KICKOFF-HOLD.md).
