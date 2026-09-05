@@ -3272,6 +3272,7 @@ export interface components {
             /** @description The goal that carries the epic. */
             epic_id: string;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
+            initial_hold?: null | components["schemas"]["AuthorizationProjectionDto"];
             /** @description The project. */
             project_id: string;
             /** @description The Realm it belongs to. */
@@ -3423,9 +3424,9 @@ export interface components {
          * @description What `epics:apply` is asked for.
          *
          *     One request, one epic, all of it. The profile category is resolved and frozen
-         *     onto every task in the same transaction the tasks are created in, so there is
-         *     no window in which a task exists without the workflow it will be judged
-         *     against.
+         *     onto every task in the same transaction the tasks are created in. When
+         *     `initial_hold` is present, apply also persists and revokes one covering
+         *     authorization before the epic becomes governable.
          */
         ApplyEpicRequest: {
             /** @description The provider-account profile to pin, if any. */
@@ -3441,6 +3442,7 @@ export interface components {
              * @description The revision the caller read the project at.
              */
             expected_revision: number;
+            initial_hold?: null | components["schemas"]["InitialExecutionHoldRequest"];
             /** @description The epic's name, which is its identity inside the project. */
             name: string;
             /** @description The runtime family the epic's work is intended for. */
@@ -3528,16 +3530,26 @@ export interface components {
             /** @description The authorization. */
             authorization_id: string;
             budget?: null | components["schemas"]["BudgetBoundsDto"];
+            /** @description The immutable command receipt that granted this authorization. */
+            capability_receipt_id: string;
+            /** @description The account profile that granted it. */
+            created_by: string;
             /**
              * Format: int32
              * @description Maximum concurrent runs it authorizes.
              */
             max_concurrency: number;
+            /** @description The recorded reason for revocation. */
+            revocation_reason?: string | null;
+            /** @description The immutable command receipt that revoked it. */
+            revocation_receipt_id?: string | null;
             /**
              * Format: date-time
              * @description Whether it has been disarmed, and when.
              */
             revoked_at?: string | null;
+            /** @description The account profile that revoked it. */
+            revoked_by?: string | null;
             /** @description What it covers. */
             scope: string;
             /** @description The tasks it names explicitly, when it is not scope-wide. */
@@ -5516,6 +5528,27 @@ export interface components {
             /** @description Exact immutable Committee role slot. */
             role_slot_id: string;
         };
+        /** @description The no-write projection of a requested covering kickoff hold. */
+        InitialExecutionHoldPreviewDto: {
+            /** @description The account profile that will record the hold. */
+            held_by: string;
+            /** @description The durable reason apply will record. */
+            reason: string;
+            /** @description The hold always covers the whole epic. */
+            scope: string;
+            /** @description Apply persists the authorization already revoked. */
+            state: string;
+        };
+        /**
+         * @description A covering revoked authorization created before a new epic becomes
+         *     governable by the scheduler.
+         */
+        InitialExecutionHoldRequest: {
+            /** @description The account profile recording the kickoff hold. */
+            held_by: string;
+            /** @description Why work must remain ineligible after the graph is created. */
+            reason: string;
+        };
         /** @description The exact shipped external-workflow revision an Admin wants to pin. */
         InstallWorkflowSpecRequest: {
             /**
@@ -6057,6 +6090,7 @@ export interface components {
             /** @description The durable epic id when this preview matched an existing epic. */
             epic_id?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
+            initial_hold?: null | components["schemas"]["InitialExecutionHoldPreviewDto"];
             /** @description The owning project. */
             project_id: string;
             /** @description The Realm that judged the graph. */

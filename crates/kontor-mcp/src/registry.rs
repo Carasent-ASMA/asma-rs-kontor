@@ -401,6 +401,20 @@ const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
     ),
 ];
 
+/// One covering admission hold persisted during epic creation.
+const INITIAL_EXECUTION_HOLD: &[FieldSpec] = &[
+    field(
+        "held_by",
+        ArgType::AccountProfileId,
+        "The project account profile that records both the grant and revocation.",
+    ),
+    field(
+        "reason",
+        ArgType::ExternalName,
+        "Why work must remain ineligible after kickoff.",
+    ),
+];
+
 /// One explicit provider/model route for an authorized recovery operation.
 const RUNTIME_MODEL_ROUTE: &[FieldSpec] = &[
     field("provider", ArgType::Text, "The provider catalog key."),
@@ -1221,6 +1235,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::AccountProfileId,
                 "The account profile runs are pinned to.",
             ),
+            opt(
+                "initial_hold",
+                Place::Body,
+                ArgType::Object(INITIAL_EXECUTION_HOLD),
+                "A covering authorization apply persists already revoked before the epic becomes governable.",
+            ),
             req(
                 "tasks",
                 Place::Body,
@@ -1291,6 +1311,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::AccountProfileId,
                 "The account profile runs are pinned to.",
+            ),
+            opt(
+                "initial_hold",
+                Place::Body,
+                ArgType::Object(INITIAL_EXECUTION_HOLD),
+                "A covering authorization apply persists already revoked before the epic becomes governable.",
             ),
             req(
                 "tasks",
