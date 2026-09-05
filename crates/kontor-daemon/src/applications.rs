@@ -10853,6 +10853,35 @@ pub(crate) fn provider_family(provider: &str) -> &str {
     provider
 }
 
+/// Resolve an explicit provider alias to the one enabled account that owns it.
+///
+/// A never-bound seat has no native account evidence to inherit. Its recovery
+/// route is therefore attributable only when the route's provider spelling is
+/// itself an enabled account alias. The eligible-account projection already
+/// rejects duplicate aliases, but this function remains fail-closed when used
+/// with a constructed or future projection that contains more than one match.
+fn account_for_explicit_provider_alias(
+    route: &ModelRung,
+    accounts: &[kontor_scheduler::headroom::EligibleAccount],
+) -> kontor_core::DomainResult<AccountProfileId> {
+    let mut matching = accounts.iter().filter(|account| {
+        account
+            .selectable_providers
+            .contains(route.provider.0.as_str())
+    });
+    let account = matching.next().ok_or(kontor_core::DomainError::Invalid {
+        subject: "ModelRoute",
+        rule: "a never-bound recovery route must name an enabled governed account alias",
+    })?;
+    if matching.next().is_some() {
+        return Err(kontor_core::DomainError::invalid(
+            "ModelRoute",
+            "a never-bound recovery route names more than one governed account",
+        ));
+    }
+    Ok(account.account_profile_id)
+}
+
 /// Qualify generic consultation providers with every governed account alias.
 ///
 /// Paseo selects an account through the provider alias itself. A template's
@@ -25932,6 +25961,28 @@ impl ApplicationOperations for Services {
                 .as_ref()
                 .map(|binding| (successor, binding))
         }) {
+            // ASMA-8099 originally shipped the never-bound recovery without an
+            // account pin. Replaying that exact idempotent command is the only
+            // safe repair authority for an already-created successor: the
+            // explicit route is part of the recorded intent, and its exact
+            // provider alias resolves to one governed account. A successor
+            // created by corrected code is already pinned and writes nothing.
+            if unbound_recovery && successor.account_profile_id.is_none() {
+                let route = explicit_model_route.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "a never-bound reroute requires one explicit Admin-authorized model route",
+                    )
+                })?;
+                let eligible = self.eligible_accounts(project_id)?;
+                let account = account_for_explicit_provider_alias(route, &eligible)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                state
+                    .with_store(|store| {
+                        store.pin_agent_run_account(project_id, successor.id, account)
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             return Ok(ReplacedSeatDto {
                 realm_id: state.realm_id(),
                 task_id,
@@ -26047,16 +26098,21 @@ impl ApplicationOperations for Services {
             headroom: self.headroom_policy(),
             now,
         };
-        // An explicit route override is an operator decision the walk must not
-        // second-guess, so no account is resolved for it -- and none is
-        // inherited either. The route names a provider and a model, never an
-        // account, so claiming the predecessor's would be exactly the
-        // unverified attestation `freeze_seat_model_rung` refuses to invent on
-        // its own no-placement arm.
+        // A never-bound recovery route has no predecessor account to inherit.
+        // Its exact provider alias must therefore resolve to one enabled
+        // governed account before the native launch. Other explicit replacement
+        // routes retain their existing no-account behavior; their authority and
+        // evidence are separate from this narrow recovery.
         let (model_rung, routed_account) = match quota_successor_route {
             Some(preplanned) => preplanned,
             None => match explicit_model_route {
-                Some(route) => (route, None),
+                Some(route) => {
+                    let account = unbound_recovery
+                        .then(|| account_for_explicit_provider_alias(&route, &eligible))
+                        .transpose()
+                        .map_err(|error| self.refuse_domain(&error))?;
+                    (route, account)
+                }
                 None => {
                     freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
                         .map_err(|error| self.refuse_domain(&error))?
@@ -33219,8 +33275,9 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrozenCommitteeRoute, QuotaOutlook, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
+        FrozenCommitteeRoute, QuotaOutlook, account_for_explicit_provider_alias,
+        consultation_account_rungs, counts_towards_completion, eligible_roots,
+        ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
         re_review_remediation_identity, render_legacy_container_name, seat_block,
         select_committee_allocation, slot_prompt,
     };
@@ -33354,6 +33411,39 @@ mod tests {
             ensure_unambiguous_generic_consultation_routes(&[route], &accounts).is_err(),
             "two indistinguishable profiles cannot be silently reduced to one"
         );
+    }
+
+    #[test]
+    fn an_explicit_recovery_alias_resolves_one_account_and_refuses_ambiguity() {
+        let first = AccountProfileId::generate();
+        let second = AccountProfileId::generate();
+        let route = committee_route("codex-personal", "gpt-5.6-sol").model_rung;
+        let exact = [EligibleAccount {
+            account_profile_id: first,
+            selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+        }];
+        assert_eq!(
+            account_for_explicit_provider_alias(&route, &exact).expect("one exact owner"),
+            first
+        );
+
+        let missing = [EligibleAccount {
+            account_profile_id: first,
+            selectable_providers: BTreeSet::from(["codex-work".to_owned()]),
+        }];
+        assert!(account_for_explicit_provider_alias(&route, &missing).is_err());
+
+        let ambiguous = [
+            EligibleAccount {
+                account_profile_id: first,
+                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+            },
+            EligibleAccount {
+                account_profile_id: second,
+                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+            },
+        ];
+        assert!(account_for_explicit_provider_alias(&route, &ambiguous).is_err());
     }
 
     /// Regression for ASMA-7681: an explicit Claude Work task pin must freeze
