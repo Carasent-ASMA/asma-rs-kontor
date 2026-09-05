@@ -21,6 +21,7 @@ use kontor_core::id::{
     BoundedText, ContentHash, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId,
     SeatBindingId, Timestamp,
 };
+use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{ContextPolicySnapshot, ModelRung};
 use kontor_core::state::NativeRuntimeIdentity;
 
@@ -1079,6 +1080,31 @@ pub trait RuntimeAdapter: Send + Sync {
         snapshots: &[RuntimeBindingSnapshot],
     ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
         let _ = snapshots;
+        Ok(Vec::new())
+    }
+
+    /// Recover an exact live binding written before frozen snapshots existed.
+    ///
+    /// This is a one-time compatibility boundary, not ordinary restore. The
+    /// caller supplies the immutable binding from Kontor's ledger; an adapter
+    /// may answer only after the exact native identity, generation, run
+    /// correlation and driveable placement have all been read back. The answer
+    /// freezes what the runtime can prove **at recovery time**, because the
+    /// historical capability document does not exist and must not be invented.
+    /// It must preserve the supplied [`RuntimeBinding`] byte-for-byte and make
+    /// no native mutation, replacement or launch.
+    ///
+    /// The default recovers nothing. A runtime that cannot prove an old seat
+    /// exactly leaves it unavailable rather than guessing.
+    ///
+    /// # Errors
+    /// Returns a typed runtime refusal when the recovery read cannot complete
+    /// or any presented native fact is contradictory.
+    async fn recover_unfrozen_bindings(
+        &self,
+        bindings: &[RuntimeBinding],
+    ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
+        let _ = bindings;
         Ok(Vec::new())
     }
 

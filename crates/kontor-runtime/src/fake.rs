@@ -1797,6 +1797,47 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(restored)
     }
 
+    async fn recover_unfrozen_bindings(
+        &self,
+        bindings: &[RuntimeBinding],
+    ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
+        let mut state = self.lock();
+        let mut recovered = Vec::new();
+        for binding in bindings {
+            if binding.identity.runtime_kind != state.runtime_kind
+                || binding.identity.host != state.host
+                || binding.identity.generation != state.generation
+            {
+                continue;
+            }
+            let Some(session) = state.sessions.get(&binding.identity.native_id) else {
+                continue;
+            };
+            let expected = CorrelationLabel::for_run(binding.agent_run_id).to_string();
+            if session.agent_run_id != binding.agent_run_id
+                || session.binding_id != binding.id
+                || session.correlation_text.as_deref() != Some(expected.as_str())
+            {
+                continue;
+            }
+            let correlation = CorrelationEvidence::establish(
+                binding.agent_run_id,
+                session.correlation_text.as_deref().unwrap_or_default(),
+                binding.identity.clone(),
+                Timestamp::now(),
+            )?;
+            let snapshot = RuntimeBindingSnapshot {
+                binding: binding.clone(),
+                capabilities: state.capabilities.clone(),
+                correlation,
+            };
+            state.placements.insert(binding.id);
+            state.bindings.insert(binding.id, snapshot.clone());
+            recovered.push(snapshot);
+        }
+        Ok(recovered)
+    }
+
     async fn prepare_plane(&self) -> RuntimeResult<()> {
         let mut state = self.lock();
         state.calls.push(AdapterCall::PreparePlane);
