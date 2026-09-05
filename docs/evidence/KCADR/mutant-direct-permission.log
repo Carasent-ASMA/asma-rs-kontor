@@ -1,0 +1,23 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.41s
+     Running tests/contract.rs (target/debug/deps/contract-bc373a1158f6541a)
+
+running 1 test
+test security_restricted_connections_cannot_mutate_previously_valid_seats ... FAILED
+
+failures:
+
+---- security_restricted_connections_cannot_mutate_previously_valid_seats stdout ----
+
+thread 'security_restricted_connections_cannot_mutate_previously_valid_seats' (74714646) panicked at crates/kontor-runtime-paseo/tests/contract.rs:4241:9:
+assertion failed: matches!(plane.adapter.retire(&binding, at("2026-09-05T07:00:00Z")).await,
+    Err(RuntimeError::UnsupportedCapability { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    security_restricted_connections_cannot_mutate_previously_valid_seats
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --test contract`

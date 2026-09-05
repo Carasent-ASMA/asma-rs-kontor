@@ -1293,6 +1293,23 @@ impl PaseoAdapter {
         self.transport.server_identity().await
     }
 
+    /// Bound every direct entrypoint to the permissions on the current
+    /// connection, including CLI routes that do not pass capability preflight.
+    async fn require_session_permissions(
+        &self,
+        permissions: &[&str],
+        capability: RuntimeCapability,
+    ) -> RuntimeResult<()> {
+        let info = self.fetch_server_info().await?;
+        if permissions
+            .iter()
+            .any(|permission| !info.permits(permission))
+        {
+            return Err(RuntimeError::UnsupportedCapability { capability });
+        }
+        Ok(())
+    }
+
     async fn fetch_projects(&self) -> RuntimeResult<Vec<PaseoProject>> {
         let request = PaseoRpc::project_list(self.next_request_id());
         let frame = self.transport.request(&request).await?;
@@ -1464,8 +1481,8 @@ impl PaseoAdapter {
     /// identity when `includeArchived` is set. Hosted-seat retirement must
     /// prove the archive stamp after issuing the archive command, and a retry
     /// must be able to prove it again. Keep this fallback private to terminal
-    /// retirement so an archived session can never become driveable through a
-    /// normal exact lookup.
+    /// retirement and canonical history so an archived session can never
+    /// become driveable through a normal exact lookup.
     async fn fetch_agent_including_archived(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
         self.find_agent_including_archived(agent_id)
             .await?
@@ -2294,6 +2311,14 @@ impl PaseoAdapter {
         command_id: &str,
         desired: &ExternalName,
     ) -> RuntimeResult<PaseoProjectOutcome> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE,
+            ],
+            RuntimeCapability::PrepareProject,
+        )
+        .await?;
         // A persisted binding is authoritative, and it is attested by exact id
         // rather than re-derived. Re-deriving would re-open the very question
         // the binding exists to close.
@@ -2653,6 +2678,11 @@ impl PaseoAdapter {
         team_run_id: TeamRunId,
         declared: &[RoleSlotId],
     ) -> RuntimeResult<Vec<PaseoSlotPlan>> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         // Every agent of *this team run*, wherever it sits — not every agent of
         // the project. The seat rules are about labels, and an agent carrying
         // this run's slot label that has been moved out of the task workspace is
@@ -2779,6 +2809,14 @@ impl PaseoAdapter {
         binding: &RuntimeBindingSnapshot,
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::Retire,
+        )
+        .await?;
         let binding = self.attested(binding)?;
         let native_id = binding.identity().native_id.as_str().to_owned();
         let command = PaseoCommand::agent_archive(&native_id);
@@ -4181,6 +4219,11 @@ impl PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         self.validate_consultation_model_rung(&request.model_rung, &request.route_provenance)?;
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
@@ -4667,6 +4710,11 @@ impl PaseoAdapter {
         &self,
         request: &HostedSeatLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
         let effective_scope = self.effective_scope(&request.scope)?;
@@ -4903,6 +4951,11 @@ impl RuntimeAdapter for PaseoAdapter {
         if snapshots.is_empty() {
             return Ok(Vec::new());
         }
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         // Read every claimed session by exact native id. Project-scoped census
         // used to make restart recovery depend on the one epic stored in fleet
         // settings; exact reads let each surviving seat re-establish its own
@@ -5002,6 +5055,11 @@ impl RuntimeAdapter for PaseoAdapter {
         if bindings.is_empty() {
             return Ok(Vec::new());
         }
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let generation = self.generation();
         let declared = self.declared().await?;
         let mut candidates = Vec::new();
@@ -5348,6 +5406,11 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &HostedSeatMessageRequest,
     ) -> RuntimeResult<HostedSeatMessageOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation != self.generation()
@@ -5430,6 +5493,14 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ConsultationMessageRequest,
     ) -> RuntimeResult<()> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::SendMessage,
+        )
+        .await?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation != self.generation()
@@ -6157,6 +6228,14 @@ impl RuntimeAdapter for PaseoAdapter {
         // Provenance first: preflight would otherwise judge this against the
         // caller's own capability snapshot.
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::Resume,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6227,6 +6306,14 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::SendMessage,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6343,6 +6430,14 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::Cancel,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6398,6 +6493,11 @@ impl RuntimeAdapter for PaseoAdapter {
         expected_provider: &str,
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let binding = self.attested(binding)?;
         let native_id = binding.identity().native_id.as_str();
         let agent = self.fetch_agent(native_id).await?;
@@ -6430,6 +6530,14 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ReconcileSessionLabelsRequest,
     ) -> RuntimeResult<ReconciledSessionLabels> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::RetitleContainer,
+        )
+        .await?;
         let binding = self.attested(&request.binding)?;
         let scope = self.effective_scope(&request.scope)?;
         let task = scope.require_task()?;
@@ -6504,6 +6612,11 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &RetitleSeatRequest,
     ) -> RuntimeResult<RetitleSeatOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation > self.generation()
@@ -6541,6 +6654,14 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &RetitleSeatRequest,
     ) -> RuntimeResult<RetitleSeatOutcome> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::RetitleContainer,
+        )
+        .await?;
         let preview = self.preview_retitle_seat(request).await?;
         if preview.changed {
             let output = self
@@ -6572,6 +6693,11 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6879,6 +7005,11 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6905,6 +7036,14 @@ impl RuntimeAdapter for PaseoAdapter {
             .transpose()?;
 
         let native_id = binding.identity().native_id.as_str().to_owned();
+        if anchor.is_none() {
+            // A timeline replacement discards stream permission lifecycle
+            // frames too; canonical rows never contain them. Refresh the
+            // authoritative permission state before completing an origin read.
+            // If this fails, the caller still owes its canonical recovery.
+            let agent = self.fetch_agent_including_archived(&native_id).await?;
+            self.observe_permissions(binding.binding_id(), &agent);
+        }
         // A cursor this adapter cannot spell in Paseo's own terms is a refusal
         // rather than a read from the start: 0.3.1 addresses a position by raw
         // epoch, and a raw epoch the registry never mapped names a numbering
@@ -7025,6 +7164,11 @@ impl RuntimeAdapter for PaseoAdapter {
         request: &LiveSubscribeRequest,
     ) -> RuntimeResult<LiveSubscription> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::LiveEvents,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -7186,6 +7330,14 @@ impl RuntimeAdapter for PaseoAdapter {
         request: &PermissionResponseRequest,
     ) -> RuntimeResult<PermissionAck> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::PermissionResponse,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -7294,6 +7446,11 @@ impl RuntimeAdapter for PaseoAdapter {
         // rather than answered — reporting a limitation is not a reason to stop
         // checking who is asking.
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let declared = self.declared().await?;
         preflight(
             &declared,

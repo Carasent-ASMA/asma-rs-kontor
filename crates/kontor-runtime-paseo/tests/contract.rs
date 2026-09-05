@@ -4226,6 +4226,107 @@ async fn security_session_permissions_bound_the_composed_surface_with_or_without
 }
 
 #[tokio::test]
+async fn security_restricted_connections_cannot_mutate_previously_valid_seats() {
+    for permissions in [
+        serde_json::json!([]),
+        serde_json::json!(["workspace.read"]),
+        serde_json::json!(["workspace.read", "workspace.manage"]),
+        serde_json::json!(["workspace.write", "workspace.manage"]),
+    ] {
+        let (plane, binding) = launched().await;
+        let mut identity = v(SERVER_INFO_NEWER_VERSION);
+        identity["permissions"] = permissions;
+        plane.daemon.set_identity(&identity);
+        plane.daemon.take_calls();
+        assert!(matches!(
+            plane
+                .adapter
+                .retire(&binding, at("2026-09-05T07:00:00Z"))
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(matches!(
+            plane
+                .adapter
+                .cancel(&CancelRequest {
+                    binding: binding.clone(),
+                    requested_at: at("2026-09-05T07:00:00Z")
+                })
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(matches!(
+            plane
+                .adapter
+                .send(&SendMessageRequest {
+                    binding: binding.clone(),
+                    message_id: MessageId::parse(MESSAGE).expect("message"),
+                    body: text("must not send"),
+                    sent_at: at("2026-09-05T07:00:00Z"),
+                })
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(matches!(
+            plane
+                .adapter
+                .respond_permission(&permission(&binding, PermissionDecision::Allow))
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        let request = RetitleSeatRequest {
+            identity: binding.identity().clone(),
+            provider_session_id: Some(external("prov_sess_1")),
+            container_native_id: external(WORKSPACE_ID),
+            desired_title: name("Must not rename"),
+            requested_at: at("2026-09-05T07:00:00Z"),
+        };
+        assert!(matches!(
+            plane.adapter.retitle_seat(&request).await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a previously issued binding cannot bypass fresh connection permissions"
+        );
+        if !identity["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .any(|p| p == "workspace.read")
+        {
+            assert!(matches!(
+                plane.adapter.preview_retitle_seat(&request).await,
+                Err(RuntimeError::UnsupportedCapability { .. })
+            ));
+            assert!(matches!(
+                plane
+                    .adapter
+                    .reconcile_role_slots(team_run(), &[slot("implement-a")])
+                    .await,
+                Err(RuntimeError::UnsupportedCapability { .. })
+            ));
+        }
+    }
+    let recorded = daemon();
+    let mut identity = v(SERVER_INFO_NEWER_VERSION);
+    identity["permissions"] = serde_json::json!(["workspace.read", "workspace.write"]);
+    recorded.set_identity(&identity);
+    let plane = Plane::fresh(recorded);
+    assert!(matches!(
+        plane
+            .adapter
+            .prepare_project("no-management", &project_name())
+            .await,
+        Err(RuntimeError::UnsupportedCapability { .. })
+    ));
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "agent-write cannot create a project"
+    );
+}
+
+#[tokio::test]
 async fn security_declared_permissions_without_workspace_read_expose_nothing() {
     let mut identity = v(SERVER_INFO_NEWER_VERSION);
     identity["permissions"] = serde_json::json!(["workspace.write", "workspace.manage"]);
@@ -4815,6 +4916,118 @@ async fn timeline_a_replacement_notification_invalidates_the_saved_cursor() {
     assert_eq!(recovered.items.len(), 1);
     assert_eq!(recovered.items[0].position.sequence, 1);
     assert_ne!(recovered.items[0].position.epoch, anchor.epoch);
+}
+
+#[tokio::test]
+async fn timeline_replacement_recovers_requested_and_resolved_permissions_from_agent_state() {
+    for was_pending in [false, true] {
+        let (plane, binding) = if was_pending {
+            with_permission().await
+        } else {
+            with_history().await
+        };
+        let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+            .await
+            .expect("initial history");
+        let pending = |adapter: &PaseoAdapter| {
+            adapter
+                .checkpoint()
+                .pending_permissions
+                .iter()
+                .any(|(id, permission)| {
+                    *id == binding.binding_id() && permission.as_str() == "perm_1"
+                })
+        };
+        assert_eq!(pending(&plane.adapter), was_pending);
+        plane.daemon.push_stream(
+            AGENT_ID,
+            vec![serde_json::json!({
+                "type": "agent.timeline.replacement",
+                "payload": {"agentId": AGENT_ID, "epoch": EPOCH_RAW}
+            })],
+        );
+        assert!(matches!(
+            plane
+                .adapter
+                .subscribe_live(&LiveSubscribeRequest {
+                    binding: binding.clone(),
+                    kinds: SESSION_KINDS.iter().copied().collect(),
+                    strict_after: anchor,
+                })
+                .await,
+            Err(RuntimeError::TimelineRefetchRequired { .. })
+        ));
+        // A missing authoritative agent read cannot complete recovery merely
+        // because canonical history itself remains available.
+        plane.daemon.set_answer_rpc(
+            "fetch_agent_request",
+            v(fixture!("protocol/agent-not-found.json")),
+        );
+        plane
+            .daemon
+            .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+        let request = HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size: 10,
+        };
+        assert!(plane.adapter.history(&request).await.is_err());
+        assert_eq!(pending(&plane.adapter), was_pending);
+        plane.daemon.set_answer_rpc(
+            "fetch_agent_request",
+            v(if was_pending {
+                AGENT
+            } else {
+                AGENT_PERMISSION_OPEN
+            }),
+        );
+        plane
+            .adapter
+            .history(&request)
+            .await
+            .expect("canonical recovery refreshes permission state");
+        assert_eq!(
+            pending(&plane.adapter),
+            !was_pending,
+            "discarded lifecycle events are recovered from pendingPermissions"
+        );
+        if was_pending {
+            plane.daemon.take_calls();
+            assert!(
+                plane
+                    .adapter
+                    .respond_permission(&permission(&binding, PermissionDecision::Allow))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                plane.daemon.mutations().is_empty(),
+                "resolved permission is refused before sending a stale answer"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn timeline_canonical_history_remains_readable_for_archived_agents() {
+    let (plane, binding) = with_history().await;
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_request",
+        v(fixture!("protocol/agent-not-found.json")),
+    );
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
+    let page = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("terminal evidence may still read archived canonical history");
+    assert!(!page.items.is_empty());
 }
 
 #[tokio::test]
@@ -6285,6 +6498,19 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         container,
         requested_at: at("2026-08-20T05:01:00Z"),
     };
+    let mut restricted = v(SERVER_INFO_NEWER_VERSION);
+    restricted["permissions"] = serde_json::json!(["workspace.read", "workspace.manage"]);
+    plane.daemon.set_identity(&restricted);
+    plane.daemon.take_calls();
+    assert!(matches!(
+        plane.adapter.reconcile_session_labels(&request).await,
+        Err(RuntimeError::UnsupportedCapability { .. })
+    ));
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "workspace management cannot update agent labels"
+    );
+    plane.daemon.set_identity(&v(SERVER_INFO_NEWER_VERSION));
     let repaired = plane
         .adapter
         .reconcile_session_labels(&request)
