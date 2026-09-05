@@ -14155,7 +14155,21 @@ impl Services {
             ));
         }
 
-        let mut cursor: Option<HistoryCursor> = None;
+        // Settlement proves the caller's exact current turn, so begin at the
+        // canonical position immediately before that message. Reading from the
+        // epoch origin is both unnecessary and unsafe operationally: Paseo's
+        // cursor-free history path has to walk backwards from a bounded tail,
+        // and a long-lived persistent seat can time out before it reaches the
+        // origin even though the current turn is directly readable. The exact
+        // message match and terminal-position check below still fail closed on
+        // a stale or fabricated window.
+        let mut cursor = Some(HistoryCursor::issue(
+            binding.id,
+            TimelinePosition {
+                epoch: message_position.epoch,
+                sequence: message_position.sequence - 1,
+            },
+        ));
         let mut message_matches = 0usize;
         let mut response_matches = 0usize;
         let mut last_turn_position = None;
