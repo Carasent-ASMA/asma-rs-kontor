@@ -1293,10 +1293,32 @@ impl PaseoAdapter {
         self.transport.server_identity().await
     }
 
+    /// Bound every direct entrypoint to the permissions on the current
+    /// connection, including CLI routes that do not pass capability preflight.
+    async fn require_session_permissions(
+        &self,
+        permissions: &[&str],
+        capability: RuntimeCapability,
+    ) -> RuntimeResult<()> {
+        let info = self.fetch_server_info().await?;
+        if permissions
+            .iter()
+            .any(|permission| !info.permits(permission))
+        {
+            return Err(RuntimeError::UnsupportedCapability { capability });
+        }
+        Ok(())
+    }
+
     async fn fetch_projects(&self) -> RuntimeResult<Vec<PaseoProject>> {
         let request = PaseoRpc::project_list(self.next_request_id());
         let frame = self.transport.request(&request).await?;
         let listed: PaseoProjectList = frame.resolve(&request, "PaseoProjectList")?;
+        if listed.error.is_some() {
+            return Err(RuntimeError::Transport {
+                rule: "the project directory reports a native error",
+            });
+        }
         Ok(listed.projects)
     }
 
@@ -1318,6 +1340,18 @@ impl PaseoAdapter {
             );
             let frame = self.transport.request(&request).await?;
             let page: PaseoWorkspacePage = frame.resolve(&request, "PaseoWorkspacePage")?;
+            if page.error.is_some()
+                || page.page_info.has_more
+                    != page
+                        .page_info
+                        .next_cursor
+                        .as_deref()
+                        .is_some_and(|cursor| !cursor.is_empty())
+            {
+                return Err(RuntimeError::Transport {
+                    rule: "the workspace directory omitted its required continuation cursor",
+                });
+            }
             found.extend(page.entries);
             match page.page_info.next() {
                 Some(next) => cursor = Some(next.to_owned()),
@@ -1327,6 +1361,61 @@ impl PaseoAdapter {
         Err(RuntimeError::Transport {
             rule: "the workspace directory did not end within the bounded page budget",
         })
+    }
+
+    /// Refuse visible native resources before explicit local-workspace retirement.
+    /// Paseo 0.7.2 masks terminal-listing failures as an empty list; this API
+    /// cannot certify terminal-manager health. It still refuses every terminal
+    /// it reports, plus nonterminal script/setup state and all malformed reads.
+    async fn require_workspace_quiet(
+        &self,
+        workspace_id: &str,
+        cwd: &WorkspaceRoot,
+    ) -> RuntimeResult<()> {
+        let request =
+            PaseoRpc::workspace_terminals(self.next_request_id(), workspace_id, cwd.as_str());
+        let frame = self.transport.request(&request).await?;
+        let terminals: crate::wire::PaseoTerminalList =
+            frame.resolve(&request, "PaseoTerminalList")?;
+        if terminals
+            .cwd
+            .as_deref()
+            .is_some_and(|actual| actual != cwd.as_str())
+            || !terminals.terminals.is_empty()
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace still reports terminals or another directory",
+            });
+        }
+        let request = PaseoRpc::workspace_scripts(self.next_request_id(), workspace_id);
+        let frame = self.transport.request(&request).await?;
+        let scripts: crate::wire::PaseoWorkspaceScripts =
+            frame.resolve(&request, "PaseoWorkspaceScripts")?;
+        if scripts.workspace_id != workspace_id
+            || scripts.error.is_some()
+            || scripts
+                .scripts
+                .iter()
+                .any(|script| script.lifecycle != "stopped")
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace script census is active, failed or uncorrelated",
+            });
+        }
+        let request = PaseoRpc::workspace_setup_status(self.next_request_id(), workspace_id);
+        let frame = self.transport.request(&request).await?;
+        let setup: crate::wire::PaseoWorkspaceSetupStatus =
+            frame.resolve(&request, "PaseoWorkspaceSetupStatus")?;
+        if setup.workspace_id != workspace_id
+            || setup
+                .snapshot
+                .is_some_and(|snapshot| !matches!(snapshot.status.as_str(), "completed" | "failed"))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace setup census is active or uncorrelated",
+            });
+        }
+        Ok(())
     }
 
     /// The authoritative readback of one workspace, by exact id.
@@ -1388,6 +1477,18 @@ impl PaseoAdapter {
             );
             let frame = self.transport.request(&request).await?;
             let page: PaseoAgentPage = frame.resolve(&request, "PaseoAgentPage")?;
+            if page.error.is_some()
+                || page.page_info.has_more
+                    != page
+                        .page_info
+                        .next_cursor
+                        .as_deref()
+                        .is_some_and(|cursor| !cursor.is_empty())
+            {
+                return Err(RuntimeError::Transport {
+                    rule: "the agent directory omitted its required continuation cursor",
+                });
+            }
             found.extend(page.entries.into_iter().map(|entry| entry.agent));
             match page.page_info.next() {
                 Some(next) => cursor = Some(next.to_owned()),
@@ -1464,8 +1565,8 @@ impl PaseoAdapter {
     /// identity when `includeArchived` is set. Hosted-seat retirement must
     /// prove the archive stamp after issuing the archive command, and a retry
     /// must be able to prove it again. Keep this fallback private to terminal
-    /// retirement so an archived session can never become driveable through a
-    /// normal exact lookup.
+    /// retirement and canonical history so an archived session can never
+    /// become driveable through a normal exact lookup.
     async fn fetch_agent_including_archived(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
         self.find_agent_including_archived(agent_id)
             .await?
@@ -2294,6 +2395,14 @@ impl PaseoAdapter {
         command_id: &str,
         desired: &ExternalName,
     ) -> RuntimeResult<PaseoProjectOutcome> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE,
+            ],
+            RuntimeCapability::PrepareProject,
+        )
+        .await?;
         // A persisted binding is authoritative, and it is attested by exact id
         // rather than re-derived. Re-deriving would re-open the very question
         // the binding exists to close.
@@ -2653,6 +2762,11 @@ impl PaseoAdapter {
         team_run_id: TeamRunId,
         declared: &[RoleSlotId],
     ) -> RuntimeResult<Vec<PaseoSlotPlan>> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         // Every agent of *this team run*, wherever it sits — not every agent of
         // the project. The seat rules are about labels, and an agent carrying
         // this run's slot label that has been moved out of the task workspace is
@@ -2779,6 +2893,14 @@ impl PaseoAdapter {
         binding: &RuntimeBindingSnapshot,
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::Retire,
+        )
+        .await?;
         let binding = self.attested(binding)?;
         let native_id = binding.identity().native_id.as_str().to_owned();
         let command = PaseoCommand::agent_archive(&native_id);
@@ -3367,9 +3489,15 @@ impl PaseoAdapter {
     async fn declared(&self) -> RuntimeResult<RuntimeCapabilities> {
         let mut capabilities = match self.fetch_server_info().await {
             Ok(info) => {
-                let degraded = !info.missing_required().is_empty() || !info.is_supported_baseline();
+                let can_read = info.permits_workspace_reads();
+                let can_drive = info.permits_workspace_driving();
+                let degraded = !info.missing_required().is_empty()
+                    || !info.is_supported_baseline()
+                    || !can_drive;
                 self.lock().server = Some(info);
-                if degraded {
+                if !can_read {
+                    self.config.capabilities_at(TrustGrade::C, &[])
+                } else if degraded {
                     self.config.degraded_capabilities()
                 } else {
                     self.config.capabilities()
@@ -3383,15 +3511,26 @@ impl PaseoAdapter {
         // version gate. Declared at every grade on purpose: a rename sets a title
         // and reads it back, so there is no readback a degraded daemon could
         // mislead a *placement* decision with.
-        let supports_project_rename = self
-            .lock()
-            .server
-            .as_ref()
-            .is_some_and(PaseoServerInfo::supports_project_rename);
+        let supports_project_rename = self.lock().server.as_ref().is_some_and(|info| {
+            info.supports_project_rename()
+                && info.permits_workspace_reads()
+                && info.permits(crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE)
+        });
         if self.mcp.is_some() || supports_project_rename {
             capabilities
                 .supported
                 .insert(RuntimeCapability::RetitleContainer);
+        }
+        // A second transport is not additional authority. Restrict the final
+        // composed surface too, including capabilities added by the MCP route.
+        if let Some(info) = self.lock().server.as_ref() {
+            if !info.permits_workspace_reads() {
+                capabilities.supported.clear();
+            } else if !info.permits(crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE) {
+                capabilities
+                    .supported
+                    .remove(&RuntimeCapability::RetitleContainer);
+            }
         }
         Ok(capabilities)
     }
@@ -4164,6 +4303,11 @@ impl PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         self.validate_consultation_model_rung(&request.model_rung, &request.route_provenance)?;
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
@@ -4650,6 +4794,11 @@ impl PaseoAdapter {
         &self,
         request: &HostedSeatLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
         let effective_scope = self.effective_scope(&request.scope)?;
@@ -4886,6 +5035,11 @@ impl RuntimeAdapter for PaseoAdapter {
         if snapshots.is_empty() {
             return Ok(Vec::new());
         }
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         // Read every claimed session by exact native id. Project-scoped census
         // used to make restart recovery depend on the one epic stored in fleet
         // settings; exact reads let each surviving seat re-establish its own
@@ -4985,6 +5139,11 @@ impl RuntimeAdapter for PaseoAdapter {
         if bindings.is_empty() {
             return Ok(Vec::new());
         }
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let generation = self.generation();
         let declared = self.declared().await?;
         let mut candidates = Vec::new();
@@ -5288,6 +5447,20 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         };
+        if let Some(placement) = &request.placement
+            && (before.workspace_id.as_deref() != Some(placement.workspace_native_id.as_str())
+                || WorkspaceRoot::parse(&before.cwd)? != placement.canonical_cwd
+                || placement
+                    .provider_session_id
+                    .as_ref()
+                    .is_some_and(|expected| {
+                        before.provider_session_id() != Some(expected.as_str())
+                    }))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the hosted retirement target changed workspace, directory or provider conversation",
+            });
+        }
         // An archive stamp is the terminal readback this operation exists to
         // prove. Older hosted seats may carry a permission mode that no longer
         // matches the current supervised policy; requiring a live route match
@@ -5331,6 +5504,11 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &HostedSeatMessageRequest,
     ) -> RuntimeResult<HostedSeatMessageOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation != self.generation()
@@ -5413,6 +5591,14 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ConsultationMessageRequest,
     ) -> RuntimeResult<()> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::SendMessage,
+        )
+        .await?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation != self.generation()
@@ -5697,6 +5883,137 @@ impl RuntimeAdapter for PaseoAdapter {
             snapshot: plan.snapshot,
             desired_title: plan.desired,
             changed: plan.changed,
+        })
+    }
+
+    /// Archive one retired native child by exact persisted identity and fresh readback.
+    async fn archive_container(
+        &self,
+        request: &kontor_runtime::container::ArchiveContainerRequest,
+    ) -> RuntimeResult<kontor_runtime::container::ArchiveContainerOutcome> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE,
+            ],
+            RuntimeCapability::Retire,
+        )
+        .await?;
+        if request.projection != ContainerProjection::NativeChild {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "only an explicitly bound native child may be archived",
+            });
+        }
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the child belongs to another runtime host or a future generation",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        if self
+            .config
+            .adopted_containers
+            .contains_key(&request.topology_node_id)
+            || self
+                .config
+                .adopted_containers
+                .values()
+                .any(|id| id.as_str() == native_id)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "adopted containers are preserved by scoped cleanup",
+            });
+        }
+        if let Some(held) = self.lock().containers.get(&request.topology_node_id)
+            && (held.binding.id != request.container_binding_id
+                || held.binding.identity.native_id != request.identity.native_id
+                || held.binding.projection != request.projection
+                || held.binding.root.as_ref() != Some(&request.canonical_cwd))
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the archive request contradicts the registered container binding",
+            });
+        }
+        let find_exact = async {
+            let mut found = Vec::new();
+            let projects = self.fetch_projects().await?;
+            if !projects
+                .iter()
+                .any(|project| project.id == request.bound_project_native_id.as_str())
+            {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "the native child's bound project is absent",
+                });
+            }
+            for project in projects {
+                found.extend(
+                    self.fetch_workspaces(&project.id)
+                        .await?
+                        .into_iter()
+                        .filter(|workspace| workspace.id == native_id),
+                );
+            }
+            match found.len() {
+                0 => Ok(None),
+                1 => Ok(found.pop()),
+                _ => Err(RuntimeError::CorrelationFailed),
+            }
+        };
+        let before: Option<PaseoWorkspace> = find_exact.await?;
+        // Check even when the workspace is absent: a dangling active session
+        // is not successful cleanup of this binding.
+        if self
+            .fetch_agents(&BTreeMap::new(), false)
+            .await?
+            .iter()
+            .any(|agent| agent.workspace_id.as_deref() == Some(native_id) && !agent.is_archived())
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the native child still contains an unarchived session",
+            });
+        }
+        let changed = if let Some(workspace) = before {
+            if workspace.project_id != request.bound_project_native_id.as_str()
+                || WorkspaceRoot::parse(&workspace.workspace_directory)? != request.canonical_cwd
+                || workspace.is_paseo_owned_worktree()
+                || !matches!(
+                    workspace.workspace_kind,
+                    PaseoWorkspaceKind::LocalCheckout | PaseoWorkspaceKind::Directory
+                )
+            {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the archive target changed parent, directory or filesystem ownership",
+                });
+            }
+            self.require_workspace_quiet(native_id, &request.canonical_cwd)
+                .await?;
+            // A lost acknowledgement is recoverable only by complete fresh
+            // absence readback below. Never substitute a CLI exit code for it.
+            let _archive_ack = self
+                .transport
+                .run(&PaseoCommand::workspace_archive(native_id))
+                .await;
+            true
+        } else {
+            false
+        };
+        for project in self.fetch_projects().await? {
+            if self
+                .fetch_workspaces(&project.id)
+                .await?
+                .iter()
+                .any(|workspace| workspace.id == native_id)
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        Ok(kontor_runtime::container::ArchiveContainerOutcome {
+            request: request.clone(),
+            changed,
+            observed_at: request.requested_at,
         })
     }
 
@@ -6140,6 +6457,14 @@ impl RuntimeAdapter for PaseoAdapter {
         // Provenance first: preflight would otherwise judge this against the
         // caller's own capability snapshot.
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::Resume,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6210,6 +6535,14 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::SendMessage,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6326,6 +6659,14 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::Cancel,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6381,6 +6722,11 @@ impl RuntimeAdapter for PaseoAdapter {
         expected_provider: &str,
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let binding = self.attested(binding)?;
         let native_id = binding.identity().native_id.as_str();
         let agent = self.fetch_agent(native_id).await?;
@@ -6413,6 +6759,14 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ReconcileSessionLabelsRequest,
     ) -> RuntimeResult<ReconciledSessionLabels> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::RetitleContainer,
+        )
+        .await?;
         let binding = self.attested(&request.binding)?;
         let scope = self.effective_scope(&request.scope)?;
         let task = scope.require_task()?;
@@ -6487,6 +6841,11 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &RetitleSeatRequest,
     ) -> RuntimeResult<RetitleSeatOutcome> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation > self.generation()
@@ -6524,6 +6883,14 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &RetitleSeatRequest,
     ) -> RuntimeResult<RetitleSeatOutcome> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::RetitleContainer,
+        )
+        .await?;
         let preview = self.preview_retitle_seat(request).await?;
         if preview.changed {
             let output = self
@@ -6555,6 +6922,11 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn inspect(&self, request: &InspectRequest) -> RuntimeResult<ControlPlaneObservation> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6862,6 +7234,11 @@ impl RuntimeAdapter for PaseoAdapter {
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -6888,6 +7265,14 @@ impl RuntimeAdapter for PaseoAdapter {
             .transpose()?;
 
         let native_id = binding.identity().native_id.as_str().to_owned();
+        if anchor.is_none() {
+            // A timeline replacement discards stream permission lifecycle
+            // frames too; canonical rows never contain them. Refresh the
+            // authoritative permission state before completing an origin read.
+            // If this fails, the caller still owes its canonical recovery.
+            let agent = self.fetch_agent_including_archived(&native_id).await?;
+            self.observe_permissions(binding.binding_id(), &agent);
+        }
         // A cursor this adapter cannot spell in Paseo's own terms is a refusal
         // rather than a read from the start: 0.3.1 addresses a position by raw
         // epoch, and a raw epoch the registry never mapped names a numbering
@@ -7008,6 +7393,11 @@ impl RuntimeAdapter for PaseoAdapter {
         request: &LiveSubscribeRequest,
     ) -> RuntimeResult<LiveSubscription> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::LiveEvents,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -7051,6 +7441,46 @@ impl RuntimeAdapter for PaseoAdapter {
             // registry is touched: an oversized frame is refused while it is
             // still only bytes.
             ensure_frame_bounded(&raw)?;
+            if raw.get("type").and_then(serde_json::Value::as_str)
+                == Some("agent.timeline.replacement")
+            {
+                let payload = raw.get("payload").ok_or_else(|| {
+                    RuntimeError::Domain(DomainError::invalid(
+                        "PaseoTimelineReplacement",
+                        "has no payload",
+                    ))
+                })?;
+                let agent_id = payload
+                    .get("agentId")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        RuntimeError::Domain(DomainError::invalid(
+                            "PaseoTimelineReplacement",
+                            "has no agent id",
+                        ))
+                    })?;
+                payload
+                    .get("epoch")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|epoch| !epoch.is_empty())
+                    .ok_or_else(|| {
+                        RuntimeError::Domain(DomainError::invalid(
+                            "PaseoTimelineReplacement",
+                            "has no epoch",
+                        ))
+                    })?;
+                if agent_id != native_id {
+                    return Err(RuntimeError::CorrelationFailed);
+                }
+                // Advertising the capability makes this one bounded signal the
+                // replacement for a full legacy row replay. Nothing from the
+                // previous numbering may be merged after it. The caller must
+                // discard its saved cursor and start a cursor-free canonical
+                // read; the new raw epoch is registered only by that readback.
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
             let envelope: PaseoStreamFrame = serde_json::from_value(
                 raw.get("payload")
                     .cloned()
@@ -7129,6 +7559,14 @@ impl RuntimeAdapter for PaseoAdapter {
         request: &PermissionResponseRequest,
     ) -> RuntimeResult<PermissionAck> {
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::PermissionResponse,
+        )
+        .await?;
         let declared = self.declared().await?;
         let generation = self.generation();
         preflight(
@@ -7237,6 +7675,11 @@ impl RuntimeAdapter for PaseoAdapter {
         // rather than answered — reporting a limitation is not a reason to stop
         // checking who is asking.
         let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
         let declared = self.declared().await?;
         preflight(
             &declared,

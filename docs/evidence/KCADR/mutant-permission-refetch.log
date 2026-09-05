@@ -1,0 +1,22 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.29s
+     Running tests/contract.rs (target/debug/deps/contract-bc373a1158f6541a)
+
+running 1 test
+test timeline_replacement_recovers_requested_and_resolved_permissions_from_agent_state ... FAILED
+
+failures:
+
+---- timeline_replacement_recovers_requested_and_resolved_permissions_from_agent_state stdout ----
+
+thread 'timeline_replacement_recovers_requested_and_resolved_permissions_from_agent_state' (74715284) panicked at crates/kontor-runtime-paseo/tests/contract.rs:4942:9:
+assertion failed: plane.adapter.history(&request).await.is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    timeline_replacement_recovers_requested_and_resolved_permissions_from_agent_state
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --test contract`

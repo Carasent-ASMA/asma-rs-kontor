@@ -227,6 +227,7 @@ impl RecordedPaseo {
             server_id: "srv_kontor_fixture".to_owned(),
             version: Some(PASEO_APP_VERSION.to_owned()),
             hostname: Some("kontor-fixture-host".to_owned()),
+            permissions: None,
             features: REQUIRED_FEATURES
                 .iter()
                 .map(|feature| (feature.as_str().to_owned(), true))

@@ -1,0 +1,32 @@
+[
+  {
+    "binary": "kontor-daemon",
+    "exit_code": 0,
+    "help_header": [
+      "Single-instance process and composition root for the Kontor control plane.",
+      "",
+      "Usage: kontor-daemon [OPTIONS] [COMMAND]",
+      ""
+    ]
+  },
+  {
+    "binary": "kontor",
+    "exit_code": 0,
+    "help_header": [
+      "Operate one Kontor realm over its loopback contract.",
+      "",
+      "Usage: kontor [OPTIONS] <COMMAND>",
+      ""
+    ]
+  },
+  {
+    "binary": "kontor-mcp",
+    "exit_code": 0,
+    "help_header": [
+      "Stdio MCP server exposing capability-gated Kontor tools.",
+      "",
+      "Usage: kontor-mcp [OPTIONS] --state-root <PATH> --credential-tier <TIER>",
+      ""
+    ]
+  }
+]

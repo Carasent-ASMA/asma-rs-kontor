@@ -568,6 +568,20 @@ pub struct HostedSeatRetireRequest {
     pub model_rung: ModelRung,
     /// Audited retirement instant.
     pub requested_at: Timestamp,
+    /// Additional persisted placement required for explicit topology cleanup.
+    /// Historical route-correction callers retain their existing contract.
+    pub placement: Option<HostedSeatRetirePlacement>,
+}
+
+/// Immutable placement facts the cleanup command must verify before native retirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedSeatRetirePlacement {
+    /// Exact native child bound to the seat's topology node.
+    pub workspace_native_id: ExternalId,
+    /// Canonical directory recorded with that child.
+    pub canonical_cwd: WorkspaceRoot,
+    /// Provider conversation id when it was exposed at bind time.
+    pub provider_session_id: Option<ExternalId>,
 }
 
 /// Exact archive readback for a hosted-seat predecessor.
@@ -1218,6 +1232,21 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::RetitleContainer,
+        })
+    }
+
+    /// Archive an exact retired native child and prove its absence.
+    ///
+    /// Implementations must refuse native roots, foreign/moved identities and
+    /// live occupants. A missing child on retry is confirmed through a complete
+    /// readback, never inferred from an acknowledgement or cached binding.
+    async fn archive_container(
+        &self,
+        request: &crate::container::ArchiveContainerRequest,
+    ) -> RuntimeResult<crate::container::ArchiveContainerOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::Retire,
         })
     }
 

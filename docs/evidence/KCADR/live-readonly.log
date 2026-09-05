@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running tests/live.rs (target/debug/deps/live-5f68300919767fc4)
+
+running 5 tests
+live Paseo announced version=Some("0.7.2") serverId=srv_xbEAfW_ifVnB
+test live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity ... ok
+test live_an_unknown_agent_is_refused_rather_than_answered_empty ... ok
+live Paseo holds 7 projects
+test live_a_correlated_session_read_round_trips ... ok
+test live_the_status_readback_agrees_with_the_pushed_identity ... ok
+live Paseo CLI reports 0.7.2
+test live_cli_reports_the_supported_baseline ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.74s
+

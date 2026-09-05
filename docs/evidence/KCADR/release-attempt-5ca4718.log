@@ -1,0 +1,18 @@
+archive HEAD extracted to /var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/kontor-verify-qcam_mo0/tree
+$ cargo generate-lockfile
+    Updating crates.io index
+     Locking 736 packages to latest Rust 1.97.1 compatible versions
+      Adding futures v0.3.33 (available: v0.3.34)
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding keyring v4.1.6 (available: v4.2.0)
+      Adding matchit v0.8.4 (available: v0.8.6)
+      Adding rmcp v3.1.2 (available: v3.2.0)
+      Adding rust-argon2 v1.0.0 (available: v1.0.1)
+      Adding tauri-plugin-stronghold v2.3.1 (available: v2.3.2)
+      Adding tinyvec v1.12.0 (available: v1.13.2)
+      Adding toml v0.8.2 (available: v0.8.23)
+      Adding toml_datetime v0.6.3 (available: v0.6.11)
+      Adding toml_edit v0.20.2 (available: v0.20.7)
+      Adding tower-http v0.7.0 (available: v0.7.1)
+      Adding uuid v1.24.0 (available: v1.26.0)
+Cargo.lock regeneration differs byte-for-byte from the committed lockfile

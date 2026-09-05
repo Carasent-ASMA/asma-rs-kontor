@@ -851,6 +851,28 @@ mod tests {
     }
 
     #[test]
+    fn fable_upgrade_preserves_frozen_routes_and_accepts_the_current_release() {
+        for provider in ["claude", "claude-work", "claude-personal"] {
+            for model in ["claude-fable-5", "claude-fable-5-1"] {
+                let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+                setting.provider_fallbacks.insert(
+                    "codex".to_owned(),
+                    kontor_core::spec::ModelRung {
+                        provider: kontor_core::spec::ProviderRef(provider.to_owned()),
+                        model: kontor_core::spec::ModelRef(model.to_owned()),
+                        effort: Some(kontor_core::spec::EffortLevel::High),
+                    },
+                );
+                let settings = RuntimeSettings {
+                    schema_version: RUNTIMES_SCHEMA,
+                    runtimes: vec![RuntimeSetting::Paseo(setting)],
+                };
+                build_registry(&settings, None).expect("current and frozen routes load");
+            }
+        }
+    }
+
+    #[test]
     fn a_paseo_host_target_is_redacted_in_debug() {
         let setting = PaseoSetting {
             runtime_kind: "paseo.agent".to_owned(),

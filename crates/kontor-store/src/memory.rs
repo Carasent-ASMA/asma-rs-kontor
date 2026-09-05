@@ -294,7 +294,7 @@ impl SqliteStore {
         project_id: ProjectId,
         item_id: &str,
     ) -> Result<Vec<MemoryRevision>, MemoryError> {
-        let mut statement = self.connection.prepare("SELECT r.id,r.revision,r.document,r.content_hash,r.provenance,r.proposed_by,r.proposed_at,r.supersedes_id,a.revision_id IS NOT NULL,i.current_revision_id=r.id,t.item_id IS NOT NULL FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id LEFT JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE r.project_id=?1 AND r.item_id=?2 ORDER BY r.revision")?;
+        let mut statement = self.connection.prepare("SELECT r.id,r.revision,r.document,r.content_hash,r.provenance,r.proposed_by,r.proposed_at,r.supersedes_id,a.revision_id IS NOT NULL,i.current_revision_id IS r.id,t.item_id IS NOT NULL FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id LEFT JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE r.project_id=?1 AND r.item_id=?2 ORDER BY r.revision")?;
         let rows = statement.query_map(params![project_id.to_string(), item_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -962,6 +962,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!((aggregate, maximum), (2, 2));
+    }
+
+    #[test]
+    fn first_proposal_history_is_readable_before_approval_and_after_restart() {
+        let (dir, store, project, _) = fixture();
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project,
+                "pending-review",
+                0,
+                &document("review these immutable bytes"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        drop(store);
+        let store = SqliteStore::open(&dir.path().join("realm.db")).unwrap();
+        let pending = store
+            .memory_history(project, "pending-review")
+            .expect("a pending first proposal is inspectable");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].revision_id, proposal.revision_id);
+        assert_eq!(pending[0].document, proposal.document);
+        assert!(!pending[0].approved);
+        assert!(!pending[0].current);
+        assert!(
+            store.list_memory(project).unwrap().is_empty(),
+            "unapproved evidence is not approved retrieval"
+        );
+        store
+            .approve_memory_revision(
+                project,
+                "pending-review",
+                &proposal.revision_id,
+                1,
+                "reviewer",
+            )
+            .unwrap();
+        let approved = store.memory_history(project, "pending-review").unwrap();
+        assert_eq!(approved.len(), 1);
+        assert_eq!(approved[0].revision_id, proposal.revision_id);
+        assert_eq!(approved[0].document, proposal.document);
+        assert!(approved[0].approved);
+        assert!(approved[0].current);
     }
 
     #[test]

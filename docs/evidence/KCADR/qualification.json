@@ -1,0 +1,29 @@
+{
+  "source_revision": "4c51059e07a9517d57cb9bd2665dc537ff681a2c",
+  "integrated_master": "ac7e788243050714d9722733cc6548d781e387d9",
+  "completed_at": "2026-09-04T21:38:57.226188+00:00",
+  "command": "CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=<isolated checkout>/target/qualification python3 -u scripts/verify-tree.py --mode archive",
+  "exit_code": 0,
+  "rust_tests_passed": 2259,
+  "rust_tests_ignored": 9,
+  "console_tests_passed": 300,
+  "gates": [
+    "cargo generate-lockfile",
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo test --workspace --locked",
+    "cargo audit",
+    "cargo deny check",
+    "/opt/homebrew/bin/pnpm install --frozen-lockfile",
+    "/opt/homebrew/bin/pnpm -r typecheck",
+    "/opt/homebrew/bin/pnpm -r test",
+    "/opt/homebrew/bin/pnpm audit --prod"
+  ],
+  "mutation_checks_killed": 3,
+  "integrated_live_readonly_tests_passed": 5,
+  "runtime_inputs_unchanged_since_archive": true,
+  "log_sha256": "56504c94594d8f4d149a2dd72663a3943709392962ffb76e0547c39230a43b03",
+  "independent_gate_verdict": null,
+  "disposable_live_mutation_qualification": "pending",
+  "deployed": false
+}

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "source_revision": "71e3c6f9492b6a0418f6552830fa3ac0c2ef0af7",
+  "source_tree": "4c9984613a4149c180dbb58a88e8765dbe932375",
+  "integrated_master": "082b63ad2e15beddac3b745bdf55c794f35d0b88",
+  "completed_at": "2026-09-05T08:59:20.495706+00:00",
+  "command": "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 CARGO_TARGET_DIR=<isolated checkout>/target/qualification python3 -u scripts/verify-tree.py --mode archive",
+  "exit_code": 0,
+  "rust_tests_passed": 2283,
+  "rust_tests_ignored": 9,
+  "console_tests_passed": 300,
+  "gates": [
+    "cargo generate-lockfile",
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo test --workspace --locked",
+    "cargo audit",
+    "cargo deny check",
+    "/opt/homebrew/bin/pnpm install --frozen-lockfile",
+    "/opt/homebrew/bin/pnpm -r typecheck",
+    "/opt/homebrew/bin/pnpm -r test",
+    "/opt/homebrew/bin/pnpm audit --prod"
+  ],
+  "log": "release-gates-71e3c6f.log",
+  "log_sha256": "77aba3bd4302fe66d19c09067d2bf1bedfd7f76ae370372f93bb577f2a40d7f3",
+  "lockfile_sha256": "5f99e2e0c95db8e79100e977c629001a5ab2e243ba2294614d2f8051c8f4a569",
+  "source_input_manifest": {
+    "format": "git ls-tree -r -z, excluding docs/evidence/KCADR/, retaining final NUL",
+    "sha256": "456b40abc42af2a21a91422525647cd20c918c5e16823a1fe49077d5a81c220d",
+    "scope": "All tracked files outside the evidence directory, including source, manifests, lockfiles, generated contracts and tests."
+  },
+  "independent_repository_reviews": [
+    "independent-paseo-review.json",
+    "independent-cleanup-review.json",
+    "independent-workflow-prerequisite-review.json",
+    "independent-integration-review.json",
+    "release-lock-refresh.json"
+  ],
+  "targeted_mutation_evidence": [
+    "mutation-results.json",
+    "review-mutants.json"
+  ],
+  "live_qualification": {
+    "source_revision": "f1b65ba2000ed0bebbe8f231fb7f073e45227614",
+    "receipt_url": "https://github.com/Carasent-ASMA/asma-modules/blob/26840a09c6e0253cd0e375baeba7762a6c5b4ecd/_docs/ai-orchestration/reports/evidence/kcadr/disposable-qualification-f1b65ba.json",
+    "native_lifecycle_implementation_unchanged": true,
+    "results": "Successful Opus 5 message, exact replay, restart, idle hosted-seat retirement and child archive; fixture cleanup recorded. Fable 5.1 selection accepted; successful Fable inference unproven.",
+    "limits": "Retained fixture readback omits optional provider persistence.sessionId. Native root removal was bounded test-infrastructure teardown after Kontor refused it. Terminal collector health cannot be proven by Paseo 0.7.2. Raw provider refusal outputs were not retained."
+  },
+  "deployment": {
+    "performed_by_this_source_lane": false,
+    "owner": "parent session /root",
+    "pending": "Build/deploy final integrated commit, production readback, configured Kontor task/epic gates and Jira closeout."
+  },
+  "independent_kontor_gate_verdict": null,
+  "historical_qualification": "qualification.json remains evidence only for 4c51059; this receipt qualifies the named source revision."
+}

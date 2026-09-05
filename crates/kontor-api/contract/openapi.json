@@ -21588,7 +21588,8 @@
           "lifecycle",
           "placement",
           "desired_binding",
-          "seats"
+          "seats",
+          "revision"
         ],
         "properties": {
           "desired_binding": {
@@ -21624,6 +21625,12 @@
           "placement": {
             "type": "string",
             "description": "Derived native-placement condition."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current aggregate revision for an exact optimistic-concurrency mutation.",
+            "minimum": 0
           },
           "seats": {
             "type": "array",
@@ -21703,12 +21710,19 @@
           "seat_binding_id",
           "role_slot_id",
           "role",
-          "lifecycle"
+          "lifecycle",
+          "revision"
         ],
         "properties": {
           "lifecycle": {
             "type": "string",
             "description": "Its lifecycle."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current aggregate revision for an exact optimistic-concurrency mutation.",
+            "minimum": 0
           },
           "role": {
             "$ref": "#/components/schemas/ResolvedRoleRefDto",

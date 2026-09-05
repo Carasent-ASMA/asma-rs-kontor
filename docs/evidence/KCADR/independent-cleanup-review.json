@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "review_type": "independent_repository_review",
+  "reviewer_session": "/root/pr167_merge/review_paseo",
+  "kontor_gate_authority": false,
+  "status": "approved",
+  "source_base": "bbc299dce7c06af978dd37dd44fa1595dd167021",
+  "approved_native_source_blobs": {
+    "crates/kontor-daemon/src/applications.rs": "19949e1666f7870cbb362956b1f65778dbf08a3a",
+    "crates/kontor-runtime-paseo/src/adapter.rs": "d2822ab8f85bbd8f9602cba4392dd089a1fb461c",
+    "crates/kontor-runtime-paseo/src/wire.rs": "102efbc9d2b3468b8109f224f5ab618fc549acaa",
+    "crates/kontor-runtime-paseo/src/client.rs": "a8f4f05f070e6e3c135018cb2bb55371f51f527a",
+    "crates/kontor-runtime/src/adapter.rs": "da764415eedb5742ade1941aa16ef18f2b09678e",
+    "crates/kontor-runtime/src/container.rs": "628bf9d43fb6c7e137b4e29079d35458597825e2"
+  },
+  "approved_revision_dto_delta": {
+    "crates/kontor-api/src/applications.rs": "bd7ee5825cf0b356a0c41ba037a5641df89abad0",
+    "crates/kontor-daemon/src/applications.rs": "431c47b4fc7ee22566347c701e96e8c1db4d1132"
+  },
+  "approved_memory_commit": "ae373f5ab7455b3ad6e65530230cc7beb4c9f57e",
+  "initial_findings_resolved": [
+    "Workspace archive can stop native resources and delete an owned worktree: scoped cleanup now permits only nonowned Directory/LocalCheckout and checks agents, terminals, scripts and setup.",
+    "Malformed or truncated directory responses could certify absence: required inventories, error checks and consistent bounded continuation are now mandatory.",
+    "Configured adoption or a contradicting held binding was unchecked: both refuse before archive.",
+    "Checks after native effects did not exclude migration/message races: a shared read/write guard spans effectful placement, consultation, delivery, hosted-message and migration workflows; coordinated regression pauses before effect.",
+    "Native parent host was reduced to a bare string: exact persisted parent runtime/host now checked.",
+    "Cleanup needed public aggregate revisions: existing projections now return them, and the API regression uses those values."
+  ],
+  "qualification_limits": [
+    "Paseo0.7.2 terminal listing masks collector errors as an empty list.",
+    "Configured adoption can be refused; historical creation vs recovery is not durably distinguished. Preserve disposable fixture creation receipts.",
+    "No native root archival; isolated project/server teardown is separate test infrastructure.",
+    "Repository review is not a Kontor role gate, release qualification or deployment approval receipt."
+  ],
+  "reviewer_native_verdict_excerpts": [
+    "Final static review conclusion: APPROVE current native cleanup/hosted retirement source. Verified every reported missing reader now spans its method, including complete public consultation operations and lower delivery/placement helpers. Re-audited writer call chains: no writer->reader nesting conflict; try_read/try_write avoids queued-writer nesting deadlock.",
+    "No remaining blocking repository finding in this scope. Test evidence is your executed suites (108+195 adapter; coordinated daemon race/retry), not independently run by me. Final daemon suite/release gates remain yours. Qualification must retain accepted upstream terminal-error and historical-creation-provenance limitations."
+  ],
+  "reviewer_memory_verdict_excerpt": "APPROVE memory fix commit ae373f5ab7455b3ad6e65530230cc7beb4c9f57e, memory.rs blob58fd95ae6dca35d10aea26e08c52186f92351ba3. Exact production delta is solely null-safe current-revision SELECT predicate; no mutation, schema, scope-filter or immutable-content path changed. Read both logs: red fails specifically InvalidColumnType(9, current_revision_id=r.id, Null), green passes all10 memory tests including proposal/reopen/approval preservation and current-pointer tests. No findings."
+}

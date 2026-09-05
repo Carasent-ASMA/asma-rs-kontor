@@ -1,0 +1,20 @@
+[
+  {
+    "mutant": "permission-composition",
+    "exit_code": 101,
+    "killed": true,
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs"
+  },
+  {
+    "mutant": "replacement-routing",
+    "exit_code": 101,
+    "killed": true,
+    "file": "crates/kontor-runtime-paseo/src/client.rs"
+  },
+  {
+    "mutant": "replacement-delivery",
+    "exit_code": 101,
+    "killed": true,
+    "file": "crates/kontor-runtime-paseo/src/client.rs"
+  }
+]

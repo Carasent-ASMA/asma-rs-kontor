@@ -1,0 +1,35 @@
+{
+  "reviewer": "/root/pr167_merge/review_paseo",
+  "scope": "Independent static repository review: permission, timeline and model compatibility; excludes native cleanup, live deployment and Kontor gate authority",
+  "initial_commit": "76a8db559bb20f87554b8b7d2d865d47b89645d9",
+  "initial_verdict": "changes_required",
+  "findings": [
+    {
+      "severity": "P1",
+      "finding": "Direct and frozen-binding operations bypassed live connection permissions",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "P2",
+      "finding": "Timeline replacement discarded permission lifecycle frames without authoritative recovery",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "P2",
+      "finding": "Initial canonical recovery refresh could not read archived agent history",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "P2",
+      "finding": "Empty binding recovery acquired an unnecessary runtime dependency",
+      "disposition": "fixed"
+    }
+  ],
+  "final_verdict": "approve",
+  "reviewed_head": "1d430977a7fb59877af3cd1f53718668e2587b0d",
+  "reviewed_working_blobs": {
+    "adapter.rs": "58e468cacd2d75a50900d63b7dcc5bc14ba4775a",
+    "contract.rs": "9c7bbe49f1eeea5939f155514cae960e6124de75"
+  },
+  "reviewer_final": "Approve the reviewed permission, timeline and model compatibility changes. No remaining findings in this bounded scope. This is independent static repository review approval; cleanup additions, live deployment qualification and Kontor gate authority are outside this verdict."
+}

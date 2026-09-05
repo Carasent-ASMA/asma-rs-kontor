@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "review_type": "independent_repository_review",
+  "reviewer_session": "/root/pr167_merge/review_paseo",
+  "kontor_gate_authority": false,
+  "status": "approved",
+  "source_base": "e67add7b865776e689226ebdbdb7aff33081539b",
+  "approved_source_blobs": {
+    "crates/kontor-daemon/src/applications.rs": "4cb002510ed23407e605ed3e472eb760404fab07",
+    "crates/kontor-daemon/tests/loopback_api.rs": "e4350f3c68c63d25dd5b3885eeecc10b59111790"
+  },
+  "findings": [],
+  "reviewer_verdict_excerpt": "APPROVE workflow-install prerequisite delta over e67add7. Exact project/profile/version read is nonmutating; project CAS takes precedence; successful receipt replay precedes preflight and retains original result revision; final transactional CAS/FK and receipt atomicity remain unchanged. Regression confirms no project revision change on refusal, same epic ID with empty reapply, exact task value preserved, same failed key remains usable, and install/replay/readback retain definition identity. Read red409 log and latest green log: new empty-epic regression plus existing admin install/CAS/replay regression both pass. No real findings; repository review only, no Kontor gate claim.",
+  "test_execution": "Author ran the tests; independent reviewer inspected source and logs."
+}

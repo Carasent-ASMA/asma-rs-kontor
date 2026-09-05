@@ -1,0 +1,114 @@
+    Checking libc v0.2.189
+    Checking errno v0.3.14
+    Checking serde v1.0.229
+    Checking signal-hook-registry v1.4.8
+   Compiling jobserver v0.1.35
+    Checking mio v1.2.3
+    Checking socket2 v0.6.5
+   Compiling cc v1.4.5
+    Checking tokio v1.53.1
+    Checking zerofrom v0.1.8
+    Checking yoke v0.8.3
+    Checking getrandom v0.4.3
+    Checking cpufeatures v0.3.1
+    Checking tracing v0.1.44
+    Checking zerovec v0.11.8
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0
+    Checking futures-util v0.3.34
+    Checking thiserror v2.0.20
+    Checking sha2 v0.11.0
+   Compiling stable_deref_trait v1.2.1
+    Checking tinystr v0.8.4
+    Checking uuid v1.24.0
+    Checking zeroize v1.9.0
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.6
+    Checking zerotrie v0.2.5
+    Checking bitflags v2.13.1
+    Checking icu_collections v2.3.0
+    Checking icu_provider v2.3.1
+    Checking tokio-util v0.7.19
+    Checking kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+    Checking h2 v0.4.19
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking rustls-pki-types v1.15.1
+    Checking hyper v1.11.1
+    Checking idna_adapter v1.2.2
+    Checking subtle v2.6.1
+    Checking hyper-util v0.1.20
+    Checking idna v1.1.0
+    Checking url v2.5.8
+    Checking kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+    Checking tower v0.5.3
+    Checking core-foundation v0.10.1
+    Checking security-framework-sys v2.17.0
+    Checking security-framework v3.7.0
+    Checking num-traits v0.2.19
+    Checking chrono v0.4.45
+    Checking tower-http v0.6.11
+    Checking futures-executor v0.3.34
+    Checking futures v0.3.33
+   Compiling crc32fast v1.5.1
+    Checking kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling zopfli v0.8.3
+   Compiling libsqlite3-sys v0.38.2
+    Checking kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+    Checking secrecy v0.10.3
+   Compiling rust-embed-utils v8.12.0
+   Compiling zip v3.0.0
+    Checking kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
+   Compiling darling_core v0.24.1
+    Checking rand v0.10.2
+    Checking kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+    Checking icalendar v0.17.13
+   Compiling utoipa-swagger-ui v9.0.2
+   Compiling rust-embed-impl v8.12.0
+    Checking sha1 v0.11.0
+    Checking tungstenite v0.30.0
+    Checking rusqlite v0.40.2
+    Checking serde_yaml_ng v0.10.0
+    Checking utoipa v5.5.0
+    Checking rust-embed v8.12.0
+    Checking rustix v1.1.4
+   Compiling darling_macro v0.24.1
+    Checking axum-core v0.5.6
+    Checking serde_urlencoded v0.7.1
+   Compiling serde_json v1.0.151
+    Checking dirs-sys v0.5.0
+    Checking axum v0.8.9
+    Checking ref-cast v1.0.27
+   Compiling darling v0.24.1
+    Checking kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-accounts)
+    Checking clap v4.6.6
+    Checking tokio-tungstenite v0.30.0
+    Checking tower-http v0.7.0
+    Checking tokio-stream v0.1.19
+    Checking schemars v1.2.2
+    Checking tracing-subscriber v0.3.23
+   Compiling rmcp-macros v3.2.0
+    Checking directories v6.0.0
+    Checking fs4 v1.1.0
+    Checking kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+    Checking num_cpus v1.17.0
+    Checking rmcp v3.1.2
+   Compiling aws-lc-rs v1.18.1
+    Checking rustls-webpki v0.103.15
+   Compiling rustls v0.23.43
+    Checking deadpool v0.12.3
+    Checking assert-json-diff v2.0.2
+    Checking tempfile v3.27.0
+    Checking wiremock v0.6.5
+    Checking tokio-rustls v0.26.5
+    Checking rustls-platform-verifier v0.7.0
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.13.4
+    Checking kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+    Checking kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+    Checking kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Checking kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Checking kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-mcp)
+    Checking kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
+    Checking kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 25s

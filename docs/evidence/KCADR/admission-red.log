@@ -1,0 +1,24 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.30s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-85725f7dd1eb38be)
+
+running 1 test
+test partial_epic_admission_reuses_its_frozen_definition_after_default_changes ... FAILED
+
+failures:
+
+---- partial_epic_admission_reuses_its_frozen_definition_after_default_changes stdout ----
+
+thread 'partial_epic_admission_reuses_its_frozen_definition_after_default_changes' (74677949) panicked at crates/kontor-daemon/tests/loopback_api.rs:24251:5:
+assertion `left == right` failed: {"realm_id":"01a0702c-36a5-7661-abd6-3846c93abb8f","code":"placement_blocked","rule":"this epic is pinned to another Team Definition revision","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    partial_epic_admission_reuses_its_frozen_definition_after_default_changes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 265 filtered out; finished in 1.44s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`
