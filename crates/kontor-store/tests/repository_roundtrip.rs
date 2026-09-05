@@ -1056,6 +1056,126 @@ fn with_workflow(fixture: &Fixture) -> TaskWorkflowId {
 }
 
 #[test]
+fn a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together() {
+    let fixture = fixture();
+    let workflow = with_workflow(&fixture);
+    let occupied_id = CommandReceiptId::generate();
+    let occupied_intent = document("occupied gate receipt");
+    fixture
+        .store
+        .record_intent(&NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: occupied_id,
+            idempotency_key: IdempotencyKey::parse("gate-receipt-occupied").expect("key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: occupied_intent.clone(),
+            payload: occupied_intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        })
+        .expect("receipt identity occupied");
+    let evaluation = NewGateEvaluation {
+        project_id: fixture.project,
+        workflow_id: workflow,
+        gate: GateKey::parse("zz.gate").expect("gate"),
+        verdict: GateVerdict::Passed,
+        evaluator_role: role("zz.reviewer"),
+        evaluator_account: fixture.account,
+        evidence: vec![artifact("zz.output")],
+        agent_run_id: None,
+        session_evidence: None,
+        reviewer_principal: None,
+        policy_evaluation_id: None,
+        recorded_at: now(),
+    };
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "gate_record",
+        "task_id": fixture.task.to_string(),
+        "gate": "zz.gate",
+        "verdict": "passed",
+    }))
+    .expect("canonical intent");
+    let key = IdempotencyKey::parse("gate-atomic-receipt").expect("key");
+    let command = |receipt_id| {
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewCommandIntent {
+                project_id: fixture.project,
+                receipt_id,
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecordGateVerdict,
+                target: AggregateRef::Task {
+                    task_id: fixture.task,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: intent.clone(),
+                payload: intent.clone(),
+                desired: None,
+                not_before: now(),
+                created_at: now(),
+            },
+        )
+    };
+    let before = census(&fixture);
+    fixture
+        .store
+        .append_gate_evaluation_with_intent(
+            &evaluation,
+            AggregateRevision::INITIAL,
+            &command(occupied_id),
+        )
+        .expect_err("a refused receipt must roll back its verdict");
+    assert_unchanged(&before, &census(&fixture), "atomic gate receipt refusal");
+    assert!(
+        fixture
+            .store
+            .get_receipt_by_key(&key)
+            .expect("receipt read")
+            .is_none()
+    );
+    let (sequence, receipt) = fixture
+        .store
+        .append_gate_evaluation_with_intent(
+            &evaluation,
+            AggregateRevision::INITIAL,
+            &command(CommandReceiptId::generate()),
+        )
+        .expect("the same key remains usable after rollback");
+    assert_eq!(sequence, 1);
+    assert_eq!(
+        fixture
+            .store
+            .gate_record_result(&receipt)
+            .expect("exact result"),
+        (workflow, 1)
+    );
+    let (replayed, same_receipt) = fixture
+        .store
+        .append_gate_evaluation_with_intent(
+            &evaluation,
+            AggregateRevision::INITIAL,
+            &command(CommandReceiptId::generate()),
+        )
+        .expect("replay reads exact result");
+    assert_eq!(replayed, sequence);
+    assert_eq!(same_receipt.id, receipt.id);
+    assert_eq!(
+        fixture
+            .store
+            .list_gate_evaluations(fixture.project, workflow)
+            .expect("history")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn a_gate_may_only_be_decided_by_the_authority_the_profile_names() {
     let fixture = fixture();
     let workflow = with_workflow(&fixture);

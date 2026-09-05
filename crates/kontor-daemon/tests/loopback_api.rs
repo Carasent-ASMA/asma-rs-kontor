@@ -9102,6 +9102,144 @@ async fn close_every_runtime_seat_without_turns(
     }
 }
 
+/// A phase-completing verdict advances the workflow, but its receipt remains
+/// replayable against the revision that authorized the original operation.
+#[tokio::test]
+async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "gate-advance-replay").await;
+    settle_every_seat(&world, &seed, &runs, "gate-advance-replay-producer").await;
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    let workflow_before = active_workflow(&world, &seed);
+    let gate_spec = workflow_before
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the projected gate is frozen");
+    let request = serde_json::json!({
+        "expected_revision": revision,
+        "verdict": "passed",
+        "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+        "evaluator_account": seed.account,
+        "evidence": gate_spec.required_evidence.iter().map(|key| key.as_str()).collect::<Vec<_>>(),
+    });
+    let original = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(original.status, 200, "{}", original.body);
+    let workflow_after = active_workflow(&world, &seed);
+    assert!(workflow_after.revision.get() > revision);
+    assert_ne!(workflow_after.current_phase, workflow_before.current_phase);
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), original.json());
+
+    let stale = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-fresh-key")
+        .send(&world)
+        .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+    assert_eq!(
+        stale.json()["current_revision"],
+        workflow_after.revision.get()
+    );
+    let mut different = request.clone();
+    different["verdict"] = serde_json::json!("rejected");
+    let conflict = Call::post(&uri, &different)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.body);
+    assert_eq!(conflict.code(), "idempotency_conflict");
+
+    let mut later_request = request.clone();
+    later_request["expected_revision"] = serde_json::json!(workflow_after.revision.get());
+    later_request["verdict"] = serde_json::json!("rejected");
+    let later = Call::post(&uri, &later_request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-later-verdict")
+        .send(&world)
+        .await;
+    assert_eq!(later.status, 200, "{}", later.body);
+    assert_eq!(later.json()["verdict"], "rejected");
+    assert_eq!(later.json()["sequence"], 2);
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json(),
+        original.json(),
+        "a later verdict cannot replace this receipt's result"
+    );
+
+    let operator = secret(&world, "operator");
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+    restarted.reconcile().await;
+    let replay = Call::post(&uri, &request)
+        .with_token(&operator)
+        .with_key("gate-advance-replay-once")
+        .send_to(&restarted.router())
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), original.json());
+    let evaluations = restarted
+        .state()
+        .with_store(|store| store.list_gate_evaluations(project, workflow_before.id))
+        .expect("durable verdict history reads");
+    assert_eq!(
+        evaluations.len(),
+        2,
+        "retries must append no duplicate verdict"
+    );
+    let preserved = restarted
+        .state()
+        .with_store(|store| {
+            store.get_active_task_workflow(project, TaskId::parse(&seed.task).expect("task id"))
+        })
+        .expect("workflow reads")
+        .expect("same workflow exists");
+    assert_eq!(preserved.id, workflow_before.id);
+    assert_eq!(preserved.revision, workflow_after.revision);
+    assert_eq!(preserved.current_phase, workflow_after.current_phase);
+    restarted.state().signals().stop();
+}
+
 /// A gate request cites evidence; it does not create that evidence.
 #[tokio::test]
 async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {

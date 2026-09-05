@@ -3612,43 +3612,44 @@ impl Services {
         &self,
         project_id: ProjectId,
         task_id: TaskId,
-        workflow_id: &kontor_core::id::TaskWorkflowId,
         gate: &GateKey,
-        _key: &IdempotencyKey,
+        receipt: &kontor_core::receipt::CommandReceipt,
     ) -> Result<GateVerdictDto, ApiError> {
         let state = self.state()?;
+        let (workflow_id, sequence) = state
+            .with_store(|store| store.gate_record_result(receipt))
+            .map_err(|error| match error {
+                RepositoryError::Conflict { subject: "gate verdict receipt", .. } => self
+                    .deny(ApiErrorCode::RevisionConflict, "this historical gate receipt has no exact verdict result binding")
+                    .advising("inspect the durable gate history; do not substitute its latest verdict for this receipt"),
+                _ => self.refuse(&error),
+            })?;
         let evaluations = state
-            .with_store(|store| store.list_gate_evaluations(project_id, *workflow_id))
+            .with_store(|store| store.list_gate_evaluations(project_id, workflow_id))
             .map_err(|error| self.refuse(&error))?;
-        let last = evaluations
+        let recorded = evaluations
             .iter()
-            .rfind(|evaluation| &evaluation.gate == gate)
+            .find(|evaluation| &evaluation.gate == gate && evaluation.sequence == sequence)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::NotFound,
                     "the replayed receipt names a verdict this workflow no longer has",
                 )
             })?;
-        let gates = state
-            .with_store(|store| store.gate_states(project_id, *workflow_id))
-            .map_err(|error| self.refuse(&error))?;
         Ok(GateVerdictDto {
             realm_id: state.realm_id(),
             task_id,
             gate: gate.as_str().to_owned(),
-            sequence: last.sequence,
-            verdict: last.verdict.as_str().to_owned(),
-            state: gates
-                .get(gate)
-                .map_or("not_ready", |state| state.as_str())
-                .to_owned(),
-            session_evidence: last.session_evidence.as_ref().map(|citation| {
+            sequence: recorded.sequence,
+            verdict: recorded.verdict.as_str().to_owned(),
+            state: recorded.verdict.resulting_state().as_str().to_owned(),
+            session_evidence: recorded.session_evidence.as_ref().map(|citation| {
                 SessionVerdictCitationDto {
                     agent_run_id: citation.agent_run_id,
                     digest: citation.digest.clone(),
                 }
             }),
-            receipt_id: String::new(),
+            receipt_id: receipt.id.to_string(),
         })
     }
 
@@ -23984,23 +23985,6 @@ impl ApplicationOperations for Services {
     ) -> Result<GateVerdictDto, ApiError> {
         let state = self.state()?;
         let task = self.task_row(project_id, task_id)?;
-        let workflow = state
-            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "the task has no active workflow to record a verdict against",
-                )
-            })?;
-        if workflow.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the task's workflow moved since the caller read it",
-                )
-                .with_revision(Some(workflow.revision)));
-        }
         let gate_key = GateKey::parse(gate).map_err(|error| self.refuse_domain(&error))?;
         let verdict =
             GateVerdict::parse(&request.verdict).map_err(|error| self.refuse_domain(&error))?;
@@ -24074,8 +24058,28 @@ impl ApplicationOperations for Services {
         // A replay answers from the append-only history rather than appending a
         // second identical verdict: the history is evidence, and evidence that
         // duplicates itself under a retry is evidence about the retry.
-        if self.replayed(key, &intent, Some(&target))?.is_some() {
-            return self.gate_verdict_replay(project_id, task_id, &workflow.id, &gate_key, key);
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            return self.gate_verdict_replay(project_id, task_id, &gate_key, &receipt);
+        }
+        let workflow = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the task has no active workflow to record a verdict against",
+                )
+            })?;
+        // Passing a gate may advance the workflow. Its receipt still belongs
+        // to the revision that authorized it; only a new verdict needs today's
+        // workflow CAS, including a stale request with a fresh key.
+        if workflow.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task's workflow moved since the caller read it",
+                )
+                .with_revision(Some(workflow.revision)));
         }
 
         let durable = self.durable_artifact_keys(project_id, task_id)?;
@@ -24164,35 +24168,44 @@ impl ApplicationOperations for Services {
                 Some(evaluator.id)
             }
         };
-        let receipt = self.record(
-            key,
-            project_id,
-            CommandKind::RecordGateVerdict,
-            target,
-            task.revision,
-            &intent,
-        )?;
-        let session_evidence = recovery.clone();
-        let sequence = state
+        let now = kontor_api::now();
+        let command = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewCommandIntent {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecordGateVerdict,
+                target,
+                target_revision: task.revision,
+                intent: intent.clone(),
+                payload: intent,
+                desired: None,
+                not_before: now,
+                created_at: now,
+            },
+        );
+        let (sequence, receipt) = state
             .with_store(|store| {
-                store.append_gate_evaluation(&NewGateEvaluation {
-                    project_id,
-                    workflow_id: workflow.id,
-                    gate: gate_key.clone(),
-                    verdict,
-                    evaluator_role,
-                    evaluator_account: request.evaluator_account,
-                    evidence,
-                    agent_run_id: seat,
-                    session_evidence,
-                    reviewer_principal,
-                    policy_evaluation_id: None,
-                    recorded_at: kontor_api::now(),
-                })
+                store.append_gate_evaluation_with_intent(
+                    &NewGateEvaluation {
+                        project_id,
+                        workflow_id: workflow.id,
+                        gate: gate_key.clone(),
+                        verdict,
+                        evaluator_role,
+                        evaluator_account: request.evaluator_account,
+                        evidence,
+                        agent_run_id: seat,
+                        session_evidence: recovery.clone(),
+                        reviewer_principal,
+                        policy_evaluation_id: None,
+                        recorded_at: now,
+                    },
+                    request.expected_revision,
+                    &command,
+                )
             })
-            .map_err(|error| self.refuse(&error))?;
-        let gates = state
-            .with_store(|store| store.gate_states(project_id, workflow.id))
             .map_err(|error| self.refuse(&error))?;
         self.advance_workflow_from_evidence(project_id, task_id)?;
         state.signals().appended();
@@ -24202,15 +24215,12 @@ impl ApplicationOperations for Services {
             gate: gate_key.as_str().to_owned(),
             sequence,
             verdict: verdict.as_str().to_owned(),
-            state: gates
-                .get(&gate_key)
-                .map_or("not_ready", |state| state.as_str())
-                .to_owned(),
+            state: verdict.resulting_state().as_str().to_owned(),
             session_evidence: recovery.map(|citation| SessionVerdictCitationDto {
                 agent_run_id: citation.agent_run_id,
                 digest: citation.digest,
             }),
-            receipt_id: receipt.to_string(),
+            receipt_id: receipt.id.to_string(),
         })
     }
 

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "review_type": "independent_repository_review",
+  "reviewer_session": "/root/pr167_merge/review_paseo",
+  "kontor_gate_authority": false,
+  "integrated_candidate": "5ca4718cf6300fb31ce44f5d2f090627e6be294c",
+  "integrated_master": "082b63ad2e15beddac3b745bdf55c794f35d0b88",
+  "initial_status": "changes_required",
+  "findings_resolved": [
+    "Passing a gate advances workflow revision, so checking CAS before receipt replay rejected exact retries.",
+    "Replay ignored the receipt key, returned the latest gate evaluation and omitted receipt_id.",
+    "Initial response read mutable current gate state after append; it now derives the recorded verdict like replay."
+  ],
+  "final_status": "approved",
+  "approved_source_blobs": {
+    "crates/kontor-daemon/src/applications.rs": "aa848ba42b2608c3b242220239ab7bf03b474938",
+    "crates/kontor-daemon/tests/loopback_api.rs": "17b7b3c0064ff41eceef90462c0fd954972b0ea1",
+    "crates/kontor-store/src/repository.rs": "0d3188c24e197e83d14ab16d0be8093e03ef4e3c",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "914409493b41c85eef99d811103b52845358e29f"
+  },
+  "reviewer_verdict_excerpt": "APPROVE final receipt-scoped gate replay correction over5ca4718. Atomic helper retains existing gate authority/evidence validations, binds verdict+canonical result+receipt in one transaction, and checks current workflow/task revisions only for new writes. Replay uses exact stored workflow/gate sequence and receipt ID before active-workflow lookup; original and replay state now both derive the recorded verdict. Collision test checks rollback and reusable key. No remaining findings in this diff. Legacy unbound receipts explicitly refuse rather than guess. This approval is repository review, not a Kontor gate verdict.",
+  "test_execution": "Author executes tests and final archive gate; reviewer inspected source and logs."
+}
