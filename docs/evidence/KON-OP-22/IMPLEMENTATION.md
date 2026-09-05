@@ -155,3 +155,43 @@ accepts the predecessor parent only as archived history. The strengthened
 Paseo boundary test failed before this correction, passes after it, and killed
 the inverted parent-state mutant. This follow-up is source-only until a later
 newest-master deployment receipt explicitly says otherwise.
+
+## 2026-09-06 final live naming-migration closeout
+
+The source-only checkpoint above is superseded. PR #190 merged the archived
+historical-parent compatibility correction as
+`98940604d9a554aa24e0d87474bf0807232499e5`, and the designated runtime owner
+deployed that exact master. The installed daemon is byte-identical to the
+detached release build (`fbecb4715218169ce1377ecfb5a9cc72fd9453552d1dc3b2072c8af872bb90d9`),
+runs as PID `5040`, serves realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`,
+and read back schema v88, `integrity_check = ok`, zero foreign-key violations,
+and preserved project revision 6. The coherent deployment receipt is
+`/Users/igor/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
+
+From that exact safe-resume checkpoint, Kontor replayed retirement key
+`asma-8090-retire-archived-advisor-after-c4b92f4` for SeatBinding
+`01a02d6e-4dba-7ab2-9534-cc1b20df6917`. Fresh runtime readback proved archived
+native `64233745-6091-4b8d-a184-407c785dac0e`; receipt
+`01a073a6-b2ce-7eb1-b145-4e4cbb158622` retired the logical seat at revision 3
+without changing ASW node `01a02d6e-4db9-7372-b2b8-c815da222dc5` or recovered
+workspace `wks_6b2fdfdfff62cd89`.
+
+The original migration key `01a07350-8090-7a11-8b22-123456789abc` and original
+preview hash `2919a00526776b78e71bb7301722e7686073e176b3dde2ef7de7ad732ca794cb`
+then replayed idempotently. Receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc`
+confirmed project revision 6 on Team Definition
+`01936f5a-2000-7000-8000-000000000001` v2, hash
+`31cdff80e27cbe1e4043e150d2cdbc43ff79a8fa7fd8d892d2b5049a600f2e13`.
+The replay changed zero already-correct live titles; fresh preview and readback
+reported every remaining live target unchanged. The retired Advisor remains
+immutable historical `rename_pending` evidence rather than a fabricated rename.
+
+The previously open OP-22 TeamRun was reconciled through Kontor and now reads
+`succeeded`. ASMA-8090 completed at revision 3 under lifecycle receipt
+`01a073bb-c50d-7263-8350-b9ed463787c7`. Its confirmed Jira link remains exactly
+`ASMA-8090`; the final deterministic reconciliation plan is converged with an
+empty diff (projection
+`8eae69b52d3aa2fac5fa2770617ee551f0b6e624522b8e195ed68a262fe91525`),
+and both task and epic conflict ledgers are empty. No direct Jira, Paseo or
+database mutation, binary replacement, build, deployment or daemon restart was
+performed by the migration-resume session.

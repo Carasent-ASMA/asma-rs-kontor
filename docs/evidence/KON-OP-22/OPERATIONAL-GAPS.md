@@ -288,8 +288,11 @@ authority.
   workspace, agent or lifecycle mutation was made by this census.
 - Resume checkpoint: use Kontor's exact runtime positions for turn settlement,
   close the evidence gaps identified by the inspectors, and continue the
-  configuration-driven migration. Owner/status: open until those original
-  Kontor operations complete.
+  configuration-driven migration.
+- Owner/status: closed 2026-09-06. Canonical Kontor timeline proof settled the
+  builder, tester, verifier and the builder-routed inspector follow-up; the
+  original TeamRun now reads `succeeded`. The final migration and task closeout
+  then completed through Kontor without another Paseo-direct read or mutation.
 
 ## 2026-09-05 — legacy Committee seats referenced an absent predecessor workspace
 
@@ -342,8 +345,11 @@ authority.
   pass, together with store all-target Clippy with warnings denied.
 - Resume checkpoint: promote the correction through commit, PR, merge and the
   same Kontor runtime fleet; then obtain a fresh preview, apply it through
-  Kontor and verify exact native identity/name readback. Owner/status: open
-  until that original Kontor operation completes.
+  Kontor and verify exact native identity/name readback.
+- Owner/status: closed 2026-09-06. Exact master `98940604d9a554aa24e0d87474bf0807232499e5`
+  was deployed and read back healthy. Same-key migration replay confirmed Team
+  Definition v2 under receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc` with no
+  remaining live rename target.
 
 ## 2026-09-05 — archived Advisor exact fetch was misclassified as live drift
 
@@ -360,8 +366,10 @@ authority.
   `rename_pending`, so it preserves the logical SeatBinding and archived native
   evidence while applying no seat rename. A captured archived-agent contract
   fixture proves the behavior and no native update.
-- Owner/status: implementation and focused regression are complete; deployment
-  and the resumed live migration remain the closeout checkpoint.
+- Owner/status: closed 2026-09-06. PR #190 is present in deployed master
+  `98940604d9a554aa24e0d87474bf0807232499e5`; the exact archived Advisor was
+  retired under receipt `01a073a6-b2ce-7eb1-b145-4e4cbb158622`, and the original
+  migration confirmed under receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc`.
 
 ## 2026-09-05 — kickoff could not persist ineligibility atomically
 
@@ -412,11 +420,12 @@ authority.
   end-to-end test proves a live Advisor is refused, an archived Advisor retires,
   and the same migration confirms without a retitle. Inverting the live-state
   guard made the daemon test fail and was restored.
-- Owner/status: source correction and local verification merged through PR
-  `#187` as `4127257d2b44a59032458acb981774bfcdc9ef78`. A single
-  newest-master deployment by the designated runtime owner remains pending.
-  Live apply remains paused until that owner returns the exact deployed commit
-  and safe-resume health receipt.
+- Owner/status: closed 2026-09-06. Source correction PR #187 and compatibility
+  PR #190 are both present in deployed master
+  `98940604d9a554aa24e0d87474bf0807232499e5`. Retirement receipt
+  `01a073a6-b2ce-7eb1-b145-4e4cbb158622` and migration receipt
+  `01a073a8-5d2e-7c53-81c1-a8d352d067bc` prove the original fenced operation
+  completed without rewriting historical identity.
 
 ## 2026-09-06 — archived Advisor retained its historical predecessor parent
 
@@ -443,7 +452,32 @@ authority.
   historical predecessor parent because it cannot be driven and its parent is
   immutable runtime evidence. A public adapter regression reproduces the
   recovered-parent mismatch; it failed before the correction and passes after.
-- Owner/status: source correction and killed mutation are complete. Merge and
-  one coherent newest-master deployment by the designated runtime owner remain
-  required before replaying the unchanged retirement key. Live migration stays
-  paused and fenced.
+- Owner/status: closed 2026-09-06. PR #190 merged and the designated owner
+  deployed exact master `98940604d9a554aa24e0d87474bf0807232499e5`. Replaying
+  the unchanged retirement key succeeded under receipt
+  `01a073a6-b2ce-7eb1-b145-4e4cbb158622`; the ASW retained recovered workspace
+  `wks_6b2fdfdfff62cd89`, and the same migration key then confirmed v2 under
+  receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc`.
+
+## 2026-09-06 — final live migration and ASMA-8090 closeout
+
+- Deployment authority remained with the designated runtime owner. Exact
+  master `98940604d9a554aa24e0d87474bf0807232499e5` was installed byte-identically
+  as daemon hash
+  `fbecb4715218169ce1377ecfb5a9cc72fd9453552d1dc3b2072c8af872bb90d9`,
+  PID `5040`; schema v88, database integrity, foreign keys, realm and project
+  revision 6 all read back healthy. Deployment receipt:
+  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
+- The migration-resume session used Kontor only. It did not build, install,
+  restart or replace a binary and made no direct Jira, Paseo or SQLite write.
+- The exact archived Advisor target retired at revision 3 under receipt
+  `01a073a6-b2ce-7eb1-b145-4e4cbb158622`. The original migration key
+  `01a07350-8090-7a11-8b22-123456789abc` confirmed Team Definition v2 under
+  receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc`; every live target read back
+  unchanged and the archived `rename_pending` target remained history.
+- The OP-22 TeamRun now reads `succeeded`. Kontor completed task
+  `01a030c2-1c65-79b1-ac84-7bc8baae8977` at revision 3 under receipt
+  `01a073bb-c50d-7263-8350-b9ed463787c7`. Confirmed Jira identity `ASMA-8090`
+  is converged with an empty deterministic diff, and task and epic conflict
+  ledgers are empty.
+- Owner/status: closed end to end.
