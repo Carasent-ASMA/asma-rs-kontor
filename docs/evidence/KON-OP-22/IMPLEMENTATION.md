@@ -138,3 +138,9 @@ section records source behavior only: no production binary was built or
 installed, no daemon was restarted, and the live KOP migration remains paused
 until the designated runtime owner deploys the merged newest-master artifact
 and returns an exact health/readback checkpoint.
+
+Source correction PR `#187` merged on current master as
+`4127257d2b44a59032458acb981774bfcdc9ef78`, with prior master
+`b2b5cad6e920fca7e5282873faef45da61e7328c` as its first parent and verified
+feature head `b8a48382824cf6d05cc7664805a63f8867ce9c14` as its second parent.
+Deployment and live migration are deliberately not claimed by this receipt.

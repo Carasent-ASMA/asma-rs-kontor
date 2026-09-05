@@ -412,7 +412,8 @@ authority.
   end-to-end test proves a live Advisor is refused, an archived Advisor retires,
   and the same migration confirms without a retitle. Inverting the live-state
   guard made the daemon test fail and was restored.
-- Owner/status: source correction and focused local verification are complete.
-  Merge and a single newest-master deployment by the designated runtime owner
-  remain pending. Live apply remains paused until that owner returns the exact
-  deployed commit and safe-resume health receipt.
+- Owner/status: source correction and local verification merged through PR
+  `#187` as `4127257d2b44a59032458acb981774bfcdc9ef78`. A single
+  newest-master deployment by the designated runtime owner remains pending.
+  Live apply remains paused until that owner returns the exact deployed commit
+  and safe-resume health receipt.

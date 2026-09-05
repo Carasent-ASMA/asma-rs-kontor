@@ -120,9 +120,10 @@ for it. That gap is OQ-4 and remains open.
   supported Kontor operations without replacing their logical identities. The
   Advisor native was then proven archived rather than absent ambiguity. The
   remaining lifecycle deadlock is specified and corrected in
-  `OPERATIONAL-GAPS.md`; its source fix is pending merge/deployment, not an open
-  naming decision. Live migration remains paused until the designated runtime
-  owner returns the deployed-commit health checkpoint.
+  `OPERATIONAL-GAPS.md`; its source fix merged through PR `#187` as
+  `4127257d2b44a59032458acb981774bfcdc9ef78` and is pending deployment, not an
+  open naming decision. Live migration remains paused until the designated
+  runtime owner returns the deployed-commit health checkpoint.
 
 ## OQ-12 — Migrating to v2 renames consultation seats, not just containers · RESOLVED 2026-09-06
 
