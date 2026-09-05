@@ -556,7 +556,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Replace one runtime-terminal unusable seat with a linked successor. */
+        /**
+         * Replace one runtime-terminal unusable seat or reroute one certified
+         *     never-bound attempt with a linked successor.
+         */
         post: operations["replace_seat"];
         delete?: never;
         options?: never;
@@ -7117,11 +7120,15 @@ export interface components {
              */
             round: number;
         };
-        /** @description What the Admin-only unusable-seat replacement is asked for. */
+        /** @description What the Admin-only unusable-seat replacement or never-bound reroute is asked for. */
         ReplaceSeatRequest: {
             /**
              * Format: int64
              * @description The immutable binding generation of the terminal predecessor.
+             *
+             *     Use zero only for an operator-abandoned attempt that never acquired a
+             *     native binding. That recovery also requires an exact pending handoff and
+             *     an explicit `model_route`.
              */
             binding_generation: number;
             /**
@@ -10260,7 +10267,7 @@ export interface operations {
             path: {
                 /** @description The owning project */
                 project_id: string;
-                /** @description The terminal predecessor run */
+                /** @description The terminal predecessor run or certified never-bound attempt */
                 agent_run_id: string;
             };
             cookie?: never;
@@ -10312,7 +10319,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The predecessor is not runtime-terminal and unusable */
+            /** @description The predecessor lacks the required terminal evidence */
             422: {
                 headers: {
                     [name: string]: unknown;

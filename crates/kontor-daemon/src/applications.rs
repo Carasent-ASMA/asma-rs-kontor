@@ -25620,16 +25620,19 @@ impl ApplicationOperations for Services {
                 )
                 .with_revision(Some(predecessor.revision)));
         }
-        let binding = predecessor.binding.clone().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::StaleBinding,
-                "the predecessor has no immutable native binding to replace",
-            )
-        })?;
-        if request.binding_generation != binding.identity.generation {
+        let binding = predecessor.binding.clone();
+        let unbound_recovery = binding.is_none();
+        if let Some(binding) = binding.as_ref() {
+            if request.binding_generation != binding.identity.generation {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the immutable binding generation differs from the replacement request",
+                ));
+            }
+        } else if request.binding_generation != 0 {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the immutable binding generation differs from the replacement request",
+                "a never-bound predecessor has binding generation zero",
             ));
         }
         let role_slot =
@@ -25670,15 +25673,77 @@ impl ApplicationOperations for Services {
             ));
         }
 
-        let adapter = state
-            .runtimes()
-            .get(&binding.identity.runtime_kind)
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "this daemon is not configured with the predecessor's runtime",
-                )
-            })?;
+        // A downstream seat is materialized with its TeamRun, so it has no
+        // admission event of its own. If its first native launch is refused,
+        // `scheduler-resume` therefore has nothing it can address. The durable
+        // activation authority is the undelivered turn dispatch that names this
+        // exact run and role slot. Admin may move only that never-bound attempt,
+        // and must name the temporary route explicitly; a root admission still
+        // recovers through the scheduler's admission receipt.
+        if unbound_recovery {
+            if request.unavailable_provider.is_some() || request.quota_exhausted.is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a never-bound reroute uses its pending dispatch, not native provider or quota evidence",
+                ));
+            }
+            if request.model_route.is_none() {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "a never-bound reroute requires one explicit Admin-authorized model route",
+                ));
+            }
+            if !predecessor.is_operator_abandoned_unbound() {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "abandon the exact never-bound run before replacing it",
+                ));
+            }
+            let pending_dispatch = state
+                .with_store(|store| store.list_turn_dispatches(project_id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .any(|dispatch| {
+                    !dispatch.dispatched
+                        && dispatch.team_run_id == predecessor.team_run_id
+                        && dispatch.to_role_slot_id == role_slot
+                        && dispatch.target_agent_run == Some(agent_run_id)
+                });
+            let already_replaced = self
+                .team_members(project_id, predecessor.team_run_id)?
+                .into_iter()
+                .any(|run| {
+                    run.parent_agent_run_id == Some(agent_run_id)
+                        && !run.is_operator_abandoned_unbound()
+                });
+            if !pending_dispatch && !already_replaced {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "no pending handoff dispatch or recorded successor authorizes this never-bound seat",
+                ));
+            }
+        }
+
+        // Validate an operator-selected route before recording the command or
+        // creating a successor row. A malformed recovery request must remain a
+        // side-effect-free refusal that can be corrected under a new key.
+        let explicit_model_route = request
+            .model_route
+            .as_ref()
+            .map(parse_runtime_model_route)
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+
+        let runtime_kind = binding.as_ref().map_or_else(
+            || self.node_runtime_kind(),
+            |held| Ok(held.identity.runtime_kind.clone()),
+        )?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "this daemon is not configured with the predecessor's runtime",
+            )
+        })?;
 
         // Resolve the quota successor before the command intent, predecessor
         // retirement or any native call. A Wait/NeedsHuman answer is a
@@ -25700,8 +25765,8 @@ impl ApplicationOperations for Services {
                 headroom: self.headroom_policy(),
                 now,
             };
-            let declared = if let Some(route) = request.model_route.as_ref() {
-                vec![parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?]
+            let declared = if let Some(route) = explicit_model_route.as_ref() {
+                vec![route.clone()]
             } else {
                 let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
                     .map_err(|error| self.refuse_domain(&error))?;
@@ -25754,7 +25819,8 @@ impl ApplicationOperations for Services {
             "role_slot": role_slot.as_role_key().as_str(),
             "task_revision": task.revision.get(),
             "predecessor_revision": predecessor.revision.get(),
-            "binding_generation": binding.identity.generation,
+            "binding_generation": request.binding_generation,
+            "unbound_recovery": unbound_recovery,
         });
         if let Some(evidence) = &request.unavailable_provider {
             intent_document["unavailable_provider"] = serde_json::json!({
@@ -25805,12 +25871,14 @@ impl ApplicationOperations for Services {
             )?;
         }
 
-        if predecessor.terminal.is_none() {
+        if predecessor.terminal.is_none()
+            && let Some(binding) = binding.as_ref()
+        {
             predecessor = self
                 .retire_predecessor_for_replacement(
                     project_id,
                     &predecessor,
-                    &binding,
+                    binding,
                     request.unavailable_provider.as_ref(),
                     request
                         .quota_exhausted
@@ -25826,21 +25894,31 @@ impl ApplicationOperations for Services {
                 "the predecessor retirement produced no terminal evidence",
             )
         })?;
-        if terminal.outcome != TerminalOutcome::Cancelled
-            || !matches!(
-                terminal.source,
-                TerminalEvidenceSource::RuntimeObservation { .. }
-            )
-        {
+        let terminal_is_valid = if unbound_recovery {
+            terminal.outcome == TerminalOutcome::Abandoned
+                && matches!(
+                    terminal.source,
+                    TerminalEvidenceSource::OperatorAbandon { .. }
+                )
+        } else {
+            terminal.outcome == TerminalOutcome::Cancelled
+                && matches!(
+                    terminal.source,
+                    TerminalEvidenceSource::RuntimeObservation { .. }
+                )
+        };
+        if !terminal_is_valid {
             return Err(self.deny(
                 ApiErrorCode::UnsupportedCapability,
-                "seat replacement requires runtime-observed cancellation",
+                "seat replacement requires either runtime-observed cancellation or the exact never-bound reroute receipt",
             ));
         }
         // A crash may persist the terminal observation just before releasing
         // the in-process snapshot. Replaying the same Admin command completes
         // that release rather than wedging an already-retired predecessor.
-        if state.sessions().get(binding.id).is_some() {
+        if let Some(binding) = binding.as_ref()
+            && state.sessions().get(binding.id).is_some()
+        {
             self.release(binding.id)?;
         }
 
@@ -25885,20 +25963,25 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse_domain(&error))?;
         let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &slot_members, &bindings)
             .map_err(|error| self.refuse_domain(&error))?;
-        let closed = slots
-            .latest_closed(&role_slot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        if closed.agent_run_id() != agent_run_id {
-            return Err(self.deny(
-                ApiErrorCode::RevisionConflict,
-                "the predecessor is not the role slot's latest closed attempt",
-            ));
-        }
-
         let successor_agent_run_id = recorded_successor_id.unwrap_or_else(AgentRunId::generate);
-        let permit = slots
-            .reserve_successor(closed, successor_agent_run_id)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let permit = if unbound_recovery {
+            slots
+                .reserve_after_unbound_abandonment(&role_slot, agent_run_id, successor_agent_run_id)
+                .map_err(|error| self.refuse_domain(&error))?
+        } else {
+            let closed = slots
+                .latest_closed(&role_slot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if closed.agent_run_id() != agent_run_id {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the predecessor is not the role slot's latest closed attempt",
+                ));
+            }
+            slots
+                .reserve_successor(closed, successor_agent_run_id)
+                .map_err(|error| self.refuse_domain(&error))?
+        };
         // The run id is durable before runtime launch. Derive a distinct UUIDv7
         // binding id from it so a retry can reclaim the runtime's exact admission.
         let mut binding_id = successor_agent_run_id.to_string();
@@ -25972,11 +26055,8 @@ impl ApplicationOperations for Services {
         // its own no-placement arm.
         let (model_rung, routed_account) = match quota_successor_route {
             Some(preplanned) => preplanned,
-            None => match request.model_route.as_ref() {
-                Some(route) => (
-                    parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?,
-                    None,
-                ),
+            None => match explicit_model_route {
+                Some(route) => (route, None),
                 None => {
                     freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
                         .map_err(|error| self.refuse_domain(&error))?

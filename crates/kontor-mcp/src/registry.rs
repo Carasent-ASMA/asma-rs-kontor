@@ -1878,7 +1878,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "agent_run_id",
                 Place::Path,
                 ArgType::AgentRunId,
-                "The runtime-terminal predecessor run.",
+                "The runtime-terminal predecessor run or certified never-bound attempt.",
             ),
             req(
                 "role_slot",
@@ -1902,13 +1902,13 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "binding_generation",
                 Place::Body,
                 ArgType::U64,
-                "The predecessor's immutable binding generation.",
+                "The predecessor's immutable binding generation; zero only after operator abandonment of a never-bound attempt.",
             ),
             opt(
                 "model_route",
                 Place::Body,
                 ArgType::Object(RUNTIME_MODEL_ROUTE),
-                "The Admin-authorized provider/model route for the successor.",
+                "The Admin-authorized provider/model route for the successor; required for a never-bound reroute.",
             ),
             opt(
                 "unavailable_provider",
@@ -1924,7 +1924,7 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
             IDEMPOTENCY,
         ],
-        about: "Replace one runtime-terminal unusable seat with its linked successor.",
+        about: "Replace one runtime-terminal unusable seat or reroute one certified never-bound attempt with its linked successor.",
     },
     ToolSpec {
         name: "kontor_seat_recover",

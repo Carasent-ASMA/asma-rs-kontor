@@ -21625,6 +21625,212 @@ async fn settling_a_never_bound_run_is_refused_as_an_unbound_role_slot() {
     );
 }
 
+/// A downstream seat whose launch was refused has no admission event of its
+/// own: it was materialized with the TeamRun and activated by a durable turn
+/// dispatch. Admin may replace that exact unbound attempt on an explicit route
+/// without abandoning its live siblings or creating another TeamRun.
+#[tokio::test]
+async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
+    let seeded = omega_with_one_unbound_slot("reroute-unbound", "omega-u-cat").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+    let giver = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k1")
+        .expect("the upstream seat exists")["agent_run_id"]
+        .as_str()
+        .expect("an agent run id");
+
+    let handed_off = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{giver}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": "omega-k1",
+            "expected_task_revision": alpha_revision(world, project, epic).await,
+            "runtime_proof": observe_current_turn(world, project, giver),
+            "artifacts": []
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("reroute-unbound-handoff")
+    .send(world)
+    .await;
+    assert_eq!(handed_off.status, 200, "{}", handed_off.body);
+    assert_eq!(
+        handed_off.json()["follow_ups"][0]["dispatched"],
+        serde_json::json!(false),
+        "the unbound target keeps the durable handoff pending: {}",
+        handed_off.body
+    );
+
+    let predecessor_seat = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .into_iter()
+        .find(|seat| seat.role.as_str() == "omega-k3" && seat.native_id.is_none())
+        .expect("the refused downstream launch left one exact unbound run");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_seat.agent_run_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let task_revision = alpha_revision(world, project, epic).await;
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+
+    let premature = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/successors:replace",
+            predecessor.id
+        ),
+        &serde_json::json!({
+            "role_slot": "omega-k3",
+            "expected_predecessor_revision": predecessor.revision.get(),
+            "expected_task_revision": task_revision,
+            "binding_generation": 0,
+            "model_route": {
+                "provider": "codex",
+                "model": "gpt-5.6-sol",
+                "effort": "xhigh"
+            }
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-unbound-before-abandon")
+    .send(world)
+    .await;
+    assert_eq!(premature.status, 409, "{}", premature.body);
+    assert_eq!(premature.json()["code"], "revision_conflict");
+
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            predecessor.id
+        ),
+        &serde_json::json!({
+            "expected_revision": predecessor.revision.get(),
+            "reason": "The downstream launch was refused before it bound a session"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("reroute-unbound-abandon")
+    .send(world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    let abandoned_revision = abandoned.json()["revision"]
+        .as_u64()
+        .expect("the abandoned revision");
+
+    let missing_route = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/successors:replace",
+            predecessor.id
+        ),
+        &serde_json::json!({
+            "role_slot": "omega-k3",
+            "expected_predecessor_revision": abandoned_revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": 0
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-unbound-without-route")
+    .send(world)
+    .await;
+    assert_eq!(missing_route.status, 400, "{}", missing_route.body);
+    assert_eq!(missing_route.json()["code"], "invalid_request");
+
+    let body = serde_json::json!({
+        "role_slot": "omega-k3",
+        "expected_predecessor_revision": abandoned_revision,
+        "expected_task_revision": task_revision,
+        "binding_generation": 0,
+        "model_route": {
+            "provider": "codex",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh"
+        }
+    });
+    let replaced = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/successors:replace",
+            predecessor.id
+        ),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-unbound-seat")
+    .send(world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert_eq!(replaced.json()["team_run_id"], serde_json::json!(team_run));
+    assert_eq!(replaced.json()["role_slot"], "omega-k3");
+    assert_eq!(replaced.json()["applied"], "created");
+
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("a successor id"),
+    )
+    .expect("a successor id");
+    let (closed, successor, dispatches) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_agent_run(project_id, predecessor.id)
+                .expect("the predecessor reads")
+                .expect("the predecessor remains"),
+            store
+                .get_agent_run(project_id, successor_id)
+                .expect("the successor reads")
+                .expect("the successor exists"),
+            store
+                .list_turn_dispatches(project_id)
+                .expect("the dispatches read"),
+        )
+    });
+    assert_eq!(
+        closed.terminal.expect("the predecessor closed").outcome,
+        TerminalOutcome::Abandoned
+    );
+    assert_eq!(successor.parent_agent_run_id, Some(predecessor.id));
+    assert!(successor.binding.is_some(), "the successor is bound");
+    assert_eq!(dispatches.len(), 1, "the original handoff is preserved");
+    assert!(
+        dispatches[0].dispatched,
+        "the handoff reached the successor"
+    );
+    assert_eq!(dispatches[0].target_agent_run, Some(successor_id));
+
+    let replay = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/successors:replace",
+            predecessor.id
+        ),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-unbound-seat")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["successor_agent_run_id"],
+        successor_id.to_string()
+    );
+}
+
 /// An unbound launch may be abandoned before its already-seated siblings end.
 /// Replaying that same operator decision after the siblings settle is the only
 /// immutable-row-safe opportunity to abandon the now-fully-terminal TeamRun.

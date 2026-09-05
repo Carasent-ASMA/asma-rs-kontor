@@ -1339,7 +1339,7 @@
         "tags": [
           "applications"
         ],
-        "summary": "Replace one runtime-terminal unusable seat with a linked successor.",
+        "summary": "Replace one runtime-terminal unusable seat or reroute one certified\nnever-bound attempt with a linked successor.",
         "operationId": "replace_seat",
         "parameters": [
           {
@@ -1354,7 +1354,7 @@
           {
             "name": "agent_run_id",
             "in": "path",
-            "description": "The terminal predecessor run",
+            "description": "The terminal predecessor run or certified never-bound attempt",
             "required": true,
             "schema": {
               "type": "string"
@@ -1407,7 +1407,7 @@
             "description": "The task, binding, run, team, or successor lineage moved"
           },
           "422": {
-            "description": "The predecessor is not runtime-terminal and unusable"
+            "description": "The predecessor lacks the required terminal evidence"
           }
         }
       }
@@ -18447,7 +18447,7 @@
       },
       "ReplaceSeatRequest": {
         "type": "object",
-        "description": "What the Admin-only unusable-seat replacement is asked for.",
+        "description": "What the Admin-only unusable-seat replacement or never-bound reroute is asked for.",
         "required": [
           "role_slot",
           "expected_predecessor_revision",
@@ -18458,7 +18458,7 @@
           "binding_generation": {
             "type": "integer",
             "format": "int64",
-            "description": "The immutable binding generation of the terminal predecessor.",
+            "description": "The immutable binding generation of the terminal predecessor.\n\nUse zero only for an operator-abandoned attempt that never acquired a\nnative binding. That recovery also requires an exact pending handoff and\nan explicit `model_route`.",
             "minimum": 0
           },
           "expected_predecessor_revision": {
@@ -18480,7 +18480,7 @@
               },
               {
                 "$ref": "#/components/schemas/RuntimeModelRouteRequest",
-                "description": "Admin-authorized temporary provider/model route for this successor.\nAbsent means the first currently eligible rung in the frozen chain."
+                "description": "Admin-authorized temporary provider/model route for this successor.\nAbsent means the first currently eligible rung in the frozen chain for\na bound predecessor. A never-bound reroute requires this field."
               }
             ]
           },
