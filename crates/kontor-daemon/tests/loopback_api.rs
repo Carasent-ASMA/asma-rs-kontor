@@ -8110,22 +8110,27 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         .expect(1)
         .mount(&server)
         .await;
+    let task_readback = Arc::new(std::sync::Mutex::new(serde_json::json!({
+        "key": "ASMA-8050",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Task", "hierarchyLevel": 0},
+            "parent": {"key": "ASMA-8049"},
+            "summary": "Recover original Jira batch",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Fallback prose"}]
+            }]},
+            "labels": []
+        }
+    })));
+    let served_readback = Arc::clone(&task_readback);
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-8050"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "key": "ASMA-8050",
-            "fields": {
-                "project": {"key": "ASMA"},
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "parent": {"key": "ASMA-8049"},
-                "summary": "Recover original Jira batch",
-                "description": {"type":"doc","version":1,"content":[{
-                    "type":"paragraph","content":[{"type":"text","text":task_description}]
-                }]},
-                "labels": [task_marker]
-            }
-        })))
-        .expect(1)
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200)
+                .set_body_json(served_readback.lock().expect("readback lock").clone())
+        })
+        .expect(3)
         .mount(&server)
         .await;
 
@@ -8245,6 +8250,68 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         "preview_hash": preview.json()["preview_hash"],
         "expected_revision": 1
     });
+    let original_items = world.daemon.state().with_store(|store| {
+        store
+            .jira_materialization_items(project_id, &original_batch_id)
+            .expect("the original items read")
+    });
+    for (rule, repair) in [
+        (
+            "the Jira issue description differs from the pending creation intent",
+            "description",
+        ),
+        ("the Jira issue lacks the pending creation marker", "marker"),
+    ] {
+        let refused = Call::post(
+            format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+            &apply_body,
+        )
+        .signed_as(&world, "admin")
+        .with_key("recover-original-jira-batch")
+        .send(&world)
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(refused.json()["code"], "revision_conflict");
+        assert_eq!(refused.json()["rule"], rule);
+        assert_eq!(
+            refused.json()["action"],
+            "compare the exact Jira key, project, type, parent and pending creation metadata; repair the mismatch, then retry the same materialization key"
+        );
+        world.daemon.state().with_store(|store| {
+            let items = store
+                .jira_materialization_items(project_id, &original_batch_id)
+                .expect("the refused items read");
+            assert_eq!(
+                items.iter().map(|item| &item.id).collect::<Vec<_>>(),
+                original_items
+                    .iter()
+                    .map(|item| &item.id)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                items[1].confirmed_key.is_none(),
+                "refused task is not confirmed"
+            );
+            assert!(
+                store
+                    .confirmed_jira_task_key(project_id, task_id)
+                    .expect("binding read")
+                    .is_none()
+            );
+            assert!(
+                !store
+                    .asma_epic_is_active(project_id, epic_id)
+                    .expect("activation read")
+            );
+        });
+        let mut readback = task_readback.lock().expect("readback lock");
+        if repair == "description" {
+            readback["fields"]["description"]["content"][0]["content"][0]["text"] =
+                serde_json::json!(task_description);
+        } else {
+            readback["fields"]["labels"] = serde_json::json!([task_marker]);
+        }
+    }
     let applied = Call::post(
         format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
         &apply_body,
@@ -8291,6 +8358,15 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         "no replacement batch is created, including replay"
     );
     assert_eq!(recoveries, 2, "the exact recovery set is durable");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("Jira requests")
+            .iter()
+            .all(|request| request.method.as_str() == "GET"),
+        "link recovery never mutates Jira while refusing or retrying"
+    );
 }
 
 #[tokio::test]

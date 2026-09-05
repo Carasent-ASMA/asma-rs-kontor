@@ -1,0 +1,18 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.00s
+     Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-b5159e50cf44b3f2)
+
+running 10 tests
+test a_configured_jira_boundary_distinguishes_historical_from_native_completion ... ignored, superseded by kontor-jira native connector contract tests
+test jira_link_apply_recovers_a_mixed_pending_batch_in_place ... ok
+test automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_epic_without_effects ... ok
+test resident_jira_conflict_replay_waits_for_the_bounded_backstop ... ok
+test identical_mixed_jira_apply_resumes_its_pending_create_in_place ... ok
+test jira_materialization_preview_is_server_derived_and_epic_first ... ok
+test a_task_with_no_jira_link_refuses_naming_instead_of_substituting_a_uuid ... ok
+test resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_without_effects ... ok
+test request_and_resident_jira_reconciliation_ignore_an_unrelated_connector_link ... ok
+test a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titles ... ok
+
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 262 filtered out; finished in 31.18s
+
