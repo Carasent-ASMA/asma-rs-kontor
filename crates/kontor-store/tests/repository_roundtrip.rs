@@ -1528,6 +1528,43 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
         .recover_gate_rejection_with_intent(&recovery(now()), &envelope("recover-again"))
         .expect_err("one rejection is consumed exactly once");
     assert_unchanged(&before, &census(&fixture), "second rejection consumption");
+
+    // The same source receipt reached by a *different* evaluation identity is
+    // still the same consumed verdict. A second rejected evaluation whose every
+    // immutable field matches the source intent would satisfy the field
+    // comparison, so only the receipt's own uniqueness stops it being routed a
+    // second time under its own primary key.
+    {
+        let connection = Connection::open(&fixture.path).expect("a raw connection opens");
+        connection
+            .execute(
+                "INSERT INTO task_gate_evaluations
+                     (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
+                      evaluator_account, evidence, recorded_at)
+                 VALUES (?1, ?2, 'zz.gate', 2, 'rejected', 'zz.reviewer', ?3, '[]', ?4)",
+                rusqlite::params![
+                    fixture.project.to_string(),
+                    workflow.to_string(),
+                    fixture.account.to_string(),
+                    "2026-01-02T00:00:00Z",
+                ],
+            )
+            .expect("a second identical rejected evaluation is seeded");
+    }
+    let before = census(&fixture);
+    let mut second_identity = recovery(now());
+    second_identity.sequence = 2;
+    second_identity.expected_workflow_revision = AggregateRevision::parse(2).expect("revision");
+    second_identity.expected_current_phase = phase("zz.one");
+    fixture
+        .store
+        .recover_gate_rejection_with_intent(&second_identity, &envelope("recover-other-sequence"))
+        .expect_err("one verdict receipt routes exactly one rejection");
+    assert_unchanged(
+        &before,
+        &census(&fixture),
+        "the same receipt under another sequence",
+    );
     assert_eq!(
         fixture
             .store
@@ -1574,8 +1611,8 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
             .list_gate_evaluations(fixture.project, workflow)
             .expect("history")
             .len(),
-        1,
-        "a recovery appends no verdict of its own"
+        2,
+        "both evaluations were seeded by this fixture; a recovery appends none"
     );
 }
 
