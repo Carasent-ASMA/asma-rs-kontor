@@ -21950,6 +21950,38 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
         "the replay repairs the deployed account-less successor in place"
     );
 
+    // The scheduler's exact replay walks every frozen slot again. It must reuse
+    // the newest recovered successor, while preserving the abandoned
+    // predecessor as audit lineage. Selecting the oldest row would try to
+    // relaunch the immutable abandoned run and strand every later slot.
+    let admission_replay = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": seeded.plan_hash}),
+    )
+    .signed_as(world, "operator")
+    .with_key("reroute-unbound-start")
+    .send(world)
+    .await;
+    assert_eq!(admission_replay.status, 200, "{}", admission_replay.body);
+    assert!(
+        admission_replay.json()["blocked"]
+            .as_array()
+            .expect("the blocked list")
+            .is_empty(),
+        "the exact admission replay reuses the recovered successor: {}",
+        admission_replay.body
+    );
+    let successor_after_replay = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the replayed successor reads")
+            .expect("the replayed successor remains")
+    });
+    assert_eq!(
+        successor_after_replay.binding, repaired.binding,
+        "replay preserves the recovered run and native binding"
+    );
+
     // Rehydrate the recovered lineage through the public settlement path. The
     // abandoned predecessor is an audit anchor, not a native attempt, but the
     // successor still names it as its parent. Dropping that anchor during

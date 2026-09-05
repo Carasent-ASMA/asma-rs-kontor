@@ -32418,6 +32418,10 @@ impl Services {
             .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
+            // The repository returns lineage oldest first. Recovery keeps an
+            // abandoned predecessor as immutable audit evidence, so replay
+            // must address the newest successor that now holds the slot.
+            .rev()
             .find(|seat| &seat.role == slot.as_role_key());
         if let Some(seat) = existing.as_ref()
             && let (Some(kind), Some(native)) = (seat.runtime_kind.clone(), seat.native_id.clone())
