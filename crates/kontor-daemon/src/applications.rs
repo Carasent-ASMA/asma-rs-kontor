@@ -9188,13 +9188,28 @@ impl Services {
                         .and_then(serde_json::Value::as_str)
                         == Some(seat.role_slot_id.as_str())
                 })
-            })
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the frozen Committee admission has no provenance for this seat",
-                )
-            })?;
+            });
+        if admission.is_none() {
+            // Committee runs frozen before admission-route provenance was
+            // introduced still carry the immutable template revision and the
+            // exact route stored on every seat. Recover only a route that the
+            // pinned template itself declared for this exact slot; anything
+            // else still needs durable reroute provenance below.
+            let (_, template) = self.committee_template(run)?;
+            if template.slots.iter().any(|slot| {
+                slot.id == seat.role_slot_id && slot.models.rungs.contains(&seat.model_rung)
+            }) {
+                return Ok(ConsultationRouteProvenance::template(
+                    run.definition_hash.clone(),
+                ));
+            }
+        }
+        let admission = admission.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the active Committee route has no immutable template or reroute provenance",
+            )
+        })?;
         let admitted_route = admission
             .get("model_route")
             .cloned()

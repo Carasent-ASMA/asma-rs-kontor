@@ -442,6 +442,56 @@ impl Respond for ClosedEpicJira {
 }
 
 #[derive(Clone)]
+struct HeldEpicJira {
+    issue_reads: Arc<AtomicUsize>,
+    external_mutations: Arc<AtomicUsize>,
+}
+
+impl Respond for HeldEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() != "GET" {
+            self.external_mutations.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(500);
+        }
+        if path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if path.ends_with("/transitions") {
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [{
+                    "id": "unsafe-reopen",
+                    "to": {
+                        "id": "10213",
+                        "name": "READY FOR DEVELOPMENT",
+                        "statusCategory": {"name": "To Do"}
+                    }
+                }]
+            }));
+        }
+        if path.contains("/rest/api/3/issue/ASMA-8205") {
+            self.issue_reads.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8205",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10231",
+                        "name": "On hold",
+                        "statusCategory": {"name": "In Progress"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "updated": "2026-09-05T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+#[derive(Clone)]
 struct FailingEpicJira {
     issue_reads: Arc<AtomicUsize>,
     transition_posts: Arc<AtomicUsize>,
@@ -10048,6 +10098,191 @@ async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
 }
 
 #[tokio::test]
+async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_epic_without_effects()
+ {
+    let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
+    let external_mutations = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(HeldEpicJira {
+            issue_reads: Arc::clone(&issue_reads),
+            external_mutations: Arc::clone(&external_mutations),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let task_id = TaskId::generate();
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-09-05T10:00:00Z");
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Held Jira epic"),
+                root_path: name("/tmp/kontor-held-jira-epic"),
+                created_at: now,
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Externally held epic"),
+                created_at: now,
+            })
+            .expect("the epic is created");
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                title: name("Unfinished child"),
+                module: None,
+                state: kontor_core::state::TaskState::Ready,
+                created_at: now,
+            })
+            .expect("the unfinished child is created");
+    });
+    confirm_promoted_epic_identity(
+        &world,
+        &project_id.to_string(),
+        &epic_id.to_string(),
+        "HOLD",
+        "ASMA-8205",
+    );
+    world.daemon.state().with_store(|store| {
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "epic"
+                    && compiled.spec().work_profile.is_none()
+            })
+            .expect("the generic epic workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the exact epic workflow is installed");
+    });
+
+    let first = world.daemon.reconcile_jira_once().await;
+    assert_eq!(first.epic_subjects, 1, "{first:?}");
+    assert_eq!(first.blocked, 1, "{first:?}");
+    assert_eq!(first.applied, 0, "{first:?}");
+    assert_eq!(issue_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        external_mutations.load(Ordering::SeqCst),
+        0,
+        "refusing an external hold must not assign or transition the Jira epic"
+    );
+    let retried = world.daemon.reconcile_jira_once().await;
+    assert_eq!(retried.epic_subjects, 1, "{retried:?}");
+    assert_eq!(retried.blocked, 1, "{retried:?}");
+    assert_eq!(retried.applied, 0, "{retried:?}");
+    assert_eq!(issue_reads.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        external_mutations.load(Ordering::SeqCst),
+        0,
+        "retrying the same refusal must remain effect-free"
+    );
+
+    let conflicts_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts");
+    let listed = Call::get(&conflicts_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let listed_json = listed.json();
+    let conflicts = listed_json.as_array().expect("a conflict list");
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "the producer records one durable conflict"
+    );
+    let conflict = &conflicts[0];
+    assert_eq!(conflict["epic_id"], epic_id.to_string());
+    assert_eq!(conflict["external_issue_key"], "ASMA-8205");
+    assert_eq!(conflict["kind"], "incompatible_human_move");
+    assert_eq!(conflict["observed_status_id"], "10231");
+    assert_eq!(conflict["observed_status_name"], "On hold");
+    assert_eq!(conflict["spec_version"], 2);
+    let conflict_id = conflict["conflict_id"]
+        .as_str()
+        .expect("a conflict id")
+        .to_owned();
+
+    let resolved = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict"),
+        &serde_json::json!({"conflict_id": conflict_id}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resolve-automatic-held-epic")
+    .send(&world)
+    .await;
+    assert_eq!(resolved.status, 200, "{}", resolved.body);
+    assert!(resolved.json()["resolved_at"].is_string());
+    assert_eq!(external_mutations.load(Ordering::SeqCst), 0);
+
+    let replay = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict"),
+        &serde_json::json!({"conflict_id": conflict_id}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resolve-automatic-held-epic")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), resolved.json());
+    assert_eq!(external_mutations.load(Ordering::SeqCst), 0);
+
+    let open = Call::get(&conflicts_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(open.status, 200, "{}", open.body);
+    assert!(open.json().as_array().expect("open conflicts").is_empty());
+    let historical = Call::get(format!("{conflicts_uri}?include_resolved=true"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(historical.status, 200, "{}", historical.body);
+    assert_eq!(
+        historical.json().as_array().expect("all conflicts").len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn resident_failed_epic_apply_emits_no_immediate_replay_wake() {
     let server = MockServer::start().await;
     let issue_reads = Arc::new(AtomicUsize::new(0));
@@ -13680,6 +13915,125 @@ async fn a_session_bound_before_a_restart_is_operable_after_it() {
         sent.json()["position"],
         "a replayed message lands where the first one did: {}",
         replayed.body
+    );
+
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// Legacy bindings predate the durable capability snapshot table. Their exact
+/// native identity and ownership still survive in `runtime_bindings`, so a
+/// restart may recover them only by re-reading that same native seat. The
+/// recovery-time capability freeze is persisted before the seat becomes
+/// operable; no replacement session is created.
+#[tokio::test]
+async fn a_legacy_binding_without_a_snapshot_recovers_in_place_after_restart() {
+    let world = World::open().await;
+    let (run, bound) = world.launch().await;
+    let operator = secret(&world, "operator");
+    let realm = world.realm_id();
+    world.daemon.state().with_store(|store| {
+        store
+            .forget_binding_snapshot(bound.binding_id())
+            .expect("the legacy fixture has no frozen snapshot");
+        assert!(
+            store
+                .list_binding_snapshots()
+                .expect("snapshots are readable")
+                .iter()
+                .all(|row| row.binding_id != bound.binding_id()),
+            "the immutable binding survives without its newer snapshot row"
+        );
+    });
+
+    let World {
+        directory,
+        daemon,
+        fake,
+        project,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+    fake.rebuild_adapter_state();
+
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the legacy realm reopens");
+    assert_eq!(restarted.realm_id(), realm);
+    assert_eq!(
+        restarted.reconcile().await,
+        BarrierState::Open,
+        "the exact surviving native seat is sufficient for bounded recovery"
+    );
+
+    let recovered = restarted
+        .state()
+        .sessions()
+        .get(bound.binding_id())
+        .expect("the exact legacy binding is recovered");
+    assert_eq!(
+        recovered.binding, bound.binding,
+        "binding authority is immutable"
+    );
+    assert_eq!(
+        recovered.identity(),
+        bound.identity(),
+        "native identity is unchanged"
+    );
+    assert_eq!(
+        fake.sessions_for(run),
+        1,
+        "recovery never creates or replaces the native session"
+    );
+    let stored = restarted.state().with_store(|store| {
+        store
+            .list_binding_snapshots()
+            .expect("recovery snapshot is readable")
+            .into_iter()
+            .find(|row| row.binding_id == bound.binding_id())
+            .expect("recovery persisted the capability freeze")
+    });
+    let persisted: kontor_runtime::capability::RuntimeBindingSnapshot =
+        serde_json::from_str(&stored.document).expect("the recovery document parses");
+    assert_eq!(
+        persisted, recovered,
+        "the in-process claim is the durable claim"
+    );
+
+    let router = restarted.router();
+    let message = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "resume the exact legacy seat"}),
+    )
+    .with_token(&operator)
+    .with_key(kontor_runtime::request::MessageId::generate().to_string())
+    .send_to(&router)
+    .await;
+    assert_eq!(message.status, 200, "{}", message.body);
+
+    fake.observe_terminal(&recovered, ObservedRunState::Cancelled)
+        .expect("the recovered native seat finishes");
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .with_token(&operator)
+    .with_key("settle-recovered-legacy-seat")
+    .send_to(&router)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["outcome"], "cancelled");
+    assert_eq!(
+        fake.sessions_for(run),
+        1,
+        "message and settlement continue through the original native seat"
     );
 
     restarted.state().signals().stop();
@@ -31932,6 +32286,62 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         judge["observed_binding"].is_null(),
         "Judge launched before findings"
     );
+
+    // Deployed Committees predating immutable per-slot admission provenance
+    // still freeze their exact template revision and each seat's exact route.
+    // Reproduce that historical row shape and prove recovery accepts only the
+    // route declared by the pinned template rather than abandoning the run.
+    let mut legacy_context = frozen_invocation.context.clone();
+    legacy_context
+        .as_object_mut()
+        .expect("the frozen Committee context is an object")
+        .remove("admission");
+    let legacy_context_document = CanonicalDocument::from_value(&legacy_context)
+        .expect("the legacy Committee context canonicalizes");
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    connection
+        .execute_batch("DROP TRIGGER consultation_run_inputs_are_frozen;")
+        .expect("the isolated fixture may reproduce the deployed legacy row");
+    connection
+        .execute(
+            "UPDATE consultation_runs
+             SET context = ?1, context_hash = ?2
+             WHERE project_id = ?3 AND run_id = ?4 AND family = 'committee'",
+            rusqlite::params![
+                legacy_context_document.json(),
+                legacy_context_document.hash().as_str(),
+                project,
+                run,
+            ],
+        )
+        .expect("the deployed pre-provenance Committee row is reproduced");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER consultation_run_inputs_are_frozen
+             BEFORE UPDATE ON consultation_runs
+             WHEN OLD.project_id <> NEW.project_id
+               OR OLD.mini_project_id <> NEW.mini_project_id
+               OR OLD.family <> NEW.family
+               OR OLD.profile_id <> NEW.profile_id
+               OR OLD.profile_version <> NEW.profile_version
+               OR OLD.definition_hash <> NEW.definition_hash
+               OR OLD.question <> NEW.question
+               OR OLD.question_hash <> NEW.question_hash
+               OR OLD.context <> NEW.context
+               OR OLD.context_hash <> NEW.context_hash
+               OR OLD.caller_seat_binding_id <> NEW.caller_seat_binding_id
+               OR OLD.topology_node_id <> NEW.topology_node_id
+               OR OLD.invoke_key <> NEW.invoke_key
+               OR OLD.invoke_intent_hash <> NEW.invoke_intent_hash
+               OR OLD.created_at <> NEW.created_at
+               OR OLD.result IS NOT NULL
+             BEGIN
+                 SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
+             END;",
+        )
+        .expect("the frozen-input guard is restored after fixture setup");
+    drop(connection);
 
     // An admin may replace an exact idle native filler without changing the
     // logical Committee seat or inventing a finding. Recovery advances the

@@ -3806,8 +3806,9 @@ impl PaseoAdapter {
     /// The three ways this can end:
     ///
     /// * the daemon says `agent_created` and hands back the agent;
-    /// * the daemon says `agent_create_failed` — it made nothing, and that is the
-    ///   one answer that lets the caller release the seat claim;
+    /// * the daemon says `agent_create_failed` — historical implementations
+    ///   disagree about whether an effect could remain, so reconciliation
+    ///   settles it like every other non-created answer;
     /// * the answer is lost or unrecognised, and reconciliation decides, never a
     ///   second create.
     async fn create_opencode_seat(
@@ -4112,19 +4113,11 @@ impl PaseoAdapter {
     /// * several — the plane has diverged, and picking one would bind a run to a
     ///   session that may belong to another. No launch.
     /// * none — it is *not* known whether Paseo created an agent, and this
-    ///   returns [`RuntimeError::Transport`] to say the attempt is unresolved.
+    ///   returns [`RuntimeError::DeliveryConfirmationUnknown`] so the admission
+    ///   claim remains held while the attempt is unresolved.
     ///   A blind relaunch here is how one seat ends up with two agents editing
     ///   one tree.
     ///
-    /// **Known hazard, pre-dating this task** (`e3b562c`, KON-MVP-11).
-    /// `Transport` is the variant callers retry, while `launch` releases the
-    /// admission on every error — so a retry after a create that did land, but
-    /// whose labels the census could not yet see, can create a second seat.
-    /// `DeliveryConfirmationUnknown` is the variant that says "unresolved, do
-    /// not retry blindly", and the AO adapter already uses it for this same
-    /// hazard. Changing it here would alter retry semantics for every provider
-    /// on this plane, so it is recorded rather than done in passing: see
-    /// `docs/evidence/KON-OP-20/2026-08-31-upstream-dependency-applied-permission.md`.
     async fn recover_launch(&self, labels: &BTreeMap<String, String>) -> RuntimeResult<String> {
         let agents = self.fetch_agents(labels, false).await?;
         let mut matches = agents
@@ -4133,7 +4126,7 @@ impl PaseoAdapter {
             .collect::<Vec<_>>();
         match matches.len() {
             1 => Ok(matches.remove(0).id),
-            0 => Err(RuntimeError::Transport {
+            0 => Err(RuntimeError::DeliveryConfirmationUnknown {
                 rule: "acknowledgement was lost and no agent carries this launch's labels yet",
             }),
             _ => Err(RuntimeError::CorrelationFailed),
@@ -5000,6 +4993,50 @@ impl RuntimeAdapter for PaseoAdapter {
             }
         }
         Ok(restored)
+    }
+
+    async fn recover_unfrozen_bindings(
+        &self,
+        bindings: &[RuntimeBinding],
+    ) -> RuntimeResult<Vec<RuntimeBindingSnapshot>> {
+        if bindings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let generation = self.generation();
+        let declared = self.declared().await?;
+        let mut candidates = Vec::new();
+        for binding in bindings {
+            if binding.identity.runtime_kind != self.config.runtime_kind
+                || binding.identity.host != self.config.host_key
+                || binding.identity.generation != generation
+            {
+                continue;
+            }
+            let Ok(agent) = self.fetch_agent(binding.identity.native_id.as_str()).await else {
+                continue;
+            };
+            let expected = CorrelationLabel::for_run(binding.agent_run_id).to_string();
+            if agent.id != binding.identity.native_id.as_str()
+                || agent.label(label::AGENT_RUN) != Some(expected.as_str())
+                || agent.is_archived()
+            {
+                continue;
+            }
+            let mut snapshot = self.bind(
+                binding.agent_run_id,
+                binding.id,
+                &agent,
+                Timestamp::now(),
+                generation,
+                declared.clone(),
+            )?;
+            // The binding is immutable historical authority. Only the missing
+            // correlation observation and capability freeze are established
+            // now; recovery must not rewrite when or where the seat was bound.
+            snapshot.binding = binding.clone();
+            candidates.push(snapshot);
+        }
+        self.restore_bindings(&candidates).await
     }
 
     async fn prepare_plane(&self) -> RuntimeResult<()> {
