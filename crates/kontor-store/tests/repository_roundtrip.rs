@@ -6666,6 +6666,21 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
     assert_eq!(replay.account_profile, request.account_profile);
     assert_eq!(replay.settled, settled);
 
+    let mut duplicate_proof = request.clone();
+    duplicate_proof.id = kontor_core::id::RoleTurnId::generate();
+    duplicate_proof.idempotency_key = "same-runtime-proof-new-key".to_owned();
+    duplicate_proof.evidence_hash = ContentHash::of(b"same runtime proof, different request");
+    let refusal = fixture
+        .store
+        .settle_role_turn(&duplicate_proof)
+        .expect_err("one runtime message cannot settle a second turn under a new key");
+    assert!(
+        refusal
+            .to_string()
+            .contains("this runtime message already settled a turn"),
+        "the proof reuse is refused explicitly: {refusal}"
+    );
+
     let keys = fixture
         .store
         .list_task_artifact_keys(fixture.project, fixture.task)
