@@ -6681,6 +6681,27 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
         "the proof reuse is refused explicitly: {refusal}"
     );
 
+    let mut duplicate_response = request.clone();
+    duplicate_response.id = kontor_core::id::RoleTurnId::generate();
+    duplicate_response.idempotency_key = "same-runtime-response-new-message".to_owned();
+    duplicate_response.evidence_hash =
+        ContentHash::of(b"same runtime response, different prompt and request");
+    duplicate_response
+        .runtime_proof
+        .as_mut()
+        .expect("the proof exists")
+        .message_id = "01900000-0000-7000-8000-000000000002".to_owned();
+    let refusal = fixture
+        .store
+        .settle_role_turn(&duplicate_response)
+        .expect_err("one runtime response cannot settle a second turn through another prompt");
+    assert!(
+        refusal
+            .to_string()
+            .contains("this runtime response already settled a turn"),
+        "the response reuse is refused explicitly: {refusal}"
+    );
+
     let keys = fixture
         .store
         .list_task_artifact_keys(fixture.project, fixture.task)

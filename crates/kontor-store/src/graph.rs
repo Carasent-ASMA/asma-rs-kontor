@@ -4142,7 +4142,7 @@ impl SqliteStore {
         }
 
         if let Some(proof) = &turn.runtime_proof {
-            let proof_already_consumed: bool = transaction
+            let message_already_consumed: bool = transaction
                 .query_row(
                     "SELECT EXISTS(
                          SELECT 1 FROM role_turns
@@ -4158,10 +4158,40 @@ impl SqliteStore {
                     |row| row.get(0),
                 )
                 .map_err(backend)?;
-            if proof_already_consumed {
+            if message_already_consumed {
                 return Err(conflict(
                     "role turn",
                     "this runtime message already settled a turn; replay its original idempotency key",
+                ));
+            }
+
+            // A runtime may expose more than one prompt before one terminal
+            // response. The response position is the produced handoff, so a
+            // different prompt id must not make that same output consumable a
+            // second time.
+            let response_already_consumed: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM role_turns
+                         WHERE project_id = ?1 AND agent_run_id = ?2
+                           AND binding_generation = ?3
+                           AND response_timeline_epoch = ?4
+                           AND response_timeline_sequence = ?5
+                     )",
+                    params![
+                        turn.project_id.to_string(),
+                        turn.agent_run_id.to_string(),
+                        i64::try_from(turn.binding_generation).unwrap_or(i64::MAX),
+                        i64::try_from(proof.timeline_epoch).unwrap_or(i64::MAX),
+                        i64::try_from(proof.response_sequence).unwrap_or(i64::MAX),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if response_already_consumed {
+                return Err(conflict(
+                    "role turn",
+                    "this runtime response already settled a turn; replay its original idempotency key",
                 ));
             }
         }
