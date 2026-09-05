@@ -1,0 +1,24 @@
+    Checking h2 v0.4.19
+    Checking kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+    Checking kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+    Checking serde_yaml_ng v0.10.0
+    Checking hyper v1.11.1
+   Compiling zip v3.0.0
+    Checking hyper-util v0.1.20
+    Checking kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling utoipa-swagger-ui v9.0.2
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.13.4
+    Checking kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-accounts)
+    Checking utoipa v5.5.0
+    Checking kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+    Checking axum v0.8.9
+    Checking kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Checking kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+    Checking wiremock v0.6.5
+    Checking kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Checking kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+    Checking kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-mcp)
+    Checking kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
+    Checking kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 40.79s

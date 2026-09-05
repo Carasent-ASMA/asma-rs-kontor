@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "source_revision": "d30e0dfee5933d29b32701974de3064b0c5da005",
+  "source_tree": "28ef690b0d587dbd2e98d80353ad055b95ffd72a",
+  "completed_at": "2026-09-05T10:17:34.273720+00:00",
+  "command": "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 CARGO_TARGET_DIR=<isolated checkout>/target/qualification python3 -u scripts/verify-tree.py --mode archive",
+  "exit_code": 0,
+  "rust_tests_passed": 2284,
+  "rust_tests_ignored": 9,
+  "console_tests_passed": 300,
+  "gates": [
+    "cargo generate-lockfile",
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo test --workspace --locked",
+    "cargo audit",
+    "cargo deny check",
+    "/opt/homebrew/bin/pnpm install --frozen-lockfile",
+    "/opt/homebrew/bin/pnpm -r typecheck",
+    "/opt/homebrew/bin/pnpm -r test",
+    "/opt/homebrew/bin/pnpm audit --prod"
+  ],
+  "log": "release-gates-d30e0df.log",
+  "log_sha256": "438638817c3af3e82e4b7836b83f03ba89b1bf17fab9904f22c07548ff87a353",
+  "lockfile_sha256": "5f99e2e0c95db8e79100e977c629001a5ab2e243ba2294614d2f8051c8f4a569",
+  "integrated_master": "fa33b4ade4fbab294561f0d23dcab9a349529f79",
+  "documentation_integration": "8e24a9340e7cd3ad7e7bbea81ec5bb96dd9c2220",
+  "source_input_manifest": {
+    "format": "git ls-tree -r -z excluding the seven explicitly reviewed Markdown paths and docs/evidence/KCADR/, retaining final NUL",
+    "sha256": "326e4795b04845758a3f8777b858ea415aee9c4ca4c2848baf9714f64953ebfd",
+    "excluded_documentation_paths": [
+      "ARCHITECTURE.md",
+      "README.md",
+      "_docs/index.md",
+      "_docs/plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md",
+      "_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md",
+      "docs/CONFIGURATION.md",
+      "docs/NATIVE_NAMING.md"
+    ],
+    "exclusion_review": "independent-jira-docs-integration-review.json",
+    "provenance": "The tests executed the named d30e0df archive. The later docs-only integration is separately reviewed and has identical remaining tracked inputs; it is not claimed as another test execution."
+  },
+  "independent_repository_reviews": [
+    "independent-jira-materialization-review.json",
+    "independent-jira-docs-integration-review.json"
+  ],
+  "behavior_evidence": {
+    "red": "jira-materialization-red.log",
+    "focused_green": "jira-materialization-green.log",
+    "full_jira": "jira-materialization-suite.log",
+    "daemon": "jira-materialization-daemon.log",
+    "scope": "Typed refusal explains the exact mismatch; unchanged guards refuse before confirmation, preserve batch/item identities, resume the original key after repair, and produce only Jira GET requests."
+  },
+  "live_recovery_receipt": "https://github.com/Carasent-ASMA/asma-modules/blob/1f2974a2525e7bb462dc64048f0ae30782ecbc46/_docs/ai-orchestration/reports/evidence/kcadr/jira-and-ecp-recovery.json",
+  "deployment": {
+    "performed_by_this_source_lane": false,
+    "owner": "parent session /root",
+    "pending": "Deploy the exact merged diagnostic correction and verify preserved state; prior PR167 merge1b0b27e is already deployed."
+  },
+  "independent_kontor_gate_verdict": null
+}

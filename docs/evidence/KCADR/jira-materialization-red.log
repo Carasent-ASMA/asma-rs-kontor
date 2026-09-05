@@ -1,0 +1,46 @@
+   Compiling h2 v0.4.19
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling zip v3.0.0
+   Compiling hyper v1.11.1
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling hyper-util v0.1.20
+   Compiling utoipa-swagger-ui v9.0.2
+   Compiling serde_yaml_ng v0.10.0
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.13.4
+   Compiling utoipa v5.5.0
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+   Compiling axum v0.8.9
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+   Compiling wiremock v0.6.5
+   Compiling kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-b5159e50cf44b3f2)
+
+running 1 test
+test jira_link_apply_recovers_a_mixed_pending_batch_in_place ... FAILED
+
+failures:
+
+---- jira_link_apply_recovers_a_mixed_pending_batch_in_place stdout ----
+
+thread 'jira_link_apply_recovers_a_mixed_pending_batch_in_place' (75665908) panicked at crates/kontor-daemon/tests/loopback_api.rs:8272:9:
+assertion `left == right` failed
+  left: String("the ticket was moved to a status the pinned specification cannot start from")
+ right: "the Jira issue description differs from the pending creation intent"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    jira_link_apply_recovers_a_mixed_pending_batch_in_place
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 271 filtered out; finished in 1.26s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

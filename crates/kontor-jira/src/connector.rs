@@ -19,7 +19,7 @@ use crate::jira::{
     FieldWrite, JiraExchange, JiraOperation, JiraOutcome, JiraRequest, JiraResponse,
     WireAssignment, WireConfirmation, WireEffects, WireFieldValue, WireObservation, WireTransition,
 };
-use crate::{JiraError, UnavailableReason, WireTimestamp};
+use crate::{JiraError, MaterializationConflict, UnavailableReason, WireTimestamp};
 
 const CONFIG_SCHEMA: u32 = 1;
 const CONFIG_FILE: &str = "jira.json";
@@ -606,9 +606,8 @@ impl JiraConnector {
                 [] => self.create_issue(plan).await?,
                 [key] => key.clone(),
                 _ => {
-                    return Err(JiraError::Conflict {
-                        operation: "materialize",
-                        kind: kontor_core::ticket::StatusConflictKind::IncompatibleHumanMove,
+                    return Err(JiraError::MaterializationConflict {
+                        kind: MaterializationConflict::AmbiguousMarker,
                     });
                 }
             }
@@ -731,16 +730,21 @@ impl JiraConnector {
             .unwrap_or(Value::Null);
         let explicit_link = plan.requested_key.is_some();
         let strict_content = !explicit_link || plan.require_marker;
-        if text_at(&value, &["fields", "project", "key"])? != self.project_key.as_str()
-            || optional_external_at(&value, &["fields", "parent", "key"])? != plan.parent_key
-            || (strict_content
-                && (observed_summary != plan.summary
-                    || observed_description != adf(&plan.description)))
+        let mismatch = if text_at(&value, &["fields", "project", "key"])?
+            != self.project_key.as_str()
         {
-            return Err(JiraError::Conflict {
-                operation: "materialize",
-                kind: kontor_core::ticket::StatusConflictKind::IncompatibleHumanMove,
-            });
+            Some(MaterializationConflict::ProjectMismatch)
+        } else if optional_external_at(&value, &["fields", "parent", "key"])? != plan.parent_key {
+            Some(MaterializationConflict::ParentMismatch)
+        } else if strict_content && observed_summary != plan.summary {
+            Some(MaterializationConflict::SummaryMismatch)
+        } else if strict_content && observed_description != adf(&plan.description) {
+            Some(MaterializationConflict::DescriptionMismatch)
+        } else {
+            None
+        };
+        if let Some(kind) = mismatch {
+            return Err(JiraError::MaterializationConflict { kind });
         }
         let issue_type_matches = match plan.kind {
             JiraIssueKind::Epic => {
@@ -772,10 +776,14 @@ impl JiraConnector {
                         .iter()
                         .any(|label| label.as_str() == Some(plan.marker.as_str()))
                 });
-        if !issue_type_matches || !marker_matches {
-            return Err(JiraError::Conflict {
-                operation: "materialize",
-                kind: kontor_core::ticket::StatusConflictKind::IncompatibleHumanMove,
+        if !issue_type_matches {
+            return Err(JiraError::MaterializationConflict {
+                kind: MaterializationConflict::IssueTypeMismatch,
+            });
+        }
+        if !marker_matches {
+            return Err(JiraError::MaterializationConflict {
+                kind: MaterializationConflict::MissingMarker,
             });
         }
         let readback = if explicit_link && plan.require_marker {

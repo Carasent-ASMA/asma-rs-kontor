@@ -81,6 +81,39 @@ impl fmt::Display for SelectionConflict {
     }
 }
 
+/// Which external identity or creation fact prevented materialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializationConflict {
+    AmbiguousMarker,
+    ProjectMismatch,
+    ParentMismatch,
+    SummaryMismatch,
+    DescriptionMismatch,
+    IssueTypeMismatch,
+    MissingMarker,
+}
+
+impl MaterializationConflict {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AmbiguousMarker => "ambiguous_marker",
+            Self::ProjectMismatch => "project_mismatch",
+            Self::ParentMismatch => "parent_mismatch",
+            Self::SummaryMismatch => "summary_mismatch",
+            Self::DescriptionMismatch => "description_mismatch",
+            Self::IssueTypeMismatch => "issue_type_mismatch",
+            Self::MissingMarker => "missing_marker",
+        }
+    }
+}
+
+impl fmt::Display for MaterializationConflict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Every rejection the Jira policy or connector produces.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -103,6 +136,8 @@ pub enum JiraError {
         operation: &'static str,
         kind: StatusConflictKind,
     },
+    #[error("jira materialization conflict: {kind}")]
+    MaterializationConflict { kind: MaterializationConflict },
     #[error("jira {operation} refused: {rule}")]
     Refused {
         operation: &'static str,

@@ -1,0 +1,17 @@
+{
+  "review_type": "independent_repository_review",
+  "reviewer_session": "/root/pr167_merge/review_paseo",
+  "base_commit": "1b0b27e7db758a8788efb3d722bcdd6d7a1d54e3",
+  "status": "approved",
+  "findings": [],
+  "kontor_gate_authority": false,
+  "approved_source_blobs": {
+    "crates/kontor-jira/src/lib.rs": "1e873d67bd27afecc7e120c9a820282e2aea8bf8",
+    "crates/kontor-jira/src/connector.rs": "3c518de6315a4ba7dbd560a92deb927357925530",
+    "crates/kontor-jira/tests/native_connector.rs": "e4f551dd904d9fae9fe91af5425c3b1d6289296c",
+    "crates/kontor-daemon/src/applications.rs": "6c75d626ce51cc14a6102085f8e9fb4af4b115f2",
+    "crates/kontor-daemon/tests/loopback_api.rs": "36c11896849174d090b1b7b8ffa49116ace857d6"
+  },
+  "reviewer_verdict_excerpt": "Existing project/parent/strict-content/type/marker predicates and ordinary explicit-link allowances are preserved; only their error classification is split. Closed static API mapping avoids status-move misdiagnosis and gives same-materialization-key recovery advice without automatic Jira mutation. Tests cover all six readback reasons, ambiguous marker, exact corrected-key recovery, GET-only traffic, original batch/item IDs, unconfirmed task binding before proof and successful same-key resume. No findings.",
+  "validation_ownership": "Author executes final suite and archive qualification; parent owns production deployment/readback."
+}

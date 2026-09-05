@@ -1,0 +1,53 @@
+{
+  "review_type": "independent_repository_integration_review",
+  "reviewer_session": "/root/pr167_merge/review_paseo",
+  "kontor_gate_authority": false,
+  "status": "approved",
+  "source_candidate": "d30e0dfee5933d29b32701974de3064b0c5da005",
+  "incoming_master": "fa33b4ade4fbab294561f0d23dcab9a349529f79",
+  "integrated_commit": "8e24a9340e7cd3ad7e7bbea81ec5bb96dd9c2220",
+  "documentation_only_paths": [
+    "ARCHITECTURE.md",
+    "README.md",
+    "_docs/index.md",
+    "_docs/plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md",
+    "_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md",
+    "docs/CONFIGURATION.md",
+    "docs/NATIVE_NAMING.md"
+  ],
+  "reviewer_verdict_excerpt": "No build/test/runtime embedded input found: include macros, file reads, source scans, Cargo/Vite/Tauri configuration and verify-tree.py do not consume these docs; sole code mentions are comments/assertion text naming the docs. No conflict with typed Jira materialization mismatches or identity preservation. No reason to repeat the full suite for this docs delta. Retain actual d30e0df gate provenance and separately record integration/input-equivalence.",
+  "equivalence_at_integration": {
+    "format": "git ls-tree -r -z excluding exactly the seven listed paths, final NUL retained",
+    "sha256": "b9381ba2d20e105e3c1971b965e916b4a4e8bef0ad6b110d5f1e5feeea2dce85"
+  },
+  "minor_finding": {
+    "issue": "Two new _docs/index.md rows were separated from their tables by blank lines.",
+    "resolution": "Removed exactly those two blank lines; link targets and all wording unchanged."
+  },
+  "gate_provenance": "The completed archive executed d30e0df and passed. Qualification-d30e0df.json records that actual archive plus separate reviewed docs integration/input equivalence; no test execution is attributed to the later head.",
+  "current_release_evidence_review": {
+    "reviewer_session": "/root/pr167_merge/review_paseo",
+    "status": "approved_after_correction",
+    "reviewed_readme_blob": "5e228e49a8a3d0180e6044ac9052ee72cc048bb3",
+    "reviewed_index_blob": "810fb4ca0102db64725a38b9386537f9948d3793",
+    "root_docs_commit": "1f2974a2525e7bb462dc64048f0ae30782ecbc46",
+    "findings_and_disposition": "Made the old both-blocked revision 2 hold explicitly historical, updated the status paragraph to deployed 1b0b27e with diagnostic qualification still pending, and replaced future production comparison wording with the completed recorded fleet comparison.",
+    "actual_verdict_excerpt": "All three stale-state corrections are accurate; deployment, current admission state and pending diagnostic qualification are clearly distinguished. No remaining findings in this bounded evidence review. No tests run or Kontor gate authority claimed.",
+    "link_and_receipt_checks": "All 44 local README links resolve; cited production-deployment, Jira/ECP recovery and admission receipts byte-match the pinned root-docs commit."
+  },
+  "final_archive_evidence_review": {
+    "reviewer_session": "/root/pr167_merge/review_paseo",
+    "status": "approved",
+    "findings": [],
+    "actual_verdict_excerpt": "Independently parsed retained log: 139 Rust result blocks total 2,284 passed/0 failed/9 ignored; console 300; all 10 command lines exactly match receipt, final production audit completes, lock byte-compare identical. Source tree matches d30e0df; independently recomputed specified exclusion manifest at d30e0df, 8e24a93 and HEAD. All five diagnostic source/test blobs still exactly approved. README and receipt attribute executed tests to d30e0df and only input equivalence to 8e; deployment/gates remain open.",
+    "reviewed_blobs": {
+      "README.md": "da681886eb07bbd840ce219e09a310528f605fbd",
+      "qualification-d30e0df.json": "4ef5f7add67416a94ea1b8c6b21c9acb4f2c8d49",
+      "release-gates-d30e0df.log": "733f03506f8c27fa01fa3ce9de829c8ebbf64613"
+    },
+    "log_sha256": "438638817c3af3e82e4b7836b83f03ba89b1bf17fab9904f22c07548ff87a353",
+    "source_input_sha256": "326e4795b04845758a3f8777b858ea415aee9c4ca4c2848baf9714f64953ebfd",
+    "tests_or_native_operations_by_reviewer": false,
+    "kontor_gate_authority": false
+  }
+}

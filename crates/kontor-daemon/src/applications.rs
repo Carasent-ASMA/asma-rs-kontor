@@ -2279,6 +2279,11 @@ impl Services {
     fn refuse_jira(&self, error: &JiraError) -> ApiError {
         tracing::warn!(detail = %error, "the configured Jira connector refused reconciliation");
         match error {
+            JiraError::MaterializationConflict { kind } => self
+                .deny(ApiErrorCode::RevisionConflict, jira_materialization_conflict_rule(*kind))
+                .advising(
+                    "compare the exact Jira key, project, type, parent and pending creation metadata; repair the mismatch, then retry the same materialization key",
+                ),
             JiraError::Conflict { kind, .. } => {
                 self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind))
             }
@@ -13603,6 +13608,34 @@ impl Services {
                 );
                 false
             }
+        }
+    }
+}
+
+/// Materialization reports the failed identity/content proof, never a workflow status.
+const fn jira_materialization_conflict_rule(
+    kind: kontor_jira::MaterializationConflict,
+) -> &'static str {
+    use kontor_jira::MaterializationConflict;
+    match kind {
+        MaterializationConflict::AmbiguousMarker => {
+            "several Jira issues carry the pending creation marker"
+        }
+        MaterializationConflict::ProjectMismatch => "the Jira issue belongs to another project",
+        MaterializationConflict::ParentMismatch => {
+            "the Jira issue parent differs from the confirmed epic binding"
+        }
+        MaterializationConflict::SummaryMismatch => {
+            "the Jira issue summary differs from the pending creation intent"
+        }
+        MaterializationConflict::DescriptionMismatch => {
+            "the Jira issue description differs from the pending creation intent"
+        }
+        MaterializationConflict::IssueTypeMismatch => {
+            "the Jira issue type differs from the materialization hierarchy or creation intent"
+        }
+        MaterializationConflict::MissingMarker => {
+            "the Jira issue lacks the pending creation marker"
         }
     }
 }
