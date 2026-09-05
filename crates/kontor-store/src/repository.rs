@@ -11244,7 +11244,7 @@ fn append_gate_evaluation_in_transaction(
     transaction: &Transaction<'_>,
     request: &NewGateEvaluation,
 ) -> RepositoryResult<u32> {
-    let (workflow, _) = load_workflow(transaction, request.project_id, request.workflow_id)?;
+    let (workflow, revision) = load_workflow(transaction, request.project_id, request.workflow_id)?;
     let gate = workflow
         .snapshot
         .definition
@@ -11336,6 +11336,28 @@ fn append_gate_evaluation_in_transaction(
             ],
         )
         .map_err(backend)?;
+    if request.verdict == GateVerdict::Rejected {
+        let next = revision.next()?;
+        let changed = transaction
+            .execute(
+                "UPDATE task_workflows SET current_phase = ?1, revision = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5",
+                params![
+                    gate.rejection_target.as_str(),
+                    revision_column(next)?,
+                    request.project_id.to_string(),
+                    request.workflow_id.to_string(),
+                    revision_column(revision)?
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "task workflow",
+                "the workflow moved while recording its gate rejection",
+            ));
+        }
+    }
     u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
         detail: "gate evaluation sequence exceeded its range".to_owned(),
     })

@@ -9629,6 +9629,12 @@ async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
     assert_eq!(later.status, 200, "{}", later.body);
     assert_eq!(later.json()["verdict"], "rejected");
     assert_eq!(later.json()["sequence"], 2);
+    let workflow_rejected = active_workflow(&world, &seed);
+    assert_eq!(
+        workflow_rejected.current_phase, gate_spec.rejection_target,
+        "a rejected gate routes the workflow to its pinned ancestor"
+    );
+    assert!(workflow_rejected.revision.get() > workflow_after.revision.get());
     let replay = Call::post(&uri, &request)
         .signed_as(&world, "operator")
         .with_key("gate-advance-replay-once")
@@ -9688,8 +9694,8 @@ async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
         .expect("workflow reads")
         .expect("same workflow exists");
     assert_eq!(preserved.id, workflow_before.id);
-    assert_eq!(preserved.revision, workflow_after.revision);
-    assert_eq!(preserved.current_phase, workflow_after.current_phase);
+    assert_eq!(preserved.revision, workflow_rejected.revision);
+    assert_eq!(preserved.current_phase, workflow_rejected.current_phase);
     restarted.state().signals().stop();
 }
 
