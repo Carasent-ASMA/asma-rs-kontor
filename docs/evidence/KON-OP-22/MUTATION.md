@@ -60,6 +60,26 @@ test passes and proves no `agent update` command was emitted. Whole-epic naming
 therefore retains the logical seat as `rename_pending` without rewriting
 archived native history.
 
+### Killed migration mutation: legacy ESW root absence treated as drift
+
+The live apply exposed an older native-root binding whose persisted
+`canonical_cwd` is absent even though the exact runtime identity reads its
+canonical root back. The regression reproduces that legacy `NULL` after
+materialization. With the old apply comparison restored,
+`a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_item_codes`
+fails with the same `stale_binding` returned by the live migration. The
+corrected planner retains the fresh runtime root only for a native project
+container whose persisted root is absent; a stored root still has to match
+exactly, and the complete preview hash still freezes the runtime readback.
+
+After restoring the correction, the focused regression passes. The full
+daemon contract run passed 266 tests before seven Jira mock-server cases were
+refused only because the sandbox prohibited loopback port binding; all seven
+passed when rerun with loopback permission (nine Jira-filtered passes plus the
+one separately filtered resident-controller case, with one superseded test
+ignored). Formatting and daemon all-target Clippy with warnings denied also
+pass. No mutation remains in the tree.
+
 ## 2026-09-05 — initial-hold admission mutation
 
 The new `ensure_initial_hold` path was temporarily changed to return the live
