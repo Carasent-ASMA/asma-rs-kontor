@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 87;
+pub const SCHEMA_VERSION: i64 = 88;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -336,6 +336,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v87. Deferred attempts refresh their exact authority and placement
     // in one due-time CAS without changing attempt or idempotency identity.
     include_str!("../migrations/0087_deferred_succession_refresh.sql"),
+    // Schema v88. New bounded role-turn receipts carry the exact current
+    // message, terminal timeline position and fresh runtime observation.
+    include_str!("../migrations/0088_role_turn_runtime_proof.sql"),
 ];
 
 const _: () = assert!(

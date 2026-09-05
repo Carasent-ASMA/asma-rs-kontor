@@ -83,8 +83,8 @@ pub use request::{
 };
 pub use scope::{EpicScope, ExecutionScope, TaskScope};
 pub use timeline::{
-    HistoryCursor, HistoryPage, HistoryReader, LiveSubscription, SessionEvent, SessionEventKind,
-    TimelineBreak, TimelinePosition,
+    EventSubject, HistoryCursor, HistoryPage, HistoryReader, LiveSubscription, SessionEvent,
+    SessionEventKind, TimelineBreak, TimelinePosition,
 };
 pub use workspace::{
     WorkspaceBinding, WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspaceClaim,

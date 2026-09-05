@@ -5194,12 +5194,11 @@ pub struct ProfileValidationDto {
 
 /// What `turns:settle` is asked for.
 ///
-/// It settles **Kontor's** bounded turn in a persistent seat. There is no field
-/// here for a runtime verdict, a terminal state or a native observation, and
-/// that is the point: a seat is expected to still be sitting there when this
-/// returns, ready for its next turn. Whether the *session* ever ended is a
-/// separate question only the runtime can answer, and `runtime:settle` is where
-/// it is asked.
+/// It settles **Kontor's** bounded turn in a persistent seat. The caller must
+/// identify the current message and its terminal canonical timeline position;
+/// Kontor re-reads both from the exact bound runtime session before recording
+/// the turn. A delayed notification from an older turn therefore cannot settle
+/// newer work after a resume or daemon restart.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct SettleTurnRequest {
     // There is deliberately **no** actor field. A caller-supplied account id
@@ -5212,9 +5211,37 @@ pub struct SettleTurnRequest {
     /// The task revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_task_revision: AggregateRevision,
+    /// Exact current runtime message and terminal response positions.
+    ///
+    /// Optional in the wire shape only so older callers receive one typed
+    /// conflict rather than a deserialization error. Absence never authorizes
+    /// settlement.
+    #[serde(default)]
+    pub runtime_proof: Option<TurnRuntimeProofRequest>,
     /// The artifacts the turn produced.
     #[serde(default)]
     pub artifacts: Vec<String>,
+}
+
+/// One canonical position in the exact bound runtime session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct TurnTimelinePositionDto {
+    /// Native timeline epoch.
+    pub epoch: u64,
+    /// One-based sequence inside that epoch.
+    pub sequence: u64,
+}
+
+/// Runtime-owned proof that the currently dispatched turn, not an older
+/// notification, completed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct TurnRuntimeProofRequest {
+    /// Kontor message identity echoed by the runtime on the current user turn.
+    pub message_id: String,
+    /// Canonical position of that exact user message.
+    pub message_position: TurnTimelinePositionDto,
+    /// Canonical position of the provider's terminal response.
+    pub response_position: TurnTimelinePositionDto,
 }
 
 /// What the Admin-only late-handoff reconciliation is asked for.

@@ -535,6 +535,10 @@ struct FakeState {
     /// Container retitles whose native effect succeeds but acknowledgement is
     /// deliberately dropped once, modelling a transport loss after commit.
     lose_retitle_ack_once: BTreeSet<TopologyNodeId>,
+    /// Whether the next send should commit and lose its acknowledgement.
+    /// Separate from the strict script queue so read-only proof calls may
+    /// legitimately precede that send.
+    lose_next_send_ack: bool,
     /// Container retitles a runtime silently ignores once, so callers must
     /// reject the unchanged native readback instead of recording success.
     ignore_retitle_once: BTreeSet<TopologyNodeId>,
@@ -1008,6 +1012,7 @@ impl ScriptedFakeRuntime {
                 seat_titles: BTreeMap::new(),
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
+                lose_next_send_ack: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
@@ -1110,6 +1115,46 @@ impl ScriptedFakeRuntime {
         session.state = ObservedRunState::Blocked;
         session.refusal = Some(refusal);
         Ok(())
+    }
+
+    /// Record one exact completed message/response pair on an issued binding.
+    ///
+    /// This test boundary models the facts a native runtime exposes after a
+    /// turn finishes: the caller's stable message identity, its canonical
+    /// timeline position, a later provider response, and a session waiting for
+    /// more input. It deliberately goes through the runtime-owned session and
+    /// rejects a snapshot the fake did not issue.
+    pub fn observe_turn_completion(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        message_id: MessageId,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<(TimelinePosition, TimelinePosition)> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the completed turn",
+            })?;
+        let session = state.session(&issued)?;
+        let message_position = session.append(
+            SessionEventKind::Message,
+            EventSubject::Message(message_id),
+            "current turn request",
+            observed_at,
+        )?;
+        let response_position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            "current turn response",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok((message_position, response_position))
     }
 
     /// Refuse recovery-successor validation for one exact provider spelling.
@@ -1531,6 +1576,12 @@ impl ScriptedFakeRuntime {
     /// Take the recorded calls and start a fresh log.
     pub fn take_calls(&self) -> Vec<AdapterCall> {
         std::mem::take(&mut self.lock().calls)
+    }
+
+    /// Commit the next sent message, then report that its acknowledgement was
+    /// lost. Read-only calls before that send do not consume this hook.
+    pub fn lose_next_send_ack(&self) {
+        self.lock().lose_next_send_ack = true;
     }
 
     /// Every recorded event of the session behind `binding`.
@@ -2791,7 +2842,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         session
             .messages
             .record(request.message_id, body_hash, acknowledgement.clone());
-        if matches!(step, Some(ScriptStep::LoseSendAck)) {
+        let lose_ack = matches!(step, Some(ScriptStep::LoseSendAck))
+            || std::mem::take(&mut state.lose_next_send_ack);
+        if lose_ack {
             return Err(RuntimeError::Transport {
                 rule: "acknowledgement was lost after the message was committed",
             });
