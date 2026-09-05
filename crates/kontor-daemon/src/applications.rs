@@ -30350,6 +30350,21 @@ impl Services {
                                 )
                             }
                         };
+                        let canonical_cwd = if matches!(
+                            kind,
+                            MigrationObjectKind::ProjectContainer
+                        ) && host.canonical_cwd.is_none()
+                        {
+                            // Legacy native-root bindings predate canonical-root
+                            // persistence. The complete preview immediately above
+                            // read this root from the exact runtime identity and
+                            // the preview hash freezes it for apply, so retaining
+                            // that fresh proof is safer than comparing it with a
+                            // historical absence that can never become equal.
+                            target.canonical_cwd.clone()
+                        } else {
+                            host.canonical_cwd.clone()
+                        };
                         (
                             TeamDefinitionMigrationSubject::Container {
                                 topology_node_id: node.id,
@@ -30357,7 +30372,7 @@ impl Services {
                             host.identity.clone(),
                             kind,
                             parent_native_id,
-                            host.canonical_cwd.clone(),
+                            canonical_cwd,
                         )
                     }
                     NativeNameSubjectKindDto::Seat => {

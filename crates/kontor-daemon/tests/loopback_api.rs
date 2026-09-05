@@ -27388,6 +27388,32 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
                 .map(str::to_owned)
         })
         .collect();
+    // Imported ESW bindings can predate canonical-root persistence. The runtime
+    // still reads the exact root back during preview, so migration must retain
+    // that fresh proof instead of comparing it with the legacy NULL forever.
+    let esw_node = topology_json["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .find(|node| node["kind_key"] == "ESW")
+        .expect("the ESW node");
+    let esw_node_id = TopologyNodeId::parse(
+        esw_node["topology_node_id"]
+            .as_str()
+            .expect("the ESW node id"),
+    )
+    .expect("a topology node id");
+    let database = world.directory.path().join("kontor.db");
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE topology_node_containers SET canonical_cwd = NULL WHERE topology_node_id = ?1",
+                rusqlite::params![esw_node_id.to_string()],
+            )
+            .expect("the legacy ESW binding is reproduced"),
+        1
+    );
     let definition = kontor_profiles::bundled_operational_domain()
         .expect("the bundled domain validates")
         .team_definitions
