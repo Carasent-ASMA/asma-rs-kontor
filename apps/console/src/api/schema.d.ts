@@ -2208,6 +2208,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Route one already-recorded rejected gate verdict that was never routed.
+         * @description The rejection is the addressed resource and `recover` is the action, so it is
+         *     spelled as an action on the gate's rejection collection. It is admin-only and
+         *     deliberately narrow: it repairs workflows rejected before the routing fix
+         *     existed, and it can do nothing to a rejection that was already routed.
+         *
+         *     It is not a second way to record a gate. No verdict is written, no evaluation
+         *     is appended, and the phase it routes to is the pinned target from the frozen
+         *     profile — never a phase the caller chose.
+         */
+        post: operations["recover_gate_rejection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}/profile-selection": {
         parameters: {
             query?: never;
@@ -5482,6 +5509,42 @@ export interface components {
             /** @description The roles the profile authorizes to waive it. */
             waiver_roles: string[];
         };
+        /** @description One recovered gate rejection route. */
+        GateRejectionRecoveryDto: {
+            /** @description Whether this call wrote the route or replayed an earlier one. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The pinned target it now sits at. */
+            current_phase: string;
+            /**
+             * Format: int64
+             * @description The workflow revision after it.
+             */
+            current_revision: number;
+            /** @description The gate whose rejection was consumed. */
+            gate: string;
+            /** @description The phase the workflow was in before the route. */
+            prior_phase: string;
+            /**
+             * Format: int64
+             * @description The workflow revision before the route.
+             */
+            prior_revision: number;
+            /** @description The Realm it was recorded in. */
+            realm_id: string;
+            /** @description The command receipt that authorizes it. */
+            receipt_id: string;
+            /** @description The verdict receipt this route consumed. */
+            rejection_receipt_id: string;
+            /**
+             * Format: int32
+             * @description Which evaluation of that gate it was.
+             */
+            sequence: number;
+            /** @description The task. */
+            task_id: string;
+            /** @description The active workflow that was routed. */
+            workflow_id: string;
+        };
         /** @description One recorded gate verdict. */
         GateVerdictDto: {
             /** @description The gate. */
@@ -7169,6 +7232,42 @@ export interface components {
              *     and selects the first currently admissible route.
              */
             recovery_profile?: components["schemas"]["RuntimeModelRouteRequest"][];
+        };
+        /**
+         * @description What `gates/{gate_id}/rejections:recover` is asked for.
+         *
+         *     Every field is an expectation, not an instruction. There is deliberately no
+         *     phase to route to and no verdict to record: the target comes from the frozen
+         *     profile and the verdict is already durable. What the caller may say is which
+         *     exact facts it read, and the command refuses unless all of them still hold.
+         */
+        RecoverGateRejectionRequest: {
+            /** @description The phase the caller read the workflow at. */
+            expected_current_phase: string;
+            /**
+             * @description The pinned rejection target the caller read from the frozen profile.
+             *
+             *     Compared, never applied: naming a different phase is refused rather than
+             *     obeyed, so this cannot become a way to choose where rejected work lands.
+             */
+            expected_rejection_target: string;
+            /**
+             * Format: int64
+             * @description The task revision the caller read.
+             */
+            expected_task_revision: number;
+            /**
+             * Format: int64
+             * @description The workflow revision the caller read.
+             */
+            expected_workflow_revision: number;
+            /** @description The receipt of the `record_gate_verdict` command being consumed. */
+            rejection_receipt_id: string;
+            /**
+             * Format: int32
+             * @description Which append-only evaluation of the gate that receipt recorded.
+             */
+            sequence: number;
         };
         /**
          * @description One member the resolver removed, and why.
@@ -15375,6 +15474,64 @@ export interface operations {
                 content?: never;
             };
             /** @description A stale revision or a reused key */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_gate_rejection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task */
+                task_id: string;
+                /** @description The gate the pinned profile declares */
+                gate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverGateRejectionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GateRejectionRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A stale revision, a reused key, or an already-routed rejection */
             409: {
                 headers: {
                     [name: string]: unknown;
