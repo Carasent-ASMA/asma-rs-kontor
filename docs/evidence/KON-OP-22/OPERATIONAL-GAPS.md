@@ -417,3 +417,33 @@ authority.
   newest-master deployment by the designated runtime owner remains pending.
   Live apply remains paused until that owner returns the exact deployed commit
   and safe-resume health receipt.
+
+## 2026-09-06 — archived Advisor retained its historical predecessor parent
+
+- Intended Kontor operation: after deployed master
+  `c4b92f434f56eb511bb40c607525f6d302cfb048` passed health/readback, retire
+  exact migration target SeatBinding
+  `01a02d6e-4dba-7ab2-9534-cc1b20df6917` through
+  `kontor_seat_retire` with expected revision 2 and stable key
+  `asma-8090-retire-archived-advisor-after-c4b92f4`.
+- Failure class: `stale_binding`, before any lifecycle or migration write. The
+  exact archived native `64233745-6091-4b8d-a184-407c785dac0e` still records
+  historical predecessor workspace `wks_124e30e7ebcff8f1`, while its active
+  recovered ASW and migration target correctly name successor workspace
+  `wks_6b2fdfdfff62cd89`. Persistent-seat lifecycle inspection correlated the
+  desired live parent before returning the already-proven archived state, so
+  the safe retirement path remained unreachable.
+- Containment: the 409 response was accepted. No direct Paseo, SQLite, Jira,
+  seat, migration, binary or daemon mutation followed. The SeatBinding remains
+  active at revision 2 and the original migration remains `applying` with the
+  same single `rename_pending` target.
+- Correction: exact native id, runtime host/generation and optional provider
+  session must still correlate for every inspection. Current-parent correlation
+  remains mandatory for a live seat. An exact archived seat may retain its
+  historical predecessor parent because it cannot be driven and its parent is
+  immutable runtime evidence. A public adapter regression reproduces the
+  recovered-parent mismatch; it failed before the correction and passes after.
+- Owner/status: source correction and killed mutation are complete. Merge and
+  one coherent newest-master deployment by the designated runtime owner remain
+  required before replaying the unchanged retirement key. Live migration stays
+  paused and fenced.

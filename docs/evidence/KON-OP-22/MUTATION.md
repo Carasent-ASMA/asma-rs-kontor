@@ -130,3 +130,18 @@ the original migration key advances the pin; and no retitle call targets the
 archived identity. The focused store test independently proves that generic
 release remains fenced and only the exact migration-authorized transaction can
 retire the target. No mutation remains in the tree.
+
+## 2026-09-06 — archived historical-parent mutation
+
+The deployed live retry exposed that lifecycle inspection still required an
+archived Advisor's historical workspace to equal the recovered ASW's desired
+workspace. The existing Paseo contract was strengthened so the archived fixture
+retains its predecessor workspace while the request names a distinct recovered
+workspace. It failed RED with `CorrelationFailed` before the correction.
+
+After making current-parent correlation conditional on the native still being
+live, the condition was inverted temporarily to reject archived parents again.
+The same regression failed at the lifecycle readback assertion. Restoring the
+live-only parent check made it pass. Exact native identity and provider-session
+checks remain unconditional, so this mutation does not weaken cross-seat
+correlation. No mutation remains in the tree.

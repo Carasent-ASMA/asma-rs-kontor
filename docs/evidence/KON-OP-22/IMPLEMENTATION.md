@@ -144,3 +144,14 @@ Source correction PR `#187` merged on current master as
 `b2b5cad6e920fca7e5282873faef45da61e7328c` as its first parent and verified
 feature head `b8a48382824cf6d05cc7664805a63f8867ce9c14` as its second parent.
 Deployment and live migration are deliberately not claimed by this receipt.
+
+Deployed master `c4b92f434f56eb511bb40c607525f6d302cfb048`
+subsequently proved one narrower compatibility gap without changing live state:
+the archived Advisor retained its predecessor workspace while the recovered
+ASW and desired migration target named its successor workspace. Exact lifecycle
+inspection now keeps native identity and provider-session correlation
+unconditional, requires the desired parent only while the native is live, and
+accepts the predecessor parent only as archived history. The strengthened
+Paseo boundary test failed before this correction, passes after it, and killed
+the inverted parent-state mutant. This follow-up is source-only until a later
+newest-master deployment receipt explicitly says otherwise.
