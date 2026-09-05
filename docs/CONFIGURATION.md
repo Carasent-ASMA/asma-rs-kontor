@@ -33,8 +33,8 @@ specification cannot change between the two.
 
 An epic apply accepts `epic_backlog_code`. Omit it to allocate from the epic
 title or set it explicitly when the business namespace differs from initials —
-for example `KOP` for “Kontor Operational MVP”. The value is immutable and
-case-insensitively unique within that Kontor project. Jira continues to own full
+for example `KOP` for “Kontor Operational MVP”. The original assignment is immutable and
+case-insensitively unique within that Kontor project. Eligible legacy-imported epics have the one-time effective-code correction described in [Native naming](NATIVE_NAMING.md#legacy-import-code-correction); original assignment evidence is preserved. Jira continues to own full
 issue keys such as `ASMA-8001`. Epics created before schema v72 remain readable
 without a code; reapply them through the preview/apply pair to assign one before
 selecting topology v4.
@@ -206,7 +206,7 @@ child work.
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)
 to `<state-root>/supervision.yml` only when this Realm should opt into the
-candidate resident succession engine. Enablement is deliberately explicit:
+resident succession engine. Enablement is deliberately explicit:
 
 - with no file, no supervisor starts;
 - schema v1 remains readable for legacy classification and starts no automatic
@@ -249,10 +249,9 @@ and exposes those references but does not reinterpret or execute them in the
 resident loop. They remain orchestration-surface metadata; the selected runtime
 adapter remains responsible for native inspection and placement.
 
-> **Release status:** these KON-OP-21 paths are implemented and covered by local
-> contract/regression tests in the current candidate tree. Merge, independent
-> audit and live-runtime verification are still pending; a local green test is
-> not a claim that an installed Realm is already running them.
+> **Release status — 2026-09-05:** KON-OP-21 is implemented and merged through PR #170 (`080e2db3`, 2026-09-05), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh.
+
+See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) for source and deployment distinctions.
 
 ## Seat permission posture
 
