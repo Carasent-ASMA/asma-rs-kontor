@@ -144,3 +144,36 @@ Kontor markers, and status `In Development`. The original receipt
 effect. Every one of the epic's 21 task reconciliation plans now returns
 `converged: true` and an empty diff. Jira Epic `ASMA-7869` is `In Development`
 with no unresolved Kontor epic conflict.
+
+## 2026-09-06 final naming-migration promotion and closeout
+
+PR #190 merged the archived historical-parent compatibility correction as
+`98940604d9a554aa24e0d87474bf0807232499e5`. The designated runtime owner
+deployed that exact master with daemon SHA-256
+`fbecb4715218169ce1377ecfb5a9cc72fd9453552d1dc3b2072c8af872bb90d9` and
+returned a healthy PID `5040`, schema v88, clean integrity and foreign-key
+readback, preserved realm/project identity and project revision 6. The coherent
+deployment receipt is
+`/Users/igor/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
+
+The ASMA-8090 owner then resumed through Kontor only:
+
+1. Same-key retirement of the exact archived Advisor preserved SeatBinding
+   `01a02d6e-4dba-7ab2-9534-cc1b20df6917` and ASW workspace
+   `wks_6b2fdfdfff62cd89`; receipt
+   `01a073a6-b2ce-7eb1-b145-4e4cbb158622` records seat revision 3.
+2. Original migration key `01a07350-8090-7a11-8b22-123456789abc` replayed its
+   original preview and confirmed Team Definition
+   `01936f5a-2000-7000-8000-000000000001` v2, hash
+   `31cdff80e27cbe1e4043e150d2cdbc43ff79a8fa7fd8d892d2b5049a600f2e13`,
+   under receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc`. Every remaining live
+   target was unchanged; archived `rename_pending` history was not falsified.
+3. The original OP-22 TeamRun read back `succeeded`; lifecycle receipt
+   `01a073bb-c50d-7263-8350-b9ed463787c7` completed ASMA-8090 at revision 3.
+4. Resident Jira convergence required no manual apply. Final projection
+   `8eae69b52d3aa2fac5fa2770617ee551f0b6e624522b8e195ed68a262fe91525`
+   is converged with an empty diff for confirmed key `ASMA-8090`; task and epic
+   conflict ledgers are empty.
+
+The resume session did not build, deploy, restart or replace Kontor and made no
+direct Jira, Paseo or database mutation.

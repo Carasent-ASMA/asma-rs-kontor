@@ -70,7 +70,7 @@ for it. That gap is OQ-4 and remains open.
   ASW `01a02d6e…` = "Codex home provenance". The preview then cleared this
   validation and failed further in, at OQ-11 below.
 
-## OQ-10 — This seat's role for the 2026-09-05 turn was never stated · OPEN
+## OQ-10 — This seat's role for the 2026-09-05 turn was never stated · RESOLVED 2026-09-06
 
 - **Attaches to:** this document.
 - **Ambiguity:** the handoff said only that the builder finished and its
@@ -84,8 +84,11 @@ for it. That gap is OQ-4 and remains open.
 - **Options seen:** (a) operator names the role and, if it is delivery owner,
   authorises the migration window; (b) treat the turn as verification only and
   report; (c) assume delivery authority and execute.
-- **Disposition:** proceeding under (b). (c) was not taken: the operation is
-  outward-facing, hard to reverse, and blocked on OQ-9 regardless.
+- **Disposition:** resolved by later explicit operator authorization. The
+  migration-resume session was authorized to own ASMA-8090 live recovery and
+  closeout from the designated deployment checkpoint while the separate
+  runtime owner retained exclusive build/deploy/restart authority. That exact
+  split was followed; no authority was inferred.
 
 ## OQ-11 — The migration census refuses on a stale native binding · RESOLVED 2026-09-06
 
@@ -120,10 +123,11 @@ for it. That gap is OQ-4 and remains open.
   supported Kontor operations without replacing their logical identities. The
   Advisor native was then proven archived rather than absent ambiguity. The
   remaining lifecycle deadlock is specified and corrected in
-  `OPERATIONAL-GAPS.md`; its source fix merged through PR `#187` as
-  `4127257d2b44a59032458acb981774bfcdc9ef78` and is pending deployment, not an
-  open naming decision. Live migration remains paused until the designated
-  runtime owner returns the deployed-commit health checkpoint.
+  `OPERATIONAL-GAPS.md`. PRs #187 and #190 are present in deployed master
+  `98940604d9a554aa24e0d87474bf0807232499e5`; the exact archived Advisor
+  retired under receipt `01a073a6-b2ce-7eb1-b145-4e4cbb158622`, and same-key
+  migration receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc` confirmed Team
+  Definition v2. This is no longer an open naming or deployment decision.
 
 ## OQ-12 — Migrating to v2 renames consultation seats, not just containers · RESOLVED 2026-09-06
 
@@ -139,5 +143,6 @@ for it. That gap is OQ-4 and remains open.
   `JUDGE`) and Advisor seats from their exact configured registered role code.
   Scope item code and topic belong to the CSW/ASW container name and are not
   repeated in seat titles. The successful partial apply rendered the available
-  targets from v2; it did not authorize rewriting the archived Advisor's
-  historical native title.
+  targets from v2; final receipt `01a073a8-5d2e-7c53-81c1-a8d352d067bc`
+  confirmed that pin and preserved the archived Advisor's historical native
+  title rather than rewriting it.
