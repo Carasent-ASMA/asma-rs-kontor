@@ -1258,6 +1258,46 @@ impl TeamRunSlots {
         })
     }
 
+    /// Reserve a replacement for an operator-abandoned attempt that never held
+    /// a native binding.
+    ///
+    /// Hydration deliberately omits those rows from the slot lineage: no native
+    /// attempt ran, so they spend neither a seat nor successor depth. Recovery
+    /// still links the new run to the abandoned logical attempt so its identity
+    /// and the reason for rerouting remain auditable. The slot must otherwise be
+    /// vacant, which prevents this path from replacing or branching a real
+    /// native lineage.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the slot is undeclared or is occupied by a
+    /// live or previously bound attempt.
+    pub fn reserve_after_unbound_abandonment(
+        &mut self,
+        slot: &RoleSlotId,
+        abandoned_agent_run_id: AgentRunId,
+        successor_agent_run_id: AgentRunId,
+    ) -> DomainResult<LaunchPermit> {
+        let team_run_id = self.team_run_id();
+        let state = self.state_mut(slot)?;
+        if state.head.live_run().is_some() || !state.lineage.is_empty() {
+            return Err(DomainError::invalid(
+                "TeamRunSlots",
+                "an unbound retry requires a vacant role slot",
+            ));
+        }
+        state.head = SlotHead::Reserved {
+            agent_run_id: successor_agent_run_id,
+            parent: Some(abandoned_agent_run_id),
+        };
+        Ok(LaunchPermit {
+            team_run_id,
+            slot: slot.clone(),
+            agent_run_id: successor_agent_run_id,
+            parent: Some(abandoned_agent_run_id),
+            replaces: None,
+        })
+    }
+
     /// Reserve the next attempt at a slot whose previous attempt closed.
     ///
     /// # Errors

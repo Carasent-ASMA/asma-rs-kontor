@@ -5317,7 +5317,7 @@ pub struct AttestLateHandoffRequest {
     pub artifacts: Vec<String>,
 }
 
-/// What the Admin-only unusable-seat replacement is asked for.
+/// What the Admin-only unusable-seat replacement or never-bound reroute is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct ReplaceSeatRequest {
     /// The role slot whose terminal attempt is being replaced.
@@ -5333,9 +5333,14 @@ pub struct ReplaceSeatRequest {
     #[schema(value_type = u64)]
     pub expected_task_revision: AggregateRevision,
     /// The immutable binding generation of the terminal predecessor.
+    ///
+    /// Use zero only for an operator-abandoned attempt that never acquired a
+    /// native binding. That recovery also requires an exact pending handoff and
+    /// an explicit `model_route`.
     pub binding_generation: u64,
     /// Admin-authorized temporary provider/model route for this successor.
-    /// Absent means the first currently eligible rung in the frozen chain.
+    /// Absent means the first currently eligible rung in the frozen chain for
+    /// a bound predecessor. A never-bound reroute requires this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_route: Option<RuntimeModelRouteRequest>,
     /// Exact evidence authorizing retirement of a never-dispatched seat whose
@@ -6951,7 +6956,8 @@ pub trait ApplicationOperations: Send + Sync {
         request: &AttestLateHandoffRequest,
     ) -> Result<LateHandoffAttestationDto, ApiError>;
 
-    /// Replace one runtime-terminal unusable seat with a linked successor.
+    /// Replace one runtime-terminal unusable seat or reroute one certified
+    /// never-bound attempt with a linked successor.
     async fn replace_seat(
         &self,
         key: &IdempotencyKey,
@@ -10683,14 +10689,15 @@ pub async fn attest_late_handoff(
     ))
 }
 
-/// Replace one runtime-terminal unusable seat with a linked successor.
+/// Replace one runtime-terminal unusable seat or reroute one certified
+/// never-bound attempt with a linked successor.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
     tag = "applications",
     params(
         ("project_id" = String, Path, description = "The owning project"),
-        ("agent_run_id" = String, Path, description = "The terminal predecessor run"),
+        ("agent_run_id" = String, Path, description = "The terminal predecessor run or certified never-bound attempt"),
         ("Idempotency-Key" = String, Header, description = "The caller's stable key")
     ),
     request_body = ReplaceSeatRequest,
@@ -10699,7 +10706,7 @@ pub async fn attest_late_handoff(
         (status = 400, description = "Invalid role slot"),
         (status = 401), (status = 403), (status = 404),
         (status = 409, description = "The task, binding, run, team, or successor lineage moved"),
-        (status = 422, description = "The predecessor is not runtime-terminal and unusable")
+        (status = 422, description = "The predecessor lacks the required terminal evidence")
     )
 )]
 pub async fn replace_seat(
