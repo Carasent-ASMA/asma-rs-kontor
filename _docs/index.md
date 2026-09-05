@@ -21,7 +21,6 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | Document | Summary | Status | When to Load |
 |----------|---------|--------|-------------|
 | [`2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md`](plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md) | Implements ASMA-8062: immutable pinned Team Definition naming/hierarchy, deterministic ASW/CSW topics and seats, identity-preserving migration, exact-master deployment and live readback. | 📚 KBI migration verified 2026-09-02; historical execution plan | Auditing the migration receipt or planning a separate epic upgrade |
-
 | [`2026-09-01-21-45-open-questions-configuration-driven-native-naming.md`](plans/2026-09-01-21-45-open-questions-configuration-driven-native-naming.md) | Four original naming questions and their dispositions. | 📚 Historical — closed | Tracing the approved aggregate boundary and naming agreement |
 
 ### Architecture (`architecture/`)
@@ -35,7 +34,6 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | Document | Summary | Status | When to Load |
 |----------|---------|--------|-------------|
 | `2026-08-20-18-53-audit-kontor-rust-workspace-code-quality.md` | In-depth snapshot audit of the 240k-line Kontor Rust workspace: source/test composition, file and function size, DRY/YAGNI/SOLID, MCP-tool legitimacy, safety, dependencies, CI gaps, and prioritized remediation. Its 127-tool / 16-worker counts are explicitly historical; current inventory is routed to the repository contract. | 🟤 Point-in-time snapshot | Assessing the audited commit's maintainability or its original findings; use current source for today's counts |
-
 | [`2026-09-01-22-19-audit-asma-8062-team-definition-v77.md`](audits/2026-09-01-22-19-audit-asma-8062-team-definition-v77.md) | Point-in-time v77 independent audit; later KBI migration resolution is in the governing receipt. | 📚 Historical audit | Reviewing that candidate and its follow-up evidence |
 
 ### Contracts (root)
