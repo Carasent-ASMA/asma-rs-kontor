@@ -6926,7 +6926,17 @@ impl RuntimeAdapter for PaseoAdapter {
                 .provider_session_id
                 .as_ref()
                 .is_some_and(|expected| provider_session_id.as_ref() != Some(expected))
-            || agent.workspace_id.as_deref() != Some(request.container_native_id.as_str())
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        // A recovered ASW may have a new active workspace while the exact
+        // archived Advisor correctly retains its predecessor parent as native
+        // history. Identity and provider-session correlation are still exact;
+        // the live-parent constraint applies only to a seat this runtime could
+        // continue driving. This must remain after the identity checks so an
+        // archived record can never stand in for a different logical seat.
+        if !agent.is_archived()
+            && agent.workspace_id.as_deref() != Some(request.container_native_id.as_str())
         {
             return Err(RuntimeError::CorrelationFailed);
         }

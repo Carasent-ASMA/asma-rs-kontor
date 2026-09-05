@@ -6687,7 +6687,12 @@ async fn seat_retitle_classifies_an_exact_archived_native_agent_as_stale() {
             native_id: external(AGENT_ID),
         },
         provider_session_id: None,
-        container_native_id: external(WORKSPACE_ID),
+        // The active ASW was recovered after this exact Advisor archived, so
+        // its migration target names the successor workspace while the native
+        // history still names the predecessor. Lifecycle inspection must not
+        // misclassify that expected historical parent difference as a live
+        // correlation failure.
+        container_native_id: external("wks_recovered_asw"),
         desired_title: name("SA"),
         requested_at: at("2026-08-20T05:04:00Z"),
     };
