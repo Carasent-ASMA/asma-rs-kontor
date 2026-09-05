@@ -47,3 +47,15 @@ and the test passed.
 
 Both restored regressions pass together. `cargo fmt --all -- --check` and
 `git diff --check` also pass. No mutation remains in the tree.
+
+### Killed compatibility mutation: archived exact fetch treated as live
+
+The live naming census exposed a Paseo compatibility change: exact agent fetch
+can return an archived agent, including its historical workspace. The original
+adapter treated that result as a live rename target. Before the correction,
+`seat_retitle_classifies_an_exact_archived_native_agent_as_stale` failed because
+preview returned success instead of `StaleBinding`. The adapter now rejects the
+archived snapshot before provider-session or workspace correlation; the same
+test passes and proves no `agent update` command was emitted. Whole-epic naming
+therefore retains the logical seat as `rename_pending` without rewriting
+archived native history.

@@ -290,3 +290,48 @@ authority.
   close the evidence gaps identified by the inspectors, and continue the
   configuration-driven migration. Owner/status: open until those original
   Kontor operations complete.
+
+## 2026-09-05 — legacy Committee seats referenced an absent predecessor workspace
+
+- Intended Kontor operation: resume the whole-epic Team Definition migration
+  after every active container passed individual readback.
+- Failure class: `stale_binding` / seat-container correlation drift. CSW node
+  `01a02bb5-fcf6-7ea0-9849-168a6975c671` correctly bound active workspace
+  `wks_88b7239acec72548`, while reviewer natives
+  `d1ad7093-0786-4a56-9b9c-fdb2b4eefb61` and
+  `55444de6-e5f1-42b4-8a81-373e88b1a2ee` still reported absent predecessor
+  workspace `wks_6ebdd414d51c49e8`.
+- Supported recovery: Kontor resumed an already-prepared, empty-profile
+  provider recovery for reviewer A and selected governed alias `claude-work`;
+  receipt `01a070b0-c897-7ad3-b8c9-6ec73d65cbf6` preserved SeatBinding
+  `01a02bb5-fcf6-7ea0-9849-1697ca5918e6` and installed native
+  `e83106cf-14e4-4a2d-81d3-a2d5cd605c48`. It then recovered reviewer B to
+  governed alias `codex-work`; receipt
+  `01a070b1-2c0d-7310-8640-f0a7c55ff91a` preserved SeatBinding
+  `01a02bb5-fcf6-7ea0-9849-16add5e1076a` and installed native
+  `497ce202-d2c1-4cef-b807-7fe7a318a837`. Both successors read back in the
+  existing `wks_88b…` CSW and the old native fillers were archived by the
+  supported recovery transaction.
+- Effects: no logical seat, Committee, workspace, project, worktree, branch,
+  finding or evidence identity was replaced. The Committee's provider-family
+  diversity remains Claude plus Codex.
+- Owner/status: closed. The resumed migration then exposed a separate archived
+  Advisor compatibility condition addressed by the regression below.
+
+## 2026-09-05 — archived Advisor exact fetch was misclassified as live drift
+
+- Intended Kontor operation: preflight the remaining ASW seat while preserving
+  archived consultation history.
+- Failure class: runtime compatibility. Paseo exact fetch returned archived
+  advisor `64233745-6091-4b8d-a184-407c785dac0e` with its historical workspace
+  `wks_124e30e7ebcff8f1`; Kontor assumed archived agents would be absent and
+  therefore compared that historical workspace with the recovered active ASW
+  container `wks_6b2fdfdfff62cd89` as though it were a live seat.
+- Correction: `preview_retitle_seat` now classifies an exact archived agent as
+  `StaleBinding` before live provider-session/workspace correlation. The
+  whole-epic naming planner already converts that supported class to
+  `rename_pending`, so it preserves the logical SeatBinding and archived native
+  evidence while applying no seat rename. A captured archived-agent contract
+  fixture proves the behavior and no native update.
+- Owner/status: implementation and focused regression are complete; deployment
+  and the resumed live migration remain the closeout checkpoint.
