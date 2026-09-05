@@ -80,6 +80,13 @@ The implementation now resolves the audited baseline gap:
   enumerated subject or identity is accepted.
 - every partial migration replay freshly re-proves every target; an externally
   drifted prior success is repaired again or remains pending.
+- a frozen `rename_pending` persistent-seat target may leave the live census
+  only through the exact migration-authorized retirement transaction, after a
+  fresh runtime inspection proves its frozen native identity is archived or
+  missing. The immutable target remains historical `rename_pending` evidence;
+  confirmation still requires exact bidirectional parity for every still-live
+  native, and same-key replay reuses the original migration intent when the
+  fresh live census becomes smaller.
 - schema v80 backfills a v79 command intent only from its exact bound upgrade
   receipt and explicitly fences every unreceipted legacy migration as
   unrecoverable rather than guessing.
@@ -177,6 +184,7 @@ Historical definitions, topology name fields, receipts and literal readbacks rem
 | REQ-008 | API, MCP, OpenAPI, console and docs expose the same pin and desired/observed names. | Contract snapshot, parity and frontend tests. |
 | REQ-009 | Jira aliases canonicalize to `connector.jira` while old duplicate evidence remains readable and non-authoritative. | Store/application regression and migration test. |
 | REQ-010 | Exact merged artifacts migrate the live realm and render `ESW • KBI-8049`, `ECP • KBI-8049`, and `TSW • KBI-8062`. | Backup, schema, hash, runtime ID and native-title receipts. |
+| REQ-011 | An exact archived/missing `rename_pending` seat can retire without weakening the in-flight migration fence or rewriting historical target evidence. | Store atomic-fence test, exact Paseo lifecycle inspection and daemon same-key replay test. |
 
 ## 5. Plan graph
 
@@ -244,6 +252,7 @@ Wave 3 — release
 | Treat a nonterminal run whose exact seat is retired as a live seatless run. | Inactive delivery seat completes a migration while a genuinely seatless run still fails closed. | Killed |
 | Preflight an archived task node or resolve a parent by scanning every historical node of the same kind. | Archived open-run omitted-slot upgrade and archived same-kind predecessor upgrade tests. | Killed |
 | Let a seat release or node retirement commit after the migration census freezes. | Both serialized transaction orders plus public seat/node retirement zero-effect fence tests. | Killed |
+| Admit a live `rename_pending` seat to the migration-authorized retirement path, or refuse the archived exact seat. | Live control is refused; archived Advisor retires and same-key migration replay confirms without retitling it. | Killed |
 
 The already-shipped TSW bootstrap checkpoint also has a killed branch-attestation mutant and passed 154 Paseo runtime contracts plus the complete archive gate.
 

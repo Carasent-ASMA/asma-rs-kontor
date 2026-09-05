@@ -217,7 +217,8 @@ use kontor_runtime::adapter::{
     ConsultationRouteProvenance, ConsultationRouteSource, ConsultationSeatRetireRequest,
     HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
     HostedSeatInspectRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
-    HostedSeatRetireRequest, RetitleSeatRequest, RuntimeAdapter, RuntimeError,
+    HostedSeatRetireRequest, PersistentSeatNativeState, RetitleSeatRequest, RuntimeAdapter,
+    RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -8066,7 +8067,7 @@ impl Services {
                 .with_revision(Some(seat.revision)));
         }
 
-        if !replayed && act == SeatAct::Retire {
+        let retiring_epic_id = if !replayed && act == SeatAct::Retire {
             let node = state
                 .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
                 .map_err(|error| self.refuse(&error))?
@@ -8082,8 +8083,10 @@ impl Services {
                     "an unscoped seat has no epic whose migration can fence retirement",
                 )
             })?;
-            self.ensure_no_team_definition_migration(project_id, epic_id)?;
-        }
+            Some(epic_id)
+        } else {
+            None
+        };
 
         // A hosted Core Team seat has its own persisted native identity, distinct
         // from the control-plane container. Attention must inspect that exact
@@ -8098,6 +8101,14 @@ impl Services {
             state
                 .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
                 .map_err(|error| self.refuse(&error))?
+        } else {
+            None
+        };
+        let migration_retirement = if let Some(epic_id) = retiring_epic_id {
+            self.ensure_team_definition_migration_allows_exact_seat_retirement(
+                project_id, epic_id, &seat, now,
+            )
+            .await?
         } else {
             None
         };
@@ -8189,24 +8200,6 @@ impl Services {
                         "the seat changed during native retirement",
                     ));
                 }
-                let node = state
-                    .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
-                    .map_err(|error| self.refuse(&error))?
-                    .ok_or_else(|| {
-                        self.deny(
-                            ApiErrorCode::PlacementBlocked,
-                            "the retired seat has no topology node",
-                        )
-                    })?;
-                self.ensure_no_team_definition_migration(
-                    project_id,
-                    node.mini_project_id.ok_or_else(|| {
-                        self.deny(
-                            ApiErrorCode::PlacementBlocked,
-                            "the retired seat has no epic",
-                        )
-                    })?,
-                )?;
             }
             let live = inspection.state.is_live();
             let observed = live.then(|| ObservedBindingDto {
@@ -8236,8 +8229,33 @@ impl Services {
             (observed, container.is_some())
         };
 
+        if let Some(epic_id) = retiring_epic_id {
+            let confirmed_migration = self
+                .ensure_team_definition_migration_allows_exact_seat_retirement(
+                    project_id, epic_id, &seat, now,
+                )
+                .await?;
+            if confirmed_migration != migration_retirement {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the naming migration changed during exact seat retirement",
+                ));
+            }
+        }
+
         let seat = if replayed {
             seat
+        } else if let Some(migration_id) = migration_retirement {
+            state
+                .with_store(|store| {
+                    store.retire_rename_pending_seat_for_migration(
+                        project_id,
+                        seat_binding_id,
+                        migration_id,
+                        now,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
         } else {
             state
                 .with_store(|store| {
@@ -17781,21 +17799,27 @@ impl ApplicationOperations for Services {
             self.migration_targets(project_id, epic_id, &definition, &prepared.preview.targets)?;
         let now = kontor_api::now();
         let proposed_id = TeamDefinitionMigrationId::generate();
-        let migration = state
-            .with_store(|store| {
-                store.record_team_definition_migration(&NewTeamDefinitionMigration {
-                    id: proposed_id,
-                    project_id,
-                    mini_project_id: epic_id,
-                    idempotency_key: key.clone(),
-                    from: current.clone(),
-                    to: target.clone(),
-                    targets: targets.clone(),
-                    command_intent_hash: intent.hash().clone(),
-                    recorded_at: now,
+        let migration = if recovering {
+            in_flight
+                .clone()
+                .expect("recovering is true only for the in-flight migration")
+        } else {
+            state
+                .with_store(|store| {
+                    store.record_team_definition_migration(&NewTeamDefinitionMigration {
+                        id: proposed_id,
+                        project_id,
+                        mini_project_id: epic_id,
+                        idempotency_key: key.clone(),
+                        from: current.clone(),
+                        to: target.clone(),
+                        targets: targets.clone(),
+                        command_intent_hash: intent.hash().clone(),
+                        recorded_at: now,
+                    })
                 })
-            })
-            .map_err(|error| self.refuse(&error))?;
+                .map_err(|error| self.refuse(&error))?
+        };
         let first_attempt = migration.id == proposed_id;
         if !first_attempt && !recovering {
             return Err(self.deny(
@@ -30463,6 +30487,110 @@ impl Services {
             ));
         }
         Ok(Some(definition))
+    }
+
+    /// Admit the one safe lifecycle exception to an in-flight naming migration:
+    /// its exact `rename_pending` persistent seat has freshly read back as no
+    /// longer live. The migration target and runtime history stay immutable.
+    async fn ensure_team_definition_migration_allows_exact_seat_retirement(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        seat: &SeatBinding,
+        inspected_at: Timestamp,
+    ) -> Result<Option<TeamDefinitionMigrationId>, ApiError> {
+        let state = self.state()?;
+        let Some(migration) = state
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let subject = TeamDefinitionMigrationSubject::Seat {
+            topology_node_id: seat.topology_node_id,
+            seat_binding_id: seat.id,
+        };
+        let target = migration
+            .targets
+            .iter()
+            .find(|target| target.subject == subject)
+            .filter(|target| {
+                target.state == TeamDefinitionMigrationTargetState::RenamePending
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this seat is not the exact rename-pending target of the in-flight Team Definition migration",
+                )
+            })?;
+        let hosted = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
+            .map_err(|error| self.refuse(&error))?;
+        let consultation = state
+            .with_store(|store| store.get_consultation_seat_by_binding(project_id, seat.id))
+            .map_err(|error| self.refuse(&error))?;
+        let (identity, provider_session_id) = match (hosted, consultation) {
+            (Some(hosted), None) => (hosted.native_identity, hosted.provider_session_id),
+            (None, Some(consultation)) => (
+                consultation.native_identity.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the rename-pending consultation seat has no exact native identity",
+                    )
+                })?,
+                consultation.provider_session_id,
+            ),
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "only one exact hosted or consultation seat may retire during a naming migration",
+                ));
+            }
+        };
+        if identity != target.identity {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the rename-pending target no longer matches the seat's frozen native identity",
+            ));
+        }
+        let container_native_id = target.desired.parent_native_id.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the rename-pending seat target has no frozen parent container",
+            )
+        })?;
+        let adapter = state
+            .runtimes()
+            .get(&identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the rename-pending seat's runtime is not configured",
+                )
+            })?;
+        let inspection = adapter
+            .inspect_persistent_seat(&RetitleSeatRequest {
+                identity: identity.clone(),
+                provider_session_id,
+                container_native_id,
+                desired_title: target.desired.title.clone(),
+                requested_at: inspected_at,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if inspection.identity != identity {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "native lifecycle readback answered for another persistent seat",
+            ));
+        }
+        if inspection.state == PersistentSeatNativeState::Live {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the rename-pending native seat is still live and cannot become history",
+            ));
+        }
+        Ok(Some(migration.id))
     }
 
     /// Fence every admission or replacement before its first durable or

@@ -38,7 +38,8 @@ use crate::adapter::{
     HostedSeatInspectRequest, HostedSeatInspection, HostedSeatLaunchRequest,
     HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatNativeState,
     HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    PersistentSeatInspection, PersistentSeatNativeState, RetitleSeatOutcome, RetitleSeatRequest,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -299,6 +300,8 @@ pub enum AdapterCall {
     RetitleSeat(ExternalId),
     /// A persistent seat's title correction was previewed, and nothing was written.
     PreviewRetitleSeat(ExternalId),
+    /// A persistent seat's exact native lifecycle was inspected.
+    InspectPersistentSeat(ExternalId),
     /// A run was launched.
     Launch(AgentRunId),
     /// A read-only consultation seat was launched or recovered.
@@ -589,6 +592,8 @@ struct FakeState {
     hosted_claim_routes: BTreeMap<ExternalId, ModelRung>,
     /// Native id -> (container id, provider session id, visible title).
     seat_titles: BTreeMap<ExternalId, (ExternalId, Option<ExternalId>, String)>,
+    /// Exact persistent seats moved out of the active native surface.
+    archived_seats: BTreeSet<ExternalId>,
     /// The visible title each container currently carries.
     ///
     /// Held apart from the binding because it is the one thing about a
@@ -1078,6 +1083,7 @@ impl ScriptedFakeRuntime {
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
+                archived_seats: BTreeSet::new(),
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
@@ -1611,6 +1617,7 @@ impl ScriptedFakeRuntime {
     pub fn forget_seat(&self, native_id: &ExternalId) {
         let mut state = self.lock();
         state.seat_titles.remove(native_id);
+        state.archived_seats.remove(native_id);
         state
             .hosted_seats
             .retain(|_, seat| &seat.identity.native_id != native_id);
@@ -1629,6 +1636,16 @@ impl ScriptedFakeRuntime {
         if let Some((binding, seat)) = found {
             state.hosted_seats.remove(&binding);
             state.archived_hosted_seats.insert(binding, seat);
+            state.archived_seats.insert(native_id.clone());
+        }
+    }
+
+    /// Reproduce a native archive for any persistent hosted or consultation
+    /// seat while retaining its immutable title and placement history.
+    pub fn archive_persistent_seat(&self, native_id: &ExternalId) {
+        let mut state = self.lock();
+        if state.seat_titles.contains_key(native_id) {
+            state.archived_seats.insert(native_id.clone());
         }
     }
 
@@ -2595,7 +2612,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .consultation_permissions
             .remove(&request.seat_binding_id);
-        state.seat_titles.remove(&request.identity.native_id);
+        state
+            .archived_seats
+            .insert(request.identity.native_id.clone());
         state
             .calls
             .push(AdapterCall::RetireConsultation(request.seat_binding_id));
@@ -2825,6 +2844,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state.calls.push(AdapterCall::PreviewRetitleSeat(
             request.identity.native_id.clone(),
         ));
+        if state.archived_seats.contains(&request.identity.native_id) {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the exact persistent native seat is archived",
+            });
+        }
         let (container, provider_session_id, title) = state
             .seat_titles
             .get(&request.identity.native_id)
@@ -2853,6 +2877,46 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             container_native_id: container.clone(),
             observed_title: title.clone(),
             changed: title != request.desired_title.as_str(),
+        })
+    }
+
+    async fn inspect_persistent_seat(
+        &self,
+        request: &RetitleSeatRequest,
+    ) -> RuntimeResult<PersistentSeatInspection> {
+        let mut state = self.lock();
+        state.calls.push(AdapterCall::InspectPersistentSeat(
+            request.identity.native_id.clone(),
+        ));
+        if request.identity.runtime_kind != state.runtime_kind
+            || request.identity.host != state.host
+            || request.identity.generation > state.generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persistent seat belongs to a runtime generation this adapter has not reached",
+            });
+        }
+        let lifecycle = if state.archived_seats.contains(&request.identity.native_id) {
+            PersistentSeatNativeState::Archived
+        } else if state.seat_titles.contains_key(&request.identity.native_id) {
+            PersistentSeatNativeState::Live
+        } else {
+            PersistentSeatNativeState::Missing
+        };
+        if let Some((container, provider_session_id, _)) =
+            state.seat_titles.get(&request.identity.native_id)
+            && (container != &request.container_native_id
+                || request
+                    .provider_session_id
+                    .as_ref()
+                    .is_some_and(|expected| provider_session_id.as_ref() != Some(expected)))
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(PersistentSeatInspection {
+            identity: request.identity.clone(),
+            state: lifecycle,
+            observed_at: request.requested_at,
         })
     }
 

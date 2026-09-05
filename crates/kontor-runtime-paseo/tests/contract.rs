@@ -47,7 +47,7 @@ use kontor_runtime::adapter::{
     ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatLaunchRequest,
     HostedSeatMessageRequest, HostedSeatNativeState, HostedSeatRetireRequest, LaunchOutcome,
-    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    PersistentSeatNativeState, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
@@ -6673,6 +6673,10 @@ async fn seat_retitle_classifies_an_exact_archived_native_agent_as_stale() {
         .answering_rpc(
             "fetch_agent_request",
             v(fixture!("protocol/agent-archived.json")),
+        )
+        .answering_rpc(
+            "fetch_agent_request",
+            v(fixture!("protocol/agent-archived.json")),
         );
     let plane = Plane::fresh(recorded);
     let request = RetitleSeatRequest {
@@ -6690,6 +6694,13 @@ async fn seat_retitle_classifies_an_exact_archived_native_agent_as_stale() {
 
     let refused = plane.adapter.preview_retitle_seat(&request).await;
     assert!(matches!(refused, Err(RuntimeError::StaleBinding { .. })));
+    let inspected = plane
+        .adapter
+        .inspect_persistent_seat(&request)
+        .await
+        .expect("the same exact archived identity has a lifecycle readback");
+    assert_eq!(inspected.identity, request.identity);
+    assert_eq!(inspected.state, PersistentSeatNativeState::Archived);
     assert_eq!(
         plane.daemon.count("agent update agt_implement"),
         0,

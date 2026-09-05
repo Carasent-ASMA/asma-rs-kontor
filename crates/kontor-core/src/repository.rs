@@ -3206,6 +3206,20 @@ pub trait TopologyRepository {
         observed_at: Timestamp,
     ) -> RepositoryResult<SeatBinding>;
 
+    /// Retire the exact persistent seat whose immutable migration target is
+    /// already `rename_pending` after the caller proved its native is no longer
+    /// live. Ordinary observations never carry this authority.
+    ///
+    /// # Errors
+    /// Refuses a different migration, target, identity source, or target state.
+    fn retire_rename_pending_seat_for_migration(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        migration_id: TeamDefinitionMigrationId,
+        retired_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding>;
+
     /// Bind one topology node to the native container read back for it.
     ///
     /// Idempotent per node *for the same native identity*: re-confirming a
@@ -3342,8 +3356,9 @@ crate::closed_enum! {
         Recorded => "recorded",
         /// At least one retitle has been attempted.
         Applying => "applying",
-        /// Every target read back its exact desired title under an unchanged
-        /// native id, and the governed pins have moved.
+        /// Every still-live target read back its exact desired title under an
+        /// unchanged native id, and the governed pins have moved. A target
+        /// whose exact non-live seat was retired stays immutable history.
         Confirmed => "confirmed",
         /// Abandoned. The epic keeps the definition its natives still render.
         Failed => "failed",

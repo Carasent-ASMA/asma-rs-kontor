@@ -87,7 +87,7 @@ for it. That gap is OQ-4 and remains open.
 - **Disposition:** proceeding under (b). (c) was not taken: the operation is
   outward-facing, hard to reverse, and blocked on OQ-9 regardless.
 
-## OQ-11 — The migration census refuses on a stale native binding · OPEN · BLOCKING
+## OQ-11 — The migration census refuses on a stale native binding · RESOLVED 2026-09-06
 
 - **Attaches to:** epic `01a0074f-6719-7570-adf7-95ee3ec69875`; the same five
   legacy consultation nodes as OQ-9.
@@ -116,9 +116,15 @@ for it. That gap is OQ-4 and remains open.
   census tolerates a provably absent native binding on a node it is about to
   rename, which is a Kontor change rather than an operation; (c) the epic is
   drained of scheduling first, so the census runs against a quiet fleet.
-- **Disposition:** none. Verification stops at the mutation boundary.
+- **Disposition:** the missing Committee workspace/seats were recovered through
+  supported Kontor operations without replacing their logical identities. The
+  Advisor native was then proven archived rather than absent ambiguity. The
+  remaining lifecycle deadlock is specified and corrected in
+  `OPERATIONAL-GAPS.md`; its source fix is pending merge/deployment, not an open
+  naming decision. Live migration remains paused until the designated runtime
+  owner returns the deployed-commit health checkpoint.
 
-## OQ-12 — Migrating to v2 renames consultation seats, not just containers · OPEN
+## OQ-12 — Migrating to v2 renames consultation seats, not just containers · RESOLVED 2026-09-06
 
 - **Attaches to:** Team Definition `01936f5a-2000-7000-8000-000000000001` v2.
 - **Observed:** v2's CSW block defines three slots whose seat names render from
@@ -127,7 +133,10 @@ for it. That gap is OQ-4 and remains open.
   (and the ASW seat `SA` / `Software Architect`), so their current names derive
   from the role code. Migration therefore renames seats as well as containers.
   Two CSW nodes also hold 4 seats each against v2's 3 slots, one retired.
-- **Ambiguity:** whether that seat rename is the intended effect of the KOP
-  migration or an unreviewed side effect. The preview never reached its rename
-  census, so the exact set is unenumerated.
-- **Disposition:** none. Flagged for whoever holds the apply.
+- **Disposition:** intended. The agreed configuration-driven convention names
+  Committee seats from their exact configured slot labels (`SEAT A`, `SEAT B`,
+  `JUDGE`) and Advisor seats from their exact configured registered role code.
+  Scope item code and topic belong to the CSW/ASW container name and are not
+  repeated in seat titles. The successful partial apply rendered the available
+  targets from v2; it did not authorize rewriting the archived Advisor's
+  historical native title.

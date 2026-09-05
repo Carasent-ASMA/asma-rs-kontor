@@ -64,8 +64,9 @@ use kontor_runtime::adapter::{
     HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
     HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
     HostedSeatNativeState, HostedSeatRetireOutcome, HostedSeatRetireRequest,
-    HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, RetitleSeatOutcome,
-    RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, PersistentSeatInspection,
+    PersistentSeatNativeState, RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter,
+    RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, ClaimedSeat, OccupiedSeat, RoleSlotKey,
@@ -6886,6 +6887,57 @@ impl RuntimeAdapter for PaseoAdapter {
             container_native_id: request.container_native_id.clone(),
             observed_title: before.title.clone().unwrap_or_default(),
             changed: before.title.as_deref() != Some(request.desired_title.as_str()),
+        })
+    }
+
+    async fn inspect_persistent_seat(
+        &self,
+        request: &RetitleSeatRequest,
+    ) -> RuntimeResult<PersistentSeatInspection> {
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persistent seat belongs to a runtime generation this plane has not reached",
+            });
+        }
+        let Some(agent) = self
+            .find_agent_including_archived(request.identity.native_id.as_str())
+            .await?
+        else {
+            return Ok(PersistentSeatInspection {
+                identity: request.identity.clone(),
+                state: PersistentSeatNativeState::Missing,
+                observed_at: request.requested_at,
+            });
+        };
+        let provider_session_id = agent
+            .provider_session_id()
+            .map(ExternalId::parse)
+            .transpose()?;
+        if agent.id != request.identity.native_id.as_str()
+            || request
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|expected| provider_session_id.as_ref() != Some(expected))
+            || agent.workspace_id.as_deref() != Some(request.container_native_id.as_str())
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(PersistentSeatInspection {
+            identity: request.identity.clone(),
+            state: if agent.is_archived() {
+                PersistentSeatNativeState::Archived
+            } else {
+                PersistentSeatNativeState::Live
+            },
+            observed_at: request.requested_at,
         })
     }
 

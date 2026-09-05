@@ -112,3 +112,29 @@ The pre-existing open-question authoring/disposition API and MCP surface is not
 part of KON-OP-22. Completion continues to read and enforce any persisted open
 questions, and the live realm currently has none. This delivery neither removes
 nor disguises that separate control-surface gap.
+
+## 2026-09-06 naming-migration recovery correction
+
+The live KOP migration exposed one final lifecycle case not covered by the
+original delivery: an exact Advisor native was already archived while its
+logical SeatBinding remained active and its immutable migration target was
+`rename_pending`. The generic migration fence correctly prevented retirement,
+but that also prevented the only governed path to remove the non-live subject
+from the live census.
+
+The correction adds exact persistent-seat lifecycle inspection to the runtime
+contract and Paseo adapter, then admits one atomic store operation for the exact
+SeatBinding and exact in-flight migration only after fresh readback proves the
+frozen native identity is archived or missing. Live natives and all generic
+lifecycle calls remain fenced. Confirmation compares the migration against the
+complete still-live native census; a retired historical target remains
+immutable evidence and is never relabelled as a successful rename. Replaying
+the same migration key reuses its original intent while freshly planning only
+the remaining live subjects.
+
+Local focused store, Paseo and daemon contracts pass, daemon compilation and
+formatting pass, and an inverted lifecycle-state mutation was killed. This
+section records source behavior only: no production binary was built or
+installed, no daemon was restarted, and the live KOP migration remains paused
+until the designated runtime owner deploys the merged newest-master artifact
+and returns an exact health/readback checkpoint.
