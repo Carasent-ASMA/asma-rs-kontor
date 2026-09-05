@@ -6381,24 +6381,19 @@ impl SqliteStore {
     /// this read in the position of deciding which of several records for one key
     /// counts — a decision the gate does not need and must not make twice.
     ///
-    /// Three sources, unioned, because an artifact leaves a durable trace in
-    /// three different places and only the first of them was ever read:
+    /// Two producer-owned sources are unioned because an artifact leaves a
+    /// durable trace in two ordinary delivery paths:
     ///
     /// - `artifact_evidence` — the addressable record: a key plus a locator
     ///   someone can follow. Nothing in the delivery path writes it today.
-    /// - `task_gate_evaluations.evidence` on a **passed** gate — the artifacts an
-    ///   authorized evaluator cited when accepting the work. This is the strongest
-    ///   of the three: an independent role attested the artifact while passing.
-    ///   A rejected verdict is excluded; citing an artifact while refusing the
-    ///   work is not evidence the contract was met.
     /// - `role_turns.artifacts` — the settling role's own declaration of what its
     ///   turn produced.
     ///
-    /// The producer's own declaration is admitted alongside the evaluator's
-    /// because it does not lower the bar: the profile requires the gates to pass
-    /// as `goals` independently, so evidence drawn from a turn is still gated.
-    /// Reading only `artifact_evidence` made the ticket gate unsatisfiable for
-    /// every task closed through ordinary delivery, which is all of them.
+    /// Gate evaluations are intentionally absent. Their `evidence` field cites
+    /// already-produced artifacts; admitting the citation as production would
+    /// let a gate request manufacture the evidence it is meant to inspect.
+    /// Evidence drawn from a producer turn is still gated independently by the
+    /// profile's required gate states.
     ///
     /// Unparseable entries are skipped rather than raised. `role_turns.artifacts`
     /// is open data — turns legitimately cite commit shas, filenames and one-off
@@ -6420,19 +6415,6 @@ impl SqliteStore {
                      SELECT artifact_key
                        FROM artifact_evidence
                       WHERE project_id = ?1 AND task_id = ?2
-                     UNION
-                     SELECT cited.value AS artifact_key
-                       FROM task_workflows AS flow
-                       JOIN task_gate_evaluations AS gate
-                         ON gate.project_id = flow.project_id
-                        AND gate.workflow_id = flow.id
-                       JOIN json_each(
-                                CASE WHEN json_valid(gate.evidence)
-                                     THEN gate.evidence ELSE '[]' END
-                            ) AS cited
-                      WHERE flow.project_id = ?1 AND flow.task_id = ?2
-                        AND gate.verdict = 'passed'
-                        AND cited.type = 'text'
                      UNION
                      SELECT entry.value AS artifact_key
                        FROM role_turns AS turn
