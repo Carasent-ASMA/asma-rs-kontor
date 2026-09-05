@@ -8,6 +8,7 @@ use kontor_core::id::{
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{NewLocalCommand, RepositoryError, RepositoryResult};
+use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{OptionalExtension, params};
 
 use crate::SqliteStore;
@@ -27,6 +28,52 @@ impl ConflictClose {
     #[must_use]
     pub const fn is_fresh(self) -> bool {
         matches!(self, Self::Closed(_))
+    }
+}
+
+impl SqliteStore {
+    /// Whether an operator resolution authorizes retrying this exact conflict
+    /// against unchanged task, workflow and Jira evidence.
+    pub fn resolved_task_conflict_authorizes(
+        &self,
+        project_id: ProjectId,
+        link_id: TicketLinkId,
+        kind: StatusConflictKind,
+        task_revision: AggregateRevision,
+        spec_version: kontor_core::id::SpecVersion,
+        payload_hash: &ContentHash,
+    ) -> RepositoryResult<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1
+                     FROM status_conflicts AS c
+                     JOIN external_ticket_observations AS o
+                       ON o.project_id = c.project_id AND o.id = c.observation_id
+                     WHERE c.project_id = ?1
+                       AND c.link_id = ?2
+                       AND c.kind = ?3
+                       AND c.task_revision = ?4
+                       AND c.spec_version = ?5
+                       AND c.resolved_at IS NOT NULL
+                       AND c.resolution_receipt_id IS NOT NULL
+                       AND o.payload_hash = ?6
+                 )",
+                params![
+                    project_id.to_string(),
+                    link_id.to_string(),
+                    kind.as_str(),
+                    i64::try_from(task_revision.get()).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "task revision exceeds SQLite range".to_owned(),
+                        }
+                    })?,
+                    i64::from(spec_version.get()),
+                    payload_hash.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)
     }
 }
 

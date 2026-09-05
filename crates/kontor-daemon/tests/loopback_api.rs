@@ -406,6 +406,12 @@ struct StatefulTaskJira {
 }
 
 #[derive(Clone)]
+struct HeldTaskJira {
+    transitioned: Arc<AtomicBool>,
+    transition_posts: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
 struct ClosedEpicJira {
     issue_reads: Arc<AtomicUsize>,
 }
@@ -584,6 +590,55 @@ impl Respond for StatefulTaskJira {
                     "issuetype": {"name": "Task", "hierarchyLevel": 0},
                     "assignee": {"accountId": "acct-kontor", "displayName": "Kontor"},
                     "updated": if transitioned {"2026-09-03T10:00:01.000+0000"} else {"2026-09-03T10:00:00.000+0000"}
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+impl Respond for HeldTaskJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if request.method.as_str() == "POST" && path.ends_with("/transitions") {
+            self.transitioned.store(true, Ordering::SeqCst);
+            self.transition_posts.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(204);
+        }
+        if request.method.as_str() == "GET" && path.ends_with("/transitions") {
+            let transitions = if self.transitioned.load(Ordering::SeqCst) {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({
+                    "id": "resolve-hold-to-closed",
+                    "to": {
+                        "id": "10228",
+                        "name": "Closed",
+                        "statusCategory": {"name": "Done"}
+                    }
+                })]
+            };
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": transitions}));
+        }
+        if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8206") {
+            let transitioned = self.transitioned.load(Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8206",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": if transitioned {"10228"} else {"10231"},
+                        "name": if transitioned {"Closed"} else {"On hold"},
+                        "statusCategory": {"name": if transitioned {"Done"} else {"In Progress"}}
+                    },
+                    "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                    "assignee": {"accountId": "acct-kontor", "displayName": "Kontor"},
+                    "updated": if transitioned {"2026-09-05T10:00:01.000+0000"} else {"2026-09-05T10:00:00.000+0000"}
                 }
             }));
         }
@@ -11275,6 +11330,221 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
         historical.json().as_array().expect("all conflicts").len(),
         1
     );
+}
+
+#[tokio::test]
+async fn resolving_an_unchanged_held_task_conflict_allows_reconciliation_to_continue() {
+    let server = MockServer::start().await;
+    let transitioned = Arc::new(AtomicBool::new(false));
+    let transition_posts = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(HeldTaskJira {
+            transitioned: Arc::clone(&transitioned),
+            transition_posts: Arc::clone(&transition_posts),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let task_id = TaskId::generate();
+    let link_id = TicketLinkId::generate();
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-09-05T10:00:00Z");
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Resolved held Jira task"),
+                root_path: name("/tmp/kontor-resolved-held-jira-task"),
+                created_at: now,
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Resolved held Jira task epic"),
+                created_at: now,
+            })
+            .expect("the epic is created");
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                title: name("Completed task held in Jira"),
+                module: None,
+                state: kontor_core::state::TaskState::Done,
+                created_at: now,
+            })
+            .expect("the task is created");
+        let pack = kontor_profiles::seeds::bundled_pack().expect("the profile pack loads");
+        let entry = pack
+            .manifest
+            .iter()
+            .find(|entry| {
+                entry.availability == kontor_profiles::pack::PackAvailability::Seeded
+                    && entry.category.as_str() == "code"
+            })
+            .expect("the code profile is seeded");
+        let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, now)
+            .expect("the code profile resolves");
+        store
+            .insert_work_profile(project_id, &bundle.profile.definition)
+            .expect("the exact work profile is published");
+        store
+            .create_task_workflow(&NewTaskWorkflow {
+                id: TaskWorkflowId::generate(),
+                project_id,
+                task_id,
+                current_phase: bundle.profile.definition.entry_phase.clone(),
+                snapshot: bundle.profile,
+                created_at: now,
+            })
+            .expect("the task workflow is created");
+        let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string())
+            .expect("a materialization batch id");
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: "resolved-held-task-binding".to_owned(),
+                    preview_hash: ContentHash::of(b"resolved held task binding"),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &[NewJiraMaterializationItem {
+                    id: ExternalId::parse(&uuid::Uuid::now_v7().to_string())
+                        .expect("a materialization item id"),
+                    batch_id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: Some(task_id),
+                    link_id: Some(link_id),
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Task,
+                    intent_kind: JiraIntentKind::Link,
+                    requested_key: Some(ExternalId::parse("ASMA-8206").expect("a Jira key")),
+                    marker: ExternalId::parse("kontor-resolved-held-task").expect("a marker"),
+                }],
+            )
+            .expect("the Jira task binding is planned");
+        let item = store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("the binding reads")
+            .into_iter()
+            .next()
+            .expect("the binding exists");
+        store
+            .confirm_jira_materialization_item(
+                &item,
+                &ExternalId::parse("ASMA-8206").expect("a Jira key"),
+                &ContentHash::of(b"resolved held task readback"),
+                now,
+            )
+            .expect("the Jira task binding confirms");
+        store
+            .confirm_jira_materialization_batch(project_id, &batch_id, now)
+            .expect("the Jira task batch confirms");
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "task"
+                    && compiled
+                        .spec()
+                        .work_profile
+                        .as_ref()
+                        .is_some_and(|profile| profile.as_str() == "code")
+            })
+            .expect("the code task workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the code Jira workflow is installed");
+    });
+
+    let plan_uri = format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan");
+    let refused = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 0);
+    let recorded = world.daemon.reconcile_jira_once().await;
+    assert_eq!(recorded.task_subjects, 1, "{recorded:?}");
+    assert_eq!(recorded.blocked, 1, "{recorded:?}");
+    assert_eq!(recorded.applied, 0, "{recorded:?}");
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 0);
+
+    let conflicts_uri = format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts");
+    let conflicts = Call::get(&conflicts_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(conflicts.status, 200, "{}", conflicts.body);
+    let conflict_id = conflicts.json()[0]["conflict_id"]
+        .as_str()
+        .expect("the conflict id")
+        .to_owned();
+    let resolved = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict"),
+        &serde_json::json!({"conflict_id": conflict_id}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resolve-held-task-exact-observation")
+    .send(&world)
+    .await;
+    assert_eq!(resolved.status, 200, "{}", resolved.body);
+
+    let authorized = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(authorized.status, 200, "{}", authorized.body);
+    assert_eq!(authorized.json()["diff"].as_array().map(Vec::len), Some(1));
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 0);
+
+    let applied = world.daemon.reconcile_jira_once().await;
+    assert_eq!(applied.task_subjects, 1, "{applied:?}");
+    assert_eq!(applied.applied, 1, "{applied:?}");
+    assert_eq!(applied.blocked, 0, "{applied:?}");
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
+    let replay = world.daemon.reconcile_jira_once().await;
+    assert_eq!(replay.converged, 1, "{replay:?}");
+    assert_eq!(replay.applied, 0, "{replay:?}");
+    assert_eq!(transition_posts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

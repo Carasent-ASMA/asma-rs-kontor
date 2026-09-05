@@ -46,7 +46,7 @@ use kontor_core::ticket::{
     FieldValue, InternalTaskFacts, LiveTransition, OwnershipAction, ReconciliationInput,
     ReconciliationOutcome, SelectedTransition, StatusConflictKind, StatusSelector,
     StatusTransitionReceipt, TicketFieldSpec, TicketPrincipal, TicketSyncProjection,
-    TransitionPlan, reconcile,
+    TransitionPlan, reconcile, reconcile_after_resolved_conflict,
 };
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -1299,6 +1299,27 @@ impl TicketDelegation<'_> {
             live_transitions: &observed.live_transitions,
             principal: &observed.principal,
         })
+    }
+
+    /// Re-plan after Kontor proved that an operator resolved this exact
+    /// conflict and that the Jira observation has not changed since.
+    #[must_use]
+    pub fn plan_after_resolved_conflict(
+        &self,
+        observed: &Observed,
+        resolved: StatusConflictKind,
+    ) -> ReconciliationOutcome {
+        reconcile_after_resolved_conflict(
+            &ReconciliationInput {
+                spec: self.workflow_spec.spec(),
+                observation: &observed.observation,
+                freshness: Freshness::Fresh,
+                facts: self.facts,
+                live_transitions: &observed.live_transitions,
+                principal: &observed.principal,
+            },
+            resolved,
+        )
     }
 
     /// Validate the exact request an apply would send, without writing.

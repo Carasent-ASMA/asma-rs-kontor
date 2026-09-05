@@ -3024,7 +3024,29 @@ impl Services {
                 .observe()
                 .await
                 .map_err(|error| self.refuse_jira(&error))?;
-            let (transition, conflict) = match delegation.plan(&observed) {
+            let initial = delegation.plan(&observed);
+            let outcome = if let ReconciliationOutcome::Conflict(kind) = initial {
+                let authorized = state
+                    .with_store(|store| {
+                        store.resolved_task_conflict_authorizes(
+                            project_id,
+                            link.id,
+                            kind,
+                            facts.task_revision,
+                            workflow_spec.spec().version,
+                            &observed.observation.payload_hash,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                if authorized {
+                    delegation.plan_after_resolved_conflict(&observed, kind)
+                } else {
+                    ReconciliationOutcome::Conflict(kind)
+                }
+            } else {
+                initial
+            };
+            let (transition, conflict) = match outcome {
                 ReconciliationOutcome::NoOp => (None, None),
                 ReconciliationOutcome::Transition(plan) => {
                     let dry_run = delegation
