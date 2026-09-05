@@ -1,5 +1,7 @@
 # ASMA Kontor
 
+> Implementation counts and delivery claims are stamped to `082b63ad` (2026-09-05). See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Registry membership, MCP advertising and credential authorization are distinct.
+
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-intent)
 
 Kontor is a local-first control plane for durable, policy-governed work across
@@ -123,7 +125,7 @@ The current repository includes:
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 166 tools — exposed through the stdio MCP server and
+- one capability catalogue — 166 registry operations, 165 advertised at admin MCP scope in the 2026-09-05 snapshot — exposed through the stdio MCP server and
   a `kontor` CLI *generated from the same registry*, with credential tiers and
   narrow serve profiles;
 - a responsive React operator console and Tauri desktop shell.
@@ -137,7 +139,7 @@ admits its absence:
 | --- | --- |
 | Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
 | Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
-| KON-OP-21 release verification | The current candidate tree implements evidence-bound mid-run quota succession and a resident bounded supervisor, but merge, independent audit and live-runtime verification are still pending. This README does not count local compilation or focused tests as a deployed capability. |
+| KON-OP-21 release verification | KON-OP-21 is implemented and merged through PR #170 (`080e2db3`, 2026-09-05), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh. |
 | Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung and preserves the adapter's typed refusal path instead of parking until the computed reset. |
 | Automatic stale-evidence rejection | Post-freeze product drift that invalidates a completion bundle is currently caught by a reviewer, not by the state machine. |
 | Unified mission-control dashboard | Individual console views do not yet provide one joined dependency graph, running/waiting/blocked/stale state, next eligible work, prepared operator decisions and delivery evidence. |
@@ -244,19 +246,18 @@ is intentionally explicit and remains local to the state root.
 
 Reading and writing are also separate processes on the MCP side: a server runs at
 one credential tier and optionally one narrow serve profile, so a delivery seat
-is given the narrow tools it works with rather than all 166. See
+is given the narrow tools it works with rather than the full advertised admin surface. See
 [`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
 
 Seat lifecycle policy has a checked example
 [`supervision.yml`](config/examples/paseo-supervision.yml). Copying it into the
-state root opts into the candidate resident succession engine only when the
+state root opts into the resident succession engine only when the
 document is schema v2, `watchdog.enabled` is `true`, and
 `recovery.max_concurrent_successions` is explicitly set inside the safe bound.
 With no policy, with schema v1, or with a disabled watchdog, automatic
 succession does not start and Kontor invents no cadence or capacity. See
 [Configuration](docs/CONFIGURATION.md).
-This path has local contract and regression coverage; merge, independent audit
-and live-runtime verification remain release gates.
+This path is merged at `080e2db3` (PR #170, 2026-09-05). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
 
 For frontend development:
 

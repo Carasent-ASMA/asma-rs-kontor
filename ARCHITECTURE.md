@@ -1,8 +1,9 @@
 # ASMA Kontor Architecture
 
 > **Status:** Current pre-1.0 repository contract. Synchronized with the
-> 2026-09-04 candidate tree; KON-OP-21 succession remains locally verified,
-> not yet independently audited or live-runtime verified.
+> released source snapshot `082b63ad` (2026-09-05). KON-OP-21 is merged through
+> PR #170 (`080e2db3`); independent/live qualification and realm enablement
+> require separate receipts. See the [implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md).
 >
 > **Scope:** Governing principles, authority boundaries, consistency model,
 > technology choices and extension rules for `asma-rs-kontor`.
@@ -270,11 +271,11 @@ honours `Admit`. The delivery launch boundary still has to return a model rung,
 however, so it currently drops the reset/escalation payload from `Wait` and
 `NeedsHuman` and preserves the adapter's typed provider-outage refusal path.
 Automatic pre-launch parking until the computed reset is not shipped. The
-current candidate tree separately implements mid-run quota detection, durable
+released source snapshot separately implements mid-run quota detection, durable
 redacted handoff, successor placement and resident bounded reconciliation. It
 does so only under explicit schema-v2 supervision enablement; schema v1 and an
 absent or disabled policy remain inert. Those KON-OP-21 paths have local tests
-but are not claimed as merged, deployed or live-runtime verified here.
+and are merged through PR #170 (`080e2db3`, 2026-09-05). Deployment, live-runtime verification and realm enablement are separate receipt-backed stages.
 
 The calendar dimension is implemented in `kontor-calendar` and is reached by no
 route and no tool, so every project currently resolves to `unrestricted`. That
