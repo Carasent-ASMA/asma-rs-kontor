@@ -21056,6 +21056,7 @@ struct UnboundWorld {
     world: World,
     project: String,
     epic: String,
+    account: String,
     team_run: String,
     seats: Vec<serde_json::Value>,
     plan_hash: String,
@@ -21231,10 +21232,80 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         world,
         project,
         epic,
+        account: account_id,
         team_run,
         seats,
         plan_hash,
     }
+}
+
+/// Gate policy names a catalog role, while a TeamRun persists the immutable
+/// slot id that holds that role. They are deliberately different in registered
+/// templates and must be resolved through the frozen TeamRun snapshot.
+#[tokio::test]
+async fn a_gate_evaluator_role_resolves_to_its_live_frozen_team_slot() {
+    let seeded = omega_with_one_unbound_slot("gate-role-slot", "omega-u-cat").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        account,
+        seats,
+        ..
+    } = &seeded;
+    let evaluator = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k4")
+        .expect("omega-r3 has one live slot");
+    let evaluator_run = evaluator["agent_run_id"]
+        .as_str()
+        .expect("the evaluator run id");
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    let task = &projection.json()["tasks"][0];
+    let task_id = task["task_id"].as_str().expect("the task id");
+    let workflow_revision = task["workflow_revision"]
+        .as_u64()
+        .expect("the workflow revision");
+
+    let recorded = Call::post(
+        format!("/v1/projects/{project}/tasks/{task_id}/gates/omega-g2/record"),
+        &serde_json::json!({
+            "expected_revision": workflow_revision,
+            "verdict": "rejected",
+            "evaluator_role": "omega-r3",
+            "evaluator_account": account,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("gate-role-slot-record")
+    .send(world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+
+    let project_id = ProjectId::parse(project).expect("the project id");
+    let task_id = TaskId::parse(task_id).expect("the task id");
+    let evaluation_run = world.daemon.state().with_store(|store| {
+        let workflow = store
+            .get_active_task_workflow(project_id, task_id)
+            .expect("the workflow reads")
+            .expect("the workflow exists");
+        store
+            .list_gate_evaluations(project_id, workflow.id)
+            .expect("the evaluations read")
+            .into_iter()
+            .find(|evaluation| evaluation.gate.as_str() == "omega-g2")
+            .expect("the gate evaluation exists")
+            .agent_run_id
+    });
+    assert_eq!(
+        evaluation_run.map(|run| run.to_string()).as_deref(),
+        Some(evaluator_run),
+        "the verdict is attributed to the live slot that the frozen template maps to omega-r3"
+    );
 }
 
 /// Journeys 5 and 6 through the public surface: a waiver is refused without
