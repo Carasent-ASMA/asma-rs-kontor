@@ -40,15 +40,15 @@ use kontor_core::receipt::{
 use kontor_core::repository::RealmRepository;
 use kontor_core::repository::{
     AccountProfileUpdate, CalendarRepository, CommandRepository, CompletionWrite,
-    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, IntakeOutcome,
-    IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent, NewGateEvaluation,
-    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewObservation, NewProject,
-    NewRuntimeEvent, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun,
-    NewTicketLink, PhaseAdvance, ProjectRepository, ReceiptAdvance, ReevaluationOutcome,
-    RepositoryError, RunClosure, RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository,
-    StoredCompletionProfile, StoredCompletionWake, StoredEpicCompletion, StoredRemediationProposal,
-    GateRouteOrigin, TaskTransitionRequest, TeamRunAdvance, TeamRunClosure, TicketRepository,
-    WorkflowRepository,
+    ConnectorSpecSelector, CredentialReference, CredentialReferenceKind, GateRouteOrigin,
+    IntakeOutcome, IntakeRepository, NewAccountProfile, NewAgentRun, NewCommandIntent,
+    NewGateEvaluation, NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewObservation,
+    NewProject, NewRuntimeEvent, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
+    NewTeamRun, NewTicketLink, PhaseAdvance, ProjectRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RunClosure, RunRepository, RuntimeBinding,
+    SourceEventIngest, SpecRepository, StoredCompletionProfile, StoredCompletionWake,
+    StoredEpicCompletion, StoredRemediationProposal, TaskTransitionRequest, TeamRunAdvance,
+    TeamRunClosure, TicketRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     ArtifactContentType, ArtifactContractSpec, BudgetBounds, CanonicalSourceEvent, DedupExpression,

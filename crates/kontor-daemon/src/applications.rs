@@ -121,11 +121,11 @@ use kontor_api::applications::{
     ValidateTopologySpecRequest,
 };
 use kontor_api::applications::{
-    GateProjectionDto, GateRejectionRecoveryDto, GateVerdictDto, ProvenanceDto,
-    RecordGateRequest, RecoverGateRejectionRequest, RedactionDto,
-    ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
-    SelectionRequest, SessionVerdictCitationDto, TicketFieldDiffDto, TicketReconcileAppliedDto,
-    TicketReconcileApplyRequest, TicketReconcilePlanDto,
+    GateProjectionDto, GateRejectionRecoveryDto, GateVerdictDto, ProvenanceDto, RecordGateRequest,
+    RecoverGateRejectionRequest, RedactionDto, ResolveContextRequest, ResolvedContextDto,
+    RuntimeSettlementDto, SelectionDto, SelectionRequest, SessionVerdictCitationDto,
+    TicketFieldDiffDto, TicketReconcileAppliedDto, TicketReconcileApplyRequest,
+    TicketReconcilePlanDto,
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
@@ -24904,8 +24904,9 @@ impl ApplicationOperations for Services {
         let gate_key = GateKey::parse(gate).map_err(|error| self.refuse_domain(&error))?;
         let rejection_receipt_id = CommandReceiptId::parse(&request.rejection_receipt_id)
             .map_err(|error| self.refuse_domain(&error))?;
-        let expected_current_phase = kontor_core::id::PhaseKey::parse(&request.expected_current_phase)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let expected_current_phase =
+            kontor_core::id::PhaseKey::parse(&request.expected_current_phase)
+                .map_err(|error| self.refuse_domain(&error))?;
         let expected_rejection_target =
             kontor_core::id::PhaseKey::parse(&request.expected_rejection_target)
                 .map_err(|error| self.refuse_domain(&error))?;

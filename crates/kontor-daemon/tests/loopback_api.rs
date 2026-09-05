@@ -9711,7 +9711,10 @@ async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
         route.origin,
         kontor_core::repository::GateRouteOrigin::Recorded
     );
-    assert_eq!(route.gate_sequence, 2, "the route names the rejected verdict");
+    assert_eq!(
+        route.gate_sequence, 2,
+        "the route names the rejected verdict"
+    );
     assert_eq!(route.rejection_target, gate_spec.rejection_target);
     assert_eq!(
         route.from_revision, workflow_after.revision,
@@ -10110,7 +10113,10 @@ async fn gate_rejection_recovery_refuses_wrong_task_gate_sequence_receipt_phase_
     // A receipt of the right shape for another command, so "is this a gate
     // verdict receipt?" is tested rather than "does this id exist?".
     let other_receipt = Call::post(
-        format!("/v1/projects/{}/tasks/{}/context:resolve", seed.project, seed.task),
+        format!(
+            "/v1/projects/{}/tasks/{}/context:resolve",
+            seed.project, seed.task
+        ),
         &serde_json::json!({ "snapshot": false }),
     )
     .signed_as(&world, "admin")
@@ -10228,7 +10234,7 @@ async fn gate_rejection_recovery_refuses_wrong_task_gate_sequence_receipt_phase_
     }
 
     // The honest request still works afterwards: the refusals consumed nothing.
-    let recovered = Call::post(&recovery_uri(&seed, &rejection.gate), &honest)
+    let recovered = Call::post(recovery_uri(&seed, &rejection.gate), &honest)
         .signed_as(&world, "admin")
         .with_key("rejection-refusals-honest")
         .send(&world)
@@ -10288,7 +10294,7 @@ async fn settle_turn(
 /// out of the phase it was returned to.
 #[tokio::test]
 async fn legacy_artifacts_do_not_advance_a_recovered_rejection_until_a_fresh_authoring_turn_settles()
-{
+ {
     let world = World::open_empty().await;
     world.script(HISTORY_LIVE);
     world.daemon.reconcile().await;
@@ -10309,7 +10315,7 @@ async fn legacy_artifacts_do_not_advance_a_recovered_rejection_until_a_fresh_aut
         .clone();
     let target = gate_spec.rejection_target.as_str().to_owned();
     let recovered = Call::post(
-        &recovery_uri(&seed, &rejection.gate),
+        recovery_uri(&seed, &rejection.gate),
         &serde_json::json!({
             "rejection_receipt_id": rejection.receipt,
             "sequence": rejection.sequence,
