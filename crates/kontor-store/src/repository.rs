@@ -50,7 +50,8 @@ use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
     CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
     CompletionWrite, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
-    GateEvaluation, HistoryGapKind, HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
+    GateEvaluation, GateRejectionRecovery, GateRejectionRoute, GateRouteOrigin, HistoryGapKind,
+    HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord,
     IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
@@ -11298,10 +11299,24 @@ impl SqliteStore {
     }
 }
 
+/// What a rejected verdict changed about its workflow, for the caller that owns
+/// the receipt and therefore has to record the route beside it.
+///
+/// The append itself cannot write the route row: the row references the command
+/// receipt, and the receipt does not exist yet when the evaluation is appended.
+/// So the facts travel back out to the one transaction that has both.
+struct RejectionRouteFacts {
+    task_id: TaskId,
+    from_phase: PhaseKey,
+    rejection_target: PhaseKey,
+    from_revision: AggregateRevision,
+    to_revision: AggregateRevision,
+}
+
 fn append_gate_evaluation_in_transaction(
     transaction: &Transaction<'_>,
     request: &NewGateEvaluation,
-) -> RepositoryResult<u32> {
+) -> RepositoryResult<(u32, Option<RejectionRouteFacts>)> {
     let (workflow, revision) = load_workflow(transaction, request.project_id, request.workflow_id)?;
     let gate = workflow
         .snapshot
@@ -11394,7 +11409,7 @@ fn append_gate_evaluation_in_transaction(
             ],
         )
         .map_err(backend)?;
-    if request.verdict == GateVerdict::Rejected {
+    let routed = if request.verdict == GateVerdict::Rejected {
         let next = revision.next()?;
         let changed = transaction
             .execute(
@@ -11415,10 +11430,408 @@ fn append_gate_evaluation_in_transaction(
                 "the workflow moved while recording its gate rejection",
             ));
         }
-    }
-    u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
+        Some(RejectionRouteFacts {
+            task_id: workflow.task_id,
+            from_phase: workflow.current_phase.clone(),
+            rejection_target: gate.rejection_target.clone(),
+            from_revision: revision,
+            to_revision: next,
+        })
+    } else {
+        None
+    };
+    let sequence = u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
         detail: "gate evaluation sequence exceeded its range".to_owned(),
+    })?;
+    Ok((sequence, routed))
+}
+
+/// Append one route row for a rejected evaluation, in the caller's transaction.
+///
+/// The insert is plain rather than upserting: the primary key is the evaluation
+/// and both receipt columns are unique, so a second route for the same
+/// rejection, or a second command claiming the same source receipt, is a
+/// constraint violation here rather than a silent no-op. That is the whole
+/// point of the table, so it is surfaced as the conflict it is.
+fn insert_gate_rejection_route(
+    transaction: &Transaction<'_>,
+    route: &GateRejectionRoute,
+) -> RepositoryResult<()> {
+    let changed = transaction
+        .execute(
+            "INSERT INTO task_gate_rejection_routes
+                 (project_id, task_id, workflow_id, gate_key, gate_sequence,
+                  rejection_receipt_id, route_receipt_id, route_origin, from_phase,
+                  rejection_target, from_revision, to_revision, routed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT DO NOTHING",
+            params![
+                route.project_id.to_string(),
+                route.task_id.to_string(),
+                route.workflow_id.to_string(),
+                route.gate.as_str(),
+                i64::from(route.gate_sequence),
+                route.rejection_receipt_id.to_string(),
+                route.route_receipt_id.to_string(),
+                route.origin.as_str(),
+                route.from_phase.as_str(),
+                route.rejection_target.as_str(),
+                revision_column(route.from_revision)?,
+                revision_column(route.to_revision)?,
+                text(route.routed_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict(
+            "gate rejection route",
+            "this rejection was already routed",
+        ));
+    }
+    Ok(())
+}
+
+/// The refusal a second consumption of one rejection gets.
+///
+/// The typed conflict carries no payload, so the receipt that already consumed
+/// the rejection is named by the caller that can read it back -- the service
+/// layer -- rather than smuggled into a `&'static str` here.
+fn already_routed() -> RepositoryError {
+    conflict(
+        "gate rejection route",
+        "this rejection was already routed by an earlier command",
+    )
+}
+
+/// One stored gate evaluation addressed by its exact append-only position.
+fn gate_evaluation_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    workflow_id: TaskWorkflowId,
+    gate: &GateKey,
+    sequence: u32,
+) -> RepositoryResult<Option<StoredGateEvaluation>> {
+    transaction
+        .query_row(
+            "SELECT verdict, evaluator_role, evaluator_account, evidence
+             FROM task_gate_evaluations
+             WHERE project_id = ?1 AND workflow_id = ?2 AND gate_key = ?3 AND sequence = ?4",
+            params![
+                project_id.to_string(),
+                workflow_id.to_string(),
+                gate.as_str(),
+                i64::from(sequence)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?
+        .map(|(verdict, role, account, evidence)| {
+            Ok(StoredGateEvaluation {
+                verdict: GateVerdict::parse(&verdict)?,
+                evaluator_role: RoleKey::parse(&role)?,
+                evaluator_account: AccountProfileId::parse(&account)?,
+                evidence: from_json::<Vec<ArtifactKey>>(&evidence)?,
+            })
+        })
+        .transpose()
+}
+
+/// The immutable content of one stored evaluation a source receipt must agree
+/// with, and nothing else. Attribution and timing are not compared: they are
+/// facts about the recording, not about what was decided.
+struct StoredGateEvaluation {
+    verdict: GateVerdict,
+    evaluator_role: RoleKey,
+    evaluator_account: AccountProfileId,
+    evidence: Vec<ArtifactKey>,
+}
+
+/// Prove the cited receipt is the durable command that recorded *this* exact
+/// rejection.
+///
+/// Two receipts are possible. One carries an exact result binding written by the
+/// recording transaction: then the binding is authoritative and the supplied
+/// `(gate, sequence)` must equal it, full stop. The other is a legacy receipt
+/// written before results were bound; there the supplied position is accepted
+/// only after every immutable field the intent represents is compared against
+/// the evaluation it claims. Either way the original receipt is read and never
+/// rewritten.
+fn ensure_source_records_this_rejection(
+    transaction: &Transaction<'_>,
+    source: &CommandReceipt,
+    recovery: &GateRejectionRecovery,
+    workflow_id: TaskWorkflowId,
+    evaluation: &StoredGateEvaluation,
+) -> RepositoryResult<()> {
+    if source.kind != CommandKind::RecordGateVerdict {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited receipt did not record a gate verdict",
+        ));
+    }
+    if source.target
+        != (AggregateRef::Task {
+            task_id: recovery.task_id,
+        })
+    {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited receipt belongs to another task",
+        ));
+    }
+    let intent: serde_json::Value = from_json(source.intent.json())?;
+    if intent["operation"].as_str() != Some("gate_record") {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited receipt records no gate verdict intent",
+        ));
+    }
+    if intent["task_id"].as_str() != Some(recovery.task_id.to_string().as_str()) {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited intent names another task",
+        ));
+    }
+    if intent["gate"].as_str() != Some(recovery.gate.as_str()) {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited intent names another gate",
+        ));
+    }
+    if intent["verdict"].as_str() != Some(GateVerdict::Rejected.as_str()) {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited intent did not reject the gate",
+        ));
+    }
+    // Every immutable evaluation field the intent represents, against the row it
+    // claims. A legacy receipt has only this to stand on, so it is compared in
+    // full rather than sampled.
+    if intent["evaluator_role"].as_str() != Some(evaluation.evaluator_role.as_str()) {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited intent names another evaluator role",
+        ));
+    }
+    if intent["evaluator_account"].as_str()
+        != Some(evaluation.evaluator_account.to_string().as_str())
+    {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited intent names another evaluating account",
+        ));
+    }
+    let cited: Vec<String> = intent["evidence"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let stored: Vec<String> = evaluation
+        .evidence
+        .iter()
+        .map(|artifact| artifact.as_str().to_owned())
+        .collect();
+    if cited != stored {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the cited intent does not carry this evaluation's evidence",
+        ));
+    }
+    // An exact result binding, when the receipt has one, outranks everything
+    // above: it is what the recording transaction itself wrote down.
+    match bound_gate_record_result(transaction, source)? {
+        Some((bound_workflow, bound_sequence)) => {
+            if bound_workflow != workflow_id || bound_sequence != recovery.sequence {
+                return Err(conflict(
+                    "gate verdict receipt",
+                    "the receipt's own result names another evaluation",
+                ));
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// The exact result a gate-recording receipt bound to itself, when it has one.
+///
+/// `None` is the legacy shape -- no stored result, or one that carries no exact
+/// binding. It is deliberately not an error here: refusing every pre-binding
+/// receipt would refuse exactly the rejections this recovery exists for.
+fn bound_gate_record_result(
+    transaction: &Transaction<'_>,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<Option<(TaskWorkflowId, u32)>> {
+    let stored: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT payload, payload_hash FROM command_outbox
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![receipt.project_id.to_string(), receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((json, hash)) = stored else {
+        return Ok(None);
+    };
+    Ok(parse_gate_record_result(&json, &hash, receipt).ok())
+}
+
+/// One receipt by its own id, refusing one that belongs to another project.
+fn command_receipt_by_id(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<Option<CommandReceipt>> {
+    let receipt: Option<CommandReceipt> = transaction
+        .query_row(
+            &format!("SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE id = ?1"),
+            params![receipt_id.to_string()],
+            |row| Ok(crate::commands::receipts::read_receipt_row(row)),
+        )
+        .optional()
+        .map_err(backend)?
+        .transpose()?;
+    match receipt {
+        Some(receipt) if receipt.project_id != project_id => Err(RepositoryError::CrossProject {
+            subject: "command receipt",
+        }),
+        other => Ok(other),
+    }
+}
+
+/// The route one recovery receipt wrote, for answering its own replay.
+fn gate_rejection_route_by_route_receipt(
+    transaction: &Transaction<'_>,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<GateRejectionRoute> {
+    route_by_column(
+        transaction,
+        receipt.project_id,
+        "route_receipt_id",
+        receipt.id,
+    )?
+    .ok_or(RepositoryError::NotFound {
+        subject: "gate rejection route",
     })
+}
+
+/// The route that already consumed one source verdict receipt, if any.
+fn gate_rejection_route_by_source(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    rejection_receipt_id: CommandReceiptId,
+) -> RepositoryResult<Option<GateRejectionRoute>> {
+    route_by_column(
+        transaction,
+        project_id,
+        "rejection_receipt_id",
+        rejection_receipt_id,
+    )
+}
+
+/// Look one route up by whichever of its two unique receipt columns is meant.
+///
+/// `column` is a fixed literal chosen by the two callers above and never reaches
+/// here from a request, so the format is not a value interpolation.
+fn route_by_column(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    column: &'static str,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<Option<GateRejectionRoute>> {
+    let key: Option<(String, String, i64)> = transaction
+        .query_row(
+            &format!(
+                "SELECT workflow_id, gate_key, gate_sequence FROM task_gate_rejection_routes
+                 WHERE project_id = ?1 AND {column} = ?2"
+            ),
+            params![project_id.to_string(), receipt_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((workflow, gate, sequence)) = key else {
+        return Ok(None);
+    };
+    let sequence = u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
+        detail: "gate rejection route sequence exceeded its range".to_owned(),
+    })?;
+    gate_rejection_route_in_transaction(
+        transaction,
+        project_id,
+        TaskWorkflowId::parse(&workflow)?,
+        &GateKey::parse(&gate)?,
+        sequence,
+    )
+}
+
+/// Read one route row back, whatever wrote it.
+fn gate_rejection_route_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    workflow_id: TaskWorkflowId,
+    gate: &GateKey,
+    sequence: u32,
+) -> RepositoryResult<Option<GateRejectionRoute>> {
+    transaction
+        .query_row(
+            "SELECT task_id, rejection_receipt_id, route_receipt_id, route_origin,
+                    from_phase, rejection_target, from_revision, to_revision, routed_at
+             FROM task_gate_rejection_routes
+             WHERE project_id = ?1 AND workflow_id = ?2 AND gate_key = ?3 AND gate_sequence = ?4",
+            params![
+                project_id.to_string(),
+                workflow_id.to_string(),
+                gate.as_str(),
+                i64::from(sequence)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?
+        .map(|row| {
+            Ok(GateRejectionRoute {
+                project_id,
+                task_id: TaskId::parse(&row.0)?,
+                workflow_id,
+                gate: gate.clone(),
+                gate_sequence: sequence,
+                rejection_receipt_id: CommandReceiptId::parse(&row.1)?,
+                route_receipt_id: CommandReceiptId::parse(&row.2)?,
+                origin: GateRouteOrigin::parse(&row.3)?,
+                from_phase: PhaseKey::parse(&row.4)?,
+                rejection_target: PhaseKey::parse(&row.5)?,
+                from_revision: revision_of(row.6)?,
+                to_revision: revision_of(row.7)?,
+                routed_at: read_timestamp(&row.8)?,
+            })
+        })
+        .transpose()
 }
 
 fn parse_gate_record_result(
@@ -11523,7 +11936,7 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         revision_of(task_revision)?.expect("task", intent.target_revision)?;
-        let sequence = append_gate_evaluation_in_transaction(&transaction, request)?;
+        let (sequence, routed) = append_gate_evaluation_in_transaction(&transaction, request)?;
         let mut payload: serde_json::Value = from_json(intent.intent.json())?;
         payload
             .as_object_mut()
@@ -11549,8 +11962,403 @@ impl SqliteStore {
                 subject: "command receipt",
             },
         )?;
+        // The route belongs to the same transaction as the verdict and the
+        // receipt: all three commit together or none of them does, so there is
+        // no window in which a workflow is routed and the reason it moved is
+        // not yet durable.
+        if let Some(routed) = routed {
+            insert_gate_rejection_route(
+                &transaction,
+                &GateRejectionRoute {
+                    project_id: request.project_id,
+                    task_id: routed.task_id,
+                    workflow_id: request.workflow_id,
+                    gate: request.gate.clone(),
+                    gate_sequence: sequence,
+                    // One command recorded the verdict and routed it, so it is
+                    // both the source and the route authority.
+                    rejection_receipt_id: receipt.id,
+                    route_receipt_id: receipt.id,
+                    origin: GateRouteOrigin::Recorded,
+                    from_phase: routed.from_phase,
+                    rejection_target: routed.rejection_target,
+                    from_revision: routed.from_revision,
+                    to_revision: routed.to_revision,
+                    routed_at: request.recorded_at,
+                },
+            )?;
+        }
         transaction.commit().map_err(backend)?;
         Ok((sequence, receipt))
+    }
+
+    /// Route one already-recorded rejected verdict that was never routed.
+    ///
+    /// This is deliberately not a second way to record a gate. It writes no
+    /// evaluation: it consumes one that is already durable, and every argument
+    /// it takes is an expectation about state the caller claims to have read
+    /// rather than an instruction about state to produce. The phase it routes to
+    /// is the pinned target from the frozen profile, never the caller's.
+    ///
+    /// # Errors
+    /// A stale or mismatched expectation, a source receipt that does not
+    /// describe this exact rejection, an already-consumed rejection, or a
+    /// backend failure. Every one of them refuses before anything is written.
+    pub fn recover_gate_rejection_with_intent(
+        &self,
+        recovery: &GateRejectionRecovery,
+        envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<(GateRejectionRoute, Applied, CommandReceipt)> {
+        let intent = envelope.peek(self.realm_id())?;
+        let transaction = self.begin()?;
+        ensure_atomic_intent_matches(
+            intent,
+            recovery.project_id,
+            CommandKind::RecoverGateRejection,
+            &AggregateRef::Task {
+                task_id: recovery.task_id,
+            },
+            intent.target_revision,
+        )?;
+        // Replay is judged first, before any mutable-state precondition. A retry
+        // of a recovery that already happened must answer from the receipt --
+        // the state it was asserting is, by then, deliberately no longer true,
+        // so checking the preconditions first would refuse every honest retry.
+        if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
+            ensure_atomic_replay(&existing, intent)?;
+            let route = gate_rejection_route_by_route_receipt(&transaction, &existing)?;
+            return Ok((route, Applied::Unchanged, existing));
+        }
+
+        let (task_state, task_revision): (String, i64) = transaction
+            .query_row(
+                "SELECT state, revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![
+                    recovery.project_id.to_string(),
+                    recovery.task_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::NotFound { subject: "task" })?;
+        if TaskState::parse(&task_state)?.is_terminal() {
+            return Err(conflict(
+                "task",
+                "a terminal task's workflow is not routed again",
+            ));
+        }
+        let task_revision = revision_of(task_revision)?;
+        task_revision.expect("task", recovery.expected_task_revision)?;
+        // The receipt witnesses the same revision the caller asserted, so a
+        // receipt cannot be attributed to a revision the request never proved.
+        task_revision.expect("task", intent.target_revision)?;
+
+        let workflow_id: String = transaction
+            .query_row(
+                "SELECT id FROM task_workflows
+                 WHERE project_id = ?1 AND task_id = ?2 AND active = 1",
+                params![
+                    recovery.project_id.to_string(),
+                    recovery.task_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "active task workflow",
+            })?;
+        let workflow_id = TaskWorkflowId::parse(&workflow_id)?;
+        let (workflow, workflow_revision) =
+            load_workflow(&transaction, recovery.project_id, workflow_id)?;
+        // The active workflow was found *through* the task, so this can only
+        // fail if the two tables disagree. Proving it costs one comparison and
+        // means the route row's task and workflow can never name different work.
+        if workflow.task_id != recovery.task_id {
+            return Err(RepositoryError::CrossProject {
+                subject: "task workflow",
+            });
+        }
+        if !workflow.active {
+            return Err(conflict(
+                "task workflow",
+                "an inactive workflow is not routed",
+            ));
+        }
+        workflow_revision.expect("task workflow", recovery.expected_workflow_revision)?;
+        if workflow.current_phase != recovery.expected_current_phase {
+            return Err(conflict(
+                "task workflow",
+                "the workflow is not at the phase the caller read",
+            ));
+        }
+
+        let gate = workflow
+            .snapshot
+            .definition
+            .gate(&recovery.gate)
+            .ok_or(RepositoryError::NotFound { subject: "gate" })?;
+        if gate.phase != workflow.current_phase {
+            return Err(conflict(
+                "gate",
+                "the gate does not belong to the workflow's current phase",
+            ));
+        }
+        // Compared, never applied. The pinned target is already validated as a
+        // strict ancestor by the frozen profile; a caller naming a different
+        // phase is refused rather than obeyed.
+        if gate.rejection_target != recovery.expected_rejection_target {
+            return Err(conflict(
+                "gate",
+                "the pinned rejection target is not the one the caller read",
+            ));
+        }
+        let rejection_target = gate.rejection_target.clone();
+
+        let evaluation = gate_evaluation_in_transaction(
+            &transaction,
+            recovery.project_id,
+            workflow_id,
+            &recovery.gate,
+            recovery.sequence,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "gate evaluation",
+        })?;
+        if evaluation.verdict != GateVerdict::Rejected {
+            return Err(conflict(
+                "gate evaluation",
+                "only a rejected verdict is routed to a rejection target",
+            ));
+        }
+
+        let source = command_receipt_by_id(
+            &transaction,
+            recovery.project_id,
+            recovery.rejection_receipt_id,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "gate verdict receipt",
+        })?;
+        ensure_source_records_this_rejection(
+            &transaction,
+            &source,
+            recovery,
+            workflow_id,
+            &evaluation,
+        )?;
+
+        // Both uniqueness rules are proved before the write as well as enforced
+        // by the schema, so an already-consumed rejection is a named refusal
+        // rather than a constraint message.
+        if gate_rejection_route_in_transaction(
+            &transaction,
+            recovery.project_id,
+            workflow_id,
+            &recovery.gate,
+            recovery.sequence,
+        )?
+        .is_some()
+            || gate_rejection_route_by_source(
+                &transaction,
+                recovery.project_id,
+                recovery.rejection_receipt_id,
+            )?
+            .is_some()
+        {
+            return Err(already_routed());
+        }
+
+        let to_revision = workflow_revision.next()?;
+        let changed = transaction
+            .execute(
+                "UPDATE task_workflows SET current_phase = ?1, revision = ?2
+                 WHERE project_id = ?3 AND id = ?4 AND revision = ?5 AND active = 1",
+                params![
+                    rejection_target.as_str(),
+                    revision_column(to_revision)?,
+                    recovery.project_id.to_string(),
+                    workflow_id.to_string(),
+                    revision_column(workflow_revision)?
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "task workflow",
+                "the workflow moved while its rejection was being routed",
+            ));
+        }
+
+        let mut payload: serde_json::Value = from_json(intent.intent.json())?;
+        payload
+            .as_object_mut()
+            .ok_or_else(|| {
+                DomainError::invalid("gate rejection recovery intent", "must be an object")
+            })?
+            .insert(
+                "result".to_owned(),
+                serde_json::json!({
+                    "intent_hash": intent.intent.hash().as_str(),
+                    "workflow_id": workflow_id.to_string(),
+                    "gate_sequence": recovery.sequence,
+                    "prior_phase": workflow.current_phase.as_str(),
+                    "current_phase": rejection_target.as_str(),
+                    "prior_revision": workflow_revision.get(),
+                    "current_revision": to_revision.get(),
+                }),
+            );
+        let mut recorded = intent.clone();
+        recorded.payload = CanonicalDocument::from_value(&payload)?;
+        if crate::commands::intent::insert_intent(&transaction, &recorded)?.is_some() {
+            return Err(conflict(
+                "command receipt",
+                "the idempotency key appeared during one atomic rejection recovery",
+            ));
+        }
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        let route = GateRejectionRoute {
+            project_id: recovery.project_id,
+            task_id: recovery.task_id,
+            workflow_id,
+            gate: recovery.gate.clone(),
+            gate_sequence: recovery.sequence,
+            rejection_receipt_id: recovery.rejection_receipt_id,
+            route_receipt_id: receipt.id,
+            origin: GateRouteOrigin::Recovered,
+            from_phase: workflow.current_phase.clone(),
+            rejection_target,
+            from_revision: workflow_revision,
+            to_revision,
+            routed_at: recovery.routed_at,
+        };
+        insert_gate_rejection_route(&transaction, &route)?;
+        transaction.commit().map_err(backend)?;
+        Ok((route, Applied::Created, receipt))
+    }
+
+    /// The route written for one rejected evaluation, if it has one.
+    ///
+    /// # Errors
+    /// Backend failures and unreadable stored identities.
+    pub fn gate_rejection_route(
+        &self,
+        project_id: ProjectId,
+        workflow_id: TaskWorkflowId,
+        gate: &GateKey,
+        sequence: u32,
+    ) -> RepositoryResult<Option<GateRejectionRoute>> {
+        let transaction = self.begin()?;
+        gate_rejection_route_in_transaction(&transaction, project_id, workflow_id, gate, sequence)
+    }
+
+    /// Every route written against one workflow, oldest first.
+    ///
+    /// # Errors
+    /// Backend failures and unreadable stored identities.
+    pub fn list_gate_rejection_routes(
+        &self,
+        project_id: ProjectId,
+        workflow_id: TaskWorkflowId,
+    ) -> RepositoryResult<Vec<GateRejectionRoute>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT gate_key, gate_sequence FROM task_gate_rejection_routes
+                 WHERE project_id = ?1 AND workflow_id = ?2
+                 ORDER BY routed_at, gate_key, gate_sequence",
+            )
+            .map_err(backend)?;
+        let keys: Vec<(String, i64)> = statement
+            .query_map(
+                params![project_id.to_string(), workflow_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(backend)?
+            .collect::<Result<_, _>>()
+            .map_err(backend)?;
+        drop(statement);
+        let transaction = self.begin()?;
+        let mut routes = Vec::with_capacity(keys.len());
+        for (gate, sequence) in keys {
+            let gate = GateKey::parse(&gate)?;
+            let sequence = u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
+                detail: "gate rejection route sequence exceeded its range".to_owned(),
+            })?;
+            if let Some(route) = gate_rejection_route_in_transaction(
+                &transaction,
+                project_id,
+                workflow_id,
+                &gate,
+                sequence,
+            )? {
+                routes.push(route);
+            }
+        }
+        Ok(routes)
+    }
+
+    /// The route that consumed one rejected verdict receipt, if any.
+    ///
+    /// This is what lets a refusal name the command that already did the work,
+    /// so an operator retrying under a fresh key can find the original result
+    /// instead of concluding the recovery never happened.
+    ///
+    /// # Errors
+    /// Backend failures and unreadable stored identities.
+    pub fn gate_rejection_route_by_rejection(
+        &self,
+        project_id: ProjectId,
+        rejection_receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<GateRejectionRoute>> {
+        let transaction = self.begin()?;
+        gate_rejection_route_by_source(&transaction, project_id, rejection_receipt_id)
+    }
+
+    /// The route currently fencing one active workflow, if any.
+    ///
+    /// A route fences only while the workflow is still sitting at the phase it
+    /// routed to. Once ordinary advancement has legitimately moved past that
+    /// phase the route stays as history and stops being a constraint, which is
+    /// what keeps one rejection from fencing a workflow forever.
+    ///
+    /// # Errors
+    /// Backend failures and unreadable stored identities.
+    pub fn active_gate_rejection_fence(
+        &self,
+        project_id: ProjectId,
+        workflow_id: TaskWorkflowId,
+        current_phase: &PhaseKey,
+    ) -> RepositoryResult<Option<GateRejectionRoute>> {
+        let transaction = self.begin()?;
+        let key: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT gate_key, gate_sequence FROM task_gate_rejection_routes
+                 WHERE project_id = ?1 AND workflow_id = ?2 AND rejection_target = ?3
+                 ORDER BY routed_at DESC, gate_sequence DESC
+                 LIMIT 1",
+                params![
+                    project_id.to_string(),
+                    workflow_id.to_string(),
+                    current_phase.as_str()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((gate, sequence)) = key else {
+            return Ok(None);
+        };
+        let gate = GateKey::parse(&gate)?;
+        let sequence = u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
+            detail: "gate rejection route sequence exceeded its range".to_owned(),
+        })?;
+        gate_rejection_route_in_transaction(&transaction, project_id, workflow_id, &gate, sequence)
     }
 
     /// Read the original workflow and sequence without substituting later history.
@@ -11706,7 +12514,13 @@ impl WorkflowRepository for SqliteStore {
 
     fn append_gate_evaluation(&self, request: &NewGateEvaluation) -> RepositoryResult<u32> {
         let transaction = self.begin()?;
-        let sequence = append_gate_evaluation_in_transaction(&transaction, request)?;
+        // Deliberately routes without recording a route row. A route names the
+        // command receipt that caused it, and this entry point has no receipt to
+        // name -- it is the receiptless contract method, which production never
+        // reaches for a verdict. Writing a route with a fabricated receipt id
+        // would put an unattributable row in the one ledger whose value is that
+        // every row is attributable.
+        let (sequence, _) = append_gate_evaluation_in_transaction(&transaction, request)?;
         transaction.commit().map_err(backend)?;
         Ok(sequence)
     }

@@ -4946,6 +4946,66 @@ pub struct GateVerdictDto {
     pub receipt_id: String,
 }
 
+/// What `gates/{gate_id}/rejections:recover` is asked for.
+///
+/// Every field is an expectation, not an instruction. There is deliberately no
+/// phase to route to and no verdict to record: the target comes from the frozen
+/// profile and the verdict is already durable. What the caller may say is which
+/// exact facts it read, and the command refuses unless all of them still hold.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct RecoverGateRejectionRequest {
+    /// The receipt of the `record_gate_verdict` command being consumed.
+    pub rejection_receipt_id: String,
+    /// Which append-only evaluation of the gate that receipt recorded.
+    pub sequence: u32,
+    /// The task revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// The workflow revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_workflow_revision: AggregateRevision,
+    /// The phase the caller read the workflow at.
+    pub expected_current_phase: String,
+    /// The pinned rejection target the caller read from the frozen profile.
+    ///
+    /// Compared, never applied: naming a different phase is refused rather than
+    /// obeyed, so this cannot become a way to choose where rejected work lands.
+    pub expected_rejection_target: String,
+}
+
+/// One recovered gate rejection route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct GateRejectionRecoveryDto {
+    /// The Realm it was recorded in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The active workflow that was routed.
+    pub workflow_id: String,
+    /// The gate whose rejection was consumed.
+    pub gate: String,
+    /// Which evaluation of that gate it was.
+    pub sequence: u32,
+    /// The verdict receipt this route consumed.
+    pub rejection_receipt_id: String,
+    /// The phase the workflow was in before the route.
+    pub prior_phase: String,
+    /// The pinned target it now sits at.
+    pub current_phase: String,
+    /// The workflow revision before the route.
+    #[schema(value_type = u64)]
+    pub prior_revision: AggregateRevision,
+    /// The workflow revision after it.
+    #[schema(value_type = u64)]
+    pub current_revision: AggregateRevision,
+    /// Whether this call wrote the route or replayed an earlier one.
+    pub applied: AppliedDto,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
+}
+
 /// What a selection-correction operation is asked for.
 ///
 /// One request shape for all three corrections, because they are the same
@@ -6897,6 +6957,16 @@ pub trait ApplicationOperations: Send + Sync {
         gate: &str,
         request: &RecordGateRequest,
     ) -> Result<GateVerdictDto, ApiError>;
+
+    /// Route one already-recorded rejected gate verdict that was never routed.
+    async fn recover_gate_rejection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        gate: &str,
+        request: &RecoverGateRejectionRequest,
+    ) -> Result<GateRejectionRecoveryDto, ApiError>;
 
     /// Correct one task's pinned work profile before a run snapshots it.
     async fn select_profile(
@@ -10473,6 +10543,49 @@ pub async fn record_gate(
         state
             .applications()
             .record_gate(&key, project_id, task_id, &gate_id, &request)
+            .await?,
+    ))
+}
+
+/// Route one already-recorded rejected gate verdict that was never routed.
+///
+/// The rejection is the addressed resource and `recover` is the action, so it is
+/// spelled as an action on the gate's rejection collection. It is admin-only and
+/// deliberately narrow: it repairs workflows rejected before the routing fix
+/// existed, and it can do nothing to a rejection that was already routed.
+///
+/// It is not a second way to record a gate. No verdict is written, no evaluation
+/// is appended, and the phase it routes to is the pinned target from the frozen
+/// profile — never a phase the caller chose.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("gate_id" = String, Path, description = "The gate the pinned profile declares"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecoverGateRejectionRequest,
+    responses(
+        (status = 200, body = GateRejectionRecoveryDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "A stale revision, a reused key, or an already-routed rejection")
+    )
+)]
+pub async fn recover_gate_rejection(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id, gate_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RecoverGateRejectionRequest>,
+) -> Result<Json<GateRejectionRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let (project_id, task_id, key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_gate_rejection(&key, project_id, task_id, &gate_id, &request)
             .await?,
     ))
 }

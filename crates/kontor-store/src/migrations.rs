@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 89;
+pub const SCHEMA_VERSION: i64 = 90;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -343,6 +343,11 @@ const MIGRATIONS: &[&str] = &[
     // request a producer observed, the binding Kontor resolved, and the typed
     // accept/refuse answer under a caller idempotency key (ASMA-8101).
     include_str!("../migrations/0089_publication_attestations.sql"),
+    // Schema v90. A rejected gate verdict and the route it caused are one
+    // append-only row carrying the route-time TeamRun, which is also the fence
+    // a recovered rejection is held behind until the routed phase is authored
+    // again by that same run.
+    include_str!("../migrations/0090_gate_rejection_routes.sql"),
 ];
 
 const _: () = assert!(

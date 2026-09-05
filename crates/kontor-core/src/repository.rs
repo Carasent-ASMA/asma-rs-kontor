@@ -1365,6 +1365,101 @@ pub struct NewGateEvaluation {
     pub recorded_at: Timestamp,
 }
 
+closed_enum! {
+    /// Which command wrote one gate rejection route.
+    ///
+    /// The distinction is permanent on purpose. A route written when the verdict
+    /// was recorded and a route recovered for a verdict recorded before that
+    /// path existed have identical *effect*, and completely different
+    /// provenance — and an audit that cannot tell them apart cannot answer the
+    /// only question worth asking about a recovery, which is which rejections
+    /// needed one.
+    GateRouteOrigin, "GateRouteOrigin" {
+        /// Written in the same transaction as the verdict it routes.
+        Recorded => "recorded",
+        /// Written afterwards, for a rejection whose verdict was already durable.
+        Recovered => "recovered",
+    }
+}
+
+/// One append-only record that a rejected gate evaluation routed its workflow.
+///
+/// It is both the audit record and the freshness fence: while the active
+/// workflow still sits at `rejection_target`, ordinary evidence advancement is
+/// held until a role turn settled strictly after `routed_at` carries that
+/// phase's required artifacts. The artifacts that existed when the rejection was
+/// recorded are exactly the ones the reviewer rejected, so releasing the fence
+/// on them would let the workflow undo its own rejection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateRejectionRoute {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The task the workflow serves.
+    pub task_id: TaskId,
+    /// The workflow that was routed.
+    pub workflow_id: TaskWorkflowId,
+    /// The gate that was rejected.
+    pub gate: GateKey,
+    /// Which append-only evaluation of that gate this route belongs to.
+    pub gate_sequence: u32,
+    /// The receipt of the command that recorded the rejected verdict.
+    ///
+    /// Unique across every route, which is what makes one rejected verdict
+    /// consumable exactly once no matter which identity a caller reaches it by.
+    pub rejection_receipt_id: CommandReceiptId,
+    /// The receipt of the command that wrote this route. Equal to
+    /// `rejection_receipt_id` on the recorded path, and never on the recovered
+    /// one.
+    pub route_receipt_id: CommandReceiptId,
+    /// Which path wrote it.
+    pub origin: GateRouteOrigin,
+    /// The phase the workflow was in when it was routed: the gate's own phase.
+    pub from_phase: PhaseKey,
+    /// The pinned strict ancestor the work returned to.
+    pub rejection_target: PhaseKey,
+    /// The workflow revision before the route.
+    pub from_revision: AggregateRevision,
+    /// The workflow revision after it.
+    pub to_revision: AggregateRevision,
+    /// When the route was written. The fence compares turn settlements to this.
+    pub routed_at: Timestamp,
+}
+
+/// What a caller must prove before an already-recorded rejection is routed.
+///
+/// Every field is an expectation rather than an instruction. The command
+/// supplies no phase to route to and no verdict to record: the target comes from
+/// the pinned profile and the verdict already exists. What the caller is
+/// permitted to say is which exact durable facts it read, and the transaction
+/// refuses unless all of them are still true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateRejectionRecovery {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The task whose active workflow is routed.
+    pub task_id: TaskId,
+    /// The gate the pinned profile declares.
+    pub gate: GateKey,
+    /// The receipt of the durable `RecordGateVerdict` command being consumed.
+    pub rejection_receipt_id: CommandReceiptId,
+    /// Which evaluation of that gate the receipt is claimed to have recorded.
+    pub sequence: u32,
+    /// The task revision the caller read.
+    pub expected_task_revision: AggregateRevision,
+    /// The workflow revision the caller read.
+    pub expected_workflow_revision: AggregateRevision,
+    /// The phase the caller read the workflow at.
+    pub expected_current_phase: PhaseKey,
+    /// The pinned rejection target the caller read from the frozen profile.
+    ///
+    /// It is compared, never applied: a caller that names a different phase is
+    /// refused rather than obeyed, so this cannot become a way to choose where
+    /// rejected work lands.
+    pub expected_rejection_target: PhaseKey,
+    /// When the route is written.
+    pub routed_at: Timestamp,
+}
+
 /// A revision-checked task transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskTransitionRequest {

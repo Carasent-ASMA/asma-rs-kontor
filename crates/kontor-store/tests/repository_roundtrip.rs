@@ -47,7 +47,8 @@ use kontor_core::repository::{
     NewTicketLink, PhaseAdvance, ProjectRepository, ReceiptAdvance, ReevaluationOutcome,
     RepositoryError, RunClosure, RunRepository, RuntimeBinding, SourceEventIngest, SpecRepository,
     StoredCompletionProfile, StoredCompletionWake, StoredEpicCompletion, StoredRemediationProposal,
-    TaskTransitionRequest, TeamRunAdvance, TeamRunClosure, TicketRepository, WorkflowRepository,
+    GateRouteOrigin, TaskTransitionRequest, TeamRunAdvance, TeamRunClosure, TicketRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
     ArtifactContentType, ArtifactContractSpec, BudgetBounds, CanonicalSourceEvent, DedupExpression,
@@ -127,6 +128,7 @@ const CENSUS_TABLES: &[&str] = &[
     "status_transition_receipts",
     "task_dependencies",
     "task_gate_evaluations",
+    "task_gate_rejection_routes",
     "task_modules",
     "task_persona_snapshots",
     "task_workflows",
@@ -1172,6 +1174,408 @@ fn a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together() {
             .expect("history")
             .len(),
         1
+    );
+}
+
+/// A workflow standing at the gate's own phase, ready to be rejected out of it.
+fn with_workflow_at_gate_phase(fixture: &Fixture) -> TaskWorkflowId {
+    let profile = work_profile();
+    if fixture
+        .store
+        .get_work_profile(fixture.project, &profile.id, profile.version)
+        .expect("the read succeeds")
+        .is_none()
+    {
+        fixture
+            .store
+            .insert_work_profile(fixture.project, &profile)
+            .expect("the profile is stored");
+    }
+    let snapshot =
+        ResolvedWorkProfileSnapshot::resolve(&profile, now()).expect("the profile resolves");
+    let workflow = TaskWorkflowId::generate();
+    fixture
+        .store
+        .create_task_workflow(&NewTaskWorkflow {
+            id: workflow,
+            project_id: fixture.project,
+            task_id: fixture.task,
+            snapshot,
+            // `zz.two` owns `zz.gate`, whose pinned rejection target is `zz.one`.
+            current_phase: phase("zz.two"),
+            created_at: now(),
+        })
+        .expect("the workflow is created");
+    workflow
+}
+
+/// One rejected evaluation, its pinned route and its exact receipt are one
+/// transaction. A receipt that cannot be written leaves no verdict, no route and
+/// an unmoved workflow behind.
+#[test]
+fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
+    let fixture = fixture();
+    let workflow = with_workflow_at_gate_phase(&fixture);
+    let gate = GateKey::parse("zz.gate").expect("gate");
+
+    // An identity already spent on another command, so the receipt insert fails
+    // *after* the verdict and the route have been written in the transaction.
+    let occupied_id = CommandReceiptId::generate();
+    let occupied_intent = document("occupied rejection receipt");
+    fixture
+        .store
+        .record_intent(&NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: occupied_id,
+            idempotency_key: IdempotencyKey::parse("rejection-route-occupied").expect("key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: occupied_intent.clone(),
+            payload: occupied_intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        })
+        .expect("receipt identity occupied");
+
+    let evaluation = NewGateEvaluation {
+        project_id: fixture.project,
+        workflow_id: workflow,
+        gate: gate.clone(),
+        verdict: GateVerdict::Rejected,
+        evaluator_role: role("zz.reviewer"),
+        evaluator_account: fixture.account,
+        evidence: Vec::new(),
+        agent_run_id: None,
+        session_evidence: None,
+        reviewer_principal: None,
+        policy_evaluation_id: None,
+        recorded_at: now(),
+    };
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "gate_record",
+        "task_id": fixture.task.to_string(),
+        "gate": "zz.gate",
+        "verdict": "rejected",
+    }))
+    .expect("canonical intent");
+    let key = IdempotencyKey::parse("rejection-route-atomic").expect("key");
+    let command = |receipt_id| {
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewCommandIntent {
+                project_id: fixture.project,
+                receipt_id,
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecordGateVerdict,
+                target: AggregateRef::Task {
+                    task_id: fixture.task,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: intent.clone(),
+                payload: intent.clone(),
+                desired: None,
+                not_before: now(),
+                created_at: now(),
+            },
+        )
+    };
+
+    let before = census(&fixture);
+    fixture
+        .store
+        .append_gate_evaluation_with_intent(
+            &evaluation,
+            AggregateRevision::INITIAL,
+            &command(occupied_id),
+        )
+        .expect_err("a refused receipt must roll back its verdict and its route");
+    assert_unchanged(&before, &census(&fixture), "atomic rejection route refusal");
+    let unmoved = fixture
+        .store
+        .get_active_task_workflow(fixture.project, fixture.task)
+        .expect("the workflow reads")
+        .expect("the workflow exists");
+    assert_eq!(
+        unmoved.current_phase,
+        phase("zz.two"),
+        "a rolled-back rejection leaves the workflow where it stood"
+    );
+    assert_eq!(unmoved.revision, AggregateRevision::INITIAL);
+    assert!(
+        fixture
+            .store
+            .gate_rejection_route(fixture.project, workflow, &gate, 1)
+            .expect("the route reads")
+            .is_none(),
+        "a rolled-back rejection records no route"
+    );
+
+    let (sequence, receipt) = fixture
+        .store
+        .append_gate_evaluation_with_intent(
+            &evaluation,
+            AggregateRevision::INITIAL,
+            &command(CommandReceiptId::generate()),
+        )
+        .expect("the same key remains usable after rollback");
+    assert_eq!(sequence, 1);
+    let routed = fixture
+        .store
+        .get_active_task_workflow(fixture.project, fixture.task)
+        .expect("the workflow reads")
+        .expect("the workflow exists");
+    assert_eq!(routed.current_phase, phase("zz.one"), "the pinned target");
+    assert_eq!(routed.revision.get(), 2, "exactly one revision increment");
+    let route = fixture
+        .store
+        .gate_rejection_route(fixture.project, workflow, &gate, 1)
+        .expect("the route reads")
+        .expect("a rejection records its route");
+    assert_eq!(route.origin, GateRouteOrigin::Recorded);
+    assert_eq!(route.rejection_receipt_id, receipt.id);
+    assert_eq!(
+        route.route_receipt_id, receipt.id,
+        "one command recorded the verdict and routed it"
+    );
+    assert_eq!(route.from_phase, phase("zz.two"));
+    assert_eq!(route.rejection_target, phase("zz.one"));
+    assert_eq!(route.from_revision, AggregateRevision::INITIAL);
+    assert_eq!(route.to_revision, routed.revision);
+
+    // A retry is answered from the receipt: no second verdict, no second route
+    // and no second increment.
+    let (replayed, same_receipt) = fixture
+        .store
+        .append_gate_evaluation_with_intent(
+            &evaluation,
+            AggregateRevision::INITIAL,
+            &command(CommandReceiptId::generate()),
+        )
+        .expect("replay reads the exact result");
+    assert_eq!(replayed, sequence);
+    assert_eq!(same_receipt.id, receipt.id);
+    assert_eq!(
+        fixture
+            .store
+            .list_gate_evaluations(fixture.project, workflow)
+            .expect("history")
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .store
+            .list_gate_rejection_routes(fixture.project, workflow)
+            .expect("routes")
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .store
+            .get_active_task_workflow(fixture.project, fixture.task)
+            .expect("the workflow reads")
+            .expect("the workflow exists")
+            .revision
+            .get(),
+        2,
+        "a replay does not increment the workflow revision"
+    );
+}
+
+/// A rejection recorded before the routing fix is routed exactly once,
+/// afterwards, and the record of that survives a reopen.
+#[test]
+fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reopen() {
+    let fixture = fixture();
+    let workflow = with_workflow_at_gate_phase(&fixture);
+    let gate = GateKey::parse("zz.gate").expect("gate");
+
+    // The pre-fix shape: a durable rejected verdict and its receipt, with the
+    // workflow still standing at the phase the rejection should have left.
+    let source_id = CommandReceiptId::generate();
+    let source_intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "gate_record",
+        "task_id": fixture.task.to_string(),
+        "gate": "zz.gate",
+        "verdict": "rejected",
+        "evaluator_role": "zz.reviewer",
+        "evaluator_account": fixture.account.to_string(),
+        "evidence": [],
+    }))
+    .expect("canonical intent");
+    fixture
+        .store
+        .record_intent(&NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: source_id,
+            idempotency_key: IdempotencyKey::parse("legacy-rejection").expect("key"),
+            kind: CommandKind::RecordGateVerdict,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: source_intent.clone(),
+            payload: source_intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        })
+        .expect("the legacy verdict receipt exists");
+    {
+        let connection = Connection::open(&fixture.path).expect("a raw connection opens");
+        connection
+            .execute(
+                "INSERT INTO task_gate_evaluations
+                     (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
+                      evaluator_account, evidence, recorded_at)
+                 VALUES (?1, ?2, 'zz.gate', 1, 'rejected', 'zz.reviewer', ?3, '[]', ?4)",
+                rusqlite::params![
+                    fixture.project.to_string(),
+                    workflow.to_string(),
+                    fixture.account.to_string(),
+                    "2026-01-01T00:00:00Z",
+                ],
+            )
+            .expect("the historical rejected evaluation is seeded");
+    }
+
+    let recovery = |routed_at| kontor_core::repository::GateRejectionRecovery {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        gate: gate.clone(),
+        rejection_receipt_id: source_id,
+        sequence: 1,
+        expected_task_revision: AggregateRevision::INITIAL,
+        expected_workflow_revision: AggregateRevision::INITIAL,
+        expected_current_phase: phase("zz.two"),
+        expected_rejection_target: phase("zz.one"),
+        routed_at,
+    };
+    let envelope = |key: &str| {
+        let intent = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "gate_rejection_recover",
+            "task_id": fixture.task.to_string(),
+            "gate": "zz.gate",
+            "rejection_receipt_id": source_id.to_string(),
+            "sequence": 1,
+        }))
+        .expect("canonical intent");
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewCommandIntent {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: IdempotencyKey::parse(key).expect("key"),
+                kind: CommandKind::RecoverGateRejection,
+                target: AggregateRef::Task {
+                    task_id: fixture.task,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: intent.clone(),
+                payload: intent,
+                desired: None,
+                not_before: now(),
+                created_at: now(),
+            },
+        )
+    };
+
+    let (route, applied, receipt) = fixture
+        .store
+        .recover_gate_rejection_with_intent(&recovery(now()), &envelope("recover-once"))
+        .expect("the historical rejection is routed");
+    assert_eq!(applied, Applied::Created);
+    assert_eq!(route.origin, GateRouteOrigin::Recovered);
+    assert_eq!(route.rejection_receipt_id, source_id);
+    assert_eq!(route.route_receipt_id, receipt.id);
+    assert_ne!(
+        route.route_receipt_id, route.rejection_receipt_id,
+        "a recovery is a distinct command from the verdict it consumes"
+    );
+    assert_eq!(route.from_phase, phase("zz.two"));
+    assert_eq!(route.rejection_target, phase("zz.one"));
+    assert_eq!(route.to_revision.get(), 2);
+    let routed = fixture
+        .store
+        .get_active_task_workflow(fixture.project, fixture.task)
+        .expect("the workflow reads")
+        .expect("the workflow exists");
+    assert_eq!(routed.current_phase, phase("zz.one"));
+    assert_eq!(routed.revision.get(), 2);
+
+    // The same key replays to the same route and receipt, and is judged before
+    // the preconditions it can no longer satisfy.
+    let (replayed, applied, same_receipt) = fixture
+        .store
+        .recover_gate_rejection_with_intent(&recovery(now()), &envelope("recover-once"))
+        .expect("a same-key retry replays");
+    assert_eq!(applied, Applied::Unchanged);
+    assert_eq!(replayed, route);
+    assert_eq!(same_receipt.id, receipt.id);
+
+    // A fresh key against the same consumed rejection changes nothing.
+    let before = census(&fixture);
+    fixture
+        .store
+        .recover_gate_rejection_with_intent(&recovery(now()), &envelope("recover-again"))
+        .expect_err("one rejection is consumed exactly once");
+    assert_unchanged(&before, &census(&fixture), "second rejection consumption");
+    assert_eq!(
+        fixture
+            .store
+            .get_active_task_workflow(fixture.project, fixture.task)
+            .expect("the workflow reads")
+            .expect("the workflow exists")
+            .revision
+            .get(),
+        2,
+        "a refused second consumption does not move the workflow"
+    );
+
+    // The route is append-only: it cannot be edited or deleted.
+    {
+        let connection = Connection::open(&fixture.path).expect("a raw connection opens");
+        connection
+            .execute(
+                "UPDATE task_gate_rejection_routes SET rejection_target = 'zz.three'",
+                [],
+            )
+            .expect_err("a route is immutable");
+        connection
+            .execute("DELETE FROM task_gate_rejection_routes", [])
+            .expect_err("a route is not deletable");
+    }
+
+    // And it survives a reopen, with the workflow still where it was routed.
+    let reopened = SqliteStore::open(&fixture.path).expect("the store reopens");
+    let after = reopened
+        .gate_rejection_route(fixture.project, workflow, &gate, 1)
+        .expect("the route reads")
+        .expect("the route is durable");
+    assert_eq!(after, route);
+    assert_eq!(
+        reopened
+            .get_active_task_workflow(fixture.project, fixture.task)
+            .expect("the workflow reads")
+            .expect("the workflow exists")
+            .current_phase,
+        phase("zz.one")
+    );
+    assert_eq!(
+        reopened
+            .list_gate_evaluations(fixture.project, workflow)
+            .expect("history")
+            .len(),
+        1,
+        "a recovery appends no verdict of its own"
     );
 }
 

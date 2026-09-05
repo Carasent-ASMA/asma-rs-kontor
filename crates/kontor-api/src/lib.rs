@@ -820,6 +820,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::record_gate),
             )
             .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover",
+                post(applications::recover_gate_rejection),
+            )
+            .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
                 post(applications::select_profile),
             )
