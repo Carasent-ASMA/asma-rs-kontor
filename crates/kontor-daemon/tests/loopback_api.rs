@@ -9809,6 +9809,134 @@ async fn an_admin_installs_the_exact_shipped_workflow_revision_under_project_cas
 }
 
 #[tokio::test]
+async fn a_profile_workflow_install_retries_after_an_empty_epic_publishes_its_prerequisite() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "docs-workflow-prerequisite").await;
+    let project_uri = format!("/v1/projects/{}", seed.project);
+    let catalogue_uri = format!("{project_uri}/connectors/connector.jira/workflow-specs");
+    let install_uri = format!("{catalogue_uri}:install");
+    let catalogue = Call::get(&catalogue_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalogue.status, 200, "{}", catalogue.body);
+    let shipped = catalogue.json();
+    let docs = shipped
+        .as_array()
+        .expect("workflow catalogue")
+        .iter()
+        .find(|spec| spec["issue_type"] == "task" && spec["version"] == 3)
+        .expect("the exact docs workflow is shipped");
+    assert_eq!(docs["installed"], false);
+    let project = Call::get(&project_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = project.json()["revision"].as_u64().expect("revision");
+    let mut request = serde_json::json!({
+        "external_project": docs["external_project"],
+        "issue_type": docs["issue_type"],
+        "version": docs["version"],
+        "expected_revision": revision,
+    });
+    let refused = Call::post(&install_uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-install-after-admission")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert_eq!(
+        refused.json()["rule"],
+        "this external-workflow specification requires a work-profile revision not installed in this project"
+    );
+    let unchanged = Call::get(&project_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(unchanged.json()["revision"], revision);
+
+    // An empty reapply publishes the profile without adding a ready task or
+    // replacing the existing task's frozen workflow.
+    let task_uri = format!("{project_uri}/tasks/{}", seed.task);
+    let original_task = Call::get(&task_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(original_task.status, 200, "{}", original_task.body);
+    let body = serde_json::json!({
+        "expected_revision": revision,
+        "name": "Control epic",
+        "work_profile_category": "docs",
+        "runtime_family": "fake.runtime",
+        "tasks": [],
+    });
+    let admitted = Call::post(format!("{project_uri}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-prerequisite-admission")
+        .send(&world)
+        .await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    assert_eq!(admitted.json()["epic_id"], seed.epic);
+    assert_eq!(admitted.json()["tasks"], serde_json::json!([]));
+    let preserved_task = Call::get(&task_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(preserved_task.status, 200, "{}", preserved_task.body);
+    assert_eq!(
+        preserved_task.json()["value"],
+        original_task.json()["value"]
+    );
+    let project = Call::get(&project_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    request["expected_revision"] = project.json()["revision"].clone();
+    let installed = Call::post(&install_uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-install-after-admission")
+        .send(&world)
+        .await;
+    assert_eq!(installed.status, 200, "{}", installed.body);
+    assert_eq!(
+        installed.json()["spec"]["definition_hash"],
+        docs["definition_hash"]
+    );
+    assert_eq!(installed.json()["receipt"]["applied"], "created");
+    let replay = Call::post(&install_uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-install-after-admission")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        installed.json()["receipt"]["receipt_id"]
+    );
+    let readback = Call::get(&catalogue_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert!(
+        readback
+            .json()
+            .as_array()
+            .expect("catalogue")
+            .iter()
+            .any(|spec| {
+                spec["issue_type"] == "task"
+                    && spec["version"] == 3
+                    && spec["definition_hash"] == docs["definition_hash"]
+                    && spec["installed"] == true
+            })
+    );
+}
+
+#[tokio::test]
 async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_without_effects() {
     let server = MockServer::start().await;
     let route_index = Arc::new(AtomicUsize::new(0));

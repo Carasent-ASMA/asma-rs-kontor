@@ -26733,6 +26733,38 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse(&error))?;
             (receipt.id, Applied::Unchanged, revision)
         } else {
+            // A shipped mapping is discoverable before its profile has been
+            // selected in this project. Keep the exact-profile foreign key,
+            // but explain that prerequisite before SQLite reports a generic
+            // persistence conflict. Successful receipt replay stays above this
+            // check and retains its original result revision.
+            if let (Some(profile), Some(version)) = (
+                compiled.spec().work_profile.as_ref(),
+                compiled.spec().work_profile_version,
+            ) {
+                let project = self.project_row(project_id)?;
+                if project.revision != request.expected_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the project moved since the caller read it",
+                        )
+                        .with_revision(Some(project.revision)));
+                }
+                let installed = state
+                    .with_store(|store| store.get_work_profile(project_id, profile, version))
+                    .map_err(|error| self.refuse(&error))?;
+                if installed.is_none() {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::InvalidRequest,
+                            "this external-workflow specification requires a work-profile revision not installed in this project",
+                        )
+                        .advising(
+                            "apply an epic using the specification's exact work profile in this project, then retry the installation",
+                        ));
+                }
+            }
             let now = kontor_api::now();
             let command = ReceiptEnvelope::new(
                 state.realm_id(),

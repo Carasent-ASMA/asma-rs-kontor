@@ -1,0 +1,24 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.13s
+     Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-85725f7dd1eb38be)
+
+running 1 test
+test a_profile_workflow_install_names_its_missing_prerequisite_and_retries_after_admission ... FAILED
+
+failures:
+
+---- a_profile_workflow_install_names_its_missing_prerequisite_and_retries_after_admission stdout ----
+
+thread 'a_profile_workflow_install_names_its_missing_prerequisite_and_retries_after_admission' (75027926) panicked at crates/kontor-daemon/tests/loopback_api.rs:9848:5:
+assertion `left == right` failed: {"realm_id":"01a07070-27d0-78a0-bf1b-f5e403c4a415","code":"revision_conflict","rule":"a persistence rule refused the write against the presented state","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"re-read the aggregate and retry with the revision it reports"}
+  left: 409
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_profile_workflow_install_names_its_missing_prerequisite_and_retries_after_admission
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 267 filtered out; finished in 1.36s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`
