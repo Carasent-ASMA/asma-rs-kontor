@@ -122,6 +122,13 @@ pub struct EpicTask {
     /// worktree, and silently unplacing a task would be a strange way to say
     /// nothing.
     pub worktree: Option<ExternalName>,
+    /// The canonical checkout Kontor derived for this task from its confirmed
+    /// tracker key (ASMA-8101), used only where nothing was ever declared.
+    ///
+    /// It never overrides a declaration: the operator's placement wins, and a
+    /// re-apply that omits `worktree` still leaves an earlier one alone. Before
+    /// this existed an undeclared task simply could not be seated.
+    pub derived_worktree: Option<ExternalName>,
 }
 
 /// The runtime-facing identity one epic declares at import time.
@@ -2849,6 +2856,18 @@ fn ensure_task(
             request.project_id,
             task.id,
             worktree,
+            request.applied_at,
+        )?;
+    } else if let Some(derived) = &plan.derived_worktree
+        && read_worktree(transaction, request.project_id, task.id)?.is_none()
+    {
+        // The deterministic tracker-keyed placement, only where nothing was
+        // ever declared: such a task could not be seated at all before.
+        upsert_worktree(
+            transaction,
+            request.project_id,
+            task.id,
+            derived,
             request.applied_at,
         )?;
     }

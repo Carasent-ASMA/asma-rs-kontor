@@ -2652,7 +2652,16 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "a native_child must say which directory it works in",
             })?;
-        crate::checkout::prepare_managed_worktree(&self.config.scope.project_root_cwd, cwd).await?;
+        let binding = crate::checkout::ManagedBranchBinding::from_scopes([
+            &request.scope,
+            &self.effective_scope(&request.scope)?,
+        ]);
+        crate::checkout::prepare_managed_worktree(
+            &self.config.scope.project_root_cwd,
+            cwd,
+            &binding,
+        )
+        .await?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let same_path = existing
             .iter()
@@ -6310,6 +6319,7 @@ impl RuntimeAdapter for PaseoAdapter {
         crate::checkout::prepare_managed_worktree(
             &self.config.scope.project_root_cwd,
             &request.root,
+            &crate::checkout::ManagedBranchBinding::from_scopes([&request.scope, &effective_scope]),
         )
         .await?;
         let project = self.require_project_for(&effective_scope)?;

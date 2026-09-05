@@ -55,6 +55,58 @@ For example, `ASMA-8001` becomes `KOP-8001` and child `ASMA-7869`
 becomes `KOP-7869`. The item code is not persisted as a second Jira binding and
 is never parsed to reconstruct a full Jira key.
 
+## Branch and worktree naming (ASMA-8101)
+
+A Kontor-managed task checkout lives at `<project root>/.worktrees/<branch>`,
+and the path *is* the branch. Until ASMA-8101 whatever a caller declared there
+became a Git branch and was later published as such — `cat-11`, `kon-op-22`,
+`consultation-<uuid>` — with no tracker identity. Kontor now shares one grammar
+with the ASMA CLI (`asma git checkout -b --from <KEY>`), implemented in
+`kontor-core` `branch.rs` and mirrored byte-for-byte by
+`_tools/asma-cli/src/asma_cli/publication_policy.py`:
+
+```text
+<type>/<PROJECT>-<number>-<slug>      ordinary work, e.g. feat/ASMA-8101-publication-identity
+releases/v<major>.<minor>.<patch>     hotpatch lines, the only keyless form
+```
+
+`<type>` is one of `feat fix docs chore refactor test perf build ci releases`;
+the key is uppercase and unpadded (`asma-8050` and `ASMA-0123` are refusals,
+never repaired); the slug is lowercase words joined by single hyphens, derived
+from a title exactly as the CLI derives it (at most 100 characters, `work-item`
+when the title has no letters or digits).
+
+Rules, in the order they apply:
+
+1. **Declaration.** `epics:apply` refuses a task `worktree` under
+   `.worktrees/` that does not encode a canonical branch, and — when the epic
+   key or the task's Jira link is already known — one whose key is neither.
+   Paths outside `.worktrees/` imply no branch and stay runtime-owned.
+2. **Derivation.** A task that declares no worktree is placed on
+   `.worktrees/feat/<TASK-KEY>-<slug(task title)>` when it links a Jira key,
+   else on the epic key with the epic title. The task key is preferred because
+   a task worktree is the unit of parallel isolation and the scheduler admits
+   one claimant per tree; publication to the default branch still goes from
+   the epic branch through the ASMA CLI. Derivation never overrides a declared
+   worktree, including on a re-apply that omits the field.
+3. **Consultations.** An Advisor or Committee checkout is
+   `.worktrees/chore/<EPIC-KEY>-consultation-<node id>`. A consultation that
+   already owns a pre-ASMA-8101 `consultation-<node id>` checkout keeps it.
+4. **Creation.** When the Paseo adapter must *mint* a branch (no local or
+   remote ref exists), the branch must parse and carry the epic key or the task
+   key of the durable execution scope (or of the plane's compatibility
+   rendering). A legacy scope whose key is an internal id cannot mint anything.
+   Existing refs and existing checkouts are history and are adopted as-is.
+5. **Epic key.** The runtime execution scope uses the confirmed Jira epic
+   binding when an imported epic declared no execution scope, so it branches
+   under its real key rather than under a UUID.
+
+Every refusal carries a stable code shared with the CLI:
+`branch_shape_invalid`, `branch_type_unknown`, `branch_key_missing`,
+`branch_key_not_canonical`, `branch_slug_invalid`, `branch_binding_mismatch`,
+`binding_unconfirmed`. A Kontor display or backlog code (`KON-OP-22`, `KOP-8001`)
+is never a key and never becomes one.
+
 ## Legacy-import code correction
 
 Normal assignments cannot be renamed. Eligible legacy-imported epics may receive

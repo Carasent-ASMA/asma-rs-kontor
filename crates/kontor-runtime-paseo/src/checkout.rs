@@ -4,28 +4,86 @@
 //! not create one. Kontor therefore prepares only the repository convention
 //! that carries enough identity to do so without a guess:
 //! `<project root>/.worktrees/<branch>`. Other roots stay runtime-owned.
+//!
+//! A branch Kontor *creates* must be the branch the ASMA CLI would have created:
+//! [`BranchName`] grammar, carrying the confirmed tracker key of the epic or
+//! task the worktree serves ([`ManagedBranchBinding`]). Until ASMA-8101 the
+//! path `.worktrees/cat-11` produced a branch `cat-11` and was published as
+//! such. A branch that already exists — locally, on the remote, or as a live
+//! checkout — is history and is adopted as-is; the grammar governs creation.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use kontor_core::branch::{BranchName, TrackerKey};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
+use kontor_runtime::scope::ExecutionScope;
 use kontor_runtime::workspace::WorkspaceRoot;
+
+/// The confirmed tracker keys a newly created managed branch may carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedBranchBinding {
+    confirmed: Vec<TrackerKey>,
+}
+
+impl ManagedBranchBinding {
+    /// Every canonical tracker key the given scopes carry: each epic key and,
+    /// where a scope names a ticket, each task key. Durable state and the
+    /// plane's compatibility rendering are both Kontor-held identities, so the
+    /// caller passes both spellings and either binds. A legacy scope whose "key"
+    /// is an internal id contributes nothing, so creation under it alone is
+    /// refused rather than named after a UUID.
+    pub(crate) fn from_scopes<'a>(scopes: impl IntoIterator<Item = &'a ExecutionScope>) -> Self {
+        let mut confirmed: Vec<TrackerKey> = Vec::with_capacity(4);
+        let mut admit = |candidate: Result<TrackerKey, _>| {
+            if let Ok(key) = candidate
+                && !confirmed.contains(&key)
+            {
+                confirmed.push(key);
+            }
+        };
+        for scope in scopes {
+            admit(TrackerKey::from_external(&scope.epic.external_epic_key));
+            if let Some(task) = scope.task.as_ref() {
+                admit(TrackerKey::from_external(&task.external_issue_key));
+            }
+        }
+        Self { confirmed }
+    }
+
+    /// Refuse to create `branch` unless it is canonical and bound to this work.
+    fn ensure_creatable(&self, branch: &str) -> RuntimeResult<()> {
+        let refusal = match BranchName::parse(branch) {
+            Ok(parsed) => match parsed.ensure_bound_to(&self.confirmed) {
+                Ok(()) => return Ok(()),
+                Err(refusal) => refusal,
+            },
+            Err(refusal) => refusal,
+        };
+        Err(RuntimeError::WorkspacePreparationFailed {
+            rule: refusal.rule(),
+        })
+    }
+}
 
 /// Ensure a managed canonical task checkout exists before Paseo registers it.
 ///
 /// An already-present managed checkout is verified against both the branch
 /// encoded by its path and the project repository's common Git directory. An
 /// absent managed checkout is created from an existing local/remote task branch
-/// or, for a new branch, from the repository's default branch.
+/// or, for a new branch, from the repository's default branch — and only when
+/// the new branch is the deterministic one `binding` allows.
 pub(crate) async fn prepare_managed_worktree(
     project_root: &WorkspaceRoot,
     task_root: &WorkspaceRoot,
+    binding: &ManagedBranchBinding,
 ) -> RuntimeResult<()> {
     let project_root = project_root.clone();
     let task_root = task_root.clone();
+    let binding = binding.clone();
     tokio::task::spawn_blocking(move || {
-        prepare_managed_worktree_blocking(&project_root, &task_root)
+        prepare_managed_worktree_blocking(&project_root, &task_root, &binding)
     })
     .await
     .map_err(|_| RuntimeError::WorkspacePreparationFailed {
@@ -36,6 +94,7 @@ pub(crate) async fn prepare_managed_worktree(
 fn prepare_managed_worktree_blocking(
     project_root: &WorkspaceRoot,
     task_root: &WorkspaceRoot,
+    binding: &ManagedBranchBinding,
 ) -> RuntimeResult<()> {
     let project = Path::new(project_root.as_str());
     let task = Path::new(task_root.as_str());
@@ -78,6 +137,9 @@ fn prepare_managed_worktree_blocking(
             .arg(task)
             .arg(format!("origin/{branch}"));
     } else {
+        // Only here does Kontor mint a branch, so only here is the grammar the
+        // gate: an existing ref is history, this would be a new publication.
+        binding.ensure_creatable(&branch)?;
         let base = default_branch_ref(project)?;
         command.arg("-b").arg(&branch).arg(task).arg(base);
     }
