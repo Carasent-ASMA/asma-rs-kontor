@@ -34,7 +34,7 @@ use kontor_core::ticket::{
     ReconciliationInput, ReconciliationOutcome, SelectedTransition, SemanticStatusClass,
     StatusConflictKind, StatusSelector, TicketFieldKey, TicketFieldMapping, TicketFieldSpec,
     TicketPrincipal, TicketSyncProjection, TransitionPlan, TransitionRouteStep, reconcile,
-    reconcile_epic,
+    reconcile_after_resolved_conflict, reconcile_epic,
 };
 
 const WORKFLOW_ONE: &str = include_str!("fixtures/external_workflow_asma.json");
@@ -1272,6 +1272,48 @@ fn an_unknown_status_or_an_incompatible_human_move_is_a_conflict() {
         assert_eq!(
             outcome,
             ReconciliationOutcome::Conflict(StatusConflictKind::IncompatibleHumanMove)
+        );
+    }
+}
+
+#[test]
+fn resolving_the_exact_incompatible_move_allows_that_transition_source_only() {
+    for spec in workflows() {
+        let target = target_of(&spec, "milestone.development-started");
+        let observed = observation(&hold_status(&spec), Some(&principal().account_id));
+        let internal = facts(TaskState::InProgress, false, None);
+        let actor = principal();
+        let transitions = [LiveTransition {
+            transition_id: external("operator-approved-transition"),
+            to: target.clone(),
+        }];
+        let input = ReconciliationInput {
+            spec: &spec,
+            observation: &observed,
+            freshness: Freshness::Fresh,
+            facts: &internal,
+            live_transitions: &transitions,
+            principal: &actor,
+        };
+
+        assert_eq!(
+            reconcile_after_resolved_conflict(&input, StatusConflictKind::IncompatibleHumanMove,),
+            ReconciliationOutcome::Transition(Box::new(TransitionPlan {
+                milestone: SemanticMilestoneKey::parse("milestone.development-started")
+                    .expect("a milestone"),
+                target,
+                transition: Some(SelectedTransition {
+                    transition_id: external("operator-approved-transition"),
+                    to: target_of(&spec, "milestone.development-started"),
+                }),
+                assignment: None,
+                assignment_prerequisite: false,
+            }))
+        );
+        assert_eq!(
+            reconcile_after_resolved_conflict(&input, StatusConflictKind::NoLiveTransition),
+            ReconciliationOutcome::Conflict(StatusConflictKind::IncompatibleHumanMove),
+            "resolving another conflict kind must not authorize a held status"
         );
     }
 }

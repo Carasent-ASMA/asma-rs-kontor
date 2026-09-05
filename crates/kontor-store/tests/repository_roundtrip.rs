@@ -3848,6 +3848,20 @@ fn a_conflict_resolution_receipt_must_resolve_this_conflicted_link() {
         .store
         .insert_conflict(fixture.project, &record)
         .expect("the conflict is recorded");
+    assert!(
+        !fixture
+            .store
+            .resolved_task_conflict_authorizes(
+                fixture.project,
+                link,
+                record.kind,
+                record.task_revision,
+                record.spec_version,
+                &ContentHash::of(b"observation"),
+            )
+            .expect("the unresolved authorization reads"),
+        "recording a conflict alone must never authorize its override"
+    );
     let wrong_kind_receipt = with_receipt(
         &fixture,
         "conflict-wrong-kind",
@@ -3909,6 +3923,66 @@ fn a_conflict_resolution_receipt_must_resolve_this_conflicted_link() {
             at("2026-08-09T12:00:00Z"),
         )
         .expect("a correctly authorized resolution closes the conflict");
+    assert!(
+        fixture
+            .store
+            .resolved_task_conflict_authorizes(
+                fixture.project,
+                link,
+                record.kind,
+                record.task_revision,
+                record.spec_version,
+                &ContentHash::of(b"observation"),
+            )
+            .expect("the exact authorization reads")
+    );
+    for denied in [
+        fixture.store.resolved_task_conflict_authorizes(
+            fixture.project,
+            other_link,
+            record.kind,
+            record.task_revision,
+            record.spec_version,
+            &ContentHash::of(b"observation"),
+        ),
+        fixture.store.resolved_task_conflict_authorizes(
+            fixture.project,
+            link,
+            StatusConflictKind::IncompatibleHumanMove,
+            record.task_revision,
+            record.spec_version,
+            &ContentHash::of(b"observation"),
+        ),
+        fixture.store.resolved_task_conflict_authorizes(
+            fixture.project,
+            link,
+            record.kind,
+            AggregateRevision::parse(2).expect("revision two"),
+            record.spec_version,
+            &ContentHash::of(b"observation"),
+        ),
+        fixture.store.resolved_task_conflict_authorizes(
+            fixture.project,
+            link,
+            record.kind,
+            record.task_revision,
+            SpecVersion::parse(2).expect("spec version two"),
+            &ContentHash::of(b"observation"),
+        ),
+        fixture.store.resolved_task_conflict_authorizes(
+            fixture.project,
+            link,
+            record.kind,
+            record.task_revision,
+            record.spec_version,
+            &ContentHash::of(b"different observation"),
+        ),
+    ] {
+        assert!(
+            !denied.expect("the mismatched authorization reads"),
+            "every evidence dimension is part of the authorization"
+        );
+    }
 }
 
 #[test]

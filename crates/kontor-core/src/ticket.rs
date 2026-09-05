@@ -1608,6 +1608,29 @@ pub fn reconcile_epic(input: &EpicReconciliationInput<'_>) -> ReconciliationOutc
 /// and never clears an assignee under [`OwnershipAction::Preserve`].
 #[must_use]
 pub fn reconcile(input: &ReconciliationInput<'_>) -> ReconciliationOutcome {
+    reconcile_with_resolution(input, None)
+}
+
+/// Reconcile after an operator resolved one exact conflict against the same
+/// immutable evidence.
+///
+/// The caller must prove the resolution still matches the link, task revision,
+/// workflow version and observation payload. Only an
+/// [`StatusConflictKind::IncompatibleHumanMove`] resolution changes the pure
+/// decision: it permits that exact observation to serve as a transition source.
+/// Every other safety check remains active.
+#[must_use]
+pub fn reconcile_after_resolved_conflict(
+    input: &ReconciliationInput<'_>,
+    resolved: StatusConflictKind,
+) -> ReconciliationOutcome {
+    reconcile_with_resolution(input, Some(resolved))
+}
+
+fn reconcile_with_resolution(
+    input: &ReconciliationInput<'_>,
+    resolved: Option<StatusConflictKind>,
+) -> ReconciliationOutcome {
     use ReconciliationOutcome::{Conflict, NoOp, Transition};
 
     if input.freshness != Freshness::Fresh {
@@ -1687,11 +1710,12 @@ pub fn reconcile(input: &ReconciliationInput<'_>) -> ReconciliationOutcome {
         return NoOp;
     }
 
-    if !input
-        .spec
-        .inbound_compatible
-        .iter()
-        .any(|s| s.status_id == input.observation.status.status_id)
+    if resolved != Some(StatusConflictKind::IncompatibleHumanMove)
+        && !input
+            .spec
+            .inbound_compatible
+            .iter()
+            .any(|s| s.status_id == input.observation.status.status_id)
     {
         return Conflict(StatusConflictKind::IncompatibleHumanMove);
     }
