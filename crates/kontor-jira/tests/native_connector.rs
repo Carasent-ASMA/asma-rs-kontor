@@ -10,12 +10,13 @@ use std::time::Duration;
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget};
 use kontor_core::id::{
     AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash, ExternalId,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey, ProjectId,
-    SCHEMA_VERSION, SemanticMilestoneKey, SpecVersion, WorkProfileKey, parse_utc_timestamp,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey, ProjectId,
+    SCHEMA_VERSION, SemanticMilestoneKey, SpecVersion, TaskId, WorkProfileKey, parse_utc_timestamp,
 };
+use kontor_core::state::{GateState, TaskState, TerminalOutcome};
 use kontor_core::ticket::{
-    EpicCompletionEvidence, InternalPredicate, LiveTransition, OwnershipAction, SelectedTransition,
-    StatusSelector, TransitionPlan,
+    EpicCompletionEvidence, InternalPredicate, InternalTaskFacts, LiveTransition, OwnershipAction,
+    SelectedTransition, StatusSelector, TransitionPlan,
 };
 use kontor_jira::jira::{
     ApplyAuthority, FieldSpecKey, IssueAmbiguityVerdict, JiraExchange, JiraIssueDelegation,
@@ -230,6 +231,110 @@ fn bundled_high_stakes_workflow_is_pinned_to_its_actual_gates() {
             "high-verification-gate".to_owned(),
         ])
     );
+}
+
+#[test]
+fn bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion() {
+    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let key = WorkflowSpecKey {
+        connector: ConnectorKey::parse("connector.jira").expect("connector"),
+        project: ExternalProjectKey::parse("asma").expect("project"),
+        issue_type: ExternalIssueTypeKey::parse("task").expect("issue type"),
+        version: SpecVersion::parse(3).expect("docs workflow revision"),
+        work_profile: Some(PinnedProfile {
+            key: WorkProfileKey::parse("docs").expect("docs profile"),
+            version: SpecVersion::parse(1).expect("frozen profile revision"),
+        }),
+    };
+    let workflow = catalog
+        .select_workflow_spec(&key)
+        .expect("docs@1 has its own exact task mapping");
+    let mut facts = InternalTaskFacts {
+        task_id: TaskId::generate(),
+        task_state: TaskState::Blocked,
+        task_revision: AggregateRevision::parse(1).expect("revision"),
+        workflow_revision: AggregateRevision::parse(1).expect("revision"),
+        projection_revision: AggregateRevision::parse(1).expect("revision"),
+        completed_phases: BTreeSet::new(),
+        gate_states: Vec::new(),
+        all_required_gates_passed: false,
+        run_outcome: None,
+    };
+    let target = |facts: &InternalTaskFacts| {
+        workflow
+            .spec()
+            .milestones
+            .iter()
+            .find(|rule| rule.predicate.evaluate(facts))
+            .map(|rule| rule.target.status_id.as_str())
+    };
+    assert_eq!(
+        target(&facts),
+        Some("10231"),
+        "a blocked docs task goes on hold"
+    );
+    facts.task_state = TaskState::InProgress;
+    assert_eq!(
+        target(&facts),
+        Some("10214"),
+        "authoring enters development"
+    );
+    facts.gate_states = vec![(
+        GateKey::parse("technical-review-gate").expect("gate"),
+        GateState::Active,
+    )];
+    assert_eq!(
+        target(&facts),
+        Some("10229"),
+        "the inspector's actual gate enters review"
+    );
+    facts.gate_states = vec![(
+        GateKey::parse("docs-final-gate").expect("gate"),
+        GateState::Active,
+    )];
+    assert_eq!(
+        target(&facts),
+        Some("10254"),
+        "the architect's actual gate enters final review"
+    );
+    facts.gate_states.clear();
+    facts.run_outcome = Some(TerminalOutcome::Succeeded);
+    assert_ne!(
+        target(&facts),
+        Some("10228"),
+        "a finished run alone cannot close the issue"
+    );
+    facts.all_required_gates_passed = true;
+    facts.run_outcome = None;
+    assert_ne!(
+        target(&facts),
+        Some("10228"),
+        "gate evidence alone cannot close the issue"
+    );
+    facts.run_outcome = Some(TerminalOutcome::Succeeded);
+    assert_eq!(
+        target(&facts),
+        Some("10228"),
+        "completed work with every required gate closes"
+    );
+
+    for (profile, version) in [
+        ("code", 1),
+        ("docs", 2),
+        ("asma-high-stakes-primary-20260829", 1),
+    ] {
+        let wrong = WorkflowSpecKey {
+            work_profile: Some(PinnedProfile {
+                key: WorkProfileKey::parse(profile).expect("profile"),
+                version: SpecVersion::parse(version).expect("version"),
+            }),
+            ..key.clone()
+        };
+        assert!(
+            catalog.select_workflow_spec(&wrong).is_err(),
+            "a different frozen profile never borrows docs@1"
+        );
+    }
 }
 
 #[test]

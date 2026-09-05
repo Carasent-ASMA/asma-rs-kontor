@@ -1,0 +1,35 @@
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.70s
+     Running unittests src/lib.rs (target/debug/deps/kontor_jira-d60c7e0db74c2bb7)
+
+running 1 test
+test connector::tests::jira_validation_failure_names_only_safe_field_ids ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_connector.rs (target/debug/deps/native_connector-5252c31c842590af)
+
+running 14 tests
+test an_installed_v1_epic_workflow_remains_selectable_and_hash_stable ... ok
+test create_field_configuration_cannot_override_kontor_owned_fields ... ok
+test bundled_task_workflows_never_cross_profile_pins ... ok
+test bundled_epic_specs_are_generic_and_entity_specific ... ok
+test bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion ... ok
+test bundled_high_stakes_workflow_is_pinned_to_its_actual_gates ... ok
+test strict_configuration_rejects_inline_credentials ... ok
+test entity_neutral_delegation_binds_apply_to_observation_route_and_readback ... ok
+test native_observe_reads_issue_transitions_and_principal ... ok
+test task_create_includes_project_configured_required_fields ... ok
+test explicit_link_confirms_level_zero_without_claiming_type_or_content ... ok
+test create_is_marker_idempotent_and_credentials_are_resolved_per_request ... ok
+test a_blocking_keychain_read_is_bounded_by_the_credential_timeout ... ok
+test native_requests_time_out_without_holding_the_daemon_open ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.01s
+
+   Doc-tests kontor_jira
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
