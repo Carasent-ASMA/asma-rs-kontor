@@ -702,6 +702,31 @@ pub struct RetitleSeatOutcome {
     pub changed: bool,
 }
 
+/// Whether one exact persistent seat still exists on the runtime's active
+/// surface. This is a lifecycle read, not a naming result: archived history is
+/// deliberately distinct from a missing or still-live native.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistentSeatNativeState {
+    /// The exact native is still active.
+    Live,
+    /// The exact native remains in immutable runtime history.
+    Archived,
+    /// The runtime no longer contains the exact native at all.
+    Missing,
+}
+
+/// Exact non-mutating lifecycle readback for a persistent hosted or
+/// consultation seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistentSeatInspection {
+    /// Unchanged native identity that was inspected.
+    pub identity: NativeRuntimeIdentity,
+    /// Current native lifecycle.
+    pub state: PersistentSeatNativeState,
+    /// When the exact readback was performed.
+    pub observed_at: Timestamp,
+}
+
 /// One idempotently addressed follow-up to an existing consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationMessageRequest {
@@ -1004,6 +1029,20 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<RetitleSeatOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::RetitleContainer,
+        })
+    }
+
+    /// Inspect whether one exact persistent seat is live, archived or absent.
+    ///
+    /// This separate surface lets a control plane retire a logical binding only
+    /// after proving its frozen native is no longer live, without treating a
+    /// failed rename as lifecycle evidence.
+    async fn inspect_persistent_seat(
+        &self,
+        _request: &RetitleSeatRequest,
+    ) -> RuntimeResult<PersistentSeatInspection> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Inspect,
         })
     }
 

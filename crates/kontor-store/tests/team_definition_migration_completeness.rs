@@ -23,13 +23,14 @@ use kontor_core::repository::{
     NewNativeContainerBinding, NewProject, NewSeatBinding, NewSessionTopologyNode, NewTask,
     NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun, ProjectRepository,
     RunRepository, RuntimeBinding, SeatLivenessObservation, SpecRepository,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    StoredHostedTopologySeat, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, Shareability, ShareabilityTier, TeamDefinitionSnapshot, TeamDefinitionSpec,
-    TeamRunSnapshot, TeamTemplateRevision, TopologySnapshot,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
+    TopologySnapshot,
 };
 use kontor_core::state::{
     NativeRuntimeIdentity, ObservedContainerKind, TaskState, TopologyLifecycle,
@@ -932,6 +933,152 @@ fn an_in_flight_migration_atomically_fences_node_and_seat_lifecycle() {
             .expect("the ECP remains")
             .lifecycle,
         TopologyLifecycle::Active
+    );
+}
+
+#[test]
+fn an_exact_rename_pending_seat_can_be_retired_before_migration_confirmation() {
+    let w = world();
+    let hosted_seat = SeatBindingId::generate();
+    let role = w
+        .store
+        .get_seat_binding(w.project_id, w.delivery_seat)
+        .expect("the source role reads")
+        .expect("the source role exists")
+        .role;
+    w.store
+        .create_seat_binding(&NewSeatBinding {
+            id: hosted_seat,
+            project_id: w.project_id,
+            topology_node_id: w.ecp,
+            role_slot_id: RoleSlotId::parse("epic.architect").expect("a hosted role slot"),
+            role,
+            task_id: None,
+            team_run_id: None,
+            attach_deadline: at("2026-09-02T10:00:00Z"),
+            parent_seat_binding_id: None,
+            created_at: at("2026-09-02T09:45:00Z"),
+        })
+        .expect("the hosted logical seat is created");
+    w.store
+        .bind_hosted_topology_seat(&StoredHostedTopologySeat {
+            project_id: w.project_id,
+            seat_binding_id: hosted_seat,
+            model_rung: ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6".to_owned()),
+                effort: None,
+            },
+            native_identity: identity("agent_hosted_architect"),
+            provider_session_id: None,
+            observed_at: at("2026-09-02T09:46:00Z"),
+        })
+        .expect("the hosted native identity is bound");
+    let hosted_target = NewTeamDefinitionMigrationTarget {
+        subject: TeamDefinitionMigrationSubject::Seat {
+            topology_node_id: w.ecp,
+            seat_binding_id: hosted_seat,
+        },
+        identity: identity("agent_hosted_architect"),
+        desired: NativePlacement {
+            title: name("AUD"),
+            parent_native_id: Some(ExternalId::parse("wks_ecp").expect("a native id")),
+            kind: MigrationObjectKind::Seat,
+            canonical_cwd: None,
+        },
+    };
+    let mut targets = complete_targets(&w);
+    targets.push(hosted_target.clone());
+    let recorded = w
+        .store
+        .record_team_definition_migration(&migration(
+            &w,
+            "retire-rename-pending-seat",
+            targets.clone(),
+        ))
+        .expect("the live native census is frozen");
+    for target in targets {
+        let is_historical_seat = target.subject
+            == (TeamDefinitionMigrationSubject::Seat {
+                topology_node_id: w.ecp,
+                seat_binding_id: hosted_seat,
+            });
+        w.store
+            .observe_team_definition_migration(
+                w.project_id,
+                recorded.id,
+                &[TeamDefinitionMigrationObservation {
+                    subject: target.subject,
+                    identity: target.identity,
+                    observed: (!is_historical_seat).then_some(target.desired),
+                    state: if is_historical_seat {
+                        TeamDefinitionMigrationTargetState::RenamePending
+                    } else {
+                        TeamDefinitionMigrationTargetState::Renamed
+                    },
+                    observed_at: at("2026-09-02T11:00:00Z"),
+                }],
+                at("2026-09-02T11:00:00Z"),
+            )
+            .expect("the exact target observation is durable");
+    }
+
+    assert!(
+        w.store
+            .confirm_team_definition_migration(
+                w.project_id,
+                recorded.id,
+                at("2026-09-02T11:01:00Z"),
+            )
+            .is_err(),
+        "rename_pending cannot be ignored while its exact native subject is live"
+    );
+
+    assert!(
+        w.store
+            .observe_seat_binding(
+                w.project_id,
+                hosted_seat,
+                &SeatLivenessObservation {
+                    released_at: Some(at("2026-09-02T11:02:00Z")),
+                    ..SeatLivenessObservation::default()
+                },
+                at("2026-09-02T11:02:00Z"),
+            )
+            .is_err(),
+        "ordinary release authority stays fenced during a migration"
+    );
+    let retired = w
+        .store
+        .retire_rename_pending_seat_for_migration(
+            w.project_id,
+            hosted_seat,
+            recorded.id,
+            at("2026-09-02T11:02:00Z"),
+        )
+        .expect("the exact rename_pending seat can become immutable history");
+    assert_eq!(retired.lifecycle, TopologyLifecycle::Retired);
+
+    let confirmed = w
+        .store
+        .confirm_team_definition_migration(w.project_id, recorded.id, at("2026-09-02T11:03:00Z"))
+        .expect("only the still-live successful target census controls the new pin");
+    assert_eq!(confirmed.state, TeamDefinitionMigrationState::Confirmed);
+    assert!(confirmed.targets.iter().any(|target| {
+        target.subject
+            == (TeamDefinitionMigrationSubject::Seat {
+                topology_node_id: w.ecp,
+                seat_binding_id: hosted_seat,
+            })
+            && target.state == TeamDefinitionMigrationTargetState::RenamePending
+    }));
+    assert_eq!(
+        w.store
+            .get_mini_project_team_definition(w.project_id, w.mini_project_id)
+            .expect("the new pin reads")
+            .expect("the epic is pinned")
+            .definition,
+        snapshot(&w.second),
     );
 }
 

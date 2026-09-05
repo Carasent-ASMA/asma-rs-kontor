@@ -7417,7 +7417,7 @@ impl TopologyRepository for SqliteStore {
             .revision
             .expect("topology node", expected_revision)?;
 
-        ensure_no_live_native_migration_for_node(&transaction, project_id, id)?;
+        ensure_live_native_migration_allows_lifecycle(&transaction, project_id, id, None)?;
 
         let advances = matches!(
             (current.lifecycle, lifecycle),
@@ -7670,10 +7670,11 @@ impl TopologyRepository for SqliteStore {
             let topology_node_id = topology_node_id.ok_or(RepositoryError::NotFound {
                 subject: "seat binding",
             })?;
-            ensure_no_live_native_migration_for_node(
+            ensure_live_native_migration_allows_lifecycle(
                 &transaction,
                 project_id,
                 TopologyNodeId::parse(&topology_node_id)?,
+                None,
             )?;
         }
         // COALESCE, never assignment: an observation carries what was seen and
@@ -7719,6 +7720,63 @@ impl TopologyRepository for SqliteStore {
             return Err(RepositoryError::NotFound {
                 subject: "seat binding",
             });
+        }
+        let binding = transaction
+            .query_row(
+                &format!(
+                    "SELECT {SEAT_BINDING_COLUMNS} FROM seat_bindings
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), id.to_string()],
+                |row| Ok(read_seat_binding(row)),
+            )
+            .map_err(backend)??;
+        transaction.commit().map_err(backend)?;
+        Ok(binding)
+    }
+
+    fn retire_rename_pending_seat_for_migration(
+        &self,
+        project_id: ProjectId,
+        id: SeatBindingId,
+        migration_id: TeamDefinitionMigrationId,
+        retired_at: Timestamp,
+    ) -> RepositoryResult<SeatBinding> {
+        let transaction = self.begin()?;
+        let topology_node_id: Option<String> = transaction
+            .query_row(
+                "SELECT topology_node_id FROM seat_bindings
+                 WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let topology_node_id = topology_node_id.ok_or(RepositoryError::NotFound {
+            subject: "seat binding",
+        })?;
+        ensure_live_native_migration_allows_lifecycle(
+            &transaction,
+            project_id,
+            TopologyNodeId::parse(&topology_node_id)?,
+            Some((id, migration_id)),
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE seat_bindings
+                    SET released_at = COALESCE(released_at, ?3),
+                        lifecycle = 'retired',
+                        revision = revision + 1,
+                        updated_at = ?3
+                  WHERE project_id = ?1 AND id = ?2 AND lifecycle = 'active'",
+                params![project_id.to_string(), id.to_string(), text(retired_at)],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "seat binding",
+                "only one active exact seat may retire for the migration",
+            ));
         }
         let binding = transaction
             .query_row(
@@ -17526,26 +17584,67 @@ fn team_definition_validator_in(
 /// lifecycle change commits first and the later census observes history, or the
 /// migration commits first and this write is refused. There is no check/write
 /// race in which a newly historical native can still be retitled.
-fn ensure_no_live_native_migration_for_node(
+fn ensure_live_native_migration_allows_lifecycle(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     topology_node_id: TopologyNodeId,
+    retiring_seat: Option<(SeatBindingId, TeamDefinitionMigrationId)>,
 ) -> RepositoryResult<()> {
-    let fenced: Option<i64> = transaction
+    let migration: Option<(String, Option<String>)> = transaction
         .query_row(
-            "SELECT 1
+            "SELECT migration.id,
+                    (SELECT target.state
+                       FROM team_definition_migration_targets AS target
+                      WHERE target.intent_id = migration.id
+                        AND target.project_id = migration.project_id
+                        AND target.subject_kind = 'seat'
+                        AND target.topology_node_id = node.id
+                        AND target.seat_binding_id = ?3
+                        AND (
+                            EXISTS (
+                                SELECT 1 FROM hosted_topology_seats AS hosted
+                                 WHERE hosted.project_id = target.project_id
+                                   AND hosted.seat_binding_id = target.seat_binding_id
+                                   AND hosted.runtime_kind = target.runtime_kind
+                                   AND hosted.host = target.native_host
+                                   AND hosted.generation = target.native_generation
+                                   AND hosted.native_id = target.native_id
+                            )
+                            OR EXISTS (
+                                SELECT 1 FROM consultation_seats AS consultation
+                                 WHERE consultation.project_id = target.project_id
+                                   AND consultation.seat_binding_id = target.seat_binding_id
+                                   AND consultation.runtime_kind = target.runtime_kind
+                                   AND consultation.host = target.native_host
+                                   AND consultation.generation = target.native_generation
+                                   AND consultation.native_id = target.native_id
+                            )
+                        ))
                FROM topology_nodes AS node
                JOIN team_definition_migration_intents AS migration
                  ON migration.project_id = node.project_id
                 AND migration.mini_project_id = node.mini_project_id
                 AND migration.state IN ('recorded', 'applying')
               WHERE node.project_id = ?1 AND node.id = ?2",
-            params![project_id.to_string(), topology_node_id.to_string()],
-            |row| row.get(0),
+            params![
+                project_id.to_string(),
+                topology_node_id.to_string(),
+                retiring_seat.map(|(seat, _)| seat.to_string()),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(backend)?;
-    if fenced.is_some() {
+    if let Some((active_migration_id, target_state)) = migration
+        && !matches!(
+            (
+                retiring_seat,
+                target_state.as_deref(),
+            ),
+            (Some((_, migration_id)), Some("rename_pending"))
+                if migration_id.to_string() == active_migration_id
+        )
+    {
         return Err(conflict(
             "team definition migration",
             "topology and seat lifecycle are fenced while native names migrate",
@@ -18781,21 +18880,6 @@ impl TeamDefinitionRepository for SqliteStore {
                 "a settled migration cannot be confirmed again",
             ));
         }
-        // Every target, without exception. `rename_pending` is the state that
-        // exists precisely so a partial apply cannot be confirmed: the pin does
-        // not move until the natives already render what it says they do.
-        if !stored.targets.iter().all(|target| {
-            matches!(
-                target.state,
-                TeamDefinitionMigrationTargetState::Renamed
-                    | TeamDefinitionMigrationTargetState::Unchanged
-            )
-        }) {
-            return Err(conflict(
-                "team definition migration",
-                "every target must read back its desired title before the pin moves",
-            ));
-        }
         // And the epic must still be where the intent left it. Anything else
         // moved the pin behind this migration's back.
         let current = self.get_mini_project_team_definition(project_id, stored.mini_project_id)?;
@@ -18806,9 +18890,12 @@ impl TeamDefinitionRepository for SqliteStore {
             ));
         }
         let target = team_definition_in(&transaction, project_id, &stored.to)?;
-        // Re-prove the census. A native that appeared between preview and
-        // confirmation is not covered by this migration, and moving the pin
-        // over it would leave it rendering a name the new pin does not describe.
+        // Re-prove the census from successful exact readbacks only. Every
+        // native that is still live must be present here with its unchanged
+        // identity and desired placement. A `rename_pending` seat can disappear
+        // only through the transactionally fenced, exact-seat retirement path;
+        // it remains immutable migration evidence but no longer belongs to the
+        // pin's live naming claim.
         prove_migration_covers_live_natives(
             self,
             project_id,
@@ -18817,6 +18904,13 @@ impl TeamDefinitionRepository for SqliteStore {
             &stored
                 .targets
                 .iter()
+                .filter(|target| {
+                    matches!(
+                        target.state,
+                        TeamDefinitionMigrationTargetState::Renamed
+                            | TeamDefinitionMigrationTargetState::Unchanged
+                    )
+                })
                 .map(|target| (target.subject, target.identity.clone()))
                 .collect::<BTreeMap<_, _>>(),
         )?;

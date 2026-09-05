@@ -28673,6 +28673,269 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
     assert_eq!(title_for("ECP"), "ECP • KOP-8001");
 }
 
+#[tokio::test]
+async fn an_archived_rename_pending_advisor_can_retire_and_complete_the_same_migration() {
+    let composed = compose_realm("/tmp/kontor-archived-advisor-naming-migration").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let control = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("archived-advisor-core-seats")
+    .send(world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+    let caller = control.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA caller")
+        .to_owned();
+
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    let profile_preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(profile_preview.status, 200, "{}", profile_preview.body);
+    let profile = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": profile_preview.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("archived-advisor-profile")
+    .send(world)
+    .await;
+    assert_eq!(profile.status, 200, "{}", profile.body);
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "topic": "Archived naming blocker",
+            "question": "Is the historical seat safe to retire?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("archived-advisor-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let advisor_seat = SeatBindingId::parse(
+        invoked.json()["seats"][0]["seat_binding_id"]
+            .as_str()
+            .expect("an Advisor seat"),
+    )
+    .expect("a canonical Advisor seat");
+    let live_advisor_seat = SeatBindingId::parse(
+        invoked.json()["seats"][1]["seat_binding_id"]
+            .as_str()
+            .expect("the second Advisor seat"),
+    )
+    .expect("a canonical second Advisor seat");
+    let (advisor_native, seat_revision) = world.daemon.state().with_store(|store| {
+        let consultation = store
+            .get_consultation_seat_by_binding(
+                ProjectId::parse(project).expect("a project id"),
+                advisor_seat,
+            )
+            .expect("the Advisor seat reads")
+            .expect("the Advisor seat exists");
+        let binding = store
+            .get_seat_binding(
+                ProjectId::parse(project).expect("a project id"),
+                advisor_seat,
+            )
+            .expect("the Advisor binding reads")
+            .expect("the Advisor binding exists");
+        (
+            consultation
+                .native_identity
+                .expect("the Advisor native reads back")
+                .native_id,
+            binding.revision,
+        )
+    });
+    world.fake.archive_persistent_seat(&advisor_native);
+
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    connection
+        .execute(
+            "DROP TRIGGER mini_project_team_definition_snapshots_are_permanent",
+            [],
+        )
+        .expect("the legacy fixture can remove its Team Definition pin");
+    connection
+        .execute(
+            "DELETE FROM mini_project_team_definition_snapshots
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![project, epic],
+        )
+        .expect("the legacy Team Definition pin is removed");
+    drop(connection);
+
+    let definition = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .team_definitions
+        .into_iter()
+        .next()
+        .expect("the recommended Team Definition");
+    let upgrade = serde_json::json!({
+        "target_definition": {
+            "id": definition.definition_id.to_string(),
+            "version": definition.version.get(),
+        },
+        "legacy_topics": {},
+        "expected_revision": composed.project_revision,
+    });
+    let upgrade_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(upgrade_preview.status, 200, "{}", upgrade_preview.body);
+    let upgrade_apply = serde_json::json!({
+        "upgrade": upgrade,
+        "preview_hash": upgrade_preview.json()["preview_hash"],
+    });
+    let partial = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &upgrade_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("archived-advisor-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(partial.code(), "rename_pending", "{}", partial.body);
+
+    let live_seat_revision = world.daemon.state().with_store(|store| {
+        let migration = store
+            .get_team_definition_migration_by_key(
+                ProjectId::parse(project).expect("a project id"),
+                &IdempotencyKey::parse("archived-advisor-upgrade").expect("an idempotency key"),
+            )
+            .expect("the migration reads")
+            .expect("the migration exists");
+        let target = migration
+            .targets
+            .iter()
+            .find(|target| target.subject.seat_binding_id() == Some(live_advisor_seat))
+            .expect("the live Advisor is an exact migration target");
+        store
+            .observe_team_definition_migration(
+                ProjectId::parse(project).expect("a project id"),
+                migration.id,
+                &[TeamDefinitionMigrationObservation {
+                    subject: target.subject,
+                    identity: target.identity.clone(),
+                    observed: None,
+                    state: TeamDefinitionMigrationTargetState::RenamePending,
+                    observed_at: kontor_api::now(),
+                }],
+                kontor_api::now(),
+            )
+            .expect("the active rename-pending reproduction is durable");
+        store
+            .get_seat_binding(
+                ProjectId::parse(project).expect("a project id"),
+                live_advisor_seat,
+            )
+            .expect("the live Advisor binding reads")
+            .expect("the live Advisor binding exists")
+            .revision
+    });
+    let refused_live = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{live_advisor_seat}/retire"),
+        &serde_json::json!({
+            "expected_revision": live_seat_revision,
+            "reason": "must not retire a live native during migration",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("refuse-live-advisor-during-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(refused_live.status, 409, "{}", refused_live.body);
+    assert_eq!(refused_live.code(), "placement_blocked");
+    assert!(
+        refused_live.body.contains("still live"),
+        "{}",
+        refused_live.body
+    );
+
+    let retired = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{advisor_seat}/retire"),
+        &serde_json::json!({
+            "expected_revision": seat_revision,
+            "reason": "the exact Advisor native is archived history",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("retire-archived-advisor-during-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    assert_eq!(retired.json()["seat"]["lifecycle"], "retired");
+
+    let completed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &upgrade_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("archived-advisor-upgrade")
+    .send(world)
+    .await;
+    assert_eq!(completed.status, 200, "{}", completed.body);
+    assert_eq!(
+        completed.json()["pinned_definition"]["id"],
+        definition.definition_id.to_string()
+    );
+    assert!(world.fake.calls().iter().any(|call| {
+        matches!(call, AdapterCall::InspectPersistentSeat(native) if native == &advisor_native)
+    }));
+    assert!(world.fake.calls().iter().all(|call| {
+        !matches!(call, AdapterCall::RetitleSeat(native) if native == &advisor_native)
+    }));
+}
+
 /// Historical topology remains immutable evidence. A Team Definition upgrade
 /// migrates only active native containers, so a runtime-archived TSW cannot
 /// block the live census or be retitled to make old history look current.
