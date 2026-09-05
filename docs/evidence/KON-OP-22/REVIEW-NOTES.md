@@ -67,3 +67,28 @@ converged; and `ASMA-8049` reached `In Development` through four exact,
 confirmed revision-2 route intents. The historical revision-1 conflict was
 resolved after target readback, and the later resident backstop created no
 duplicate effect or conflict.
+
+## 2026-09-05 — evidence-integrity follow-up review
+
+The independent inspector reviewed merge
+`082b63ad2e15beddac3b745bdf55c794f35d0b88` (tree `6a91fe9a`) at the exact
+`origin/master` tip and returned **PASS on the production correction**:
+
+- gate evidence comes only from producer-owned `artifact_evidence` and settled
+  `role_turns.artifacts`; a gate's own citations cannot manufacture production;
+- ordinary gate attribution resolves the exact live evaluator-role seat and
+  checks its pinned account when present;
+- phase readiness derives from durable evidence and stops at ambiguous branches;
+- completion derives its artifacts and completed phases from durable records,
+  never from the caller's closure request.
+
+The inspector withheld the delivery gate because two new refusal branches had
+no direct regression and this document plus `MUTATION.md` predated the
+correction. The follow-up adds direct tests for both missing boundaries:
+
+- no live seat holding the evaluator role;
+- a real but different account from the evaluator seat's pinned account.
+
+Both tests pass on the restored implementation and both are independently
+mutation-proven red in `MUTATION.md`. A fresh inspector verdict remains required
+after this follow-up commit; this section does not pre-record that verdict.

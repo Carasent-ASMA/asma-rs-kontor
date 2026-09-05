@@ -6666,6 +6666,37 @@ async fn seat_retitle_classifies_an_exact_missing_native_agent_as_stale() {
     );
 }
 
+#[tokio::test]
+async fn seat_retitle_classifies_an_exact_archived_native_agent_as_stale() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering_rpc(
+            "fetch_agent_request",
+            v(fixture!("protocol/agent-archived.json")),
+        );
+    let plane = Plane::fresh(recorded);
+    let request = RetitleSeatRequest {
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        provider_session_id: None,
+        container_native_id: external(WORKSPACE_ID),
+        desired_title: name("SA"),
+        requested_at: at("2026-08-20T05:04:00Z"),
+    };
+
+    let refused = plane.adapter.preview_retitle_seat(&request).await;
+    assert!(matches!(refused, Err(RuntimeError::StaleBinding { .. })));
+    assert_eq!(
+        plane.daemon.count("agent update agt_implement"),
+        0,
+        "an archived exact identity is historical evidence and must not be renamed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // compaction_
 // ---------------------------------------------------------------------------

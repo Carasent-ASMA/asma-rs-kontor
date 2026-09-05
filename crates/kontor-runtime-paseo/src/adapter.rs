@@ -6857,6 +6857,16 @@ impl RuntimeAdapter for PaseoAdapter {
         let before = self
             .fetch_agent(request.identity.native_id.as_str())
             .await?;
+        // Paseo 0.3.1 may return an archived agent from exact fetch even though
+        // it is no longer an active native seat. Its historical workspace and
+        // title are evidence, not a rename target. Classify it exactly like an
+        // absent native so whole-epic naming can retain the logical seat as
+        // `rename_pending` without mutating archived history.
+        if before.is_archived() {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the exact native agent is archived",
+            });
+        }
         let provider_session_id = before
             .provider_session_id()
             .map(ExternalId::parse)
