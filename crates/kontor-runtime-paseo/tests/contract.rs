@@ -1116,8 +1116,8 @@ fn opencode_rung() -> ModelRung {
 }
 
 /// The message id the create is built with, derived from the launch.
-fn first_turn_id(agent_run_id: AgentRunId, binding_id: RuntimeBindingId) -> String {
-    format!("kontor-first-turn-{agent_run_id}-{binding_id}")
+fn first_turn_id(_agent_run_id: AgentRunId, binding_id: RuntimeBindingId) -> String {
+    binding_id.to_string()
 }
 
 /// The launch-intent digest this launch will carry, derived independently of the

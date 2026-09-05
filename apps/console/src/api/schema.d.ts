@@ -7872,12 +7872,11 @@ export interface components {
         /**
          * @description What `turns:settle` is asked for.
          *
-         *     It settles **Kontor's** bounded turn in a persistent seat. There is no field
-         *     here for a runtime verdict, a terminal state or a native observation, and
-         *     that is the point: a seat is expected to still be sitting there when this
-         *     returns, ready for its next turn. Whether the *session* ever ended is a
-         *     separate question only the runtime can answer, and `runtime:settle` is where
-         *     it is asked.
+         *     It settles **Kontor's** bounded turn in a persistent seat. The caller must
+         *     identify the current message and its terminal canonical timeline position;
+         *     Kontor re-reads both from the exact bound runtime session before recording
+         *     the turn. A delayed notification from an older turn therefore cannot settle
+         *     newer work after a resume or daemon restart.
          */
         SettleTurnRequest: {
             /** @description The artifacts the turn produced. */
@@ -7889,6 +7888,7 @@ export interface components {
             expected_task_revision: number;
             /** @description The role slot whose turn this is. */
             role_slot: string;
+            runtime_proof?: null | components["schemas"]["TurnRuntimeProofRequest"];
         };
         /** @description What settling one bounded role turn produced. */
         SettledTurnDto: {
@@ -8808,6 +8808,31 @@ export interface components {
             target_agent_run_id?: string | null;
             /** @description The slot the work was handed to. */
             to_role_slot: string;
+        };
+        /**
+         * @description Runtime-owned proof that the currently dispatched turn, not an older
+         *     notification, completed.
+         */
+        TurnRuntimeProofRequest: {
+            /** @description Kontor message identity echoed by the runtime on the current user turn. */
+            message_id: string;
+            /** @description Canonical position of that exact user message. */
+            message_position: components["schemas"]["TurnTimelinePositionDto"];
+            /** @description Canonical position of the provider's terminal response. */
+            response_position: components["schemas"]["TurnTimelinePositionDto"];
+        };
+        /** @description One canonical position in the exact bound runtime session. */
+        TurnTimelinePositionDto: {
+            /**
+             * Format: int64
+             * @description Native timeline epoch.
+             */
+            epoch: number;
+            /**
+             * Format: int64
+             * @description One-based sequence inside that epoch.
+             */
+            sequence: number;
         };
         /** @description Exact identity and outage evidence for retiring one unused native seat. */
         UnavailableProviderSeatRequest: {

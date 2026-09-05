@@ -430,6 +430,8 @@ impl Modify for RealmBearer {
         crate::applications::AbandonedRunDto,
         crate::applications::RuntimeSettlementDto,
         crate::applications::SettleTurnRequest,
+        crate::applications::TurnRuntimeProofRequest,
+        crate::applications::TurnTimelinePositionDto,
         crate::applications::SettledTurnDto,
         crate::applications::AttestLateHandoffRequest,
         crate::applications::LateHandoffAttestationDto,

@@ -33,10 +33,10 @@ use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
-    ContentHash, ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId, ModuleKey,
-    ProjectId, RoleSlotId, RoleTurnId, RuntimeBindingId, SpecVersion, StatusConflictId, TaskId,
-    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId, Timestamp,
-    WorkProfileKey,
+    ContentHash, EventCursor, ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId,
+    ModuleKey, ProjectId, RoleSlotId, RoleTurnId, RuntimeBindingId, SpecVersion, StatusConflictId,
+    TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketObservationId,
+    Timestamp, WorkProfileKey,
 };
 use kontor_core::naming::AiShortName;
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -3922,6 +3922,9 @@ pub struct NewRoleTurn {
     pub task_revision: AggregateRevision,
     /// The native binding generation the seat was bound under.
     pub binding_generation: u64,
+    /// Exact current-message and terminal-position proof. Absent only for the
+    /// separately-authorized late-handoff reconciliation path.
+    pub runtime_proof: Option<RoleTurnRuntimeProof>,
     /// The tier the settling caller authenticated at. Truthful by construction:
     /// it is what the bearer proved, not what a request body claimed.
     pub authority_tier: &'static str,
@@ -3956,8 +3959,43 @@ pub struct SettledTurn {
     pub evidence_hash: ContentHash,
     /// The native binding generation.
     pub binding_generation: u64,
+    /// Exact current-message and terminal-position proof, absent only on
+    /// historical pre-v88 or separately-authorized late-handoff receipts.
+    pub runtime_proof: Option<RoleTurnRuntimeProof>,
     /// When it was settled.
     pub settled_at: Timestamp,
+}
+
+/// Immutable request context needed to serve a role-turn idempotency replay
+/// without consulting the runtime again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleTurnReplay {
+    /// The project named by the original request.
+    pub project_id: ProjectId,
+    /// The task revision the original turn was taken against.
+    pub task_revision: AggregateRevision,
+    /// The authority tier authenticated on the original request.
+    pub authority_tier: String,
+    /// The account derived from the original bound run.
+    pub account_profile: Option<AccountProfileId>,
+    /// The durable settlement receipt.
+    pub settled: SettledTurn,
+}
+
+/// Runtime-owned evidence binding one role-turn settlement to the exact
+/// current message rather than a delayed prior-turn notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleTurnRuntimeProof {
+    /// Kontor message identity echoed on the current user turn.
+    pub message_id: String,
+    /// Canonical epoch containing both message and response.
+    pub timeline_epoch: u64,
+    /// Position of the current user message.
+    pub message_sequence: u64,
+    /// Position of its terminal provider response.
+    pub response_sequence: u64,
+    /// Fresh durable observation proving the seat was waiting for input.
+    pub runtime_observation_cursor: EventCursor,
 }
 
 /// One follow-up a settled turn derived.
@@ -3983,6 +4021,60 @@ pub struct TurnDispatch {
 }
 
 impl SqliteStore {
+    /// Read the settlement already owned by one idempotency key.
+    ///
+    /// This is deliberately a store-only read. A delayed retry may arrive after
+    /// the same persistent seat has completed a later turn, so replaying the
+    /// original receipt must not re-inspect the runtime or derive another
+    /// follow-up.
+    ///
+    /// # Errors
+    /// Backend or persisted-domain decoding failures only.
+    pub fn get_settled_turn_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> RepositoryResult<Option<RoleTurnReplay>> {
+        let transaction = self.begin()?;
+        let context: Option<(String, String, i64, String, Option<String>)> = transaction
+            .query_row(
+                "SELECT id, project_id, task_revision, authority_tier, account_profile
+                 FROM role_turns WHERE idempotency_key = ?1",
+                params![idempotency_key],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((id, project_id, task_revision, authority_tier, account_profile)) = context else {
+            transaction.commit().map_err(backend)?;
+            return Ok(None);
+        };
+        let settled = read_turn(&transaction, &id)?.ok_or(RepositoryError::NotFound {
+            subject: "settled role turn",
+        })?;
+        let replay = RoleTurnReplay {
+            project_id: ProjectId::parse(&project_id)?,
+            task_revision: AggregateRevision::parse(u64::try_from(task_revision).map_err(
+                |_| DomainError::invalid("settled role turn", "has an invalid task revision"),
+            )?)?,
+            authority_tier,
+            account_profile: account_profile
+                .as_deref()
+                .map(AccountProfileId::parse)
+                .transpose()?,
+            settled,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(Some(replay))
+    }
+
     /// Settle one bounded role turn, or return the turn that key already
     /// settled.
     ///
@@ -4018,6 +4110,12 @@ impl SqliteStore {
         turn: &NewRoleTurn,
         require_unsettled_slot: bool,
     ) -> RepositoryResult<(SettledTurn, Applied)> {
+        if !require_unsettled_slot && turn.runtime_proof.is_none() {
+            return Err(conflict(
+                "role turn",
+                "the current runtime message and terminal timeline position were not proved",
+            ));
+        }
         let transaction = self.begin()?;
         // Key first, and compared whole: a replay of the same settlement is the
         // original answer, and the same key naming a different turn is a
@@ -4101,13 +4199,19 @@ impl SqliteStore {
                 .map(|key| key.as_str().to_owned())
                 .collect::<Vec<_>>(),
         )?;
+        let proof = turn.runtime_proof.as_ref();
         transaction
             .execute(
                 "INSERT INTO role_turns
                      (id, project_id, task_id, team_run_id, agent_run_id, role_slot_id,
                       turn_ordinal, idempotency_key, task_revision, binding_generation,
-                      authority_tier, account_profile, artifacts, evidence_hash, settled_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                      authority_tier, account_profile, artifacts, evidence_hash, settled_at,
+                      settlement_kind,
+                      runtime_message_id, message_timeline_epoch, message_timeline_sequence,
+                      response_timeline_epoch, response_timeline_sequence,
+                      runtime_observation_cursor)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     turn.id.to_string(),
                     turn.project_id.to_string(),
@@ -4123,7 +4227,18 @@ impl SqliteStore {
                     turn.account_profile.map(|id| id.to_string()),
                     artifacts,
                     turn.evidence_hash.as_str(),
-                    text(turn.settled_at)
+                    text(turn.settled_at),
+                    if require_unsettled_slot {
+                        "late_handoff"
+                    } else {
+                        "current_runtime"
+                    },
+                    proof.map(|proof| proof.message_id.as_str()),
+                    proof.map(|proof| i64::try_from(proof.timeline_epoch).unwrap_or(i64::MAX)),
+                    proof.map(|proof| i64::try_from(proof.message_sequence).unwrap_or(i64::MAX)),
+                    proof.map(|proof| i64::try_from(proof.timeline_epoch).unwrap_or(i64::MAX)),
+                    proof.map(|proof| i64::try_from(proof.response_sequence).unwrap_or(i64::MAX)),
+                    proof.map(|proof| proof.runtime_observation_cursor.get())
                 ],
             )
             .map_err(backend)?;
@@ -4148,7 +4263,10 @@ impl SqliteStore {
             .connection
             .prepare(
                 "SELECT id, task_id, team_run_id, agent_run_id, role_slot_id, turn_ordinal,
-                        artifacts, evidence_hash, binding_generation, settled_at
+                        artifacts, evidence_hash, binding_generation, settled_at,
+                        runtime_message_id, message_timeline_epoch, message_timeline_sequence,
+                        response_timeline_epoch, response_timeline_sequence,
+                        runtime_observation_cursor
                  FROM role_turns
                  WHERE project_id = ?1 AND task_id = ?2
                  ORDER BY settled_at, turn_ordinal",
@@ -4579,7 +4697,10 @@ fn read_turn(transaction: &Transaction<'_>, id: &str) -> RepositoryResult<Option
     let mut statement = transaction
         .prepare(
             "SELECT id, task_id, team_run_id, agent_run_id, role_slot_id, turn_ordinal,
-                    artifacts, evidence_hash, binding_generation, settled_at
+                    artifacts, evidence_hash, binding_generation, settled_at,
+                    runtime_message_id, message_timeline_epoch, message_timeline_sequence,
+                    response_timeline_epoch, response_timeline_sequence,
+                    runtime_observation_cursor
              FROM role_turns WHERE id = ?1",
         )
         .map_err(backend)?;
@@ -4593,6 +4714,17 @@ fn read_turn(transaction: &Transaction<'_>, id: &str) -> RepositoryResult<Option
 /// One settled turn, from a row carrying the standard column order.
 fn turn_from_row(row: &rusqlite::Row<'_>) -> RepositoryResult<SettledTurn> {
     let artifacts: Vec<String> = from_json(&column_text(row, 6)?)?;
+    let optional_u64 = |index| -> RepositoryResult<Option<u64>> {
+        row.get::<_, Option<i64>>(index)
+            .map_err(backend)?
+            .map(|value| {
+                u64::try_from(value).map_err(|_| {
+                    DomainError::invalid("settled role turn", "has an invalid runtime position")
+                        .into()
+                })
+            })
+            .transpose()
+    };
     Ok(SettledTurn {
         id: RoleTurnId::parse(&column_text(row, 0)?)?,
         task_id: TaskId::parse(&column_text(row, 1)?)?,
@@ -4607,5 +4739,39 @@ fn turn_from_row(row: &rusqlite::Row<'_>) -> RepositoryResult<SettledTurn> {
         evidence_hash: ContentHash::parse(&column_text(row, 7)?)?,
         binding_generation: u64::try_from(row.get::<_, i64>(8).map_err(backend)?).unwrap_or(0),
         settled_at: read_timestamp(&column_text(row, 9)?)?,
+        runtime_proof: match (
+            row.get::<_, Option<String>>(10).map_err(backend)?,
+            optional_u64(11)?,
+            optional_u64(12)?,
+            optional_u64(13)?,
+            optional_u64(14)?,
+            row.get::<_, Option<i64>>(15)
+                .map_err(backend)?
+                .map(EventCursor::parse)
+                .transpose()?,
+        ) {
+            (None, None, None, None, None, None) => None,
+            (
+                Some(message_id),
+                Some(timeline_epoch),
+                Some(message_sequence),
+                Some(response_epoch),
+                Some(response_sequence),
+                Some(runtime_observation_cursor),
+            ) if timeline_epoch == response_epoch => Some(RoleTurnRuntimeProof {
+                message_id,
+                timeline_epoch,
+                message_sequence,
+                response_sequence,
+                runtime_observation_cursor,
+            }),
+            _ => {
+                return Err(DomainError::invalid(
+                    "settled role turn",
+                    "has incomplete or mixed-epoch runtime proof",
+                )
+                .into());
+            }
+        },
     })
 }

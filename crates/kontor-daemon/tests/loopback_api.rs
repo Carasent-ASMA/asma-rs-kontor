@@ -15076,6 +15076,7 @@ async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successo
             &serde_json::json!({
                 "role_slot": slot,
                 "expected_task_revision": revision,
+                "runtime_proof": observe_current_turn(&world, &project, agent_run),
                 "artifacts": ["change-set"]
             }),
         )
@@ -17530,6 +17531,63 @@ async fn session_label_repair_preserves_the_bound_identity_and_replays_once() {
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still
 /// be sitting there when it returns.
+fn observe_current_turn(world: &World, project: &str, agent_run: &str) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let agent_run_id = AgentRunId::parse(agent_run).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the settling run reads")
+            .expect("the settling run exists")
+    });
+    let binding = run.binding.expect("the settling run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact settling binding");
+    let message_id = kontor_runtime::request::MessageId::generate();
+    let message_identity = message_id.to_string();
+    let (message_position, response_position) = world
+        .fake
+        .observe_turn_completion(&held, message_id, kontor_api::now())
+        .expect("the runtime records the completed turn");
+    serde_json::json!({
+        "message_id": message_identity,
+        "message_position": {
+            "epoch": message_position.epoch,
+            "sequence": message_position.sequence,
+        },
+        "response_position": {
+            "epoch": response_position.epoch,
+            "sequence": response_position.sequence,
+        },
+    })
+}
+
+fn observe_post_turn_status(world: &World, project: &str, agent_run: &str) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let agent_run_id = AgentRunId::parse(agent_run).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the settling run reads")
+            .expect("the settling run exists")
+    });
+    let binding = run.binding.expect("the settling run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact settling binding");
+    world
+        .fake
+        .observe_post_turn_state_change(&held, kontor_api::now())
+        .expect("the runtime records the post-turn status");
+}
+
 #[tokio::test]
 async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     let world = World::open_empty_with_a_plane().await;
@@ -17568,13 +17626,80 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
         "artifact keys may contain only lowercase ASCII letters, digits, '.', '_' and '-'"
     );
 
-    let settled = Call::post(
+    let calls_before_unproved = world.fake.calls().len();
+    let unproved = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
         &serde_json::json!({
             "role_slot": role_slot,
             "expected_task_revision": revision,
             "artifacts": ["change-set"]
         }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-unproved")
+    .send(&world)
+    .await;
+    assert_eq!(unproved.status, 409, "{}", unproved.body);
+    assert_eq!(unproved.code(), "revision_conflict", "{}", unproved.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_unproved,
+        "missing current-turn evidence refuses before any runtime effect",
+    );
+    let unproved_dispatches = world.daemon.state().with_store(|store| {
+        store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")
+    });
+    assert!(
+        unproved_dispatches.is_empty(),
+        "an unproved settlement fans out nothing",
+    );
+
+    let stale_runtime_proof = observe_current_turn(&world, &project, &agent_run);
+    let runtime_proof = observe_current_turn(&world, &project, &agent_run);
+    observe_post_turn_status(&world, &project, &agent_run);
+    let calls_before_stale = world.fake.calls().len();
+    let stale_completion = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": stale_runtime_proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-stale-completion")
+    .send(&world)
+    .await;
+    assert_eq!(stale_completion.status, 409, "{}", stale_completion.body);
+    assert_eq!(stale_completion.code(), "revision_conflict");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_stale + 2,
+        "the stale proof performs only the fresh inspect and bounded history read",
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+                .expect("dispatches read"))
+            .is_empty(),
+        "a delayed completion from the prior turn fans out nothing",
+    );
+
+    let settled_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": revision,
+        "runtime_proof": runtime_proof,
+        "artifacts": ["change-set"]
+    });
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &settled_body,
     )
     .signed_as(&world, "operator")
     .with_key("turn-live-1")
@@ -17614,11 +17739,7 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     // second position in the seat's sequence.
     let replayed = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
-        &serde_json::json!({
-            "role_slot": role_slot,
-            "expected_task_revision": revision,
-            "artifacts": ["change-set"]
-        }),
+        &settled_body,
     )
     .signed_as(&world, "operator")
     .with_key("turn-live-1")
@@ -17635,6 +17756,7 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
         &serde_json::json!({
             "role_slot": role_slot,
             "expected_task_revision": revision,
+            "runtime_proof": settled_body["runtime_proof"],
             "artifacts": ["change-set", "review-notes"]
         }),
     )
@@ -17644,9 +17766,8 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     .await;
     assert_eq!(drifted.status, 409, "{}", drifted.body);
 
-    // `seat_live` is reported, not assumed. With the frozen snapshot gone this
-    // process cannot drive the seat, and the settlement says so rather than
-    // claiming a reusable seat it could not reach.
+    // Without the frozen snapshot, a new settlement cannot prove its current
+    // turn and therefore fails closed before recording or dispatching.
     world.daemon.state().sessions().forget(
         world
             .daemon
@@ -17668,6 +17789,7 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
         &serde_json::json!({
             "role_slot": role_slot,
             "expected_task_revision": revision,
+            "runtime_proof": settled_body["runtime_proof"],
             "artifacts": ["late-notes"]
         }),
     )
@@ -17675,13 +17797,8 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     .with_key("turn-live-unreachable")
     .send(&world)
     .await;
-    assert_eq!(unreachable.status, 200, "{}", unreachable.body);
-    assert_eq!(
-        unreachable.json()["seat_live"],
-        serde_json::json!(false),
-        "a seat this process cannot reach is reported as such: {}",
-        unreachable.body
-    );
+    assert_eq!(unreachable.status, 409, "{}", unreachable.body);
+    assert_eq!(unreachable.code(), "stale_binding");
 
     // A stale revision is refused: a turn is settled against a named task state.
     let stale = Call::post(
@@ -17741,11 +17858,15 @@ async fn the_next_turn_on_a_settled_slot_reuses_the_same_seat() {
         .as_u64()
         .expect("a revision");
 
+    let first_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": revision,
+        "runtime_proof": observe_current_turn(&world, &project, &agent_run),
+        "artifacts": ["change-set"]
+    });
     let first = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
-        &serde_json::json!({
-            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
-        }),
+        &first_body,
     )
     .signed_as(&world, "operator")
     .with_key("turn-reuse-1")
@@ -17760,7 +17881,10 @@ async fn the_next_turn_on_a_settled_slot_reuses_the_same_seat() {
     let second = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
         &serde_json::json!({
-            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set", "review-notes"]
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(&world, &project, &agent_run),
+            "artifacts": ["change-set", "review-notes"]
         }),
     )
     .signed_as(&world, "operator")
@@ -17774,6 +17898,40 @@ async fn the_next_turn_on_a_settled_slot_reuses_the_same_seat() {
         2,
         "a second turn takes the next position in the seat's sequence: {}",
         second.body
+    );
+
+    // A delayed transport retry of the first request is still the first
+    // receipt. The seat's runtime now points at turn two, so consulting it here
+    // would either falsely reject the retry as stale or risk fan-out from the
+    // wrong current turn. Durable key replay performs neither.
+    let calls_before_delayed_replay = world.fake.calls().len();
+    let dispatches_before_delayed_replay = world.daemon.state().with_store(|store| {
+        store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")
+    });
+    let delayed_replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &first_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-reuse-1")
+    .send(&world)
+    .await;
+    assert_eq!(delayed_replay.status, 200, "{}", delayed_replay.body);
+    assert_eq!(delayed_replay.json()["applied"], "unchanged");
+    assert_eq!(delayed_replay.json()["turn_id"], first.json()["turn_id"]);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_delayed_replay,
+        "a durable replay performs no fresh runtime operation",
+    );
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")),
+        dispatches_before_delayed_replay,
+        "a durable replay derives or fans out no follow-up",
     );
 
     // The identity assertions BLK-010 asks for.
@@ -17843,11 +18001,16 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
         .as_u64()
         .expect("a revision");
 
+    let runtime_proof = observe_current_turn(&world, &project, &agent_run);
+    let settlement_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": revision,
+        "runtime_proof": runtime_proof,
+        "artifacts": ["change-set"]
+    });
     let settled = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
-        &serde_json::json!({
-            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
-        }),
+        &settlement_body,
     )
     .signed_as(&world, "operator")
     .with_key("turn-follow-1")
@@ -17914,9 +18077,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
     // Replaying the settlement derives nothing further.
     let replayed = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
-        &serde_json::json!({
-            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
-        }),
+        &settlement_body,
     )
     .signed_as(&world, "operator")
     .with_key("turn-follow-1")
@@ -18005,16 +18166,18 @@ async fn a_follow_up_whose_acknowledgement_was_lost_is_not_delivered_twice() {
         .as_u64()
         .expect("a revision");
 
+    let runtime_proof = observe_current_turn(&world, &project, &agent_run);
     // The runtime commits the follow-up and then loses the acknowledgement: the
     // effect happened, and the control plane cannot know it did.
-    world
-        .fake
-        .push_step(kontor_runtime::fake::ScriptStep::LoseSendAck);
+    world.fake.lose_next_send_ack();
 
     let settled = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
         &serde_json::json!({
-            "role_slot": role_slot, "expected_task_revision": revision, "artifacts": ["change-set"]
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": runtime_proof,
+            "artifacts": ["change-set"]
         }),
     )
     .signed_as(&world, "operator")
@@ -18143,6 +18306,7 @@ async fn a_turn_receipt_records_proven_authority_and_not_a_claimed_actor() {
         &serde_json::json!({
             "role_slot": role_slot,
             "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(&world, &project, &agent_run),
             "actor": other_id,
             "account_profile": other_id,
             "artifacts": ["change-set"]
@@ -18195,6 +18359,7 @@ async fn a_turn_receipt_records_proven_authority_and_not_a_claimed_actor() {
         &serde_json::json!({
             "role_slot": role_slot,
             "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(&world, &project, &agent_run),
             "artifacts": ["change-set", "review-notes"]
         }),
     )
@@ -18253,6 +18418,7 @@ async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
             &serde_json::json!({
                 "role_slot": role_slot,
                 "expected_task_revision": revision,
+                "runtime_proof": observe_current_turn(&world, &project, agent_run),
                 "artifacts": ["change-set"]
             }),
         )
@@ -18459,6 +18625,11 @@ async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
         &serde_json::json!({
             "role_slot": first["role_slot"].as_str().expect("slot"),
             "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(
+                &world,
+                &project,
+                first["agent_run_id"].as_str().expect("id"),
+            ),
             "artifacts": ["change-set"]
         }),
     )
@@ -18608,6 +18779,7 @@ async fn a_follow_up_selects_the_successors_existing_seat_and_does_not_replace_i
         &serde_json::json!({
             "role_slot": from_slot,
             "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(&world, &project, &from_run),
             "artifacts": ["change-set"]
         }),
     )
@@ -18747,11 +18919,33 @@ async fn alpha_settle(
     artifacts: serde_json::Value,
     revision: u64,
 ) -> Answer {
+    alpha_settle_with_proof(
+        world,
+        project,
+        run,
+        key,
+        artifacts,
+        revision,
+        observe_current_turn(world, project, run),
+    )
+    .await
+}
+
+async fn alpha_settle_with_proof(
+    world: &World,
+    project: &str,
+    run: &str,
+    key: &'static str,
+    artifacts: serde_json::Value,
+    revision: u64,
+    runtime_proof: serde_json::Value,
+) -> Answer {
     Call::post(
         format!("/v1/projects/{project}/agent-runs/{run}/turns:settle"),
         &serde_json::json!({
             "role_slot": "alpha-k1",
             "expected_task_revision": revision,
+            "runtime_proof": runtime_proof,
             "artifacts": artifacts
         }),
     )
@@ -18988,13 +19182,15 @@ async fn both_handoff_conditions_withhold_a_follow_up_until_each_is_satisfied() 
     });
 
     // Both conditions now hold, and only now is the follow-up eligible.
-    let third = alpha_settle(
+    let third_runtime_proof = observe_current_turn(&world, &project, &k1_run);
+    let third = alpha_settle_with_proof(
         &world,
         &project,
         &k1_run,
         "alpha-turn-3",
         serde_json::json!(["alpha-a2"]),
         alpha_revision(&world, &project, &epic).await,
+        third_runtime_proof.clone(),
     )
     .await;
     assert_eq!(third.status, 200, "{}", third.body);
@@ -19027,13 +19223,14 @@ async fn both_handoff_conditions_withhold_a_follow_up_until_each_is_satisfied() 
     let after_release = alpha_content(&world, &target).await;
 
     // Delivered once: a replayed settlement adds no second effect.
-    let replay = alpha_settle(
+    let replay = alpha_settle_with_proof(
         &world,
         &project,
         &k1_run,
         "alpha-turn-3",
         serde_json::json!(["alpha-a2"]),
         alpha_revision(&world, &project, &epic).await,
+        third_runtime_proof,
     )
     .await;
     assert_eq!(replay.status, 200, "{}", replay.body);
@@ -19504,6 +19701,7 @@ async fn a_team_that_closed_on_settled_turns_releases_admission_capacity() {
             &serde_json::json!({
                 "role_slot": role_slot,
                 "expected_task_revision": revision,
+                "runtime_proof": observe_current_turn(&world, &project, agent_run),
                 "artifacts": ["change-set"]
             }),
         )
@@ -19684,6 +19882,7 @@ async fn consecutive_turns_on_one_slot_converge_on_one_seat_and_one_session() {
             &serde_json::json!({
                 "role_slot": role_slot,
                 "expected_task_revision": revision,
+                "runtime_proof": observe_current_turn(&world, &project, &agent_run),
                 "artifacts": ["change-set"]
             }),
         )
@@ -20199,6 +20398,7 @@ async fn a_waiver_completes_a_team_whose_declared_slot_was_never_bound() {
             &serde_json::json!({
                 "role_slot": role_slot,
                 "expected_task_revision": revision,
+                "runtime_proof": observe_current_turn(world, project, agent_run),
                 "artifacts": ["omega-a3"]
             }),
         )
@@ -20565,19 +20765,18 @@ async fn a_waived_slot_is_never_given_a_follow_up() {
     let revision = projected.json()["tasks"][0]["revision"]
         .as_u64()
         .expect("a revision");
+    let giver = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k1")
+        .expect("omega-k1 is seated")["agent_run_id"]
+        .as_str()
+        .expect("id");
     let settled = Call::post(
-        format!(
-            "/v1/projects/{project}/agent-runs/{}/turns:settle",
-            seats
-                .iter()
-                .find(|seat| seat["role_slot"] == "omega-k1")
-                .expect("omega-k1 is seated")["agent_run_id"]
-                .as_str()
-                .expect("id")
-        ),
+        format!("/v1/projects/{project}/agent-runs/{giver}/turns:settle"),
         &serde_json::json!({
             "role_slot": "omega-k1",
             "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(world, project, giver),
             "artifacts": ["omega-a2", "omega-a3"]
         }),
     )
@@ -20633,6 +20832,11 @@ async fn an_unwaived_slot_on_the_same_template_does_receive_the_follow_up() {
         &serde_json::json!({
             "role_slot": "omega-k1",
             "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(
+                &control.world,
+                &control.project,
+                &giver,
+            ),
             "artifacts": ["omega-a2", "omega-a3"]
         }),
     )
@@ -20708,6 +20912,11 @@ async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
         &serde_json::json!({
             "role_slot": "omega-k1",
             "expected_task_revision": 1,
+            "runtime_proof": observe_current_turn(
+                &recovered.world,
+                &recovered.project,
+                &giver,
+            ),
             "artifacts": ["omega-a2", "omega-a3"]
         }),
     )
