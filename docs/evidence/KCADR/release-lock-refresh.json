@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "reason": "The required archive release gate regenerates Cargo.lock and compares canonical bytes; current registry resolution includes eight patch updates.",
+  "source_base": "67e9104f3b1b7f366697f44c5e9185883ce9ad5b",
+  "previous_lock_sha256": "f885d9002bc9e453990a8ec2efe10bee5d42fd3925521ee7cf813311833d8c05",
+  "new_lock_sha256": "5f99e2e0c95db8e79100e977c629001a5ab2e243ba2294614d2f8051c8f4a569",
+  "package_records_before": 758,
+  "package_records_after": 758,
+  "updates": {
+    "indexmap": "2.14.1 -> 2.14.2",
+    "js-sys": "0.3.104 -> 0.3.105",
+    "wasm-bindgen": "0.2.127 -> 0.2.128",
+    "wasm-bindgen-futures": "0.4.77 -> 0.4.78",
+    "wasm-bindgen-macro": "0.2.127 -> 0.2.128",
+    "wasm-bindgen-macro-support": "0.2.127 -> 0.2.128",
+    "wasm-bindgen-shared": "0.2.127 -> 0.2.128",
+    "web-sys": "0.3.104 -> 0.3.105"
+  },
+  "manifest_changes": false,
+  "reviewer_session": "/root/pr167_merge/review_paseo",
+  "status": "approved_static_review",
+  "kontor_gate_authority": false,
+  "reviewer_verdict_excerpt": "Parsed both lockfiles:758 package records each, exactly eight reported patch-version replacements, no package-name/source changes; all other record changes only point consumers to indexmap2.14.2. Every dependency resolves uniquely. All eight updated checksums match the local crates.io sparse-index records, all are not yanked, reported MSRV<=1.85 under toolchain1.97.1. Family exact pins agree. Material transitive detail: wasm-bindgen-macro-support now requires syn^3.0 and resolves already-locked syn3.0.5; index confirms this is intentional, no new package. No findings; no cargo process started. Full archive gate still qualifies the changed build inputs."
+}
