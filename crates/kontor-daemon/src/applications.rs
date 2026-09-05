@@ -959,6 +959,135 @@ impl Services {
             .collect()
     }
 
+    /// Artifact contracts this task's producers have already recorded.
+    ///
+    /// A lifecycle or gate request may cite these keys, but cannot add one by
+    /// naming it. The store deliberately excludes gate-evaluation citations
+    /// from this read so the check cannot prove itself.
+    fn durable_artifact_keys(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<BTreeSet<ArtifactKey>, ApiError> {
+        self.state()?
+            .with_store(|store| store.list_task_artifact_keys(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .map(|key| ArtifactKey::parse(key.as_str()).map_err(|error| self.refuse_domain(&error)))
+            .collect()
+    }
+
+    /// Phases whose own producer evidence and gates are durably satisfied.
+    fn completed_workflow_phases(
+        workflow: &TaskWorkflow,
+        gates: &BTreeMap<GateKey, kontor_core::state::GateState>,
+        artifacts: &BTreeSet<ArtifactKey>,
+    ) -> BTreeSet<kontor_core::id::PhaseKey> {
+        workflow
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .filter(|phase| {
+                phase
+                    .required_artifacts
+                    .iter()
+                    .all(|artifact| artifacts.contains(artifact))
+                    && phase.gates.iter().all(|gate| {
+                        gates
+                            .get(gate)
+                            .is_some_and(|state| state.satisfies_requirement())
+                    })
+            })
+            .map(|phase| phase.id.clone())
+            .collect()
+    }
+
+    /// The first phase whose own requirements are not yet complete.
+    ///
+    /// This virtual catch-up lets a pre-upgrade workflow whose stored phase is
+    /// stale accept exactly its next gate without rewriting the revision the
+    /// caller just read. The committed projection catches up after the verdict.
+    fn evidence_ready_phase(
+        workflow: &TaskWorkflow,
+        completed: &BTreeSet<kontor_core::id::PhaseKey>,
+    ) -> kontor_core::id::PhaseKey {
+        let mut current = workflow.current_phase.clone();
+        let mut visited = BTreeSet::new();
+        while completed.contains(&current) && visited.insert(current.clone()) {
+            let mut outgoing = workflow
+                .snapshot
+                .definition
+                .edges
+                .iter()
+                .filter(|edge| edge.from == current);
+            let Some(edge) = outgoing.next() else {
+                break;
+            };
+            if outgoing.next().is_some() {
+                // A branching workflow needs an explicit phase-choice surface;
+                // evidence alone cannot choose one branch without inventing
+                // authority. Stay at the fork until that surface advances it.
+                break;
+            }
+            current = edge.to.clone();
+        }
+        current
+    }
+
+    /// Advance the stored phase only while its persisted requirements prove it
+    /// complete. This is a deterministic projection of producer turns and gate
+    /// states, never a phase claim from an API request.
+    fn advance_workflow_from_evidence(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<TaskWorkflow, ApiError> {
+        let state = self.state()?;
+        loop {
+            let workflow = state
+                .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the task has no active workflow to advance",
+                    )
+                })?;
+            let gates = state
+                .with_store(|store| store.gate_states(project_id, workflow.id))
+                .map_err(|error| self.refuse(&error))?;
+            let artifacts = self.durable_artifact_keys(project_id, task_id)?;
+            let completed = Self::completed_workflow_phases(&workflow, &gates, &artifacts);
+            let ready = Self::evidence_ready_phase(&workflow, &completed);
+            if ready == workflow.current_phase {
+                return Ok(workflow);
+            }
+            let Some(next) = workflow
+                .snapshot
+                .definition
+                .edges
+                .iter()
+                .find(|edge| edge.from == workflow.current_phase)
+                .map(|edge| edge.to.clone())
+            else {
+                return Ok(workflow);
+            };
+            state
+                .with_store(|store| {
+                    store.advance_phase(&kontor_core::repository::PhaseAdvance {
+                        project_id,
+                        workflow_id: workflow.id,
+                        expected_revision: workflow.revision,
+                        next_phase: next,
+                        advanced_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            state.signals().appended();
+        }
+    }
+
     fn latest_handoff_receipt(
         &self,
         project_id: ProjectId,
@@ -3308,6 +3437,38 @@ impl Services {
                     .map_err(|error| self.refuse(&error))?;
                 if run.is_some_and(|run| !run.projection.lifecycle.is_terminal()) {
                     return Ok(Some(seat.agent_run_id));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The live seat that actually holds a gate's evaluator role.
+    fn live_evaluator_seat(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        evaluator_role: &RoleKey,
+    ) -> Result<Option<kontor_core::repository::AgentRun>, ApiError> {
+        let state = self.state()?;
+        let runs = state
+            .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        for (team_run_id, _) in runs.into_iter().rev() {
+            let seats = state
+                .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+                .map_err(|error| self.refuse(&error))?;
+            for seat in seats {
+                if seat.role != *evaluator_role {
+                    continue;
+                }
+                let run = state
+                    .with_store(|store| store.get_agent_run(project_id, seat.agent_run_id))
+                    .map_err(|error| self.refuse(&error))?;
+                if let Some(run) = run
+                    && !run.projection.lifecycle.is_terminal()
+                {
+                    return Ok(Some(run));
                 }
             }
         }
@@ -23353,14 +23514,57 @@ impl ApplicationOperations for Services {
         if self.replayed(key, &intent, Some(&target))?.is_some() {
             return self.gate_verdict_replay(project_id, task_id, &workflow.id, &gate_key, key);
         }
-        let receipt = self.record(
-            key,
-            project_id,
-            CommandKind::RecordGateVerdict,
-            target,
-            task.revision,
-            &intent,
-        )?;
+
+        let durable = self.durable_artifact_keys(project_id, task_id)?;
+        let current_gate_states = state
+            .with_store(|store| store.gate_states(project_id, workflow.id))
+            .map_err(|error| self.refuse(&error))?;
+        let completed = Self::completed_workflow_phases(&workflow, &current_gate_states, &durable);
+        let ready_phase = Self::evidence_ready_phase(&workflow, &completed);
+        let gate_spec = workflow
+            .snapshot
+            .definition
+            .gate(&gate_key)
+            .ok_or_else(|| {
+                self.deny(ApiErrorCode::NotFound, "the workflow declares no such gate")
+            })?;
+        let evaluator_authorized = if verdict == GateVerdict::Waived {
+            gate_spec.waiver_allowed && gate_spec.waiver_roles.contains(&evaluator_role)
+        } else {
+            gate_spec.evaluator_roles.contains(&evaluator_role)
+        };
+        if !evaluator_authorized {
+            return Err(
+                self.refuse_domain(&kontor_core::DomainError::MissingAuthority {
+                    subject: "gate evaluation",
+                    rule: "the acting role is not an authority for this gate",
+                }),
+            );
+        }
+        let gate_phase = gate_spec.phase.clone();
+        let phase_position = |phase: &kontor_core::id::PhaseKey| {
+            workflow
+                .snapshot
+                .definition
+                .phases
+                .iter()
+                .position(|candidate| &candidate.id == phase)
+        };
+        if verdict.requires_evidence() && phase_position(&gate_phase) > phase_position(&ready_phase)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a gate cannot be recorded before its workflow phase is ready",
+            ));
+        }
+        if verdict.requires_evidence()
+            && evidence.iter().any(|artifact| !durable.contains(artifact))
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a passing or waived gate may cite only durable producer evidence",
+            ));
+        }
 
         // Read *before* the write opens the store: `with_store` takes one
         // process-wide lock, and asking for the seat from inside the closure
@@ -23377,8 +23581,34 @@ impl ApplicationOperations for Services {
                 request,
                 citation,
             )?),
-            None => self.live_seat(project_id, task_id)?,
+            None => {
+                let evaluator = self
+                    .live_evaluator_seat(project_id, task_id, &evaluator_role)?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::InvalidRequest,
+                            "the task has no live seat holding the gate's evaluator role",
+                        )
+                    })?;
+                if let Some(pinned) = evaluator.account_profile_id
+                    && pinned != request.evaluator_account
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "the evaluating account does not match the evaluator seat's pinned account",
+                    ));
+                }
+                Some(evaluator.id)
+            }
         };
+        let receipt = self.record(
+            key,
+            project_id,
+            CommandKind::RecordGateVerdict,
+            target,
+            task.revision,
+            &intent,
+        )?;
         let session_evidence = recovery.clone();
         let sequence = state
             .with_store(|store| {
@@ -23401,6 +23631,7 @@ impl ApplicationOperations for Services {
         let gates = state
             .with_store(|store| store.gate_states(project_id, workflow.id))
             .map_err(|error| self.refuse(&error))?;
+        self.advance_workflow_from_evidence(project_id, task_id)?;
         state.signals().appended();
         Ok(GateVerdictDto {
             realm_id: state.realm_id(),
@@ -24284,6 +24515,7 @@ impl ApplicationOperations for Services {
         // be trusted to answer — the certifier decides it from the template's
         // declared slots. Until every one is accounted for this is a no-op.
         let (team_run_closed, _) = self.settle_team(project_id, &run, now)?;
+        self.advance_workflow_from_evidence(project_id, task_id)?;
         let follow_ups = self.derive_follow_ups(project_id, &settled, now).await?;
 
         Ok(SettledTurnDto {
@@ -31426,25 +31658,38 @@ impl Services {
                 ));
             }
         };
-        let artifacts: BTreeSet<kontor_core::id::ArtifactKey> = request
+        let cited_artifacts: BTreeSet<kontor_core::id::ArtifactKey> = request
             .evidence
             .iter()
             .map(|key| kontor_core::id::ArtifactKey::parse(key))
             .collect::<Result<_, _>>()
             .map_err(|error| self.refuse_domain(&error))?;
-        let completed = state
-            .with_store(|store| store.get_active_task_workflow(project_id, task.id))
-            .map_err(|error| self.refuse(&error))?
-            .map(|workflow| {
-                workflow
-                    .snapshot
-                    .definition
-                    .phases
-                    .iter()
-                    .map(|phase| phase.id.clone())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
+        let (artifacts, completed) = if to == TaskState::Done {
+            let artifacts = self.durable_artifact_keys(project_id, task.id)?;
+            if cited_artifacts
+                .iter()
+                .any(|artifact| !artifacts.contains(artifact))
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "task completion may cite only durable producer evidence",
+                ));
+            }
+            let workflow = state
+                .with_store(|store| store.get_active_task_workflow(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
+            let completed = if let Some(workflow) = workflow {
+                let gates = state
+                    .with_store(|store| store.gate_states(project_id, workflow.id))
+                    .map_err(|error| self.refuse(&error))?;
+                Self::completed_workflow_phases(&workflow, &gates, &artifacts)
+            } else {
+                BTreeSet::new()
+            };
+            (artifacts, completed)
+        } else {
+            (cited_artifacts, BTreeSet::new())
+        };
         // A task that ran a team closes with that team's own certificate, derived
         // here from the frozen template's declared slots. It is not fabricated and
         // it is not accepted from the caller: an uncertified team is a refusal
@@ -31479,11 +31724,7 @@ impl Services {
             reopen: matches!(request.action, LifecycleAction::ReopenTask),
             run_outcome: None,
             produced_artifacts: artifacts.clone(),
-            completed_phases: if to == TaskState::Done {
-                completed.clone()
-            } else {
-                BTreeSet::new()
-            },
+            completed_phases: completed,
             team_closure: team_closure.clone(),
             occurred_at: now,
         };
