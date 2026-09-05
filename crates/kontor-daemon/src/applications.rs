@@ -24514,7 +24514,13 @@ impl ApplicationOperations for Services {
                 )
             })
             .map_err(|error| self.refuse(&error))?;
-        self.advance_workflow_from_evidence(project_id, task_id)?;
+        // A rejection is routed atomically with its append-only verdict. Do not
+        // immediately catch the workflow forward again from evidence produced
+        // before that rejection; the responsible seat must settle the routed
+        // phase once more before ordinary evidence advancement resumes.
+        if verdict != GateVerdict::Rejected {
+            self.advance_workflow_from_evidence(project_id, task_id)?;
+        }
         state.signals().appended();
         Ok(GateVerdictDto {
             realm_id: state.realm_id(),
