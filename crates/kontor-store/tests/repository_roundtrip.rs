@@ -221,6 +221,16 @@ fn artifact(text: &str) -> ArtifactKey {
     ArtifactKey::parse(text).expect("a valid artifact key")
 }
 
+fn runtime_turn_proof() -> kontor_store::RoleTurnRuntimeProof {
+    kontor_store::RoleTurnRuntimeProof {
+        message_id: "01900000-0000-7000-8000-000000000001".to_owned(),
+        timeline_epoch: 1,
+        message_sequence: 1,
+        response_sequence: 2,
+        runtime_observation_cursor: EventCursor::parse(1).expect("a positive cursor"),
+    }
+}
+
 fn document(marker: &str) -> CanonicalDocument {
     CanonicalDocument::from_value(&serde_json::json!({
         "schema_version": 1,
@@ -6240,6 +6250,7 @@ fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
                 idempotency_key: format!("turn-{slot}"),
                 task_revision: AggregateRevision::INITIAL,
                 binding_generation: 1,
+                runtime_proof: Some(runtime_turn_proof()),
                 authority_tier: "operator",
                 account_profile: Some(fixture.account),
                 artifacts: [artifact("zz.output")].into_iter().collect(),
@@ -6413,31 +6424,53 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
     // The turn declares one contract key beside the free-form labels a real turn
     // carries — a filename and a commit sha. `artifact_evidence` stays empty:
     // this is the ordinary delivery path, which registers no locator.
+    let request = kontor_store::NewRoleTurn {
+        id: kontor_core::id::RoleTurnId::generate(),
+        project_id: fixture.project,
+        task_id: fixture.task,
+        team_run_id: team_run,
+        agent_run_id: run,
+        role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+        idempotency_key: "turn-artifact-evidence".to_owned(),
+        task_revision: AggregateRevision::INITIAL,
+        binding_generation: 1,
+        runtime_proof: Some(runtime_turn_proof()),
+        authority_tier: "operator",
+        account_profile: Some(fixture.account),
+        artifacts: [
+            artifact("zz.output"),
+            artifact("architecture.md"),
+            artifact("commit-6f884a0e552272d05583c3db6f4edcf414a44f40"),
+        ]
+        .into_iter()
+        .collect(),
+        evidence_hash: ContentHash::of(b"turn"),
+        settled_at: now(),
+    };
+    let mut unproved = request.clone();
+    unproved.id = kontor_core::id::RoleTurnId::generate();
+    unproved.idempotency_key = "turn-without-runtime-proof".to_owned();
+    unproved.runtime_proof = None;
     fixture
         .store
-        .settle_role_turn(&kontor_store::NewRoleTurn {
-            id: kontor_core::id::RoleTurnId::generate(),
-            project_id: fixture.project,
-            task_id: fixture.task,
-            team_run_id: team_run,
-            agent_run_id: run,
-            role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
-            idempotency_key: "turn-artifact-evidence".to_owned(),
-            task_revision: AggregateRevision::INITIAL,
-            binding_generation: 1,
-            authority_tier: "operator",
-            account_profile: Some(fixture.account),
-            artifacts: [
-                artifact("zz.output"),
-                artifact("architecture.md"),
-                artifact("commit-6f884a0e552272d05583c3db6f4edcf414a44f40"),
-            ]
-            .into_iter()
-            .collect(),
-            evidence_hash: ContentHash::of(b"turn"),
-            settled_at: now(),
-        })
+        .settle_role_turn(&unproved)
+        .expect_err("an ordinary role turn without current runtime proof is refused");
+
+    let (settled, _) = fixture
+        .store
+        .settle_role_turn(&request)
         .expect("the turn settles");
+    assert_eq!(settled.runtime_proof, Some(runtime_turn_proof()));
+    let replay = fixture
+        .store
+        .get_settled_turn_by_idempotency_key(&request.idempotency_key)
+        .expect("the replay context reads")
+        .expect("the settled key exists");
+    assert_eq!(replay.project_id, fixture.project);
+    assert_eq!(replay.task_revision, request.task_revision);
+    assert_eq!(replay.authority_tier, request.authority_tier);
+    assert_eq!(replay.account_profile, request.account_profile);
+    assert_eq!(replay.settled, settled);
 
     let keys = fixture
         .store
@@ -6889,10 +6922,13 @@ fn a_waived_slot_is_refused_a_run_a_binding_a_turn_and_an_update() {
         .execute(
             "INSERT INTO role_turns (id, project_id, task_id, team_run_id, agent_run_id,
                  role_slot_id, turn_ordinal, idempotency_key, task_revision, binding_generation,
-                 authority_tier, artifacts, evidence_hash, settled_at)
+                 authority_tier, artifacts, evidence_hash, settled_at, settlement_kind,
+                 runtime_message_id, message_timeline_epoch, message_timeline_sequence,
+                 response_timeline_epoch, response_timeline_sequence, runtime_observation_cursor)
              VALUES (?1, ?2, ?3, ?4, ?5, 'zz.checker', 1, 'sneak', 1, 1, 'operator', '[]',
                      '0000000000000000000000000000000000000000000000000000000000000000',
-                     '2026-08-09T10:00:00Z')",
+                     '2026-08-09T10:00:00Z', 'current_runtime',
+                     '01900000-0000-7000-8000-000000000001', 1, 1, 1, 2, 1)",
             rusqlite::params![
                 kontor_core::id::RoleTurnId::generate().to_string(),
                 project,
@@ -6930,6 +6966,7 @@ fn a_disposition_closure_reproves_itself_and_round_trips_as_its_own_source() {
             idempotency_key: "turn-maker".to_owned(),
             task_revision: AggregateRevision::INITIAL,
             binding_generation: 1,
+            runtime_proof: Some(runtime_turn_proof()),
             authority_tier: "operator",
             account_profile: Some(fixture.fixture.account),
             artifacts: [artifact("zz.output")].into_iter().collect(),
@@ -7151,10 +7188,14 @@ fn a_slot_that_both_settled_and_was_waived_is_refused_by_the_store() {
             raw.execute(
                 "INSERT INTO role_turns (id, project_id, task_id, team_run_id, agent_run_id,
                      role_slot_id, turn_ordinal, idempotency_key, task_revision,
-                     binding_generation, authority_tier, artifacts, evidence_hash, settled_at)
+                     binding_generation, authority_tier, artifacts, evidence_hash, settled_at,
+                     settlement_kind, runtime_message_id, message_timeline_epoch,
+                     message_timeline_sequence, response_timeline_epoch,
+                     response_timeline_sequence, runtime_observation_cursor)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 1, 1, 'operator', '[]',
                          '0000000000000000000000000000000000000000000000000000000000000000',
-                         '2026-08-09T10:00:00Z')",
+                         '2026-08-09T10:00:00Z', 'current_runtime',
+                         '01900000-0000-7000-8000-000000000001', 1, 1, 1, 2, 1)",
                 rusqlite::params![
                     id,
                     project.to_string(),

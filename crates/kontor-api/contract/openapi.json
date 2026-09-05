@@ -20060,7 +20060,7 @@
       },
       "SettleTurnRequest": {
         "type": "object",
-        "description": "What `turns:settle` is asked for.\n\nIt settles **Kontor's** bounded turn in a persistent seat. There is no field\nhere for a runtime verdict, a terminal state or a native observation, and\nthat is the point: a seat is expected to still be sitting there when this\nreturns, ready for its next turn. Whether the *session* ever ended is a\nseparate question only the runtime can answer, and `runtime:settle` is where\nit is asked.",
+        "description": "What `turns:settle` is asked for.\n\nIt settles **Kontor's** bounded turn in a persistent seat. The caller must\nidentify the current message and its terminal canonical timeline position;\nKontor re-reads both from the exact bound runtime session before recording\nthe turn. A delayed notification from an older turn therefore cannot settle\nnewer work after a resume or daemon restart.",
         "required": [
           "role_slot",
           "expected_task_revision"
@@ -20082,6 +20082,17 @@
           "role_slot": {
             "type": "string",
             "description": "The role slot whose turn this is."
+          },
+          "runtime_proof": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TurnRuntimeProofRequest",
+                "description": "Exact current runtime message and terminal response positions.\n\nOptional in the wire shape only so older callers receive one typed\nconflict rather than a deserialization error. Absence never authorizes\nsettlement."
+              }
+            ]
           }
         }
       },
@@ -21998,6 +22009,51 @@
           "to_role_slot": {
             "type": "string",
             "description": "The slot the work was handed to."
+          }
+        }
+      },
+      "TurnRuntimeProofRequest": {
+        "type": "object",
+        "description": "Runtime-owned proof that the currently dispatched turn, not an older\nnotification, completed.",
+        "required": [
+          "message_id",
+          "message_position",
+          "response_position"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Kontor message identity echoed by the runtime on the current user turn."
+          },
+          "message_position": {
+            "$ref": "#/components/schemas/TurnTimelinePositionDto",
+            "description": "Canonical position of that exact user message."
+          },
+          "response_position": {
+            "$ref": "#/components/schemas/TurnTimelinePositionDto",
+            "description": "Canonical position of the provider's terminal response."
+          }
+        }
+      },
+      "TurnTimelinePositionDto": {
+        "type": "object",
+        "description": "One canonical position in the exact bound runtime session.",
+        "required": [
+          "epoch",
+          "sequence"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Native timeline epoch.",
+            "minimum": 0
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "One-based sequence inside that epoch.",
+            "minimum": 0
           }
         }
       },

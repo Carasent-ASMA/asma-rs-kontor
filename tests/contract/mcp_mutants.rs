@@ -115,8 +115,9 @@ fn no_tool_names_a_runtime_endpoint_or_a_provider() {
         &[],
     );
     // Runtime *operations* stay daemon routes. The only runtime words a tool may
-    // carry are the family key it selects and the capability list it reads, and
-    // neither creates, kills or archives anything.
+    // carry are the family key it selects and the bounded current-turn proof a
+    // settlement submits for daemon-side readback. Neither is an endpoint,
+    // provider selector, native identity, or lifecycle command.
     let runtime_arguments: BTreeSet<&str> = every_argument()
         .into_iter()
         .filter(|(_, name)| name.contains("runtime"))
@@ -124,8 +125,8 @@ fn no_tool_names_a_runtime_endpoint_or_a_provider() {
         .collect();
     assert_eq!(
         runtime_arguments,
-        BTreeSet::from(["runtime_family"]),
-        "a tool grew a runtime argument beyond the family it selects"
+        BTreeSet::from(["runtime_family", "runtime_proof"]),
+        "a tool grew a runtime argument beyond the reviewed family/proof boundary"
     );
     // `kontor_topology_archive` is the one tool allowed to spell one of these
     // verbs, and only because it does not mean what the verb means here.

@@ -520,8 +520,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // exact item, on which run, under which immutable signal revision. v86
     // binds that provenance to the exact control-event cursor and adds the
     // durable forward-only seat-succession attempt and receipt ledgers. v87
-    // permits a due deferred attempt to refresh its exact authority atomically.
-    assert_eq!(SCHEMA_VERSION, 87);
+    // permits a due deferred attempt to refresh its exact authority atomically;
+    // v88 binds every new role-turn settlement to its current runtime message
+    // and terminal canonical timeline position.
+    assert_eq!(SCHEMA_VERSION, 88);
 }
 
 #[test]
