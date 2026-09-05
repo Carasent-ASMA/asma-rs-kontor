@@ -197,3 +197,96 @@ authority.
   `In Development`, and its Kontor epic has no unresolved Jira conflict.
 - Owner/status: closed end to end. No direct Jira or database mutation was used
   for recovery; the only fallbacks were the documented read-only diagnostics.
+
+## 2026-09-04 — KOP correction exposed a legacy ECP title dependency
+
+- Intended Kontor operation: preview the evidence-preserving recovery of ECP
+  topology node `01a00c26-2862-7121-ad2c-3e3028497669` in project
+  `01a0064a-e056-7603-9968-ef64fdaacb75`, after the one-time epic backlog-code
+  correction changed epic `01a0074f-6719-7570-adf7-95ee3ec69875` from `OP` to
+  `KOP` under receipt `01a06d91-d3a1-7142-8d82-f96f3ef29931`.
+- Failure class: `unsupported_capability` / workspace mismatch. The live runtime
+  proved one exact-parent/exact-path replacement candidate for stale native id
+  `wks_0c695ce96e2c4296`, but that candidate carried
+  `ECP • ASMA-7869 • Kontor Operational MVP` while the epic's still-pinned
+  topology-v1 template rendered `ECP • ASMA-7869 • OP`. Preview failed closed
+  before changing either identity.
+- Exact scope: Realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`, Paseo project
+  `prj_b95f6d73b8de6c59`, ECP topology node above, and its sole exact-path live
+  candidate. No other workspace, project, seat or Jira issue is in scope.
+- Bounded fallback: Paseo was used only to retitle that already-proved candidate.
+  An initial `ECP • KOP-7869` attempt exposed that recovery deliberately renders
+  the currently pinned topology rather than the project's unpinned Team
+  Definition; the immutable topology-v1 document was then read through Kontor,
+  and the same workspace was corrected to `ECP • ASMA-7869 • OP`. Readback kept
+  workspace `wks_900499bd8e2e59cb`, project `prj_b95f6d73b8de6c59`, and the exact
+  canonical path unchanged. No other Paseo mutation and no direct Kontor
+  database write occurred.
+- Recovery result: the resumed Kontor preview hash was
+  `a91b1dd0d62c71b3b7c96c7198893c7964c3797c74d6d7ac0c2c27e05dc577bf`.
+  Kontor atomically replaced only stale native id `wks_0c695ce96e2c4296` with
+  `wks_900499bd8e2e59cb` under receipt
+  `01a06d95-d086-75a2-863c-5ff19d93d692`, preserving the topology node and
+  canonical path.
+- Owner/status: closed end to end by the KON-OP-22 delivery owner. The original
+  Kontor workflow resumed at the recovery checkpoint; Team Definition migration
+  remains a separate next operation.
+
+## 2026-09-05 — legacy consultation container bindings blocked native-name migration
+
+- Intended Kontor operation: preview the identity-preserving upgrade of epic
+  `01a0074f-6719-7570-adf7-95ee3ec69875` to Team Definition
+  `01936f5a-2000-7000-8000-000000000001` v2, using the five explicitly supplied
+  legacy consultation topics recorded in `OPEN-QUESTIONS.md`.
+- Failure class: `stale_binding`. CSW topology node
+  `01a02bb3-2614-7711-8a02-8978ab947be8` named absent workspace
+  `wks_163b779bb853680e`; ASW node
+  `01a02d6e-4db9-7372-b2b8-c815da222dc5` named absent workspace
+  `wks_124e30e7ebcff8f1`. The migration refused before changing a title or pin.
+- Bounded fallback: Paseo was used only to create empty replacement workspaces
+  under the existing epic project and the exact canonical paths that Kontor
+  required. No agent, seat, project, Git worktree, branch or code was created.
+  Kontor then previewed and adopted CSW `wks_5dff06d16622a38d` under receipt
+  `01a07091-b37a-7591-b244-7e7ababb9742` and ASW
+  `wks_6b2fdfdfff62cd89` under receipt
+  `01a07091-d525-7bd0-9120-b7d0a1799112`, retaining both topology-node
+  identities and before/after evidence.
+- Contained correction: an initial CSW candidate
+  `wks_f6989674acc87b20` was created with the wrong path. It held zero agents and
+  was immediately archived; its empty mistaken directory was removed. It was
+  never offered to or adopted by Kontor and changed no control-plane identity.
+- Owner/status: the two consultation container gaps are closed. Migration
+  preview resumed and exposed the next separately recorded stale binding.
+
+## 2026-09-05 — completed OP-20 topology named a missing historical TSW
+
+- Intended Kontor operation: resume the same Team Definition upgrade preview.
+- Failure class: `stale_binding`. The completed OP-20 task still had an active
+  TSW topology node naming absent workspace `wks_f4a6…`, although its TeamRun
+  had succeeded and every seat was already retired.
+- Bounded fallback: a direct Paseo create was attempted only through the
+  supported surface and was refused as an unsafe duplicate. No bypass and no
+  native mutation followed. Kontor first upgraded the epic topology pin from v1
+  to v4 under receipt `01a07095-0c7a-7893-a313-91a53eb0d780`, then retired only
+  the stale OP-20 TSW node under receipt
+  `01a07095-ca5d-76b2-b626-de6463058220`. The task, TeamRun, SeatBindings,
+  branch, Git worktree, commits and historical native binding remain preserved.
+- Owner/status: closed without deletion. The migration resumed from the same
+  checkpoint.
+
+## 2026-09-05 — bounded runtime census and verdict readback
+
+- Intended Kontor operations: identify the still-unnamed migration subject and
+  read the terminal inspector responses needed for evidence-bound role-turn
+  settlement.
+- Failure class: the whole-epic migration refusal did not identify the stale
+  binding, and Kontor's timeline projection deliberately omits message bodies.
+- Bounded fallback: read-only Paseo status/activity calls were limited to the
+  exact OP-21/OP-22 delivery seats and the three legacy consultation natives.
+  They proved which immutable native ids still existed, their exact workspace
+  ids, and the inspectors' already-rendered verdicts. No Paseo message, title,
+  workspace, agent or lifecycle mutation was made by this census.
+- Resume checkpoint: use Kontor's exact runtime positions for turn settlement,
+  close the evidence gaps identified by the inspectors, and continue the
+  configuration-driven migration. Owner/status: open until those original
+  Kontor operations complete.

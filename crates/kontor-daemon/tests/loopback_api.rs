@@ -7271,6 +7271,162 @@ fn active_workflow(world: &World, seed: &Bootstrapped) -> kontor_core::repositor
         .expect("the task has an active workflow")
 }
 
+/// An ordinary verdict is attributable to the task's live evaluator seat. A
+/// role name in the request cannot stand in for a seat that no longer exists.
+#[tokio::test]
+async fn an_ordinary_gate_verdict_requires_a_live_evaluator_seat() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "gate-no-live-evaluator").await;
+    let inspector = inspector_run(&world, &runs).await;
+    let (uri, revision, _) = gate_record_target(&world, &seed).await;
+
+    close_seat(&world, &seed, &inspector, "gate-no-live-evaluator-settle").await;
+
+    let refused = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": seed.account,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-no-live-evaluator-record")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(
+        refused
+            .body
+            .contains("no live seat holding the gate's evaluator role"),
+        "the refusal identifies the missing authority: {}",
+        refused.body
+    );
+
+    let workflow = active_workflow(&world, &seed);
+    let evaluations = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("the seeded project id parses"),
+                workflow.id,
+            )
+        })
+        .expect("the evaluations read back");
+    assert!(
+        evaluations.is_empty(),
+        "a role name without a live seat appends nothing: {evaluations:#?}"
+    );
+}
+
+/// A real account is not sufficient attribution when it is not the account
+/// frozen into the evaluator seat that actually rendered the verdict.
+#[tokio::test]
+async fn an_ordinary_gate_verdict_requires_the_evaluator_seats_pinned_account() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "gate-evaluator-account").await;
+
+    let pinned = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/account-selection",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({
+            "expected_revision": seed.task_revision,
+            "account_profile_id": seed.account,
+            "reason": "Pin the evaluator's account"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("gate-evaluator-account-pin")
+    .send(&world)
+    .await;
+    assert_eq!(pinned.status, 200, "{}", pinned.body);
+
+    let runs = seat_existing(&world, &seed, "gate-evaluator-account").await;
+    let inspector = inspector_run(&world, &runs).await;
+    let snapshot = Call::get(format!("/v1/runs/{inspector}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+    assert_eq!(
+        snapshot.json()["value"]["account_profile_id"],
+        seed.account,
+        "the evaluator seat freezes the selected account: {}",
+        snapshot.body
+    );
+
+    let other = Call::post(
+        format!(
+            "/v1/projects/{}/provider-account-profiles:ensure",
+            seed.project
+        ),
+        &serde_json::json!({
+            "label": "Other evaluator account",
+            "harness": "fake.runtime",
+            "credential_alias": "other-evaluator",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("gate-evaluator-account-other")
+    .send(&world)
+    .await;
+    assert_eq!(other.status, 200, "{}", other.body);
+    let other = other.json()["account_profile_id"]
+        .as_str()
+        .expect("the other account has an id")
+        .to_owned();
+
+    let (uri, revision, _) = gate_record_target(&world, &seed).await;
+    let refused = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "inspector",
+            "evaluator_account": other,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-evaluator-account-record")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(
+        refused
+            .body
+            .contains("does not match the evaluator seat's pinned account"),
+        "the refusal identifies the account mismatch: {}",
+        refused.body
+    );
+
+    let workflow = active_workflow(&world, &seed);
+    let evaluations = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("the seeded project id parses"),
+                workflow.id,
+            )
+        })
+        .expect("the evaluations read back");
+    assert!(
+        evaluations.is_empty(),
+        "an account mismatch appends nothing: {evaluations:#?}"
+    );
+}
+
 /// A closed evaluator seat can no longer record its own gate: the gate that
 /// was rendered in its session must be transcribed through the recovery path,
 /// and the citation is refused *while* the seat is still able to act.
