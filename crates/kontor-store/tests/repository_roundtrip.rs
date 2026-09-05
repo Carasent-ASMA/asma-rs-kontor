@@ -6496,7 +6496,7 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
 }
 
 #[test]
-fn only_a_passed_gate_contributes_its_cited_artifacts_as_evidence() {
+fn no_gate_verdict_can_turn_its_citations_into_producer_evidence() {
     let fixture = fixture();
     let workflow = with_workflow(&fixture);
     let cite = |actor: &str, verdict: GateVerdict, evidence: Vec<ArtifactKey>| NewGateEvaluation {
@@ -6547,7 +6547,8 @@ fn only_a_passed_gate_contributes_its_cited_artifacts_as_evidence() {
         "neither a rejection nor a waiver evidences an artifact, even one it cites"
     );
 
-    // The same evaluator then passes, citing the contract artifact.
+    // The same evaluator then passes, citing the contract artifact. A pass is
+    // still only an evaluation of producer evidence; it cannot create it.
     fixture
         .store
         .append_gate_evaluation(&cite(
@@ -6557,21 +6558,13 @@ fn only_a_passed_gate_contributes_its_cited_artifacts_as_evidence() {
         ))
         .expect("the gate passes");
 
-    let keys = fixture
-        .store
-        .list_task_artifact_keys(fixture.project, fixture.task)
-        .expect("the read succeeds");
     assert!(
-        keys.contains(&name("zz.output")),
-        "a passed gate's citation is evidence: {keys:?}"
-    );
-    assert!(
-        !keys.contains(&name("zz.rejected-only")),
-        "a rejected verdict's citation must not leak in: {keys:?}"
-    );
-    assert!(
-        !keys.contains(&name("zz.waived-only")),
-        "a waived gate's citation must not leak in: {keys:?}"
+        fixture
+            .store
+            .list_task_artifact_keys(fixture.project, fixture.task)
+            .expect("the read succeeds")
+            .is_empty(),
+        "a pass, rejection and waiver all cite evidence without producing it"
     );
 }
 

@@ -43,9 +43,8 @@ use harness::{World, at, secret};
 use kontor_core::id::{
     AgentRunId, AggregateRevision, ContentHash, ExternalId, MiniProjectId, ProjectId,
 };
-use kontor_core::repository::RealmRepository as _;
+use kontor_core::repository::RunRepository as _;
 use kontor_mcp::{CallerTier, Dispatcher, FrameBudget, Method, Reply, Transport, TransportFailure};
-use kontor_runtime::RuntimeAdapter as _;
 use kontor_store::{
     JiraIntentKind, JiraItemKind, NewJiraMaterializationBatch, NewJiraMaterializationItem,
 };
@@ -73,14 +72,6 @@ const HISTORY_LIVE: &str = r#"{
   "live": [
     {"kind": "message", "sequence": 3, "emitted_at": "2026-08-10T09:03:00Z", "body": "three"}
   ]
-}"#;
-
-/// The step that lets the scripted runtime observe its own termination.
-const OBSERVED_TERMINAL: &str = r#"{
-  "history": [
-    {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "working"}
-  ],
-  "steps": [{"step": "cancel_observed_terminal"}]
 }"#;
 
 /// The transport seam, bound to a real router instead of a real socket.
@@ -243,47 +234,52 @@ fn task_view<'a>(projection: &'a serde_json::Value, task: &str) -> &'a serde_jso
         .unwrap_or_else(|| panic!("task {task} is missing from the projection: {projection}"))
 }
 
-/// Drive the scripted runtime's session for `run` to a terminal state.
-///
-/// This is the *agent finishing its work*, which happens outside Kontor. It is
-/// not a Kontor operation and deliberately not an MCP call: the journey's claim
-/// is that every instruction **to Kontor** goes through the tool surface, not
-/// that the outside world is also made of tool calls. Settlement would be a lie
-/// if the runtime had not actually reached a terminal state first, so this makes
-/// it true rather than asserting it.
-///
-/// The step is queued immediately before the cancel rather than at the top of the
-/// test: the fake matches its queue strictly by operation, so a cancel step loaded
-/// earlier would be consumed by whichever of `prepare_workspace`, `admit_launch`
-/// or `launch` reached the runtime first.
-async fn finish_natively(world: &World, run: &str) {
-    world.script(OBSERVED_TERMINAL);
+/// Have the scripted runtime record the exact request/response positions that
+/// prove one bounded role turn completed while its persistent seat stays live.
+fn observe_current_turn(world: &World, project: &str, run: &str) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
     let agent_run_id = AgentRunId::parse(run).expect("an agent run id");
-    let binding = world.daemon.state().with_store(|store| {
+    let run = world.daemon.state().with_store(|store| {
         store
-            .snapshot_run_inspection(agent_run_id)
-            .expect("readable")
-            .open(world.realm_id())
-            .expect("our own realm")
-            .expect("the run exists")
-            .run
-            .binding
-            .expect("the run is bound")
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the settling run reads")
+            .expect("the settling run exists")
     });
-    let snapshot = world
+    let binding = run.binding.expect("the settling run is bound");
+    let held = world
         .daemon
         .state()
         .sessions()
         .get(binding.id)
-        .expect("this process holds the frozen snapshot");
-    world
+        .expect("this process holds the exact settling binding");
+    let message_id = kontor_runtime::request::MessageId::generate();
+    let message_identity = message_id.to_string();
+    let (message_position, response_position) = world
         .fake
-        .cancel(&kontor_runtime::request::CancelRequest {
-            binding: snapshot,
-            requested_at: at("2026-08-10T09:30:00Z"),
-        })
-        .await
-        .expect("the runtime observes its own termination");
+        .observe_turn_completion(&held, message_id, kontor_api::now())
+        .expect("the runtime records the completed turn");
+    serde_json::json!({
+        "message_id": message_identity,
+        "message_position": {
+            "epoch": message_position.epoch,
+            "sequence": message_position.sequence,
+        },
+        "response_position": {
+            "epoch": response_position.epoch,
+            "sequence": response_position.sequence,
+        },
+    })
+}
+
+/// Producer artifacts declared by this journey's explicit five-slot fixture.
+fn artifacts_for_role(role_slot: &str) -> serde_json::Value {
+    match role_slot {
+        "builder" => serde_json::json!(["code-change"]),
+        "inspector" => serde_json::json!(["review-notes"]),
+        "tester" => serde_json::json!(["qa-report"]),
+        "architect" => serde_json::json!(["release-notes"]),
+        _ => serde_json::json!([]),
+    }
 }
 
 /// Record the exact successful Jira readbacks that this socket-free journey
@@ -807,19 +803,32 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "round {round}: the scheduler re-admitted a task it already closed: {task}"
         );
 
-        // 8. Every seat settles. The runtime reaches its own terminal state first —
-        //    that is the agent finishing, outside Kontor — and only then is the
-        //    settlement asked for through the tool.
+        // 8. Every bounded role turn settles with exact runtime positions while
+        //    its persistent seat stays live. The role turn, not a later gate or
+        //    lifecycle request, is the durable producer of its artifacts.
+        let before_turns = ok(
+            &lead,
+            "kontor_epic_get",
+            serde_json::json!({ "project_id": project, "epic_id": epic }),
+        )
+        .await;
+        let task_revision = task_view(&before_turns, &task)["revision"]
+            .as_u64()
+            .expect("a task revision");
         for (index, seat) in seats.iter().enumerate() {
             let run = seat["agent_run_id"].as_str().expect("an agent run id");
-            finish_natively(&world, run).await;
+            let role_slot = seat["role_slot"].as_str().expect("a role slot");
             let settled = ok(
                 &lead,
-                "kontor_runtime_settle",
+                "kontor_turn_settle",
                 serde_json::json!({
                     "project_id": project,
                     "agent_run_id": run,
-                    "idempotency_key": format!("journey-settle-{round}-{index}"),
+                    "role_slot": role_slot,
+                    "expected_task_revision": task_revision,
+                    "runtime_proof": observe_current_turn(&world, &project, run),
+                    "artifacts": artifacts_for_role(role_slot),
+                    "idempotency_key": format!("journey-turn-{round}-{index}"),
                 }),
             )
             .await;
@@ -827,6 +836,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
                 settled["agent_run_id"], *run,
                 "the settlement answered about the seat it was asked about: {settled}"
             );
+            assert_eq!(settled["seat_live"], true, "the persistent seat stays live");
         }
 
         // 9. The gates the pinned profile declares, discharged through the public
@@ -839,15 +849,21 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         )
         .await;
         let view = task_view(&projection, &task);
-        let workflow_revision = view["workflow_revision"]
-            .as_u64()
-            .expect("a task with an active workflow reports its revision");
         let gates = view["gates"].as_array().expect("a gate list").clone();
         assert!(
             !gates.is_empty(),
             "the pinned profile declares gates to discharge: {projection}"
         );
         for (index, gate) in gates.iter().enumerate() {
+            let current = ok(
+                &lead,
+                "kontor_epic_get",
+                serde_json::json!({ "project_id": project, "epic_id": epic }),
+            )
+            .await;
+            let workflow_revision = task_view(&current, &task)["workflow_revision"]
+                .as_u64()
+                .expect("a task with an active workflow reports its revision");
             let name = gate["gate"].as_str().expect("a gate");
             let evaluator = gate["evaluator_roles"]
                 .as_array()

@@ -58,23 +58,24 @@ use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{
     CapacityRepository, CommandRepository, ConnectorSpecSelector, NewAgentRun,
-    NewConsultationMaterializationReroute, NewLocalCommand, NewMiniProject, NewObservation,
-    NewProject, NewProviderQuotaState, NewProviderUsageObservation, NewQuotaObservationProvenance,
-    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewTask, NewTaskWorkflow, NewTeamRun,
-    NewTicketLink, ProjectRepository, ProviderUsageObservation, RealmRepository, RunClosure,
-    RunRepository, RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
-    StoredConsultationProfileRevision, StoredEpicCompletion, StoredEpicRoster, StoredPromotion,
-    StoredQuickSession, SuccessionRepository, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketRepository, TopologyRepository, WorkflowRepository,
+    NewConsultationMaterializationReroute, NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewQuotaObservationProvenance, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
+    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, RuntimeBinding,
+    SourceDisposition, SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision,
+    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
+    SuccessionRepository, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
     ProviderRef, QuotaDecisionBasis, TeamRunSnapshot,
 };
 use kontor_core::state::{
-    Freshness, NativeRuntimeIdentity, ObservedRunState, RuntimeContact, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    Freshness, GateVerdict, NativeRuntimeIdentity, ObservedRunState, RuntimeContact,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::succession::NewSuccessionAttempt;
 use kontor_core::succession::SuccessionAttemptState;
@@ -9010,16 +9011,80 @@ async fn a_run_the_runtime_says_is_still_working_is_not_settled() {
 ///
 /// Extracted so more than one test can reach a *closed team*, which is the state
 /// every terminal task transition is judged against.
+fn code_profile_artifacts_for_role(role: &str) -> serde_json::Value {
+    match role {
+        "builder" => serde_json::json!(["code-change"]),
+        "inspector" => serde_json::json!(["review-notes"]),
+        "tester" => serde_json::json!(["qa-report"]),
+        "architect" => serde_json::json!(["release-notes"]),
+        _ => serde_json::json!([]),
+    }
+}
+
 async fn settle_every_seat(
     world: &World,
     seed: &Bootstrapped,
     runs: &[String],
     prefix: &str,
 ) -> Answer {
-    // Every declared seat is settled, one call each. The team closes on the last
-    // one, because the closure walks the template's declared slots and an
-    // unsettled seat is unaccounted for rather than absent.
+    // Every delivery artifact is first recorded by the persistent role turn
+    // that produced it. Gate and lifecycle callers may cite those keys later,
+    // but their request bodies are never the evidence source.
     let mut settled = None;
+    for (index, run) in runs.iter().enumerate() {
+        let snapshot = Call::get(format!("/v1/runs/{run}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+        let role = snapshot.json()["value"]["role"]
+            .as_str()
+            .expect("the seat has a role")
+            .to_owned();
+        let artifacts = code_profile_artifacts_for_role(&role);
+        let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        let task_revision = projection.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a task revision");
+        let turn = Call::post(
+            format!(
+                "/v1/projects/{}/agent-runs/{run}/turns:settle",
+                seed.project
+            ),
+            &serde_json::json!({
+                "role_slot": role,
+                "expected_task_revision": task_revision,
+                "runtime_proof": observe_current_turn(world, &seed.project, run),
+                "artifacts": artifacts,
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("{prefix}-turn-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(turn.status, 200, "turn {index}: {}", turn.body);
+
+        // A settled-turn team closes from its immutable role-turn rows while
+        // the persistent seats remain live and reusable.
+        settled = Some(turn);
+    }
+    settled.expect("at least one seat was settled")
+}
+
+/// Close every runtime seat without settling a role turn.
+///
+/// This is intentionally available only to the negative evidence test below:
+/// it produces a valid closed-team certificate while leaving the task with no
+/// producer-authored artifact records.
+async fn close_every_runtime_seat_without_turns(
+    world: &World,
+    seed: &Bootstrapped,
+    runs: &[String],
+    prefix: &str,
+) {
     for (index, run) in runs.iter().enumerate() {
         finish_natively(world, run).await;
         let answer = Call::post(
@@ -9030,13 +9095,275 @@ async fn settle_every_seat(
             &serde_json::json!({}),
         )
         .signed_as(world, "operator")
-        .with_key(format!("{prefix}-settle-{index}"))
+        .with_key(format!("{prefix}-runtime-settle-{index}"))
         .send(world)
         .await;
         assert_eq!(answer.status, 200, "seat {index}: {}", answer.body);
-        settled = Some(answer);
     }
-    settled.expect("at least one seat was settled")
+}
+
+/// A gate request cites evidence; it does not create that evidence.
+#[tokio::test]
+async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "gate-no-self-evidence").await;
+    let mut builder = None;
+    for run in &runs {
+        let snapshot = Call::get(format!("/v1/runs/{run}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        if snapshot.json()["value"]["role"] == "builder" {
+            builder = Some(run.clone());
+            break;
+        }
+    }
+    let builder = builder.expect("the team has a builder");
+    let before_turn = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = before_turn.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a task revision");
+    let turn = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{builder}/turns:settle",
+            seed.project
+        ),
+        &serde_json::json!({
+            "role_slot": "builder",
+            "expected_task_revision": task_revision,
+            "runtime_proof": observe_current_turn(&world, &seed.project, &builder),
+            "artifacts": ["code-change"],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-no-self-evidence-builder")
+    .send(&world)
+    .await;
+    assert_eq!(turn.status, 200, "{}", turn.body);
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let projection_json = projection.json();
+    let declared = projection_json["tasks"][0]["gates"]
+        .as_array()
+        .expect("declared gates")
+        .iter()
+        .find(|candidate| candidate["gate"] == gate)
+        .expect("the selected gate is projected");
+    let evidence = declared["required_evidence"].clone();
+    let evaluator = declared["evaluator_roles"][0]
+        .as_str()
+        .expect("an evaluator")
+        .to_owned();
+
+    let refused = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": evaluator,
+            "evaluator_account": seed.account,
+            "evidence": evidence,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-no-self-evidence-pass")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert!(
+        refused.body.contains("durable producer evidence"),
+        "the refusal names the missing authority: {}",
+        refused.body
+    );
+
+    let workflow = active_workflow(&world, &seed);
+    let evaluations = world.daemon.state().with_store(|store| {
+        store
+            .list_gate_evaluations(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                workflow.id,
+            )
+            .expect("the gate history reads")
+    });
+    assert!(
+        evaluations.is_empty(),
+        "a refused citation appends no verdict: {evaluations:#?}"
+    );
+}
+
+/// Durable evidence for a later phase does not authorize skipping the gate
+/// sequence declared by the frozen workflow.
+#[tokio::test]
+async fn a_gate_cannot_pass_before_its_workflow_phase_is_ready() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "gate-phase-order").await;
+    let mut selected = BTreeMap::new();
+    for run in &runs {
+        let snapshot = Call::get(format!("/v1/runs/{run}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let role = snapshot.json()["value"]["role"]
+            .as_str()
+            .expect("a role")
+            .to_owned();
+        selected.insert(role, run.clone());
+    }
+    let initial = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = initial.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a task revision");
+    for (role, artifact) in [("builder", "code-change"), ("tester", "qa-report")] {
+        let run = selected.get(role).expect("the team declares the role");
+        let turn = Call::post(
+            format!(
+                "/v1/projects/{}/agent-runs/{run}/turns:settle",
+                seed.project
+            ),
+            &serde_json::json!({
+                "role_slot": role,
+                "expected_task_revision": task_revision,
+                "runtime_proof": observe_current_turn(&world, &seed.project, run),
+                "artifacts": [artifact],
+            }),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("gate-phase-order-{role}"))
+        .send(&world)
+        .await;
+        assert_eq!(turn.status, 200, "{}", turn.body);
+    }
+
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let projection_json = projection.json();
+    let task = &projection_json["tasks"][0];
+    assert_eq!(task["current_phase"], "code-review");
+    let qa = task["gates"]
+        .as_array()
+        .expect("gates")
+        .iter()
+        .find(|gate| gate["gate"] == "qa-gate")
+        .expect("the QA gate")
+        .clone();
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/gates/qa-gate/record",
+            seed.project, seed.task
+        ),
+        &serde_json::json!({
+            "expected_revision": task["workflow_revision"],
+            "verdict": "passed",
+            "evaluator_role": "tester",
+            "evaluator_account": seed.account,
+            "evidence": qa["required_evidence"],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("gate-phase-order-skip-review")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert!(
+        refused.body.contains("workflow phase is ready"),
+        "the refusal names the ordered boundary: {}",
+        refused.body
+    );
+}
+
+/// Completion must derive its artifacts and phase completion from stored facts.
+/// Even already-passed gate rows cannot turn the lifecycle request's strings
+/// into producer evidence.
+#[tokio::test]
+async fn task_completion_refuses_caller_named_unproduced_artifacts() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "complete-no-self-evidence").await;
+    close_every_runtime_seat_without_turns(&world, &seed, &runs, "complete-no-self-evidence").await;
+
+    // Seed gate states directly so this test isolates the lifecycle artifact
+    // boundary. These rows are citations, deliberately not producer evidence.
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let workflow = active_workflow(&world, &seed);
+    for gate in &workflow.snapshot.definition.gates {
+        let evaluator_role = gate
+            .evaluator_roles
+            .first()
+            .expect("every gate declares an evaluator")
+            .clone();
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.append_gate_evaluation(&NewGateEvaluation {
+                    project_id,
+                    workflow_id: workflow.id,
+                    gate: gate.id.clone(),
+                    verdict: GateVerdict::Passed,
+                    evaluator_role,
+                    evaluator_account: AccountProfileId::parse(&seed.account)
+                        .expect("an account id"),
+                    evidence: gate.required_evidence.clone(),
+                    agent_run_id: None,
+                    session_evidence: None,
+                    reviewer_principal: None,
+                    policy_evaluation_id: None,
+                    recorded_at: at("2026-08-10T10:00:00Z"),
+                })
+            })
+            .expect("the isolation gate state records");
+    }
+
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task = &projection.json()["tasks"][0];
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/lifecycle",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "action": "complete_task",
+            "task_id": seed.task,
+            "expected_revision": task["revision"],
+            "reason": "Caller strings are not evidence",
+            "evidence": task["required_artifacts"],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("complete-no-self-evidence-attempt")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert!(
+        refused.body.contains("durable producer evidence"),
+        "the refusal names the missing authority: {}",
+        refused.body
+    );
+
+    let after = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(after.json()["tasks"][0]["state"], "in_progress");
 }
 
 /// Discharge one task's pinned profile through the public routes and complete it.
@@ -9080,10 +9407,14 @@ async fn discharge_the_profile_and_complete(
         "the pinned profile declares gates to discharge: {}",
         projection.body
     );
-    let workflow_revision = projected_task["workflow_revision"]
-        .as_u64()
-        .expect("a task with an active workflow reports its revision");
     for (index, gate) in gates.iter().enumerate() {
+        let current = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        let workflow_revision = current.json()["tasks"][0]["workflow_revision"]
+            .as_u64()
+            .expect("a task with an active workflow reports its revision");
         let name = gate["gate"].as_str().expect("a gate");
         let evaluator = gate["evaluator_roles"]
             .as_array()
@@ -15077,7 +15408,7 @@ async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successo
                 "role_slot": slot,
                 "expected_task_revision": revision,
                 "runtime_proof": observe_current_turn(&world, &project, agent_run),
-                "artifacts": ["change-set"]
+                "artifacts": code_profile_artifacts_for_role(slot)
             }),
         )
         .signed_as(&world, "operator")
@@ -15095,10 +15426,14 @@ async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successo
         .as_array()
         .expect("gates")
         .clone();
-    let workflow_revision = projection.json()["tasks"][0]["workflow_revision"]
-        .as_u64()
-        .expect("a workflow revision");
     for (index, gate) in gates.iter().enumerate() {
+        let current = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let workflow_revision = current.json()["tasks"][0]["workflow_revision"]
+            .as_u64()
+            .expect("a workflow revision");
         let name = gate["gate"].as_str().expect("a gate");
         let evaluator = gate["evaluator_roles"][0]
             .as_str()
@@ -18419,7 +18754,7 @@ async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
                 "role_slot": role_slot,
                 "expected_task_revision": revision,
                 "runtime_proof": observe_current_turn(&world, &project, agent_run),
-                "artifacts": ["change-set"]
+                "artifacts": code_profile_artifacts_for_role(role_slot)
             }),
         )
         .signed_as(&world, "operator")
@@ -18473,10 +18808,14 @@ async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
         .as_array()
         .expect("gates")
         .clone();
-    let workflow_revision = projection.json()["tasks"][0]["workflow_revision"]
-        .as_u64()
-        .expect("a workflow revision");
     for (index, gate) in gates.iter().enumerate() {
+        let current = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let workflow_revision = current.json()["tasks"][0]["workflow_revision"]
+            .as_u64()
+            .expect("a workflow revision");
         let name = gate["gate"].as_str().expect("a gate");
         let evaluator = gate["evaluator_roles"][0]
             .as_str()
@@ -18630,7 +18969,7 @@ async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
                 &project,
                 first["agent_run_id"].as_str().expect("id"),
             ),
-            "artifacts": ["change-set"]
+            "artifacts": ["code-change", "review-notes", "qa-report", "release-notes"]
         }),
     )
     .signed_as(&world, "operator")
@@ -18651,10 +18990,14 @@ async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
         .as_array()
         .expect("gates")
         .clone();
-    let workflow_revision = gate_view.json()["tasks"][0]["workflow_revision"]
-        .as_u64()
-        .expect("a workflow revision");
     for (index, gate) in gates.iter().enumerate() {
+        let current = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        let workflow_revision = current.json()["tasks"][0]["workflow_revision"]
+            .as_u64()
+            .expect("a workflow revision");
         let name = gate["gate"].as_str().expect("a gate");
         let evaluator = gate["evaluator_roles"][0]
             .as_str()
