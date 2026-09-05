@@ -19071,6 +19071,32 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     assert_eq!(replayed.json()["turn_id"], settled.json()["turn_id"]);
     assert_eq!(replayed.json()["turn_ordinal"], 1);
 
+    // The runtime proof is single-use too. A second caller may not turn the
+    // same completed response into another turn merely by minting a new
+    // idempotency key; only the original key can replay this settlement.
+    let dispatches_before_proof_reuse = world.daemon.state().with_store(|store| {
+        store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")
+    });
+    let reused_proof = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &settled_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-live-same-proof-new-key")
+    .send(&world)
+    .await;
+    assert_eq!(reused_proof.status, 409, "{}", reused_proof.body);
+    assert_eq!(reused_proof.code(), "revision_conflict");
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_turn_dispatches(ProjectId::parse(&project).expect("project id"))
+            .expect("dispatches read")),
+        dispatches_before_proof_reuse,
+        "refusing proof reuse must not fan out another handoff",
+    );
+
     // The same key with different content is a conflict, not a second turn.
     let drifted = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),

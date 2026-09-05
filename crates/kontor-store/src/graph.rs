@@ -4141,6 +4141,31 @@ impl SqliteStore {
             return Ok((settled, Applied::Unchanged));
         }
 
+        if let Some(proof) = &turn.runtime_proof {
+            let proof_already_consumed: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM role_turns
+                         WHERE project_id = ?1 AND agent_run_id = ?2
+                           AND binding_generation = ?3 AND runtime_message_id = ?4
+                     )",
+                    params![
+                        turn.project_id.to_string(),
+                        turn.agent_run_id.to_string(),
+                        i64::try_from(turn.binding_generation).unwrap_or(i64::MAX),
+                        proof.message_id.as_str(),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if proof_already_consumed {
+                return Err(conflict(
+                    "role turn",
+                    "this runtime message already settled a turn; replay its original idempotency key",
+                ));
+            }
+        }
+
         if require_unsettled_slot {
             let prior_turn: bool = transaction
                 .query_row(
