@@ -8611,6 +8611,11 @@ export interface components {
             parent_topology_node_id?: string | null;
             /** @description Derived native-placement condition. */
             placement: string;
+            /**
+             * Format: int64
+             * @description Current aggregate revision for an exact optimistic-concurrency mutation.
+             */
+            revision: number;
             /** @description The seats this node hosts, in stable slot order. */
             seats: components["schemas"]["TopologySeatDto"][];
             /**
@@ -8656,6 +8661,11 @@ export interface components {
         TopologySeatDto: {
             /** @description Its lifecycle. */
             lifecycle: string;
+            /**
+             * Format: int64
+             * @description Current aggregate revision for an exact optimistic-concurrency mutation.
+             */
+            revision: number;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
             /** @description The stable role-slot address within the node. */

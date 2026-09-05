@@ -1314,6 +1314,11 @@ impl PaseoAdapter {
         let request = PaseoRpc::project_list(self.next_request_id());
         let frame = self.transport.request(&request).await?;
         let listed: PaseoProjectList = frame.resolve(&request, "PaseoProjectList")?;
+        if listed.error.is_some() {
+            return Err(RuntimeError::Transport {
+                rule: "the project directory reports a native error",
+            });
+        }
         Ok(listed.projects)
     }
 
@@ -1335,6 +1340,18 @@ impl PaseoAdapter {
             );
             let frame = self.transport.request(&request).await?;
             let page: PaseoWorkspacePage = frame.resolve(&request, "PaseoWorkspacePage")?;
+            if page.error.is_some()
+                || page.page_info.has_more
+                    != page
+                        .page_info
+                        .next_cursor
+                        .as_deref()
+                        .is_some_and(|cursor| !cursor.is_empty())
+            {
+                return Err(RuntimeError::Transport {
+                    rule: "the workspace directory omitted its required continuation cursor",
+                });
+            }
             found.extend(page.entries);
             match page.page_info.next() {
                 Some(next) => cursor = Some(next.to_owned()),
@@ -1344,6 +1361,61 @@ impl PaseoAdapter {
         Err(RuntimeError::Transport {
             rule: "the workspace directory did not end within the bounded page budget",
         })
+    }
+
+    /// Refuse visible native resources before explicit local-workspace retirement.
+    /// Paseo 0.7.2 masks terminal-listing failures as an empty list; this API
+    /// cannot certify terminal-manager health. It still refuses every terminal
+    /// it reports, plus nonterminal script/setup state and all malformed reads.
+    async fn require_workspace_quiet(
+        &self,
+        workspace_id: &str,
+        cwd: &WorkspaceRoot,
+    ) -> RuntimeResult<()> {
+        let request =
+            PaseoRpc::workspace_terminals(self.next_request_id(), workspace_id, cwd.as_str());
+        let frame = self.transport.request(&request).await?;
+        let terminals: crate::wire::PaseoTerminalList =
+            frame.resolve(&request, "PaseoTerminalList")?;
+        if terminals
+            .cwd
+            .as_deref()
+            .is_some_and(|actual| actual != cwd.as_str())
+            || !terminals.terminals.is_empty()
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace still reports terminals or another directory",
+            });
+        }
+        let request = PaseoRpc::workspace_scripts(self.next_request_id(), workspace_id);
+        let frame = self.transport.request(&request).await?;
+        let scripts: crate::wire::PaseoWorkspaceScripts =
+            frame.resolve(&request, "PaseoWorkspaceScripts")?;
+        if scripts.workspace_id != workspace_id
+            || scripts.error.is_some()
+            || scripts
+                .scripts
+                .iter()
+                .any(|script| script.lifecycle != "stopped")
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace script census is active, failed or uncorrelated",
+            });
+        }
+        let request = PaseoRpc::workspace_setup_status(self.next_request_id(), workspace_id);
+        let frame = self.transport.request(&request).await?;
+        let setup: crate::wire::PaseoWorkspaceSetupStatus =
+            frame.resolve(&request, "PaseoWorkspaceSetupStatus")?;
+        if setup.workspace_id != workspace_id
+            || setup
+                .snapshot
+                .is_some_and(|snapshot| !matches!(snapshot.status.as_str(), "completed" | "failed"))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the workspace setup census is active or uncorrelated",
+            });
+        }
+        Ok(())
     }
 
     /// The authoritative readback of one workspace, by exact id.
@@ -1405,6 +1477,18 @@ impl PaseoAdapter {
             );
             let frame = self.transport.request(&request).await?;
             let page: PaseoAgentPage = frame.resolve(&request, "PaseoAgentPage")?;
+            if page.error.is_some()
+                || page.page_info.has_more
+                    != page
+                        .page_info
+                        .next_cursor
+                        .as_deref()
+                        .is_some_and(|cursor| !cursor.is_empty())
+            {
+                return Err(RuntimeError::Transport {
+                    rule: "the agent directory omitted its required continuation cursor",
+                });
+            }
             found.extend(page.entries.into_iter().map(|entry| entry.agent));
             match page.page_info.next() {
                 Some(next) => cursor = Some(next.to_owned()),
@@ -5363,6 +5447,20 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         };
+        if let Some(placement) = &request.placement
+            && (before.workspace_id.as_deref() != Some(placement.workspace_native_id.as_str())
+                || WorkspaceRoot::parse(&before.cwd)? != placement.canonical_cwd
+                || placement
+                    .provider_session_id
+                    .as_ref()
+                    .is_some_and(|expected| {
+                        before.provider_session_id() != Some(expected.as_str())
+                    }))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the hosted retirement target changed workspace, directory or provider conversation",
+            });
+        }
         // An archive stamp is the terminal readback this operation exists to
         // prove. Older hosted seats may carry a permission mode that no longer
         // matches the current supervised policy; requiring a live route match
@@ -5785,6 +5883,137 @@ impl RuntimeAdapter for PaseoAdapter {
             snapshot: plan.snapshot,
             desired_title: plan.desired,
             changed: plan.changed,
+        })
+    }
+
+    /// Archive one retired native child by exact persisted identity and fresh readback.
+    async fn archive_container(
+        &self,
+        request: &kontor_runtime::container::ArchiveContainerRequest,
+    ) -> RuntimeResult<kontor_runtime::container::ArchiveContainerOutcome> {
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_MANAGE,
+            ],
+            RuntimeCapability::Retire,
+        )
+        .await?;
+        if request.projection != ContainerProjection::NativeChild {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "only an explicitly bound native child may be archived",
+            });
+        }
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the child belongs to another runtime host or a future generation",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        if self
+            .config
+            .adopted_containers
+            .contains_key(&request.topology_node_id)
+            || self
+                .config
+                .adopted_containers
+                .values()
+                .any(|id| id.as_str() == native_id)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "adopted containers are preserved by scoped cleanup",
+            });
+        }
+        if let Some(held) = self.lock().containers.get(&request.topology_node_id)
+            && (held.binding.id != request.container_binding_id
+                || held.binding.identity.native_id != request.identity.native_id
+                || held.binding.projection != request.projection
+                || held.binding.root.as_ref() != Some(&request.canonical_cwd))
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the archive request contradicts the registered container binding",
+            });
+        }
+        let find_exact = async {
+            let mut found = Vec::new();
+            let projects = self.fetch_projects().await?;
+            if !projects
+                .iter()
+                .any(|project| project.id == request.bound_project_native_id.as_str())
+            {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "the native child's bound project is absent",
+                });
+            }
+            for project in projects {
+                found.extend(
+                    self.fetch_workspaces(&project.id)
+                        .await?
+                        .into_iter()
+                        .filter(|workspace| workspace.id == native_id),
+                );
+            }
+            match found.len() {
+                0 => Ok(None),
+                1 => Ok(found.pop()),
+                _ => Err(RuntimeError::CorrelationFailed),
+            }
+        };
+        let before: Option<PaseoWorkspace> = find_exact.await?;
+        // Check even when the workspace is absent: a dangling active session
+        // is not successful cleanup of this binding.
+        if self
+            .fetch_agents(&BTreeMap::new(), false)
+            .await?
+            .iter()
+            .any(|agent| agent.workspace_id.as_deref() == Some(native_id) && !agent.is_archived())
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the native child still contains an unarchived session",
+            });
+        }
+        let changed = if let Some(workspace) = before {
+            if workspace.project_id != request.bound_project_native_id.as_str()
+                || WorkspaceRoot::parse(&workspace.workspace_directory)? != request.canonical_cwd
+                || workspace.is_paseo_owned_worktree()
+                || !matches!(
+                    workspace.workspace_kind,
+                    PaseoWorkspaceKind::LocalCheckout | PaseoWorkspaceKind::Directory
+                )
+            {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the archive target changed parent, directory or filesystem ownership",
+                });
+            }
+            self.require_workspace_quiet(native_id, &request.canonical_cwd)
+                .await?;
+            // A lost acknowledgement is recoverable only by complete fresh
+            // absence readback below. Never substitute a CLI exit code for it.
+            let _archive_ack = self
+                .transport
+                .run(&PaseoCommand::workspace_archive(native_id))
+                .await;
+            true
+        } else {
+            false
+        };
+        for project in self.fetch_projects().await? {
+            if self
+                .fetch_workspaces(&project.id)
+                .await?
+                .iter()
+                .any(|workspace| workspace.id == native_id)
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        Ok(kontor_runtime::container::ArchiveContainerOutcome {
+            request: request.clone(),
+            changed,
+            observed_at: request.requested_at,
         })
     }
 

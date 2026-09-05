@@ -24314,6 +24314,278 @@ async fn partial_epic_admission_reuses_its_frozen_definition_after_default_chang
     });
 }
 
+#[tokio::test]
+async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledgement() {
+    let composed = compose_realm("/tmp/kontor-native-child-cleanup").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let epic = MiniProjectId::parse(&composed.epic).expect("epic");
+    let materialized = Call::post(format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({"target": {"scope": "epic_control", "epic_id": epic}, "expected_revision": composed.project_revision}))
+        .signed_as(world, "operator").with_key("cleanup-materialize").send(world).await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let hosted_launch = Call::post(format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1, "routes": [{"role_code": "LSA", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}}]}))
+        .signed_as(world, "admin").with_key("cleanup-hosted-launch").send(world).await;
+    assert_eq!(hosted_launch.status, 200, "{}", hosted_launch.body);
+    let node = world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project, Some(epic))
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ECP")
+            .expect("child")
+    });
+    let binding = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node_container(project, node.id)
+            .expect("binding")
+            .expect("native child")
+    });
+    let archive_uri = format!("/v1/projects/{project}/topology/nodes/{}/archive", node.id);
+    let early = Call::post(
+        &archive_uri,
+        &serde_json::json!({"expected_revision": node.revision, "reason": "still active"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cleanup-active-refusal")
+    .send(world)
+    .await;
+    assert_eq!(early.status, 409, "{}", early.body);
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::ArchiveContainer(_)))
+    );
+    let seats = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project, node.id).expect("seats"));
+    let projected = Call::get(format!("/v1/projects/{project}/topology:inspect"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projected.status, 200, "{}", projected.body);
+    let projected_child = projected.json()["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|candidate| candidate["topology_node_id"] == node.id.to_string())
+        .expect("the exact child")
+        .clone();
+    assert_eq!(
+        projected_child["revision"],
+        serde_json::json!(node.revision)
+    );
+    let mut native_retired = 0;
+    for seat in seats {
+        let hosted = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(project, seat.id)
+                .expect("hosted read")
+        });
+        let retire_uri = format!("/v1/projects/{project}/seat-bindings/{}/retire", seat.id);
+        let projected_seat = projected_child["seats"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .find(|candidate| candidate["seat_binding_id"] == seat.id.to_string())
+            .expect("the exact seat");
+        assert_eq!(projected_seat["revision"], serde_json::json!(seat.revision));
+        let retire_body = serde_json::json!({"expected_revision": projected_seat["revision"], "reason": "retire disposable role"});
+        let key = format!("cleanup-seat-{}", seat.id);
+        if hosted.is_some() {
+            native_retired += 1;
+            world.fake.lose_next_hosted_retire_ack(seat.id);
+            let pause = world.fake.pause_next_hosted_retirement();
+            let retiring = Call::post(&retire_uri, &retire_body)
+                .signed_as(world, "operator")
+                .with_key(&key)
+                .send(world);
+            let contenders = async {
+                pause.entered().await;
+                let message = Call::post(
+                    format!("/v1/projects/{project}/seat-bindings/{}/messages", seat.id),
+                    &serde_json::json!({"body": "must not start during retirement"}),
+                )
+                .signed_as(world, "operator")
+                .with_key(kontor_runtime::request::MessageId::generate().to_string())
+                .send(world)
+                .await;
+                let pin = world.daemon.state().with_store(|store| {
+                    store
+                        .get_mini_project_team_definition(project, epic)
+                        .expect("pin")
+                        .expect("frozen")
+                });
+                let migration = Call::post(format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+                    &serde_json::json!({"upgrade": {"target_definition": {"id": pin.definition.definition_id, "version": pin.definition.version}, "legacy_topics": {}, "expected_revision": composed.project_revision}, "preview_hash": "0".repeat(64)}))
+                    .signed_as(world, "admin").with_key("cleanup-concurrent-migration").send(world).await;
+                pause.release();
+                assert_eq!(message.status, 409, "{}", message.body);
+                assert!(
+                    message.body.contains("native topology cleanup"),
+                    "{}",
+                    message.body
+                );
+                assert_eq!(migration.status, 409, "{}", migration.body);
+                assert!(
+                    migration
+                        .body
+                        .contains("native topology work is in progress"),
+                    "{}",
+                    migration.body
+                );
+                assert!(!world.fake.calls().iter().any(
+                    |call| matches!(call, AdapterCall::MessageHostedSeat(id) if *id == seat.id)
+                ));
+            };
+            let (uncertain, ()) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                tokio::join!(retiring, contenders)
+            })
+            .await
+            .expect("coordinated cleanup and refusals finish");
+            assert_ne!(
+                uncertain.status, 200,
+                "native uncertainty must preserve the logical role"
+            );
+            assert_eq!(
+                world
+                    .daemon
+                    .state()
+                    .with_store(|store| store
+                        .get_seat_binding(project, seat.id)
+                        .expect("seat")
+                        .expect("retained"))
+                    .lifecycle,
+                TopologyLifecycle::Active
+            );
+        }
+        let retired = Call::post(&retire_uri, &retire_body)
+            .signed_as(world, "operator")
+            .with_key(&key)
+            .send(world)
+            .await;
+        assert_eq!(retired.status, 200, "{}", retired.body);
+        let replay = Call::post(&retire_uri, &retire_body)
+            .signed_as(world, "operator")
+            .with_key(&key)
+            .send(world)
+            .await;
+        assert_eq!(replay.status, 200, "{}", replay.body);
+        assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+        assert_eq!(
+            replay.json()["receipt"]["receipt_id"],
+            retired.json()["receipt"]["receipt_id"]
+        );
+        assert_eq!(
+            world.daemon.state().with_store(|store| store
+                .get_hosted_topology_seat(project, seat.id)
+                .expect("history retained")),
+            hosted
+        );
+    }
+    assert_eq!(
+        native_retired, 1,
+        "one real hosted LSA was retired under its original binding"
+    );
+    let retired = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{}/retire", node.id),
+        &serde_json::json!({"expected_revision": projected_child["revision"], "reason": "test work finished"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cleanup-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let retired_node = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node(project, node.id)
+            .expect("node")
+            .expect("retired")
+    });
+    assert_eq!(retired_node.lifecycle, TopologyLifecycle::Retired);
+    let retired_projection = retired.json()["projection"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|candidate| candidate["topology_node_id"] == node.id.to_string())
+        .expect("retired child")
+        .clone();
+    assert_eq!(
+        retired_projection["revision"],
+        serde_json::json!(retired_node.revision)
+    );
+    let body = serde_json::json!({"expected_revision": retired_projection["revision"], "reason": "remove disposable native child"});
+    world.fake.lose_next_archive_ack(node.id);
+    let uncertain = Call::post(&archive_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("cleanup-archive")
+        .send(world)
+        .await;
+    assert_ne!(
+        uncertain.status, 200,
+        "an unconfirmed native effect must not close logical cleanup"
+    );
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .get_topology_node(project, node.id)
+                .expect("node")
+                .expect("retained"))
+            .lifecycle,
+        TopologyLifecycle::Retired
+    );
+    let retried = Call::post(&archive_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("cleanup-archive")
+        .send(world)
+        .await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    let replayed = Call::post(&archive_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("cleanup-archive")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        retried.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .get_topology_node(project, node.id)
+                .expect("node")
+                .expect("history retained")
+                .lifecycle,
+            TopologyLifecycle::Archived
+        );
+        assert_eq!(
+            store
+                .get_topology_node_container(project, node.id)
+                .expect("binding")
+                .expect("binding retained"),
+            binding
+        );
+    });
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::ArchiveContainer(id) if *id == node.id))
+            .count(),
+        1,
+        "retry proves prior native absence instead of archiving twice"
+    );
+}
+
 /// A replayed key answers from what is durable, and a stale revision writes
 /// nothing.
 #[tokio::test]

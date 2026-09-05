@@ -484,6 +484,36 @@ pub struct RetitleContainerOutcome {
     pub changed: bool,
 }
 
+/// Archive one retired native child, addressed exclusively by durable binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveContainerRequest {
+    /// Logical node whose completed native child is being removed.
+    pub topology_node_id: TopologyNodeId,
+    /// Stable binding identity retained after cleanup.
+    pub container_binding_id: ContainerBindingId,
+    /// Persisted native shape; only a native child may be archived.
+    pub projection: ContainerProjection,
+    /// Complete native identity, including host and generation.
+    pub identity: NativeRuntimeIdentity,
+    /// Exact native project from the persisted ancestor binding.
+    pub bound_project_native_id: ExternalId,
+    /// Canonical child directory recorded when it was bound.
+    pub canonical_cwd: WorkspaceRoot,
+    /// Requested observation instant.
+    pub requested_at: Timestamp,
+}
+
+/// Verified native absence, retaining all of the original identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveContainerOutcome {
+    /// The exact request whose native child was proved absent.
+    pub request: ArchiveContainerRequest,
+    /// Whether this invocation attempted an archive or found prior absence.
+    pub changed: bool,
+    /// Instant of the authoritative absence readback.
+    pub observed_at: Timestamp,
+}
+
 /// Prove the sole live native child that replaces one stale persisted binding.
 ///
 /// This is a recovery read, not ordinary reconciliation. The old identity must

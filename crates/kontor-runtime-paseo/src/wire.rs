@@ -508,8 +508,9 @@ pub struct PaseoProject {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoProjectList {
     /// Every project the daemon owns.
-    #[serde(default)]
     pub projects: Vec<PaseoProject>,
+    /// A native refusal never certifies an empty directory.
+    pub error: Option<serde_json::Value>,
 }
 
 /// The answer to `project.add.request`.
@@ -620,11 +621,12 @@ impl PaseoWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoWorkspacePage {
     /// The workspaces on this page.
-    #[serde(default)]
     pub entries: Vec<PaseoWorkspace>,
     /// Where the next page starts, when there is one.
-    #[serde(default, rename = "pageInfo")]
+    #[serde(rename = "pageInfo")]
     pub page_info: PaseoPageInfo,
+    /// A native refusal never certifies an empty directory.
+    pub error: Option<serde_json::Value>,
 }
 
 /// A directory page's continuation.
@@ -634,7 +636,7 @@ pub struct PaseoPageInfo {
     #[serde(default, rename = "nextCursor", alias = "afterCursor")]
     pub next_cursor: Option<String>,
     /// Whether the daemon says more rows exist.
-    #[serde(default, rename = "hasMore", alias = "hasMoreAfter")]
+    #[serde(rename = "hasMore", alias = "hasMoreAfter")]
     pub has_more: bool,
 }
 
@@ -651,6 +653,62 @@ impl PaseoPageInfo {
             _ => None,
         }
     }
+}
+
+/// Terminal inventory for one exact directory. Any entry prevents workspace cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoTerminalList {
+    /// Echoed selector when this daemon supplies it.
+    pub cwd: Option<String>,
+    /// Opaque terminal details: nonempty is refused without interpreting a shell.
+    pub terminals: Vec<serde_json::Value>,
+}
+
+/// Script inventory used only to prove the workspace has no running script.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoWorkspaceScripts {
+    /// Exact addressed workspace.
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: String,
+    /// Reported script lifecycles.
+    pub scripts: Vec<PaseoWorkspaceScript>,
+    /// Native errors must not look like an empty successful census.
+    #[serde(deserialize_with = "required_nullable")]
+    pub error: Option<String>,
+}
+
+/// One script's liveness, independent of its display name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoWorkspaceScript {
+    /// Only the known stopped state permits cleanup.
+    pub lifecycle: String,
+}
+
+/// Setup job state for one exact workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoWorkspaceSetupStatus {
+    /// Exact addressed workspace.
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: String,
+    /// Null means no setup job has been recorded.
+    #[serde(deserialize_with = "required_nullable")]
+    pub snapshot: Option<PaseoSetupSnapshot>,
+}
+
+/// Setup status; unknown states prevent destructive cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoSetupSnapshot {
+    /// Only completed or failed setup is terminal.
+    pub status: String,
+}
+
+// Nullable is a value; absence is malformed when the field carries census authority.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 /// What Paseo says an agent is doing.
@@ -950,11 +1008,12 @@ pub struct PaseoAgentEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoAgentPage {
     /// The rows on this page.
-    #[serde(default)]
     pub entries: Vec<PaseoAgentEntry>,
     /// Where the next page starts, when there is one.
-    #[serde(default, rename = "pageInfo")]
+    #[serde(rename = "pageInfo")]
     pub page_info: PaseoPageInfo,
+    /// A native refusal never certifies an empty directory.
+    pub error: Option<serde_json::Value>,
 }
 
 /// The answer to `send_agent_message_request`.

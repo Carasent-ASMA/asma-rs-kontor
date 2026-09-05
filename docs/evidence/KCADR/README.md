@@ -1,6 +1,6 @@
 # ASMA-8098 compatibility recovery evidence
 
-Status: implementation and automated release qualification complete; independent gates, disposable live mutation qualification and deployment remain pending. This is implementation-agent evidence, not an independent gate verdict or deployment receipt.
+Status: updated implementation is in progress. The archived release qualification below belongs to historical candidate `4c51059e07a9517d57cb9bd2665dc537ff681a2c`; it does not qualify the newer source. Final integrated release checks, required Kontor role gates, disposable live qualification and fleet deployment remain pending. This is implementation evidence, not a deployment receipt.
 
 ## Scope and identities
 
@@ -10,7 +10,7 @@ Status: implementation and automated release qualification complete; independent
 - Realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`, project `01a0064a-e056-7603-9968-ef64fdaacb75`.
 - Exact bindings and unwaivable gates: [admission readback](admission-readback.json).
 
-The user approved one execution lane with no delegated agents. Both tasks are blocked at revision 2 to prevent additional automatic admission while release prerequisites remain open; see [the durable receipts and readback](release-block-readback.json). This change does not claim the fleet-verifier, fleet-spec-auditor, inspector or architect verdicts that the selected profiles require.
+The later user approval delegates PR #167 source completion and merge to one receiving session and authorizes independent reviewers; the parent session owns documentation, live qualification, deployment and closure. This supersedes the earlier no-delegation default. Both tasks are blocked at revision 2 to prevent additional automatic admission while release prerequisites remain open; see [the durable receipts and readback](release-block-readback.json). This change does not claim the fleet-verifier, fleet-spec-auditor, inspector or architect verdicts that the selected profiles require.
 
 ## Implementation
 
@@ -19,9 +19,27 @@ The user approved one execution lane with no delegated agents. Both tasks are bl
 - New current Claude catalog choices use `claude-fable-5-1`. Frozen `claude-fable-5` routes still pass registry recovery for all three Claude account aliases. Existing sessions, definitions and historical evidence are not rewritten.
 - Governance paragraphs and the team-design blueprint were recovered with current implementation boundaries, read-only consultation responsibilities and template-owned committee composition.
 
-Source commits: `7381029` (adapter), `bb4ac51` (model catalog), `536b932` (repository guidance). Candidate `4c51059e07a9517d57cb9bd2665dc537ff681a2c` integrates naming owner PR #166 at `ac7e788243050714d9722733cc6548d781e387d9`. Root documentation is in [asma-modules PR #2981](https://github.com/Carasent-ASMA/asma-modules/pull/2981); implementation is in [Kontor PR #167](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/167). Later commits contain evidence only; the runtime/build/test inputs remain identical to the qualified archive.
+Source commits: `7381029` (adapter), `bb4ac51` (model catalog), `536b932` (repository guidance). Candidate `4c51059e07a9517d57cb9bd2665dc537ff681a2c` integrates naming owner PR #166 at `ac7e788243050714d9722733cc6548d781e387d9`. Root documentation is in [asma-modules PR #2981](https://github.com/Carasent-ASMA/asma-modules/pull/2981); implementation is in [Kontor PR #167](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/167). The branch has since integrated OP-21/OP-22 and changed runtime, admission and Jira mapping source. Those inputs differ from the historical qualified archive.
 
-## Verification
+## Current recovery candidate
+
+- `76a8db559bb20f87554b8b7d2d865d47b89645d9` adds task workflow specification v3 for frozen `docs@1`, without replacing the code/high mappings or changing task profile pins. The real mapping regression failed before correction; the full Jira suite then passed (1 unit + 14 contract tests). See [red](docs-workflow-red.log) and [green](docs-workflow-green.log).
+- `1d430977a7fb59877af3cd1f53718668e2587b0d` preserves a partially admitted epic's frozen Team Definition and permits a structurally legal historical project-root boundary within the same topology lineage. The focused admission regression and all 8 store topology contracts passed; foreign project, terminal root, unrelated lineage and within-epic snapshot mismatches remain refused. See [admission](admission-green.log) and [root boundary](root-boundary-green.log).
+- `bbc299d` enforces current session permission declarations on bound operations, and restores pending permission state during canonical timeline refetch. The full adapter suite passed (108 unit + 190 contract tests, 6 live tests excluded); two additional deliberate defects were killed. See [adapter](adapter-review-green.log), [mutations](review-mutants.json), and the [independent repository review](independent-paseo-review.json). That approval is scoped to permission, timeline and model source; it does not stand in for required Kontor workflow verdicts.
+- Native cleanup uses the existing seat-retire and topology archive operations. An idle hosted native must be archived/read back before its logical seat is released. A retired local child requires exact binding, parent host and directory checks, no reported native work, and fresh absence after archive. A shared native lifecycle guard excludes concurrent placement, messages and migration. Lost acknowledgements and exact-key retries preserve the original identities.
+- The existing topology inspection and mutation projections now return stored node/seat `revision` values. Qualification reads `GET /v1/projects/{project_id}/topology:inspect`, then uses the exact returned revision in each retirement/archive request.
+- `ae373f5ab7455b3ad6e65530230cc7beb4c9f57e` makes first-proposal memory history readable before approval. The regression reproduced the null-to-boolean SQL decode failure; all 10 memory tests pass after the null-safe read predicate. Immutable revision contents and approval rules are unchanged. See [red](memory-history-red.log) and [green](memory-history-green.log).
+- Final integrated release qualification and deployment remain pending. A stopped exploratory daemon run is not qualification of the new candidate.
+
+The cleanup, admission, docs mapping and memory changes received [independent repository review](independent-cleanup-review.json). The [focused daemon regression](cleanup-daemon-focused.log) exercises public revision readback, concurrent message/migration refusal, native retirement, lost acknowledgements and exact receipt replay. [API contracts](cleanup-api-contract.log) were regenerated and [console type checking](cleanup-console-typecheck.log) passed. These checks do not replace the pending integrated archive gate.
+
+## Native cleanup qualification limits
+
+Cleanup refuses native roots, all Git-worktree kinds, explicitly Paseo-owned trees and configured adopted identities. Paseo 0.7.2 skips teardown commands and directory deletion for the permitted nonowned local kinds, and workspace archive preserves the parent project. The stored binding does not distinguish every historical creation from same-path recovery/adoption; qualification therefore retains the actual creation and readback receipts for its explicitly disposable local fixture.
+
+The adapter refuses every terminal returned by the native terminal inventory, running/unknown script or setup state, unarchived sessions, malformed directory responses and incomplete pagination. Upstream 0.7.2 terminal listing masks internal listing errors as an empty list. The protocol therefore cannot certify terminal collector health; this limitation is not claimed as solved enforcement. The disposable fixture contains no externally created terminals or scripts. Its isolated native project/server teardown is a separate test-infrastructure action, not evidence that Kontor archived a native root.
+
+## Historical qualification of `4c51059`
 
 | Check | Result | Evidence |
 | --- | --- | --- |
@@ -49,8 +67,8 @@ The old reservation migration and completion-recovery patch remain excluded. Suc
 
 ## Release and closeout checkpoint
 
-No installed Kontor binary was changed by this lane. Automated release checks are complete. Independent gates, disposable Kontor-to-Paseo mutation qualification, cleanup/readback and fleet deployment must still be evidenced before closure. The user requested serialized deployment after the naming release.
+No installed Kontor binary was changed by this source lane. Only historical candidate `4c51059` has the full archive qualification recorded here; the final integrated candidate still requires its own release check. Independent gates, disposable Kontor-to-Paseo mutation qualification, cleanup/readback and fleet deployment must still be evidenced before closure. The user requested serialized deployment after the naming release.
 
-Admission has partially committed the graph but fails while governing the epic: the topology parent is terminal, outside scope or an illegal kind. Native Jira creation returned 503; a recorded ASMA-only fallback created the exact three issues above. Kontor stored their verified links. Initial materialization was refused after Jira automation moved them to DRAFT. The compatibility task has since been reconciled through Kontor to On hold with a converged fresh readback. Documentation reconciliation remains blocked because the build has no unique Jira workflow specification for its frozen docs profile; see [the current reconciliation receipts](jira-reconciliation.json). The served CLI/MCP catalogs expose no standalone evidence-ingestion command. Do not invent a passed gate, create replacement topology or bypass the workflow to close these tasks.
+Admission has partially committed the graph but fails while governing the epic: the topology parent is terminal, outside scope or an illegal kind. Native Jira creation returned 503; a recorded ASMA-only fallback created the exact three issues above. Kontor stored their verified links. Initial materialization was refused after Jira automation moved them to DRAFT. The compatibility task has since been reconciled through Kontor to On hold with a converged fresh readback. Documentation reconciliation was blocked because the served build had no unique Jira workflow specification for its frozen docs profile; the additive v3 correction is committed and awaits installation through the supported control plane; see [the current reconciliation receipts](jira-reconciliation.json). The served CLI/MCP catalogs expose no standalone evidence-ingestion command. Do not invent a passed gate, create replacement topology or bypass the workflow to close these tasks.
 
-The durable gap report and exact idempotency keys are in the asma-modules document `_docs/ai-orchestration/reports/2026-09-04-23-21-report-compatibility-kontor-operational-gap.md`. Resume the same identities after the responsible owner repairs admission and connector/workflow reconciliation, attach these artifacts through the supported recovered surface, and complete the real gates and release qualification.
+The durable gap report and exact idempotency keys are in the asma-modules document `_docs/ai-orchestration/reports/2026-09-04-23-21-report-compatibility-kontor-operational-gap.md`. Resume the same identities after the committed admission and connector/workflow corrections are qualified and deployed, attach these artifacts through the supported recovered surface, and complete the real gates and release qualification.

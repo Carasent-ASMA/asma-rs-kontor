@@ -239,6 +239,9 @@ pub struct TopologySeatDto {
     /// Its lifecycle.
     #[schema(value_type = String)]
     pub lifecycle: TopologyLifecycle,
+    /// Current aggregate revision for an exact optimistic-concurrency mutation.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
 }
 
 /// One node of a topology projection.
@@ -266,6 +269,9 @@ pub struct TopologyNodeDto {
     pub observed_binding: Option<ObservedBindingDto>,
     /// The seats this node hosts, in stable slot order.
     pub seats: Vec<TopologySeatDto>,
+    /// Current aggregate revision for an exact optimistic-concurrency mutation.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
 }
 
 /// The scope a semantic topology operation acts on.

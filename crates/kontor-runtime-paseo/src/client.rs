@@ -975,6 +975,39 @@ impl PaseoRpc {
         )
     }
 
+    /// Read terminals in one exact workspace and directory; both selectors are required.
+    #[must_use]
+    pub fn workspace_terminals(request_id: String, workspace_id: &str, cwd: &str) -> Self {
+        Self::read(
+            "list_terminals_request",
+            "list_terminals_response",
+            request_id,
+            serde_json::json!({"workspaceId": workspace_id, "cwd": cwd}),
+        )
+    }
+
+    /// Read setup activity before retiring a workspace.
+    #[must_use]
+    pub fn workspace_setup_status(request_id: String, workspace_id: &str) -> Self {
+        Self::read(
+            "workspace_setup_status_request",
+            "workspace_setup_status_response",
+            request_id,
+            serde_json::json!({"workspaceId": workspace_id}),
+        )
+    }
+
+    /// Read script activity before retiring a workspace.
+    #[must_use]
+    pub fn workspace_scripts(request_id: String, workspace_id: &str) -> Self {
+        Self::read(
+            "workspace.script.list.request",
+            "workspace.script.list.response",
+            request_id,
+            serde_json::json!({"workspaceId": workspace_id}),
+        )
+    }
+
     /// One `create_agent_request` that is the whole delivery launch.
     ///
     /// # Why one stage and not two

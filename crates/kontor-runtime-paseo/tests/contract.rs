@@ -7071,6 +7071,255 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
     }
 }
 
+fn local_archive_workspace() -> serde_json::Value {
+    let mut workspace = v(WORKSPACE_LIST_ONE);
+    workspace["entries"][0]["workspaceKind"] = serde_json::json!("directory");
+    workspace
+}
+
+fn archive_daemon() -> RecordedPaseo {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", local_archive_workspace());
+    recorded.set_answer_rpc(
+        "list_terminals_request",
+        serde_json::json!({"cwd": CWD, "terminals": []}),
+    );
+    recorded.set_answer_rpc(
+        "workspace.script.list.request",
+        serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [], "error": null}),
+    );
+    recorded.set_answer_rpc(
+        "workspace_setup_status_request",
+        serde_json::json!({"workspaceId": WORKSPACE_ID, "snapshot": null}),
+    );
+    recorded
+}
+
+fn archive_child() -> kontor_runtime::container::ArchiveContainerRequest {
+    kontor_runtime::container::ArchiveContainerRequest {
+        topology_node_id: node(NODE_A),
+        container_binding_id: ContainerBindingId::generate(),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        bound_project_native_id: external(PROJECT_ID),
+        canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+        requested_at: at("2026-09-05T10:00:00Z"),
+    }
+}
+
+#[tokio::test]
+async fn native_child_archive_confirms_absence_and_replays_after_a_lost_ack() {
+    for lost_ack in [false, true] {
+        let plane = Plane::fresh(archive_daemon());
+        plane.daemon.forget_queued_rpc("fetch_workspaces_request");
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_workspaces_request", local_archive_workspace());
+        plane
+            .daemon
+            .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+        let command = PaseoCommand::workspace_archive(WORKSPACE_ID);
+        plane.daemon.set_answer(&command, "{}");
+        if lost_ack {
+            plane.daemon.lose_next(&command);
+        }
+        let request = archive_child();
+        let first = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("fresh absence settles cleanup");
+        assert!(first.changed);
+        assert_eq!(first.request, request);
+        assert_eq!(plane.daemon.mutations(), vec![command.route().to_owned()]);
+        plane.daemon.take_calls();
+        let retry = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("already absent is recovered");
+        assert!(!retry.changed);
+        assert_eq!(retry.request, request);
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "retry must not repeat native archive"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
+    for case in [
+        "foreign-parent",
+        "wrong-cwd",
+        "owned-worktree",
+        "root",
+        "foreign-host",
+        "future-generation",
+        "active-session",
+        "orphan-session",
+        "read-only",
+        "missing-read",
+        "git-worktree",
+        "running-script",
+        "terminal",
+        "running-setup",
+        "script-error",
+        "wrong-script-workspace",
+        "malformed-terminals",
+        "malformed-setup",
+    ] {
+        let plane = Plane::fresh(archive_daemon());
+        plane.daemon.forget_queued_rpc("fetch_workspaces_request");
+        let mut request = archive_child();
+        match case {
+            "foreign-parent" => request.bound_project_native_id = external("prj_somebody_else"),
+            "git-worktree" => plane.daemon.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE)),
+            "running-script" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [{"lifecycle": "running"}], "error": null})),
+            "terminal" => plane.daemon.set_answer_rpc("list_terminals_request", serde_json::json!({"cwd": CWD, "terminals": [{"id": "interactive-shell"}]})),
+            "running-setup" => plane.daemon.set_answer_rpc("workspace_setup_status_request", serde_json::json!({"workspaceId": WORKSPACE_ID, "snapshot": {"status": "running"}})),
+            "script-error" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [], "error": "unavailable"})),
+            "wrong-script-workspace" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": "foreign-workspace", "scripts": [], "error": null})),
+            "malformed-setup" => plane.daemon.set_answer_rpc("workspace_setup_status_request", serde_json::json!({"workspaceId": WORKSPACE_ID})),
+            "malformed-terminals" => plane.daemon.set_answer_rpc("list_terminals_request", serde_json::json!({"cwd": CWD})),
+            "wrong-cwd" => request.canonical_cwd = WorkspaceRoot::parse("/other/cwd").expect("cwd"),
+            "owned-worktree" => plane
+                .daemon
+                .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED)),
+            "root" => request.projection = ContainerProjection::NativeRoot,
+            "foreign-host" => request.identity.host = name("another-host"),
+            "future-generation" => request.identity.generation = 2,
+            "active-session" | "orphan-session" => {
+                plane
+                    .daemon
+                    .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+                if case == "orphan-session" {
+                    plane
+                        .daemon
+                        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+                }
+            }
+            "read-only" | "missing-read" => {
+                let mut identity = v(SERVER_INFO);
+                identity["permissions"] = if case == "read-only" {
+                    serde_json::json!(["workspace.read"])
+                } else {
+                    serde_json::json!(["workspace.manage"])
+                };
+                plane.daemon.set_identity(&identity);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            plane.adapter.archive_container(&request).await.is_err(),
+            "{case} must refuse"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} must mutate nothing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_child_archive_does_not_trust_a_successful_ack_without_absence() {
+    let plane = Plane::fresh(archive_daemon());
+    plane.daemon.forget_queued_rpc("fetch_workspaces_request");
+    plane
+        .daemon
+        .set_answer(&PaseoCommand::workspace_archive(WORKSPACE_ID), "{}");
+    assert_eq!(
+        plane
+            .adapter
+            .archive_container(&archive_child())
+            .await
+            .expect_err("workspace remains"),
+        RuntimeError::CorrelationFailed
+    );
+    assert_eq!(
+        plane.daemon.mutations(),
+        vec![
+            PaseoCommand::workspace_archive(WORKSPACE_ID)
+                .route()
+                .to_owned()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn native_child_archive_rejects_incomplete_censuses_and_adopted_targets() {
+    for route in [
+        "project.list.request",
+        "fetch_workspaces_request",
+        "fetch_agents_request",
+    ] {
+        for malformed in [
+            serde_json::json!({}),
+            serde_json::json!({"entries": [], "pageInfo": {}}),
+            serde_json::json!({"entries": [], "pageInfo": {"hasMore": true, "nextCursor": null}}),
+            serde_json::json!({"projects": [], "entries": [], "pageInfo": {"hasMore": false, "nextCursor": null}, "error": "unavailable"}),
+        ] {
+            let plane = Plane::fresh(archive_daemon());
+            plane.daemon.set_answer_rpc(route, malformed);
+            assert!(
+                plane
+                    .adapter
+                    .archive_container(&archive_child())
+                    .await
+                    .is_err(),
+                "{route} must not certify malformed absence"
+            );
+            assert!(plane.daemon.mutations().is_empty());
+        }
+    }
+    // A malformed post-mutation page is not a successful native readback.
+    let plane = Plane::fresh(archive_daemon());
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_workspaces_request", local_archive_workspace());
+    plane
+        .daemon
+        .set_answer_rpc("fetch_workspaces_request", serde_json::json!({}));
+    plane
+        .daemon
+        .set_answer(&PaseoCommand::workspace_archive(WORKSPACE_ID), "{}");
+    assert!(
+        plane
+            .adapter
+            .archive_container(&archive_child())
+            .await
+            .is_err()
+    );
+    assert_eq!(plane.daemon.mutations().len(), 1);
+
+    let mut configured = config();
+    configured
+        .adopted_containers
+        .insert(node(NODE_A), external(WORKSPACE_ID));
+    let plane = Plane::build_with_config(
+        archive_daemon(),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        configured,
+    );
+    assert!(
+        plane
+            .adapter
+            .archive_container(&archive_child())
+            .await
+            .is_err()
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an adopted child is preserved"
+    );
+}
+
 fn ecp_request(node_id: TopologyNodeId, parent: ContainerBinding) -> ContainerRequest {
     ContainerRequest {
         container_binding_id: ContainerBindingId::generate(),
@@ -7797,6 +8046,11 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
         .answering_rpc("fetch_agent_request", after);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+            workspace_native_id: external(WORKSPACE_ID),
+            canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+            provider_session_id: None,
+        }),
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -7854,6 +8108,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
         .answering_rpc("fetch_agents_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -7879,6 +8134,69 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
         .expect("a lost post-archive acknowledgement replays without a second effect");
     assert_eq!(replayed.identity, request.identity);
     assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
+}
+
+#[tokio::test]
+async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retirement() {
+    for case in [
+        "running",
+        "workspace",
+        "cwd",
+        "provider-conversation",
+        "read-only",
+        "missing-read",
+    ] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut before = v(AGENT);
+        before["agent"]["labels"] = serde_json::json!({"kontor.seat_binding_id": seat_binding_id.to_string(), "kontor.hosted_seat": "true"});
+        let mut request = HostedSeatRetireRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            requested_at: at("2026-09-05T12:00:00Z"),
+            placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+                provider_session_id: None,
+            }),
+        };
+        match case {
+            "running" => before["agent"]["status"] = serde_json::json!("running"),
+            "workspace" => before["agent"]["workspaceId"] = serde_json::json!("wks_other"),
+            "cwd" => before["agent"]["cwd"] = serde_json::json!("/somebody/else"),
+            "provider-conversation" => {
+                request
+                    .placement
+                    .as_mut()
+                    .expect("placement")
+                    .provider_session_id = Some(external("expected-prior-conversation"))
+            }
+            _ => {}
+        }
+        let plane = Plane::fresh(daemon().answering_rpc("fetch_agent_request", before));
+        if matches!(case, "read-only" | "missing-read") {
+            let mut identity = v(SERVER_INFO);
+            identity["permissions"] = if case == "read-only" {
+                serde_json::json!(["workspace.read"])
+            } else {
+                serde_json::json!(["workspace.write"])
+            };
+            plane.daemon.set_identity(&identity);
+        }
+        assert!(
+            plane.adapter.retire_hosted_seat(&request).await.is_err(),
+            "{case} refuses"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} does not archive"
+        );
+    }
 }
 
 #[tokio::test]
@@ -7969,6 +8287,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
         .answering_rpc("fetch_agent_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),

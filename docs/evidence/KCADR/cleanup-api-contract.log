@@ -1,0 +1,45 @@
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling tracing v0.1.44
+   Compiling uuid v1.24.0
+   Compiling bitflags v2.13.1
+   Compiling hyper v1.11.1
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling aho-corasick v1.1.5
+   Compiling zopfli v0.8.3
+   Compiling regex-automata v0.4.18
+   Compiling security-framework v3.7.0
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling regex v1.13.1
+   Compiling zip v3.0.0
+   Compiling reqwest v0.13.4
+   Compiling icalendar v0.17.13
+   Compiling utoipa-swagger-ui v9.0.2
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
+   Compiling rusqlite v0.40.2
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+   Compiling serde_urlencoded v0.7.1
+   Compiling utoipa v5.5.0
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling axum-core v0.5.6
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling axum v0.8.9
+   Compiling tower-http v0.7.0
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.95s
+     Running tests/openapi_contract.rs (target/qualification/debug/deps/openapi_contract-c149a555a65586b0)
+
+running 3 tests
+test the_committed_session_vocabulary_is_the_one_this_crate_subscribes_to ... ok
+test the_contract_document_names_every_route_the_router_exposes ... ok
+test the_committed_contract_document_is_the_one_this_crate_serves ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
