@@ -1,7 +1,6 @@
 # Native naming
 
-> Status: approved contract; implemented locally, with final archive
-> verification, independent audit and live epic migration pending.
+> Status: approved and implemented contract. The 2026-09-02 KBI migration is verified live; other epics retain historical pins until their own explicit upgrade. See the [governing migration receipt](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-09-01-03-39-architecture-kontor-configuration-driven-native-naming.md#8-implementation-and-live-migration-receipt): deployed `1a4320f7`, migration `01a062dd-b092-7593-b64e-c385d2eb7c07`, nine preserved native identities.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -32,7 +31,7 @@ Jira keys remain full standard keys such as `ASMA-8001` and `ASMA-7869`. The
 Jira project key is configured at Kontor project level, and each confirmed full
 key remains persisted with connector evidence.
 
-Every epic has one immutable epic backlog code that is case-insensitively unique
+Every epic has one epic backlog code with an immutable original assignment that is case-insensitively unique
 inside the Kontor project. Automatic allocation:
 
 1. starts with uppercase title-word initials;
@@ -55,6 +54,19 @@ task item code = <EPIC_BACKLOG_CODE>-<JIRA_TASK_NUMBER>
 For example, `ASMA-8001` becomes `KOP-8001` and child `ASMA-7869`
 becomes `KOP-7869`. The item code is not persisted as a second Jira binding and
 is never parsed to reconstruct a full Jira key.
+
+## Legacy-import code correction
+
+Normal assignments cannot be renamed. Eligible legacy-imported epics may receive
+one effective-code correction through
+`kontor_epic_backlog_code_correction_preview` / `_apply`. The original row is
+preserved as immutable evidence. Supply the exact project/epic, current project
+`expected_revision`, `expected_prior_code`, project-unique `corrected_code` and
+immutable `reason`; apply also requires the preview hash and stable idempotency
+key. Read back the correction receipt and effective code. A revision conflict
+requires a fresh preview. This changes no confirmed Jira key and grants no
+permission to rewrite historical native names; native migration remains a
+separate preview/apply against the pinned definition.
 
 ## Recommended Team Definition values
 

@@ -4,13 +4,13 @@ version: 0.1
 date_created: 2026-09-01
 last_updated: 2026-09-02
 owner: Kontor Lead Software Architect
-status: Verification and re-audit
+status: Historical — KBI migration verified 2026-09-02
 tags: [kontor, naming, team-definition, topology, migration, ASMA-8062]
 ---
 
 # Configuration-Driven Native Naming and Live Migration Plan
 
-![Status: Verification and re-audit](https://img.shields.io/badge/status-Verification%20and%20re--audit-yellow)
+> **Resolution 2026-09-05:** KBI migration is verified by deployed `1a4320f7` and receipt `01a062dd-b092-7593-b64e-c385d2eb7c07`; see [Native naming](../../docs/NATIVE_NAMING.md). Preserve this original execution plan as history. Other epics require their own pinned-definition upgrade, not a replay of this completed KBI migration.
 
 > **Jira:** `ASMA-8062`
 > **Kontor task:** `01a05d9b-8014-7182-9b96-921fc9386900` (`KBI-8062`)
