@@ -21642,6 +21642,25 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
     } = &seeded;
     let project_id = ProjectId::parse(project).expect("a project id");
     let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+    let recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Recovery verifier",
+            "harness": "fake.runtime",
+            "credential_alias": "recovery-verifier",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-unbound-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(recovery_account.status, 200, "{}", recovery_account.body);
+    let recovery_account_id = recovery_account.json()["account_profile_id"]
+        .as_str()
+        .expect("the recovery account id")
+        .to_owned();
     let giver = seats
         .iter()
         .find(|seat| seat["role_slot"] == "omega-k1")
@@ -21700,7 +21719,7 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
             "expected_task_revision": task_revision,
             "binding_generation": 0,
             "model_route": {
-                "provider": "codex",
+                "provider": "codex-personal",
                 "model": "gpt-5.6-sol",
                 "effort": "xhigh"
             }
@@ -21757,7 +21776,7 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
         "expected_task_revision": task_revision,
         "binding_generation": 0,
         "model_route": {
-            "provider": "codex",
+            "provider": "codex-personal",
             "model": "gpt-5.6-sol",
             "effort": "xhigh"
         }
@@ -21805,12 +21824,31 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
     );
     assert_eq!(successor.parent_agent_run_id, Some(predecessor.id));
     assert!(successor.binding.is_some(), "the successor is bound");
+    assert_eq!(
+        successor.account_profile_id.map(|id| id.to_string()),
+        Some(recovery_account_id.clone()),
+        "the exact recovery alias must pin the account before launch"
+    );
     assert_eq!(dispatches.len(), 1, "the original handoff is preserved");
     assert!(
         dispatches[0].dispatched,
         "the handoff reached the successor"
     );
     assert_eq!(dispatches[0].target_agent_run, Some(successor_id));
+
+    // Reproduce the row written by the first ASMA-8099 deployment: the native
+    // successor exists and is bound, but its account was left null. The exact
+    // command replay must repair that historical row without replacing it.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    connection
+        .execute(
+            "UPDATE agent_runs SET account_profile_id = NULL
+             WHERE project_id = ?1 AND id = ?2",
+            rusqlite::params![project, successor_id.to_string()],
+        )
+        .expect("the fixture reproduces the deployed account-less successor");
+    drop(connection);
 
     let replay = Call::post(
         format!(
@@ -21829,6 +21867,81 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
         replay.json()["successor_agent_run_id"],
         successor_id.to_string()
     );
+    let repaired = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the repaired successor reads")
+            .expect("the repaired successor remains")
+    });
+    assert_eq!(
+        repaired.account_profile_id.map(|id| id.to_string()),
+        Some(recovery_account_id),
+        "the replay repairs the deployed account-less successor in place"
+    );
+
+    // Rehydrate the recovered lineage through the public settlement path. The
+    // abandoned predecessor is an audit anchor, not a native attempt, but the
+    // successor still names it as its parent. Dropping that anchor during
+    // hydration leaves the successor rootless and silently prevents TeamRun
+    // closure after every real seat has finished.
+    let mut unfinished = vec![(successor_id.to_string(), "omega-k3".to_owned())];
+    unfinished.extend(
+        seats
+            .iter()
+            .filter(|seat| seat["role_slot"] != "omega-k1")
+            .map(|seat| {
+                (
+                    seat["agent_run_id"]
+                        .as_str()
+                        .expect("an agent run id")
+                        .to_owned(),
+                    seat["role_slot"].as_str().expect("a role slot").to_owned(),
+                )
+            }),
+    );
+    assert_eq!(
+        unfinished.len(),
+        2,
+        "the recovered QA seat and remaining implementation seat must finish"
+    );
+
+    for (index, (agent_run, role_slot)) in unfinished.iter().enumerate() {
+        let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        let revision = projected.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a task revision");
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": revision,
+                "runtime_proof": observe_current_turn(world, project, agent_run),
+                "artifacts": ["omega-a3"]
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("reroute-unbound-settle-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "slot `{role_slot}`: {}", settled.body);
+        if index + 1 == unfinished.len() {
+            assert_eq!(
+                settled.json()["team_run_closed"],
+                serde_json::json!(team_run),
+                "the recovered lineage must survive hydration and close the TeamRun: {}",
+                settled.body
+            );
+        } else {
+            assert!(
+                settled.json()["team_run_closed"].is_null(),
+                "one real seat still remains: {}",
+                settled.body
+            );
+        }
+    }
 }
 
 /// An unbound launch may be abandoned before its already-seated siblings end.

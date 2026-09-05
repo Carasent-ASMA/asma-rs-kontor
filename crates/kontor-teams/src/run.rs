@@ -880,6 +880,17 @@ impl TeamRunSlots {
             .map(|slot| (slot.id.clone(), SlotState::vacant()))
             .collect();
 
+        // An operator-abandoned run that never held a native binding normally
+        // spends neither a seat nor successor depth. Retain only the exact rows
+        // that a real successor names as its audit parent; without that anchor
+        // the successor becomes a rootless lineage after restart. Unreferenced
+        // failed launches remain omitted, including abandoned branches beside
+        // an otherwise valid native successor chain.
+        let referenced_parents: BTreeSet<AgentRunId> = runs
+            .iter()
+            .filter(|run| !run.is_operator_abandoned_unbound())
+            .filter_map(|run| run.parent_agent_run_id)
+            .collect();
         let mut grouped: BTreeMap<RoleSlotId, Vec<&AgentRun>> = BTreeMap::new();
         for run in runs {
             if run.team_run_id != team_run_id {
@@ -888,7 +899,7 @@ impl TeamRunSlots {
                     "a run belongs to a different team run",
                 ));
             }
-            if run.is_operator_abandoned_unbound() {
+            if run.is_operator_abandoned_unbound() && !referenced_parents.contains(&run.id) {
                 continue;
             }
             let slot = RoleSlotId::new(run.role.clone());
@@ -1023,7 +1034,13 @@ impl TeamRunSlots {
                 "the successor chain does not cover every attempt of the slot",
             ));
         }
-        if u32::try_from(chain.len() - 1).unwrap_or(u32::MAX) > max_successor_depth {
+        let native_attempts = chain
+            .iter()
+            .filter(|run| !run.is_operator_abandoned_unbound())
+            .count();
+        if u32::try_from(native_attempts.saturating_sub(1)).unwrap_or(u32::MAX)
+            > max_successor_depth
+        {
             return Err(DomainError::invalid(
                 "TeamRunSlots",
                 "the successor chain is deeper than the template allows",
@@ -1033,7 +1050,9 @@ impl TeamRunSlots {
         let (leaf, closed) = chain.split_last().expect("the chain has at least the root");
         let mut lineage = Vec::with_capacity(closed.len());
         for run in closed {
-            lineage.push(Self::closed_attempt(run)?);
+            if !run.is_operator_abandoned_unbound() {
+                lineage.push(Self::closed_attempt(run)?);
+            }
         }
 
         let head = if leaf.projection.lifecycle.is_terminal() {
@@ -1261,12 +1280,13 @@ impl TeamRunSlots {
     /// Reserve a replacement for an operator-abandoned attempt that never held
     /// a native binding.
     ///
-    /// Hydration deliberately omits those rows from the slot lineage: no native
-    /// attempt ran, so they spend neither a seat nor successor depth. Recovery
-    /// still links the new run to the abandoned logical attempt so its identity
-    /// and the reason for rerouting remain auditable. The slot must otherwise be
-    /// vacant, which prevents this path from replacing or branching a real
-    /// native lineage.
+    /// Hydration omits those rows from the native slot lineage, but retains an
+    /// exact row while a real successor names it as an audit parent. No native
+    /// attempt ran, so the row spends neither a seat nor successor depth.
+    /// Recovery still links the new run to the abandoned logical attempt so its
+    /// identity and the reason for rerouting remain auditable. The slot must
+    /// otherwise be vacant, which prevents this path from replacing or
+    /// branching a real native lineage.
     ///
     /// # Errors
     /// Returns [`DomainError`] when the slot is undeclared or is occupied by a
