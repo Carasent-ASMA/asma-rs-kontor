@@ -9695,6 +9695,36 @@ async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
         2,
         "retries must append no duplicate verdict"
     );
+    // The rejection routed exactly once, and the record of why the workflow
+    // moved survives the restart with it.
+    let routes = restarted
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, workflow_before.id))
+        .expect("durable route history reads");
+    assert_eq!(
+        routes.len(),
+        1,
+        "one rejection routes once, however many times its receipt is replayed"
+    );
+    let route = &routes[0];
+    assert_eq!(
+        route.origin,
+        kontor_core::repository::GateRouteOrigin::Recorded
+    );
+    assert_eq!(route.gate_sequence, 2, "the route names the rejected verdict");
+    assert_eq!(route.rejection_target, gate_spec.rejection_target);
+    assert_eq!(
+        route.from_revision, workflow_after.revision,
+        "the route records the revision the rejection moved from"
+    );
+    assert_eq!(
+        route.to_revision, workflow_rejected.revision,
+        "exactly one revision increment, recorded on the route"
+    );
+    assert_eq!(
+        route.rejection_receipt_id, route.route_receipt_id,
+        "one command recorded the verdict and routed it"
+    );
     let preserved = restarted
         .state()
         .with_store(|store| {
@@ -9706,6 +9736,684 @@ async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
     assert_eq!(preserved.revision, workflow_rejected.revision);
     assert_eq!(preserved.current_phase, workflow_rejected.current_phase);
     restarted.state().signals().stop();
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8110 — a rejected verdict recorded before the routing fix is routed
+// exactly once, and the route it writes fences the phase it returns to.
+// ---------------------------------------------------------------------------
+
+/// The route the rejection just recorded, and the state it moved the workflow
+/// from, so the fixture can be rewound to the shape a pre-fix realm was left in.
+struct RecordedRejection {
+    workflow: TaskWorkflowId,
+    gate: String,
+    sequence: u32,
+    /// The phase the workflow stood at before the rejection routed it.
+    phase_before: String,
+    /// The workflow revision before the rejection.
+    revision_before: u64,
+    /// The receipt of the `record_gate_verdict` command.
+    receipt: String,
+}
+
+/// Drive one task to its first gate and reject it through the ordinary path.
+async fn record_a_rejection(
+    world: &World,
+    seed: &Bootstrapped,
+    runs: &[String],
+    slug: &str,
+) -> RecordedRejection {
+    settle_every_seat(world, seed, runs, &format!("{slug}-producer")).await;
+    let (uri, revision, gate) = gate_record_target(world, seed).await;
+    let before = active_workflow(world, seed);
+    let gate_spec = before
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the projected gate is frozen")
+        .clone();
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-reject"))
+    .send(world)
+    .await;
+    assert_eq!(rejected.status, 200, "{}", rejected.body);
+    let sequence = rejected.json()["sequence"].as_u64().expect("a sequence");
+    let receipt = rejected.json()["receipt_id"]
+        .as_str()
+        .expect("a receipt id")
+        .to_owned();
+    RecordedRejection {
+        workflow: before.id,
+        gate,
+        sequence: u32::try_from(sequence).expect("a small sequence"),
+        phase_before: before.current_phase.as_str().to_owned(),
+        revision_before: before.revision.get(),
+        receipt,
+    }
+}
+
+/// Rewind a recorded rejection into the state ASMA-8100 was actually found in:
+/// the verdict and its receipt durable, and the workflow never routed.
+///
+/// The route table and its triggers did not exist before this generation, so
+/// removing the row and restoring the workflow's pre-rejection phase and
+/// revision reproduces a genuine pre-migration database rather than faking one.
+/// The trigger is dropped and recreated from its own stored definition, so the
+/// fixture cannot silently leave the append-only guarantee off.
+fn rewind_to_unrouted_rejection(world: &World, seed: &Bootstrapped, rejection: &RecordedRejection) {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let trigger: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'trigger' AND name = 'task_gate_rejection_routes_no_delete'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the append-only trigger exists");
+    connection
+        .execute("DROP TRIGGER task_gate_rejection_routes_no_delete", [])
+        .expect("the fixture may lift its own guard");
+    let removed = connection
+        .execute(
+            "DELETE FROM task_gate_rejection_routes WHERE project_id = ?1 AND workflow_id = ?2",
+            rusqlite::params![seed.project, rejection.workflow.to_string()],
+        )
+        .expect("the route row is removed");
+    assert_eq!(removed, 1, "the ordinary path wrote exactly one route");
+    connection
+        .execute(&trigger, [])
+        .expect("the append-only trigger is restored");
+    let moved = connection
+        .execute(
+            "UPDATE task_workflows SET current_phase = ?1, revision = ?2
+             WHERE project_id = ?3 AND id = ?4",
+            rusqlite::params![
+                rejection.phase_before,
+                i64::try_from(rejection.revision_before).expect("a small revision"),
+                seed.project,
+                rejection.workflow.to_string()
+            ],
+        )
+        .expect("the workflow is rewound");
+    assert_eq!(moved, 1);
+}
+
+/// The recovery URI for one task's gate.
+fn recovery_uri(seed: &Bootstrapped, gate: &str) -> String {
+    format!(
+        "/v1/projects/{}/tasks/{}/gates/{gate}/rejections:recover",
+        seed.project, seed.task
+    )
+}
+
+/// The task revision the recovery must witness.
+async fn task_revision_of(world: &World, seed: &Bootstrapped) -> u64 {
+    let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a task revision")
+}
+
+/// Row counts for every table a refused recovery could conceivably touch.
+fn rejection_census(world: &World) -> Vec<(&'static str, i64)> {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    [
+        "task_gate_rejection_routes",
+        "task_gate_evaluations",
+        "command_receipts",
+        "command_outbox",
+        "task_workflows",
+        "role_turns",
+        "tasks",
+        "team_runs",
+        "agent_runs",
+    ]
+    .into_iter()
+    .map(|table| {
+        let count: i64 = connection
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|_| panic!("`{table}` is countable"));
+        (table, count)
+    })
+    .collect()
+}
+
+/// The workflow's mutable position, for proving a refusal moved nothing.
+fn workflow_position(world: &World, seed: &Bootstrapped) -> (String, u64) {
+    let workflow = active_workflow(world, seed);
+    (
+        workflow.current_phase.as_str().to_owned(),
+        workflow.revision.get(),
+    )
+}
+
+/// A rejection recorded before the fix is routed once, replays under its own
+/// key, refuses a second key, and survives a restart unchanged.
+#[tokio::test]
+async fn a_historical_gate_rejection_recovery_routes_once_and_replays_after_restart() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rejection-recovery").await;
+    let rejection = record_a_rejection(&world, &seed, &runs, "rejection-recovery").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+
+    let workflow = active_workflow(&world, &seed);
+    assert_eq!(
+        workflow.current_phase.as_str(),
+        rejection.phase_before,
+        "the fixture reproduces an unrouted rejection"
+    );
+    let gate_spec = workflow
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == rejection.gate)
+        .expect("the gate is frozen")
+        .clone();
+    let target = gate_spec.rejection_target.as_str().to_owned();
+    let uri = recovery_uri(&seed, &rejection.gate);
+    let request = serde_json::json!({
+        "rejection_receipt_id": rejection.receipt,
+        "sequence": rejection.sequence,
+        "expected_task_revision": task_revision_of(&world, &seed).await,
+        "expected_workflow_revision": rejection.revision_before,
+        "expected_current_phase": rejection.phase_before,
+        "expected_rejection_target": target,
+    });
+
+    // An operator cannot reach it: repairing a workflow is admin authority.
+    let denied = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("rejection-recovery-operator")
+        .send(&world)
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+
+    let recovered = Call::post(&uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("rejection-recovery-once")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let body = recovered.json();
+    assert_eq!(body["applied"], "created");
+    assert_eq!(body["gate"], rejection.gate);
+    assert_eq!(body["sequence"], rejection.sequence);
+    assert_eq!(body["rejection_receipt_id"], rejection.receipt);
+    assert_eq!(body["prior_phase"], rejection.phase_before);
+    assert_eq!(body["current_phase"], target);
+    assert_eq!(body["prior_revision"], rejection.revision_before);
+    assert_eq!(body["current_revision"], rejection.revision_before + 1);
+    assert_eq!(body["workflow_id"], rejection.workflow.to_string());
+    assert_ne!(
+        body["receipt_id"], rejection.receipt,
+        "a recovery is its own command, not the verdict it consumes"
+    );
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), rejection.revision_before + 1)
+    );
+
+    // The same key replays the same answer, and writes nothing more.
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("rejection-recovery-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    let mut expected = body.clone();
+    expected["applied"] = serde_json::json!("unchanged");
+    assert_eq!(replay.json(), expected);
+
+    // A fresh key against the consumed rejection changes nothing and names the
+    // command that already routed it.
+    let before = rejection_census(&world);
+    let second = Call::post(&uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("rejection-recovery-second-key")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 409, "{}", second.body);
+    assert_eq!(second.code(), "revision_conflict");
+    assert!(
+        second.body.contains(
+            body["receipt_id"]
+                .as_str()
+                .expect("the original recovery receipt")
+        ),
+        "the refusal names the command that already routed it: {}",
+        second.body
+    );
+    assert_eq!(before, rejection_census(&world));
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), rejection.revision_before + 1)
+    );
+
+    // And all of it survives a restart.
+    let admin = secret(&world, "admin");
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+    restarted.reconcile().await;
+    let replay = Call::post(&uri, &request)
+        .with_token(&admin)
+        .with_key("rejection-recovery-once")
+        .send_to(&restarted.router())
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), expected);
+    let routes = restarted
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, rejection.workflow))
+        .expect("routes read")
+        .len();
+    assert_eq!(routes, 1, "one rejection, one route, across a restart");
+    let evaluations = restarted
+        .state()
+        .with_store(|store| store.list_gate_evaluations(project, rejection.workflow))
+        .expect("history reads");
+    assert_eq!(
+        evaluations.len(),
+        usize::try_from(rejection.sequence).expect("a small sequence"),
+        "a recovery appends no verdict of its own"
+    );
+    let preserved = restarted
+        .state()
+        .with_store(|store| {
+            store.get_active_task_workflow(project, TaskId::parse(&seed.task).expect("task id"))
+        })
+        .expect("workflow reads")
+        .expect("the same workflow exists");
+    assert_eq!(preserved.id, rejection.workflow);
+    assert_eq!(preserved.current_phase.as_str(), target);
+    assert_eq!(preserved.revision.get(), rejection.revision_before + 1);
+    restarted.state().signals().stop();
+}
+
+/// Every way a recovery request can name the wrong thing is refused, and none
+/// of them writes anything.
+///
+/// The census is taken around each case rather than once at the end, so a
+/// refusal that wrote a row and a later one that removed it could not cancel
+/// out.
+#[tokio::test]
+async fn gate_rejection_recovery_refuses_wrong_task_gate_sequence_receipt_phase_target_and_revisions_without_writes()
+ {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rejection-refusals").await;
+    let rejection = record_a_rejection(&world, &seed, &runs, "rejection-refusals").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+
+    let workflow = active_workflow(&world, &seed);
+    let gate_spec = workflow
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == rejection.gate)
+        .expect("the gate is frozen")
+        .clone();
+    let target = gate_spec.rejection_target.as_str().to_owned();
+    let task_revision = task_revision_of(&world, &seed).await;
+    let honest = serde_json::json!({
+        "rejection_receipt_id": rejection.receipt,
+        "sequence": rejection.sequence,
+        "expected_task_revision": task_revision,
+        "expected_workflow_revision": rejection.revision_before,
+        "expected_current_phase": rejection.phase_before,
+        "expected_rejection_target": target,
+    });
+
+    // A receipt of the right shape for another command, so "is this a gate
+    // verdict receipt?" is tested rather than "does this id exist?".
+    let other_receipt = Call::post(
+        format!("/v1/projects/{}/tasks/{}/context:resolve", seed.project, seed.task),
+        &serde_json::json!({ "snapshot": false }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("rejection-refusals-other-receipt")
+    .send(&world)
+    .await;
+    assert_eq!(other_receipt.status, 200, "{}", other_receipt.body);
+
+    let another_task = TaskId::generate();
+    let cases: Vec<(&str, String, serde_json::Value)> = vec![
+        (
+            "another task",
+            format!(
+                "/v1/projects/{}/tasks/{another_task}/gates/{}/rejections:recover",
+                seed.project, rejection.gate
+            ),
+            honest.clone(),
+        ),
+        (
+            "a gate the profile does not declare",
+            recovery_uri(&seed, "zz.not-a-gate"),
+            honest.clone(),
+        ),
+        (
+            "a sequence the gate never had",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["sequence"] = serde_json::json!(rejection.sequence + 7);
+                body
+            },
+        ),
+        (
+            "a receipt that recorded no verdict",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["rejection_receipt_id"] = other_receipt.json()["receipt_id"].clone();
+                body
+            },
+        ),
+        (
+            "a receipt that exists nowhere",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["rejection_receipt_id"] =
+                    serde_json::json!(CommandReceiptId::generate().to_string());
+                body
+            },
+        ),
+        (
+            "a phase the workflow is not at",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["expected_current_phase"] = serde_json::json!(target.clone());
+                body
+            },
+        ),
+        (
+            "a rejection target the profile did not pin",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["expected_rejection_target"] =
+                    serde_json::json!(rejection.phase_before.clone());
+                body
+            },
+        ),
+        (
+            "a stale task revision",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["expected_task_revision"] = serde_json::json!(task_revision + 5);
+                body
+            },
+        ),
+        (
+            "a stale workflow revision",
+            recovery_uri(&seed, &rejection.gate),
+            {
+                let mut body = honest.clone();
+                body["expected_workflow_revision"] =
+                    serde_json::json!(rejection.revision_before + 5);
+                body
+            },
+        ),
+    ];
+
+    for (index, (name, uri, body)) in cases.iter().enumerate() {
+        let before = rejection_census(&world);
+        let position_before = workflow_position(&world, &seed);
+        let refused = Call::post(uri, body)
+            .signed_as(&world, "admin")
+            .with_key(format!("rejection-refusals-{index}"))
+            .send(&world)
+            .await;
+        assert_ne!(
+            refused.status, 200,
+            "{name} must be refused: {}",
+            refused.body
+        );
+        assert_eq!(
+            before,
+            rejection_census(&world),
+            "{name}: a refusal wrote a row"
+        );
+        assert_eq!(
+            position_before,
+            workflow_position(&world, &seed),
+            "{name}: a refusal moved the workflow"
+        );
+    }
+
+    // The honest request still works afterwards: the refusals consumed nothing.
+    let recovered = Call::post(&recovery_uri(&seed, &rejection.gate), &honest)
+        .signed_as(&world, "admin")
+        .with_key("rejection-refusals-honest")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["applied"], "created");
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target, rejection.revision_before + 1)
+    );
+}
+
+/// The seat filling one role, found through the public snapshot.
+async fn run_with_role(world: &World, runs: &[String], role: &str) -> String {
+    for run in runs {
+        let snapshot = Call::get(format!("/v1/runs/{run}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+        if snapshot.json()["value"]["role"] == role {
+            return run.clone();
+        }
+    }
+    panic!("the seated team has no {role} seat")
+}
+
+/// Settle one bounded turn on one seat, citing exactly `artifacts`.
+async fn settle_turn(
+    world: &World,
+    seed: &Bootstrapped,
+    run: &str,
+    role: &str,
+    artifacts: serde_json::Value,
+    key: &str,
+) -> Answer {
+    Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{run}/turns:settle",
+            seed.project
+        ),
+        &serde_json::json!({
+            "role_slot": role,
+            "expected_task_revision": task_revision_of(world, seed).await,
+            "runtime_proof": observe_current_turn(world, &seed.project, run),
+            "artifacts": artifacts,
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key.to_owned())
+    .send(world)
+    .await
+}
+
+/// The artifacts that existed when a rejection was recorded are the ones the
+/// reviewer rejected. They must not walk the recovered workflow straight back
+/// out of the phase it was returned to.
+#[tokio::test]
+async fn legacy_artifacts_do_not_advance_a_recovered_rejection_until_a_fresh_authoring_turn_settles()
+{
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rejection-fence").await;
+    // Every phase's producer artifact already exists, and is exactly the
+    // evidence the rejection was about.
+    let rejection = record_a_rejection(&world, &seed, &runs, "rejection-fence").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+
+    let workflow = active_workflow(&world, &seed);
+    let gate_spec = workflow
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == rejection.gate)
+        .expect("the gate is frozen")
+        .clone();
+    let target = gate_spec.rejection_target.as_str().to_owned();
+    let recovered = Call::post(
+        &recovery_uri(&seed, &rejection.gate),
+        &serde_json::json!({
+            "rejection_receipt_id": rejection.receipt,
+            "sequence": rejection.sequence,
+            "expected_task_revision": task_revision_of(&world, &seed).await,
+            "expected_workflow_revision": rejection.revision_before,
+            "expected_current_phase": rejection.phase_before,
+            "expected_rejection_target": target,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("rejection-fence-recover")
+    .send(&world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["current_phase"], target);
+    let routed_revision = rejection.revision_before + 1;
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision)
+    );
+
+    // Reconciliation re-reads the same durable artifacts as often as it likes.
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, &seed),
+            (target.clone(), routed_revision),
+            "reconciliation must not advance on pre-rejection evidence"
+        );
+    }
+
+    // A turn from the reviewing role, carrying its own phase's artifact, is not
+    // the rework the rejection asked for.
+    let inspector = run_with_role(&world, &runs, "inspector").await;
+    let reviewer_turn = settle_turn(
+        &world,
+        &seed,
+        &inspector,
+        "inspector",
+        serde_json::json!(["review-notes"]),
+        "rejection-fence-reviewer",
+    )
+    .await;
+    assert_eq!(reviewer_turn.status, 200, "{}", reviewer_turn.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision),
+        "a reviewer's turn does not release the fence its own rejection raised"
+    );
+
+    // Neither is a turn that produced nothing.
+    let tester = run_with_role(&world, &runs, "tester").await;
+    let empty_turn = settle_turn(
+        &world,
+        &seed,
+        &tester,
+        "tester",
+        serde_json::json!([]),
+        "rejection-fence-empty",
+    )
+    .await;
+    assert_eq!(empty_turn.status, 200, "{}", empty_turn.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision),
+        "an empty turn does not release the fence"
+    );
+
+    // The rework itself does. The seat is the preserved one that authored the
+    // phase in the first place, and its artifact is settled fresh.
+    let builder = run_with_role(&world, &runs, "builder").await;
+    let rework = settle_turn(
+        &world,
+        &seed,
+        &builder,
+        "builder",
+        serde_json::json!(["code-change"]),
+        "rejection-fence-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (phase_after, revision_after) = workflow_position(&world, &seed);
+    assert_ne!(
+        phase_after, target,
+        "a fresh authoring settlement releases the fence"
+    );
+    assert!(
+        revision_after > routed_revision,
+        "releasing the fence lets ordinary advancement resume"
+    );
+
+    // The route stays as history once the workflow has legitimately moved on:
+    // it is a record of what happened, not a permanent stop.
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let routes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, rejection.workflow))
+        .expect("routes read");
+    assert_eq!(routes.len(), 1);
+    assert_eq!(
+        routes[0].origin,
+        kontor_core::repository::GateRouteOrigin::Recovered
+    );
 }
 
 /// A gate request cites evidence; it does not create that evidence.

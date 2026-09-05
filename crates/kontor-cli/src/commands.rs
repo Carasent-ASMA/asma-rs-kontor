@@ -236,6 +236,63 @@ mod tests {
         }
     }
 
+    /// The exact invocation ASMA-8110's qualification runs against a live realm.
+    ///
+    /// The command is generated, so nothing stops a later rename of the tool
+    /// from silently respelling it. This pins the spelling and every flag that
+    /// recovery run depends on, so a rename fails here rather than in front of
+    /// an operator holding a one-shot recovery.
+    #[test]
+    fn the_gate_rejection_recovery_spelling_is_the_one_operators_are_given() {
+        assert_eq!(
+            command_name("kontor_gate_rejection_recover"),
+            "gate-rejection-recover"
+        );
+        let matches = build()
+            .try_get_matches_from([
+                "kontor",
+                "--state-root",
+                "/tmp/realm",
+                "--tier",
+                "admin",
+                "gate-rejection-recover",
+                "--project-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                "--task-id",
+                "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                "--gate-id",
+                "technical-review-gate",
+                "--rejection-receipt-id",
+                "01a07373-0b66-7b93-905f-c2a21bee494f",
+                "--sequence",
+                "1",
+                "--expected-task-revision",
+                "2",
+                "--expected-workflow-revision",
+                "2",
+                "--expected-current-phase",
+                "technical-review",
+                "--expected-rejection-target",
+                "authoring",
+                "--idempotency-key",
+                "asma-8100-technical-review-rejection-1-recovery",
+            ])
+            .expect("the documented recovery invocation parses");
+        let sub = matches
+            .subcommand_matches("gate-rejection-recover")
+            .expect("the recovery subcommand is selected");
+        assert_eq!(
+            sub.get_one::<String>("expected_rejection_target")
+                .map(String::as_str),
+            Some("authoring")
+        );
+        assert_eq!(
+            sub.get_one::<String>("rejection_receipt_id")
+                .map(String::as_str),
+            Some("01a07373-0b66-7b93-905f-c2a21bee494f")
+        );
+    }
+
     #[test]
     fn a_declared_number_reaches_the_dispatcher_as_a_number() {
         let command = build();

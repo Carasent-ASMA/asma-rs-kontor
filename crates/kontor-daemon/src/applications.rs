@@ -1174,20 +1174,26 @@ impl Services {
             .find(|phase| phase.id == route.rejection_target)
             .map(|phase| phase.required_artifacts.iter().cloned().collect())
             .unwrap_or_default();
-        let active_runs: BTreeSet<kontor_core::id::TeamRunId> = state
+        // The task's *preserved* TeamRun: the current one, whatever its
+        // lifecycle. Identity is the test here, not liveness. A team that
+        // settled every seat closes as `succeeded`, and the seats stay
+        // persistent and reusable -- which is precisely the state a recovered
+        // rejection is found in, and precisely the state a new bounded turn is
+        // handed into. Requiring a non-terminal run would make the fence
+        // unreleasable in the one situation it exists for, while still not
+        // excluding anything an identity comparison does not already exclude.
+        let preserved_run = state
             .with_store(|store| store.list_team_runs_for_task(project_id, workflow.task_id))
             .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            .filter(|(_, lifecycle)| !lifecycle.is_terminal())
-            .map(|(id, _)| id)
-            .collect();
+            .last()
+            .map(|(id, _)| *id);
         let released = state
             .with_store(|store| store.list_settled_turns(project_id, workflow.task_id))
             .map_err(|error| self.refuse(&error))?
             .iter()
             .any(|turn| {
                 turn.settled_at > route.routed_at
-                    && active_runs.contains(&turn.team_run_id)
+                    && preserved_run.is_some_and(|run| turn.team_run_id == run)
                     && handoff_role
                         .as_ref()
                         .is_none_or(|role| turn.role_slot_id.as_role_key() == role)

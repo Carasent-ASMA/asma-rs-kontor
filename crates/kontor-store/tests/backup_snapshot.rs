@@ -774,6 +774,120 @@ fn a_restore_reinstates_the_same_realm_and_refuses_a_different_one() {
     );
 }
 
+/// The v89 gate-rejection route schema migrates, passes both integrity checks
+/// and survives a snapshot round trip with its append-only guarantees intact.
+///
+/// These are exactly the checks ASMA-8110's qualification runs against the live
+/// realm before and after the recovery command (steps 5 and 9), so a migration
+/// that damaged the database or dropped a constraint fails here rather than
+/// there.
+#[test]
+fn the_gate_rejection_route_schema_migrates_and_survives_a_snapshot() {
+    let home = TempDir::new().expect("a temporary directory");
+    let source = home.path().join("source.db");
+    let store = seeded(&source, 1);
+    drop(store);
+
+    let assert_schema = |path: &std::path::Path, context: &str| {
+        let connection = rusqlite::Connection::open(path).expect("the realm opens");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("the schema version reads");
+        assert_eq!(version, SCHEMA_VERSION, "{context}: schema version");
+        assert_eq!(SCHEMA_VERSION, 89, "the route schema is generation 89");
+
+        // Both database integrity checks the deployment runs, in the same order.
+        let integrity: String = connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("the integrity check runs");
+        assert_eq!(integrity, "ok", "{context}: integrity_check");
+        let foreign_keys: i64 = connection
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("the foreign key check runs");
+        assert_eq!(foreign_keys, 0, "{context}: foreign_key_check rows");
+
+        let table: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'task_gate_rejection_routes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the route table is countable");
+        assert_eq!(table, 1, "{context}: migration 0089 exists exactly once");
+
+        // The append-only guarantees are schema, not convention: a restore that
+        // dropped them would leave a ledger that could be rewritten.
+        let triggers: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'trigger' AND tbl_name = 'task_gate_rejection_routes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the route triggers are countable");
+        assert_eq!(triggers, 2, "{context}: immutable and no-delete triggers");
+
+        let schema: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type = 'table' AND name = 'task_gate_rejection_routes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the route schema reads");
+        // The two uniqueness rules that make one rejection consumable once.
+        assert!(
+            schema.contains("rejection_receipt_id TEXT    NOT NULL UNIQUE"),
+            "{context}: the source verdict receipt stays unique"
+        );
+        assert!(
+            schema.contains("route_receipt_id     TEXT    NOT NULL UNIQUE"),
+            "{context}: the routing receipt stays unique"
+        );
+        assert!(
+            schema.contains("PRIMARY KEY (project_id, workflow_id, gate_key, gate_sequence)"),
+            "{context}: one route per evaluation"
+        );
+
+        // The new command kind is accepted by the widened receipt vocabulary.
+        let receipts: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type = 'table' AND name = 'command_receipts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the receipt schema reads");
+        assert!(
+            receipts.contains("'recover_gate_rejection'"),
+            "{context}: the recovery command kind is storable"
+        );
+    };
+
+    assert_schema(&source, "migrated");
+    let snapshot = create_snapshot(
+        &source,
+        &home.path().join("backups"),
+        at("2026-08-10T10:00:00Z"),
+    )
+    .expect("the realm is snapshotted");
+    assert_eq!(snapshot.manifest.database_schema_version, SCHEMA_VERSION);
+    assert_schema(&snapshot.snapshot, "snapshotted");
+
+    let restored_path = home.path().join("restored.db");
+    restore_snapshot(
+        &snapshot.snapshot,
+        &restored_path,
+        at("2026-08-10T11:00:00Z"),
+    )
+    .expect("the snapshot restores");
+    assert_schema(&restored_path, "restored");
+    SqliteStore::open(&restored_path).expect("the restored realm opens without re-migrating");
+}
+
 #[test]
 fn memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt() {
     let home = TempDir::new().expect("a temporary directory");

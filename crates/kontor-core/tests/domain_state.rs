@@ -1623,6 +1623,11 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("abandon_run", "team_run", "witness", None),
     ("resume_task", "task", "witness", None),
     ("record_gate_verdict", "task", "witness", None),
+    // Routing an already-recorded rejection witnesses the same task the verdict
+    // did. It is a distinct kind precisely so the verdict receipt can never be
+    // replayed as the authority that routed it, and this row is what keeps the
+    // two from quietly converging on one rule.
+    ("recover_gate_rejection", "task", "witness", None),
     // A proposal is decided before the work it proposes exists, so the project
     // is the only aggregate there is to name at that moment; approving an
     // already-created graph still names that graph.
