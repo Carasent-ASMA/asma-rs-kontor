@@ -1444,6 +1444,24 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
                 ],
             )
             .expect("the historical rejected evaluation is seeded");
+        // A second, later rejection of the same gate with identical immutable
+        // fields. It exists before the recovery runs, so a path that reached for
+        // the gate's *latest* evaluation instead of the requested one would
+        // route this row and the assertions below would see it.
+        connection
+            .execute(
+                "INSERT INTO task_gate_evaluations
+                     (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
+                      evaluator_account, evidence, recorded_at)
+                 VALUES (?1, ?2, 'zz.gate', 2, 'rejected', 'zz.reviewer', ?3, '[]', ?4)",
+                rusqlite::params![
+                    fixture.project.to_string(),
+                    workflow.to_string(),
+                    fixture.account.to_string(),
+                    "2026-01-02T00:00:00Z",
+                ],
+            )
+            .expect("a second identical rejected evaluation is seeded");
     }
 
     let recovery = |routed_at| kontor_core::repository::GateRejectionRecovery {
@@ -1503,6 +1521,10 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
     assert_eq!(route.from_phase, phase("zz.two"));
     assert_eq!(route.rejection_target, phase("zz.one"));
     assert_eq!(route.to_revision.get(), 2);
+    assert_eq!(
+        route.gate_sequence, 1,
+        "the requested evaluation is routed, never the gate's latest"
+    );
     let routed = fixture
         .store
         .get_active_task_workflow(fixture.project, fixture.task)
@@ -1520,6 +1542,17 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
     assert_eq!(applied, Applied::Unchanged);
     assert_eq!(replayed, route);
     assert_eq!(same_receipt.id, receipt.id);
+    assert_eq!(
+        fixture
+            .store
+            .get_active_task_workflow(fixture.project, fixture.task)
+            .expect("the workflow reads")
+            .expect("the workflow exists")
+            .revision
+            .get(),
+        2,
+        "a replay must not increment the workflow revision"
+    );
 
     // A fresh key against the same consumed rejection changes nothing.
     let before = census(&fixture);
@@ -1530,32 +1563,27 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
     assert_unchanged(&before, &census(&fixture), "second rejection consumption");
 
     // The same source receipt reached by a *different* evaluation identity is
-    // still the same consumed verdict. A second rejected evaluation whose every
-    // immutable field matches the source intent would satisfy the field
-    // comparison, so only the receipt's own uniqueness stops it being routed a
-    // second time under its own primary key.
-    {
-        let connection = Connection::open(&fixture.path).expect("a raw connection opens");
-        connection
-            .execute(
-                "INSERT INTO task_gate_evaluations
-                     (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
-                      evaluator_account, evidence, recorded_at)
-                 VALUES (?1, ?2, 'zz.gate', 2, 'rejected', 'zz.reviewer', ?3, '[]', ?4)",
-                rusqlite::params![
-                    fixture.project.to_string(),
-                    workflow.to_string(),
-                    fixture.account.to_string(),
-                    "2026-01-02T00:00:00Z",
-                ],
-            )
-            .expect("a second identical rejected evaluation is seeded");
-    }
+    // still the same consumed verdict. This is the shape that actually occurs:
+    // the work is reworked, re-reviewed and rejected a second time, so the
+    // workflow is back at the gate's phase and a second rejected evaluation
+    // exists whose every immutable field matches the first receipt's intent.
+    // Every other precondition then passes, and only the receipt's own
+    // uniqueness stops that one verdict being routed twice.
+    fixture
+        .store
+        .advance_phase(&PhaseAdvance {
+            project_id: fixture.project,
+            workflow_id: workflow,
+            expected_revision: AggregateRevision::parse(2).expect("revision"),
+            next_phase: phase("zz.two"),
+            advanced_at: now(),
+        })
+        .expect("the reworked task returns to the gate's phase");
     let before = census(&fixture);
     let mut second_identity = recovery(now());
     second_identity.sequence = 2;
-    second_identity.expected_workflow_revision = AggregateRevision::parse(2).expect("revision");
-    second_identity.expected_current_phase = phase("zz.one");
+    second_identity.expected_workflow_revision = AggregateRevision::parse(3).expect("revision");
+    second_identity.expected_current_phase = phase("zz.two");
     fixture
         .store
         .recover_gate_rejection_with_intent(&second_identity, &envelope("recover-other-sequence"))
@@ -1573,8 +1601,8 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
             .expect("the workflow exists")
             .revision
             .get(),
-        2,
-        "a refused second consumption does not move the workflow"
+        3,
+        "a refused second consumption leaves the workflow where the fixture put it"
     );
 
     // The route is append-only: it cannot be edited or deleted.
@@ -1604,7 +1632,8 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
             .expect("the workflow reads")
             .expect("the workflow exists")
             .current_phase,
-        phase("zz.one")
+        phase("zz.two"),
+        "the fixture advanced the reworked task back to the gate's phase"
     );
     assert_eq!(
         reopened
