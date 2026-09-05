@@ -1,0 +1,85 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.82s
+     Running tests/repository_roundtrip.rs (target/qualification/debug/deps/repository_roundtrip-be4e190cd6ddcb18)
+
+running 76 tests
+test a_capability_receipt_must_record_this_command_over_this_exact_scope ... ok
+test a_context_policy_survives_crash_reopen_with_its_clamp_evidence ... ok
+test a_compaction_receipt_is_idempotent_by_id_and_conflicts_on_different_content ... ok
+test a_completion_transition_from_a_superseded_revision_changes_nothing ... ok
+test a_confirmed_receipt_whose_session_moved_never_reaches_storage ... ok
+test a_completion_whose_wake_cannot_be_stored_commits_neither ... ok
+test a_conflict_resolution_receipt_must_resolve_this_conflicted_link ... ok
+test a_completion_commit_refuses_command_scope_and_unchanged_state_mismatches ... ok
+test a_closed_run_is_immutable_and_recovery_creates_a_successor ... ok
+test a_conflict_keeps_its_inputs_and_resolves_exactly_once ... ok
+test a_disappeared_process_never_closes_a_run ... ok
+test a_phase_advances_only_along_a_declared_edge_and_only_under_a_compare_and_swap ... ok
+test a_disposition_closure_reproves_itself_and_round_trips_as_its_own_source ... ok
+test a_published_completion_profile_revision_cannot_be_republished ... ok
+test a_gate_may_only_be_decided_by_the_authority_the_profile_names ... ok
+test a_project_with_no_calendar_is_unrestricted_not_closed ... ok
+test a_pinned_calendar_revision_is_never_silently_upgraded ... ok
+test a_dependency_cycle_is_refused_and_writes_nothing ... ok
+test a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together ... ok
+test a_mismatched_realm_envelope_or_foreign_id_fails_atomically has been running for over 60 seconds
+test a_raw_event_is_appended_before_state_is_reduced_and_replays_are_idempotent ... ok
+test a_second_remediation_proposal_for_one_round_is_refused ... ok
+test a_run_context_policy_is_written_once_and_cannot_be_revised ... ok
+test a_referenced_account_profile_cannot_be_deleted ... ok
+test a_refused_intent_rolls_back_receipt_outbox_desired_state_and_event_together ... ok
+test a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate ... ok
+test a_replayed_completion_wake_reuses_its_intent_instead_of_adding_a_second ... ok
+test a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store ... ok
+test a_repeated_source_event_returns_the_original_decision ... ok
+test a_mismatched_realm_envelope_or_foreign_id_fails_atomically ... ok
+test a_task_closes_only_when_its_pinned_profile_says_it_may ... ok
+test a_valid_id_from_another_project_never_resolves ... ok
+test a_waiver_is_refused_without_policy_authority_evidence_or_an_unbound_slot ... ok
+test account_profiles_are_listed_and_read_per_project ... ok
+test a_task_from_a_sibling_goal_is_not_armed_by_a_goal_authorization ... ok
+test a_waiver_replays_on_its_key_and_is_never_appended_to ... ok
+test a_waived_slot_is_refused_a_run_a_binding_a_turn_and_an_update ... ok
+test a_slot_that_both_settled_and_was_waived_is_refused_by_the_store ... ok
+test an_account_profile_change_from_a_foreign_realm_is_refused_before_any_write ... ok
+test an_account_profile_credential_identity_cannot_be_edited_by_direct_sql ... ok
+test an_account_profile_from_another_project_is_never_updated ... ok
+test an_account_profile_round_trips_through_a_reopen ... ok
+test an_account_profile_update_is_a_compare_and_swap ... ok
+test an_execution_authorization_is_bounded_and_arms_only_its_scope ... ok
+test an_empty_ledger_snapshot_resumes_without_a_gap_or_an_overlap ... ok
+test an_exact_orphaned_route_effect_recovers_receipt_and_wake_once ... ok
+test an_exact_orphaned_proposal_claim_recovers_once_and_rejects_impostors ... ok
+test an_incompatible_command_kind_and_target_never_reaches_sql ... ok
+test an_override_approval_and_its_revocation_each_need_their_own_receipt ... ok
+test an_existing_source_event_can_create_one_linked_receipt_per_newer_trigger_revision ... ok
+test an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled ... ok
+test an_override_is_bounded_by_its_scope_ceiling_and_revocation ... ok
+test an_unreferenced_account_profile_is_deleted_under_a_compare_and_swap ... ok
+test another_project_can_neither_read_nor_target_a_context_policy ... ok
+test both_external_workflow_fixtures_persist_reopen_and_hash_identically ... ok
+test calendar_exceptions_are_append_only_and_scoped_to_their_project ... ok
+test compaction_receipts_survive_crash_reopen_and_report_the_most_recent ... ok
+test desired_observed_and_derived_all_survive_a_restart_with_different_values ... ok
+test cross_project_targets_tasks_evidence_pins_and_trigger_refs_fail_without_partial_rows ... ok
+test every_refused_write_leaves_zero_partial_rows_revisions_events_or_outbox_entries ... ok
+test every_team_closure_source_round_trips_as_itself ... ok
+test external_comments_deduplicate_replays_and_keep_edits ... ok
+test no_gate_verdict_can_turn_its_citations_into_producer_evidence ... ok
+test replayed_or_out_of_order_native_events_never_regress_projection_or_revision ... ok
+test orphaned_remediation_effects_without_claims_cannot_be_adopted ... ok
+test intent_desired_state_outbox_and_event_commit_together ... ok
+test persona_snapshot_persists_reopens_and_rejects_cross_project_or_wrong_gate ... ok
+test sensitive_material_is_rejected_from_every_persisted_string_category_without_echo ... ok
+test specifications_and_snapshots_survive_a_restart_byte_for_byte ... ok
+test stale_atomic_withdrawal_leaves_no_receipt_and_preserves_the_moved_task ... ok
+test team_run_advances_and_closes_with_cas_and_bound_evidence ... ok
+test terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash ... ok
+test the_gate_state_map_reduces_the_whole_append_only_history ... ok
+test the_arbitrary_profile_and_persona_fixtures_persist_reopen_and_hash_identically ... ok
+test two_epics_reuse_the_same_exact_derived_completion_profile ... ok
+test the_stored_command_vocabulary_is_exactly_the_domain_vocabulary ... ok
+test workflow_installation_rolls_back_when_its_authority_receipt_is_refused ... ok
+
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 238.25s
+

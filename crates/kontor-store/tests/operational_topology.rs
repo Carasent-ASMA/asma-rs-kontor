@@ -2,7 +2,8 @@
 
 use kontor_core::id::{
     AggregateRevision, ExternalId, ExternalName, MiniProjectId, ProjectId, RoleCode, RoleSlotId,
-    SeatBindingId, SpecVersion, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    SeatBindingId, SpecVersion, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
+    parse_utc_timestamp,
 };
 use kontor_core::naming::{NativeNameSegment, NativeNameTemplate, NativeNameToken};
 use kontor_core::repository::{
@@ -14,6 +15,7 @@ use kontor_core::spec::{
     CatalogRoleRef, Shareability, ShareabilityClass, ShareabilityClassifier,
     ShareabilityProvenance, ShareabilityTier, TopologySnapshot,
 };
+use kontor_core::state::TopologyLifecycle;
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use kontor_store::backup::export_realm;
@@ -640,4 +642,187 @@ fn repinning_an_epic_migrates_compatible_nodes_without_changing_their_identities
             && revisions_before.get(&node.id).copied() == Some(node.revision)),
         "startup convergence changes only the stale topology stamps"
     );
+}
+
+/// A project's durable root can predate a newly admitted epic. That boundary
+/// alone may span revisions; it must not widen arbitrary topology parenting.
+#[test]
+fn a_new_epic_can_share_its_lineages_historical_project_root() {
+    for scenario in [
+        "valid",
+        "foreign-project",
+        "unrelated-lineage",
+        "terminal-root",
+        "wrong-kind",
+        "unscoped",
+        "changed-root-rule",
+    ] {
+        let home = TempDir::new().expect("temporary state");
+        let database = home.path().join("kontor.db");
+        let store = SqliteStore::open(&database).expect("store");
+        let project = ProjectId::generate();
+        let foreign = ProjectId::generate();
+        let epic = MiniProjectId::generate();
+        let now = at("2026-09-05T07:00:00Z");
+        for id in [project, foreign] {
+            store
+                .create_project(&NewProject {
+                    id,
+                    name: name("Project root recovery"),
+                    root_path: name(&format!("/tmp/root-recovery-{id}")),
+                    created_at: now,
+                })
+                .expect("project");
+        }
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic,
+                project_id: project,
+                name: name("New epic"),
+                created_at: now,
+            })
+            .expect("epic");
+        let domain = bundled_operational_domain().expect("bundled domain");
+        let old = domain
+            .topology_specs
+            .iter()
+            .find(|spec| spec.version.get() == 1)
+            .expect("historical topology")
+            .clone();
+        let mut new = domain
+            .topology_specs
+            .iter()
+            .find(|spec| spec.version.get() == 4)
+            .expect("current topology")
+            .clone();
+        if scenario == "unrelated-lineage" {
+            new.spec_id = TopologySpecId::generate();
+        }
+        if scenario == "changed-root-rule" {
+            new.node_kinds
+                .iter_mut()
+                .find(|kind| kind.kind.as_str() == "ESW")
+                .expect("epic kind")
+                .allowed_parents = vec![TopologyKindKey::parse("QSW").expect("kind")];
+        }
+        let root_project = if scenario == "foreign-project" {
+            foreign
+        } else {
+            project
+        };
+        let old_hash = store
+            .publish_topology_spec(root_project, &old, &default_stamp(), now)
+            .expect("old topology");
+        let old_pin = TopologySnapshot {
+            spec_id: old.spec_id,
+            version: old.version,
+            canonical_hash: old_hash,
+        };
+        let new_hash = store
+            .publish_topology_spec(project, &new, &default_stamp(), now)
+            .expect("new topology");
+        let new_pin = TopologySnapshot {
+            spec_id: new.spec_id,
+            version: new.version,
+            canonical_hash: new_hash,
+        };
+        store
+            .pin_mini_project_topology(&MiniProjectTopologySnapshot {
+                project_id: project,
+                mini_project_id: epic,
+                topology: new_pin.clone(),
+                pinned_at: now,
+            })
+            .expect("new epic pin");
+        let root_id = TopologyNodeId::generate();
+        let root = store
+            .create_topology_node(&NewSessionTopologyNode {
+                id: root_id,
+                project_id: root_project,
+                mini_project_id: None,
+                topology: old_pin.clone(),
+                kind: old.root_kind.clone(),
+                parent_id: None,
+                task_id: None,
+                created_at: now,
+            })
+            .expect("existing root");
+        if scenario == "terminal-root" {
+            store
+                .transition_topology_node(
+                    root_project,
+                    root_id,
+                    TopologyLifecycle::Retired,
+                    AggregateRevision::INITIAL,
+                    now,
+                )
+                .expect("retired root");
+        }
+        let node_id = TopologyNodeId::generate();
+        let request = NewSessionTopologyNode {
+            id: node_id,
+            project_id: project,
+            mini_project_id: (scenario != "unscoped").then_some(epic),
+            topology: new_pin.clone(),
+            kind: TopologyKindKey::parse(if scenario == "wrong-kind" {
+                "ECP"
+            } else {
+                "ESW"
+            })
+            .expect("kind"),
+            parent_id: Some(root_id),
+            task_id: None,
+            created_at: now,
+        };
+        let result = store.create_topology_node(&request);
+        if scenario != "valid" {
+            assert!(
+                result.is_err(),
+                "{scenario} must not bypass topology validation: {result:?}"
+            );
+            assert!(
+                store
+                    .list_topology_nodes(project, Some(epic))
+                    .expect("epic nodes")
+                    .is_empty(),
+                "a refusal must create nothing"
+            );
+            continue;
+        }
+        let node = result
+            .expect("a current epic attaches beneath the same lineage's historical project root");
+        assert_eq!(node.topology, new_pin);
+        assert_eq!(
+            store
+                .get_topology_node(project, root_id)
+                .expect("root read")
+                .expect("root retained"),
+            root
+        );
+        let mut wrong_child = request.clone();
+        wrong_child.id = TopologyNodeId::generate();
+        wrong_child.topology = old_pin;
+        wrong_child.kind = TopologyKindKey::parse("ECP").expect("kind");
+        wrong_child.parent_id = Some(node_id);
+        assert!(
+            store.create_topology_node(&wrong_child).is_err(),
+            "within-epic nodes must keep the exact frozen topology"
+        );
+        drop(store);
+        let reopened = SqliteStore::open(&database).expect("restart");
+        assert_eq!(
+            reopened
+                .get_topology_node(project, root_id)
+                .expect("root read")
+                .expect("root retained"),
+            root
+        );
+        assert_eq!(
+            reopened
+                .get_topology_node(project, node_id)
+                .expect("epic read")
+                .expect("epic retained"),
+            node
+        );
+    }
 }

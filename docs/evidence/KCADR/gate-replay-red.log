@@ -1,0 +1,26 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.52s
+     Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-85725f7dd1eb38be)
+
+running 1 test
+test a_phase_advancing_gate_replays_after_revision_change_and_restart ... FAILED
+
+failures:
+
+---- a_phase_advancing_gate_replays_after_revision_change_and_restart stdout ----
+
+thread 'a_phase_advancing_gate_replays_after_revision_change_and_restart' (75195196) panicked at crates/kontor-daemon/tests/loopback_api.rs:9144:5:
+assertion `left == right` failed: {"realm_id":"01a07099-691b-7c72-8c6b-d37b0f66fe19","code":"revision_conflict","rule":"the task's workflow moved since the caller read it","current_revision":3,"oldest_retained_cursor":null,"newest_cursor":null,"action":"re-read the aggregate and retry with the revision it reports"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_phase_advancing_gate_replays_after_revision_change_and_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 271 filtered out; finished in 1.66s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

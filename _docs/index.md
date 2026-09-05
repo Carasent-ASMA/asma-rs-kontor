@@ -1,20 +1,27 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-01.
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-05.
 
 ## Overview
 
 This documentation covers implementation-local knowledge for the `asma-rs-kontor` workspace. Platform-wide Kontor product principles, architecture, decisions and implementation plans remain in the [AI orchestration documentation](../../../_docs/ai-orchestration/index.md); this router contains audits, contracts and other documents whose scope is the Kontor repository implementation itself.
 
-**Start here for *why*:** [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. The repository-local restatement, readable without the parent checkout, is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+**Start here for *why*:** [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. They define thin as a narrow authority boundary, require a rich mission-control projection, prefer reuse over duplication and make human escalation a prepared last resort. The repository-local restatement, readable without the parent checkout, is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Documents by Category
+
+### Reference (`reference/`)
+
+| Document | Summary | Status | When to Load |
+| --- | --- | --- | --- |
+| [Recommended teams and seats](reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md) | Role responsibilities, fleet-design recommendations and explicit implementation limits | Recommendation | Designing teams or evaluating models for roles |
 
 ### Plans (`plans/`)
 
 | Document | Summary | Status | When to Load |
 |----------|---------|--------|-------------|
-| [`2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md`](plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md) | Implements ASMA-8062: immutable pinned Team Definition naming/hierarchy, deterministic ASW/CSW topics and seats, identity-preserving migration, exact-master deployment and live readback. | 🟡 In progress | Implementing, reviewing, migrating or delivering configuration-driven native naming |
+| [`2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md`](plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md) | Implements ASMA-8062: immutable pinned Team Definition naming/hierarchy, deterministic ASW/CSW topics and seats, identity-preserving migration, exact-master deployment and live readback. | 📚 KBI migration verified 2026-09-02; historical execution plan | Auditing the migration receipt or planning a separate epic upgrade |
+| [`2026-09-01-21-45-open-questions-configuration-driven-native-naming.md`](plans/2026-09-01-21-45-open-questions-configuration-driven-native-naming.md) | Four original naming questions and their dispositions. | 📚 Historical — closed | Tracing the approved aggregate boundary and naming agreement |
 
 ### Architecture (`architecture/`)
 
@@ -27,6 +34,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | Document | Summary | Status | When to Load |
 |----------|---------|--------|-------------|
 | `2026-08-20-18-53-audit-kontor-rust-workspace-code-quality.md` | In-depth snapshot audit of the 240k-line Kontor Rust workspace: source/test composition, file and function size, DRY/YAGNI/SOLID, MCP-tool legitimacy, safety, dependencies, CI gaps, and prioritized remediation. Its 127-tool / 16-worker counts are explicitly historical; current inventory is routed to the repository contract. | 🟤 Point-in-time snapshot | Assessing the audited commit's maintainability or its original findings; use current source for today's counts |
+| [`2026-09-01-22-19-audit-asma-8062-team-definition-v77.md`](audits/2026-09-01-22-19-audit-asma-8062-team-definition-v77.md) | Point-in-time v77 independent audit; later KBI migration resolution is in the governing receipt. | 📚 Historical audit | Reviewing that candidate and its follow-up evidence |
 
 ### Contracts (root)
 
@@ -41,6 +49,8 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | [`../README.md`](../README.md) | What Kontor is and is not, what is built and what is deliberately not, build and run |
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | Principles, authority boundaries, consistency model, completion machinery, tool registry, security and extension rules |
 | [`../docs/CONFIGURATION.md`](../docs/CONFIGURATION.md) | Where configuration lives, seat supervision, seat MCP surface and serve profiles |
+| [`../docs/NATIVE_NAMING.md`](../docs/NATIVE_NAMING.md) | Current pinned-definition naming contract and legacy-import correction |
+| [Canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) | Current revision-stamped schema, registry, merge and deployment distinctions |
 | [`../RECOVERY.md`](../RECOVERY.md) | Backup, snapshot, export, restore, import and credential rotation runbook |
 | [`../SECURITY.md`](../SECURITY.md) | Reporting and supported-version policy |
 | [`../docs/QUOTA-FALLBACK-PLAN.md`](../docs/QUOTA-FALLBACK-PLAN.md) | Provider quota fallback behaviour |

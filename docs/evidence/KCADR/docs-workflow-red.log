@@ -1,0 +1,22 @@
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.88s
+     Running tests/native_connector.rs (target/debug/deps/native_connector-5252c31c842590af)
+
+running 1 test
+test bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion ... FAILED
+
+failures:
+
+---- bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion stdout ----
+
+thread 'bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion' (74646988) panicked at crates/kontor-jira/tests/native_connector.rs:251:10:
+docs@1 has its own exact task mapping: Selection { subject: "ExternalWorkflowSpec", conflict: NoMatch }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-jira --test native_connector`

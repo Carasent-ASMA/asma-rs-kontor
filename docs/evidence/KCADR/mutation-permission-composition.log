@@ -1,0 +1,37 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.86s
+     Running tests/contract.rs (target/debug/deps/contract-8d2dbf8a351e6ce1)
+
+running 14 tests
+test an_archived_hosted_seat_replays_before_live_permission_mode_validation ... ok
+test security_declared_permissions_without_workspace_read_expose_nothing ... ok
+test committee_permission_is_bound_to_the_exact_run_seat_and_native ... ok
+test prelaunch_refuses_a_permission_mode_the_readback_did_not_apply ... ok
+test permission_an_unknown_request_is_refused_before_dispatch ... ok
+test security_declared_read_only_daemon_permissions_expose_only_reads ... ok
+test permission_an_unknown_delivery_is_reconciled_not_resent ... ok
+test permission_response_is_session_bound_and_idempotent ... ok
+test permission_an_acknowledgement_for_another_agent_is_refused ... ok
+test permission_an_open_request_survives_a_restart_and_is_answered_once ... ok
+test permission_survives_a_restart_as_the_same_acknowledgement ... ok
+test permission_a_resolution_paseo_reports_is_never_answered_a_second_time ... ok
+test timeline_a_permission_observed_on_a_readback_stays_pending ... ok
+test security_session_permissions_bound_the_composed_surface_with_or_without_mcp ... FAILED
+
+failures:
+
+---- security_session_permissions_bound_the_composed_surface_with_or_without_mcp stdout ----
+
+thread 'security_session_permissions_bound_the_composed_surface_with_or_without_mcp' (72290473) panicked at crates/kontor-runtime-paseo/tests/contract.rs:4151:13:
+assertion `left == right` failed
+  left: true
+ right: false
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    security_session_permissions_bound_the_composed_surface_with_or_without_mcp
+
+test result: FAILED. 13 passed; 1 failed; 0 ignored; 0 measured; 172 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --test contract`

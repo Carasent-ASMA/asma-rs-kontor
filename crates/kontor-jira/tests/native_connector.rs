@@ -10,12 +10,13 @@ use std::time::Duration;
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget};
 use kontor_core::id::{
     AggregateRevision, CommandReceiptId, ConnectorKey, ContentHash, ExternalId,
-    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, IdempotencyKey, ProjectId,
-    SCHEMA_VERSION, SemanticMilestoneKey, SpecVersion, WorkProfileKey, parse_utc_timestamp,
+    ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey, ProjectId,
+    SCHEMA_VERSION, SemanticMilestoneKey, SpecVersion, TaskId, WorkProfileKey, parse_utc_timestamp,
 };
+use kontor_core::state::{GateState, TaskState, TerminalOutcome};
 use kontor_core::ticket::{
-    EpicCompletionEvidence, InternalPredicate, LiveTransition, OwnershipAction, SelectedTransition,
-    StatusSelector, TransitionPlan,
+    EpicCompletionEvidence, InternalPredicate, InternalTaskFacts, LiveTransition, OwnershipAction,
+    SelectedTransition, StatusSelector, TransitionPlan,
 };
 use kontor_jira::jira::{
     ApplyAuthority, FieldSpecKey, IssueAmbiguityVerdict, JiraExchange, JiraIssueDelegation,
@@ -23,8 +24,8 @@ use kontor_jira::jira::{
     SpecCatalog, WireConfirmation, WireEffects, WireObservation, WireTransition, WorkflowSpecKey,
 };
 use kontor_jira::{
-    JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan, SelectionConflict, UnavailableReason,
-    WireTimestamp,
+    JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan, MaterializationConflict,
+    SelectionConflict, UnavailableReason, WireTimestamp,
 };
 use secrecy::SecretString;
 use wiremock::matchers::{body_json, method, path};
@@ -230,6 +231,110 @@ fn bundled_high_stakes_workflow_is_pinned_to_its_actual_gates() {
             "high-verification-gate".to_owned(),
         ])
     );
+}
+
+#[test]
+fn bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion() {
+    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let key = WorkflowSpecKey {
+        connector: ConnectorKey::parse("connector.jira").expect("connector"),
+        project: ExternalProjectKey::parse("asma").expect("project"),
+        issue_type: ExternalIssueTypeKey::parse("task").expect("issue type"),
+        version: SpecVersion::parse(3).expect("docs workflow revision"),
+        work_profile: Some(PinnedProfile {
+            key: WorkProfileKey::parse("docs").expect("docs profile"),
+            version: SpecVersion::parse(1).expect("frozen profile revision"),
+        }),
+    };
+    let workflow = catalog
+        .select_workflow_spec(&key)
+        .expect("docs@1 has its own exact task mapping");
+    let mut facts = InternalTaskFacts {
+        task_id: TaskId::generate(),
+        task_state: TaskState::Blocked,
+        task_revision: AggregateRevision::parse(1).expect("revision"),
+        workflow_revision: AggregateRevision::parse(1).expect("revision"),
+        projection_revision: AggregateRevision::parse(1).expect("revision"),
+        completed_phases: BTreeSet::new(),
+        gate_states: Vec::new(),
+        all_required_gates_passed: false,
+        run_outcome: None,
+    };
+    let target = |facts: &InternalTaskFacts| {
+        workflow
+            .spec()
+            .milestones
+            .iter()
+            .find(|rule| rule.predicate.evaluate(facts))
+            .map(|rule| rule.target.status_id.as_str())
+    };
+    assert_eq!(
+        target(&facts),
+        Some("10231"),
+        "a blocked docs task goes on hold"
+    );
+    facts.task_state = TaskState::InProgress;
+    assert_eq!(
+        target(&facts),
+        Some("10214"),
+        "authoring enters development"
+    );
+    facts.gate_states = vec![(
+        GateKey::parse("technical-review-gate").expect("gate"),
+        GateState::Active,
+    )];
+    assert_eq!(
+        target(&facts),
+        Some("10229"),
+        "the inspector's actual gate enters review"
+    );
+    facts.gate_states = vec![(
+        GateKey::parse("docs-final-gate").expect("gate"),
+        GateState::Active,
+    )];
+    assert_eq!(
+        target(&facts),
+        Some("10254"),
+        "the architect's actual gate enters final review"
+    );
+    facts.gate_states.clear();
+    facts.run_outcome = Some(TerminalOutcome::Succeeded);
+    assert_ne!(
+        target(&facts),
+        Some("10228"),
+        "a finished run alone cannot close the issue"
+    );
+    facts.all_required_gates_passed = true;
+    facts.run_outcome = None;
+    assert_ne!(
+        target(&facts),
+        Some("10228"),
+        "gate evidence alone cannot close the issue"
+    );
+    facts.run_outcome = Some(TerminalOutcome::Succeeded);
+    assert_eq!(
+        target(&facts),
+        Some("10228"),
+        "completed work with every required gate closes"
+    );
+
+    for (profile, version) in [
+        ("code", 1),
+        ("docs", 2),
+        ("asma-high-stakes-primary-20260829", 1),
+    ] {
+        let wrong = WorkflowSpecKey {
+            work_profile: Some(PinnedProfile {
+                key: WorkProfileKey::parse(profile).expect("profile"),
+                version: SpecVersion::parse(version).expect("version"),
+            }),
+            ..key.clone()
+        };
+        assert!(
+            catalog.select_workflow_spec(&wrong).is_err(),
+            "a different frozen profile never borrows docs@1"
+        );
+    }
 }
 
 #[test]
@@ -951,6 +1056,145 @@ async fn explicit_link_confirms_level_zero_without_claiming_type_or_content() {
             .await
             .is_err(),
         "an explicit link still refuses a task attached to another epic"
+    );
+}
+
+#[tokio::test]
+async fn materialization_identifies_each_mismatch_without_mutating_jira() {
+    let server = MockServer::start().await;
+    let exact = serde_json::json!({
+        "key": "ASMA-8050",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Task", "hierarchyLevel": 0, "subtask": false},
+            "parent": {"key": "ASMA-8049"},
+            "summary": "Original creation summary",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Original description"}]
+            }]},
+            "labels": ["kontor-task-recovery-fixture"]
+        }
+    });
+    let readback = Arc::new(Mutex::new(exact.clone()));
+    let served = Arc::clone(&readback);
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8050"))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(served.lock().expect("readback").clone())
+        })
+        .expect(7)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search/jql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issues": [{"key": "ASMA-8050"}, {"key": "ASMA-8051"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(), "endpoint": server.uri(),
+                "project_key": "ASMA", "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connectors =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    let connector = connectors
+        .for_project(project_id)
+        .expect("configured project");
+    let plan = JiraIssuePlan {
+        kind: JiraIssueKind::Task,
+        requested_key: Some(ExternalId::parse("ASMA-8050").expect("key")),
+        marker: ExternalId::parse("kontor-task-recovery-fixture").expect("marker"),
+        require_marker: true,
+        summary: "Original creation summary".to_owned(),
+        description: "Original description".to_owned(),
+        parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent")),
+    };
+    for (pointer, value, expected) in [
+        (
+            "/fields/project/key",
+            serde_json::json!("FOREIGN"),
+            MaterializationConflict::ProjectMismatch,
+        ),
+        (
+            "/fields/parent/key",
+            serde_json::json!("ASMA-9999"),
+            MaterializationConflict::ParentMismatch,
+        ),
+        (
+            "/fields/summary",
+            serde_json::json!("Changed summary"),
+            MaterializationConflict::SummaryMismatch,
+        ),
+        (
+            "/fields/description",
+            serde_json::Value::Null,
+            MaterializationConflict::DescriptionMismatch,
+        ),
+        (
+            "/fields/issuetype/name",
+            serde_json::json!("User Story"),
+            MaterializationConflict::IssueTypeMismatch,
+        ),
+        (
+            "/fields/labels",
+            serde_json::json!([]),
+            MaterializationConflict::MissingMarker,
+        ),
+    ] {
+        let mut mismatched = exact.clone();
+        *mismatched.pointer_mut(pointer).expect("fixture field") = value;
+        *readback.lock().expect("readback") = mismatched;
+        let refused = connector
+            .materialize(&plan)
+            .await
+            .expect_err("identity proof refuses");
+        assert!(
+            matches!(refused, JiraError::MaterializationConflict { kind } if kind == expected),
+            "{pointer}: {refused}"
+        );
+    }
+    *readback.lock().expect("readback") = exact;
+    let confirmed = connector
+        .materialize(&plan)
+        .await
+        .expect("corrected metadata recovers");
+    assert_eq!(
+        confirmed.issue_key,
+        plan.requested_key.clone().expect("original key")
+    );
+    let create = JiraIssuePlan {
+        requested_key: None,
+        ..plan
+    };
+    let refused = connector
+        .materialize(&create)
+        .await
+        .expect_err("marker is ambiguous");
+    assert!(matches!(
+        refused,
+        JiraError::MaterializationConflict {
+            kind: MaterializationConflict::AmbiguousMarker
+        }
+    ));
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 8);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method.as_str() == "GET")
     );
 }
 

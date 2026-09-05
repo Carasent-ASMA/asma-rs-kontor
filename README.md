@@ -1,5 +1,7 @@
 # ASMA Kontor
 
+> Implementation counts and delivery claims are stamped to `082b63ad` (2026-09-05). See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Registry membership, MCP advertising and credential authorization are distinct.
+
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-intent)
 
 Kontor is a local-first control plane for durable, policy-governed work across
@@ -51,6 +53,12 @@ other runtime, and asking each orchestrator to grow a project database,
 scheduler, policy engine and Jira model would create several competing control
 planes. Kontor is the deliberately small authority above them.
 
+Here, **small means a narrow authority boundary**. It does not mean a small
+codebase or a weak UI. The operator still needs a rich mission-control dashboard
+for the truth no single connected system can show: dependency order, what is
+running or waiting, what needs attention, what can run next and whether the work
+is actually delivered.
+
 | Concern | Kontor owns | Agent runtime owns |
 | --- | --- | --- |
 | Project truth | Tasks, dependencies, profiles, gates, evidence, policy | No |
@@ -60,8 +68,25 @@ planes. Kontor is the deliberately small authority above them.
 | Recovery | Reconciliation and explicit uncertainty | Native inventory and inspection |
 | Integrations | Typed projections and native connector commands | Runtime-specific protocol |
 
+The reuse rule is simple:
+
+| Existing system | Keep using it for | Kontor adds |
+| --- | --- | --- |
+| Jira | Business workflow, issue fields and team-established process | Deterministic orchestration and convergence with execution evidence |
+| GitHub | Repositories, pull requests, checks and releases | Joined delivery evidence and completion truth |
+| Paseo or another runtime | Native sessions, transcripts, tools, permissions and provider login | Durable bindings, safe derived state and cross-runtime recovery |
+
+Kontor may absorb one narrow capability only when keeping or adopting a whole
+external product for it would cost more over its lifetime in dependencies,
+synchronization and split authority. That requires a written reason and a clean
+cutover to one writer. It is not permission to recreate a mature product.
+
 See [Architecture](ARCHITECTURE.md) for the complete boundary and technology
 rationale.
+
+The [recommended teams and seats](_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md)
+describe role responsibilities and fleet-design tradeoffs, with implementation
+limits separated from recommendations.
 
 ## What Kontor provides
 
@@ -100,7 +125,7 @@ The current repository includes:
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 166 tools — exposed through the stdio MCP server and
+- one capability catalogue — 166 registry operations, 165 advertised at admin MCP scope in the 2026-09-05 snapshot — exposed through the stdio MCP server and
   a `kontor` CLI *generated from the same registry*, with credential tiers and
   narrow serve profiles;
 - a responsive React operator console and Tauri desktop shell.
@@ -114,9 +139,10 @@ admits its absence:
 | --- | --- |
 | Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
 | Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
-| KON-OP-21 release verification | The current candidate tree implements evidence-bound mid-run quota succession and a resident bounded supervisor, but merge, independent audit and live-runtime verification are still pending. This README does not count local compilation or focused tests as a deployed capability. |
+| KON-OP-21 release verification | KON-OP-21 is implemented and merged through PR #170 (`080e2db3`, 2026-09-05), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh. |
 | Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung and preserves the adapter's typed refusal path instead of parking until the computed reset. |
 | Automatic stale-evidence rejection | Post-freeze product drift that invalidates a completion bundle is currently caught by a reviewer, not by the state machine. |
+| Unified mission-control dashboard | Individual console views do not yet provide one joined dependency graph, running/waiting/blocked/stale state, next eligible work, prepared operator decisions and delivery evidence. |
 | Remote access and federation | Loopback only. Multi-realm switching, remote bind, pairing and TLS are unbuilt security designs, not hidden flags. |
 | AO and direct-Codex in production | `ao` and `codex` are a closed deferred list; a configuration naming either is refused rather than falling back to Paseo. |
 
@@ -126,7 +152,7 @@ Kontor turns the conventions ASMA currently enforces through instructions,
 backlog reconciliation and careful human supervision into inspectable system
 rules:
 
-- one view of a mini-project from plan through implementation and verification;
+- durable joined truth for one mission-control view from plan through implementation and verification; the unified dashboard itself is still listed above as unbuilt;
 - no duplicate persistent role session for one declared team slot;
 - safe parallel work only when module/worktree isolation is proven;
 - explicit provider-account selection without storing secrets in project data;
@@ -220,19 +246,18 @@ is intentionally explicit and remains local to the state root.
 
 Reading and writing are also separate processes on the MCP side: a server runs at
 one credential tier and optionally one narrow serve profile, so a delivery seat
-is given the narrow tools it works with rather than all 166. See
+is given the narrow tools it works with rather than the full advertised admin surface. See
 [`crates/kontor-mcp/seats/README.md`](crates/kontor-mcp/seats/README.md).
 
 Seat lifecycle policy has a checked example
 [`supervision.yml`](config/examples/paseo-supervision.yml). Copying it into the
-state root opts into the candidate resident succession engine only when the
+state root opts into the resident succession engine only when the
 document is schema v2, `watchdog.enabled` is `true`, and
 `recovery.max_concurrent_successions` is explicitly set inside the safe bound.
 With no policy, with schema v1, or with a disabled watchdog, automatic
 succession does not start and Kontor invents no cadence or capacity. See
 [Configuration](docs/CONFIGURATION.md).
-This path has local contract and regression coverage; merge, independent audit
-and live-runtime verification remain release gates.
+This path is merged at `080e2db3` (PR #170, 2026-09-05). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
 
 For frontend development:
 
@@ -391,7 +416,10 @@ It coordinates supported runtimes through adapters.
 No. They remain execution planes. Kontor supplies durable cross-runtime state,
 policy, scheduling, reconciliation and evidence above them.
 
-### Does Kontor replace AgentsRoom or Jira?
+### Does Kontor replace AgentsRoom, Jira or GitHub?
+
+GitHub remains the repository, pull-request, check and release system. Kontor
+uses those observations as delivery evidence.
 
 Jira remains the external workflow system; Kontor converges to it through a
 native connector and never edits its store. Jira issue keys remain their native
@@ -450,6 +478,17 @@ Completion Profile runs integration, then an independent read-only committee who
 members review frozen evidence without seeing each other's findings, then bounded
 remediation if that verdict is non-compliant, then six closeout receipts. A
 non-compliant verdict is not waived, and a committee cannot waive it for itself.
+
+### When does Kontor ask a human?
+
+As a last safe step. It first performs deterministic inspection and any
+policy-permitted automatic recovery, then uses a bounded Advisor and, for
+cross-cutting ambiguity, a bounded Committee, followed only by bounded
+evidence-backed remediation. If those paths cannot establish a safe authorized
+way forward, Kontor raises one prepared decision brief with the evidence, tried
+options, exact decision and consequence of no action. Decisions inherently
+reserved to human authority go directly to that brief; consultation cannot
+invent authority.
 
 ### How do I add another runtime?
 

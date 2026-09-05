@@ -1,0 +1,49 @@
+   Compiling memchr v2.8.3
+   Compiling uuid v1.24.0
+   Compiling serde_json v1.0.151
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-util v0.3.34
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling futures-channel v0.3.34
+   Compiling hyper v1.11.1
+   Compiling nom v8.0.0
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.20
+   Compiling tokio-util v0.7.19
+   Compiling chrono v0.4.45
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling iso8601 v0.6.5
+   Compiling nom-language v0.1.0
+   Compiling reqwest v0.13.4
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
+   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling icalendar v0.17.13
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.55s
+     Running tests/operational_topology.rs (target/debug/deps/operational_topology-2fa9316bbb487eec)
+
+running 1 test
+test a_new_epic_can_share_its_lineages_historical_project_root ... FAILED
+
+failures:
+
+---- a_new_epic_can_share_its_lineages_historical_project_root stdout ----
+
+thread 'a_new_epic_can_share_its_lineages_historical_project_root' (74685844) panicked at crates/kontor-store/tests/operational_topology.rs:697:27:
+a current epic attaches beneath the same lineage's historical project root: Conflict { subject: "topology node", rule: "the parent is terminal, outside the node scope, or has an illegal kind" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_new_epic_can_share_its_lineages_historical_project_root
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.35s
+
+error: test failed, to rerun pass `-p kontor-store --test operational_topology`

@@ -1,0 +1,37 @@
+{
+  "source_revision": "4c51059e07a9517d57cb9bd2665dc537ff681a2c",
+  "source_archive": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/kontor-compat-release-7i7btzj_",
+  "command": [
+    "cargo",
+    "build",
+    "-p",
+    "kontor-daemon",
+    "-p",
+    "kontor-cli",
+    "-p",
+    "kontor-mcp",
+    "--bins",
+    "--release",
+    "--locked",
+    "-j2"
+  ],
+  "exit_code": 0,
+  "deployed": false,
+  "binaries": [
+    {
+      "name": "kontor-daemon",
+      "path": "/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/release-qualification/release/kontor-daemon",
+      "sha256": "9be1b4bcac75a482c6c9427571e6da555dcc618824e5e024037cbfd825cdba4e"
+    },
+    {
+      "name": "kontor",
+      "path": "/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/release-qualification/release/kontor",
+      "sha256": "edb386d258858cf849f6ecbe2299424c05ba4e7a804cbb7dcc3d333290232ed7"
+    },
+    {
+      "name": "kontor-mcp",
+      "path": "/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/release-qualification/release/kontor-mcp",
+      "sha256": "beb2095be2e9c3e2848ffb890b83e4757456e19d7795bc5ffbe600df84949cad"
+    }
+  ]
+}

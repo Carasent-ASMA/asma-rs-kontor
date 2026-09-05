@@ -597,6 +597,11 @@ pub struct Services {
     provider_probe_guard: tokio::sync::Mutex<()>,
     /// Serializes one durable succession through its effectful resume states.
     succession_guard: tokio::sync::Mutex<()>,
+    /// Native cleanup excludes placement, migration and hosted work until exact
+    /// readback and logical release finish. The realm's exclusive state-root
+    /// lock supplies the single-process boundary; native identities and durable
+    /// revisions remain authoritative after restart.
+    native_lifecycle_guard: tokio::sync::RwLock<()>,
     /// Vendor exhaustion wording, read once from the Realm's state root.
     ///
     /// Empty means the Realm configured no `quota-signals.yml`, and reactive
@@ -663,6 +668,7 @@ impl Services {
             usage_poller,
             provider_probe_guard: tokio::sync::Mutex::new(()),
             succession_guard: tokio::sync::Mutex::new(()),
+            native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
         }))
     }
@@ -679,6 +685,24 @@ impl Services {
                 self.realm_id,
                 ApiErrorCode::Unavailable,
                 "the realm's application services are not composed yet",
+            )
+        })
+    }
+
+    fn native_activity(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, ApiError> {
+        self.native_lifecycle_guard.try_read().map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "native topology cleanup or migration is in progress; retry from the same identity",
+            )
+        })
+    }
+
+    fn native_lifecycle_change(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
+        self.native_lifecycle_guard.try_write().map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "native topology work is in progress; retirement or migration must wait",
             )
         })
     }
@@ -2255,6 +2279,11 @@ impl Services {
     fn refuse_jira(&self, error: &JiraError) -> ApiError {
         tracing::warn!(detail = %error, "the configured Jira connector refused reconciliation");
         match error {
+            JiraError::MaterializationConflict { kind } => self
+                .deny(ApiErrorCode::RevisionConflict, jira_materialization_conflict_rule(*kind))
+                .advising(
+                    "compare the exact Jira key, project, type, parent and pending creation metadata; repair the mismatch, then retry the same materialization key",
+                ),
             JiraError::Conflict { kind, .. } => {
                 self.deny(ApiErrorCode::RevisionConflict, jira_conflict_rule(*kind))
             }
@@ -3312,6 +3341,7 @@ impl Services {
         message_id: kontor_runtime::request::MessageId,
         now: Timestamp,
     ) -> Result<bool, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let Some(target) = target else {
             return Ok(false);
@@ -3587,43 +3617,44 @@ impl Services {
         &self,
         project_id: ProjectId,
         task_id: TaskId,
-        workflow_id: &kontor_core::id::TaskWorkflowId,
         gate: &GateKey,
-        _key: &IdempotencyKey,
+        receipt: &kontor_core::receipt::CommandReceipt,
     ) -> Result<GateVerdictDto, ApiError> {
         let state = self.state()?;
+        let (workflow_id, sequence) = state
+            .with_store(|store| store.gate_record_result(receipt))
+            .map_err(|error| match error {
+                RepositoryError::Conflict { subject: "gate verdict receipt", .. } => self
+                    .deny(ApiErrorCode::RevisionConflict, "this historical gate receipt has no exact verdict result binding")
+                    .advising("inspect the durable gate history; do not substitute its latest verdict for this receipt"),
+                _ => self.refuse(&error),
+            })?;
         let evaluations = state
-            .with_store(|store| store.list_gate_evaluations(project_id, *workflow_id))
+            .with_store(|store| store.list_gate_evaluations(project_id, workflow_id))
             .map_err(|error| self.refuse(&error))?;
-        let last = evaluations
+        let recorded = evaluations
             .iter()
-            .rfind(|evaluation| &evaluation.gate == gate)
+            .find(|evaluation| &evaluation.gate == gate && evaluation.sequence == sequence)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::NotFound,
                     "the replayed receipt names a verdict this workflow no longer has",
                 )
             })?;
-        let gates = state
-            .with_store(|store| store.gate_states(project_id, *workflow_id))
-            .map_err(|error| self.refuse(&error))?;
         Ok(GateVerdictDto {
             realm_id: state.realm_id(),
             task_id,
             gate: gate.as_str().to_owned(),
-            sequence: last.sequence,
-            verdict: last.verdict.as_str().to_owned(),
-            state: gates
-                .get(gate)
-                .map_or("not_ready", |state| state.as_str())
-                .to_owned(),
-            session_evidence: last.session_evidence.as_ref().map(|citation| {
+            sequence: recorded.sequence,
+            verdict: recorded.verdict.as_str().to_owned(),
+            state: recorded.verdict.resulting_state().as_str().to_owned(),
+            session_evidence: recorded.session_evidence.as_ref().map(|citation| {
                 SessionVerdictCitationDto {
                     agent_run_id: citation.agent_run_id,
                     digest: citation.digest.clone(),
                 }
             }),
-            receipt_id: String::new(),
+            receipt_id: receipt.id.to_string(),
         })
     }
 
@@ -5067,6 +5098,7 @@ impl Services {
         roster: &FrozenRoster,
         now: Timestamp,
     ) -> Result<Vec<(CoreTeamSeat, SeatBindingId)>, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let held = state
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
@@ -6333,6 +6365,7 @@ impl Services {
         project_id: ProjectId,
         scope: &TopologyScope,
     ) -> Result<SessionTopologyNode, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let topology = self.project_topology(project_id)?;
         let spec = self.pinned_spec(project_id)?;
@@ -6398,7 +6431,9 @@ impl Services {
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?;
         self.pin_epic_topology(project_id, epic_id, &topology)?;
-        if scoped.is_empty() {
+        // Admission can commit its immutable pin before creating any nodes.
+        // A retry must retain that pin even when the project default advanced.
+        if scoped.is_empty() && self.pinned_team_definition(project_id, epic_id)?.is_none() {
             let (definition, _) = self.project_team_definition(project_id)?;
             self.pin_epic_team_definition(project_id, epic_id, &definition)?;
         }
@@ -7284,7 +7319,149 @@ impl Services {
         })
     }
 
-    fn move_node_lifecycle(
+    /// Complete native child cleanup before its logical archive is recorded.
+    async fn archive_native_child(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        if node.lifecycle != TopologyLifecycle::Retired {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "native cleanup requires a retired topology node",
+            ));
+        }
+        let seats = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        let children = state
+            .with_store(|store| store.list_project_topology_nodes(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        if seats
+            .iter()
+            .any(|seat| seat.lifecycle == TopologyLifecycle::Active)
+            || children.iter().any(|child| {
+                child.parent_id == Some(node.id) && child.lifecycle == TopologyLifecycle::Active
+            })
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the archive target still hosts active work",
+            ));
+        }
+        if let Some(task_id) = node.task_id
+            && !state
+                .with_store(|store| store.list_open_team_runs(project_id, task_id))
+                .map_err(|error| self.refuse(&error))?
+                .is_empty()
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the archive target still belongs to an open delivery run",
+            ));
+        }
+        let Some(binding) = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        if binding.observed_kind != ObservedContainerKind::Workspace {
+            return Err(self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "native root archive is not supported; preserve the bound project",
+            ));
+        }
+        let mut parent_id = node.parent_id;
+        let mut native_parent = None;
+        while let Some(id) = parent_id {
+            let parent = state
+                .with_store(|store| store.get_topology_node(project_id, id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the archive target has missing persisted ancestry",
+                    )
+                })?;
+            if let Some(parent_binding) = state
+                .with_store(|store| store.get_topology_node_container(project_id, id))
+                .map_err(|error| self.refuse(&error))?
+                && parent_binding.observed_kind == ObservedContainerKind::Project
+            {
+                if parent_binding.identity.runtime_kind != binding.identity.runtime_kind
+                    || parent_binding.identity.host != binding.identity.host
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the native child's persisted parent belongs to another runtime host",
+                    ));
+                }
+                native_parent = Some(parent_binding.identity.native_id);
+                break;
+            }
+            parent_id = parent.parent_id;
+        }
+        let archive = kontor_runtime::container::ArchiveContainerRequest {
+            topology_node_id: node.id,
+            container_binding_id: ContainerBindingId::parse(binding.container_binding_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            projection: ContainerProjection::NativeChild,
+            identity: binding.identity.clone(),
+            bound_project_native_id: native_parent.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the native child has no persisted project ancestor",
+                )
+            })?,
+            canonical_cwd: WorkspaceRoot::parse(
+                binding
+                    .canonical_cwd
+                    .as_ref()
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the native child has no persisted directory",
+                        )
+                    })?
+                    .as_str(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?,
+            requested_at: kontor_api::now(),
+        };
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the native child's runtime is unavailable",
+                )
+            })?;
+        let observed = adapter
+            .archive_container(&archive)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if observed.request != archive {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "native cleanup answered for another container identity",
+            ));
+        }
+        let unchanged = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        if unchanged.as_ref() != Some(&binding) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the container binding changed during native cleanup",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn move_node_lifecycle(
         &self,
         key: &IdempotencyKey,
         project_id: ProjectId,
@@ -7292,6 +7469,7 @@ impl Services {
         request: &TopologyNodeRequest,
         lifecycle: TopologyLifecycle,
     ) -> Result<TopologyMutationDto, ApiError> {
+        let _native_lifecycle = self.native_lifecycle_change()?;
         let state = self.state()?;
         let now = kontor_api::now();
         let project = state
@@ -7312,14 +7490,6 @@ impl Services {
                     "no such topology node exists in this project",
                 )
             })?;
-        if node.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the topology node moved since the caller read it",
-                )
-                .with_revision(Some(node.revision)));
-        }
 
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -7332,9 +7502,24 @@ impl Services {
             "node": topology_node_id.to_string(),
             "reason": request.reason.as_str(),
         }))?;
-        let replayed = self
-            .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
-            .is_some();
+        let epic_id = node.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "an unscoped node has no epic for its lifecycle receipt",
+            )
+        })?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        if !replayed && node.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the topology node moved since the caller read it",
+                )
+                .with_revision(Some(node.revision)));
+        }
         if !replayed {
             let epic_id = node.mini_project_id.ok_or_else(|| {
                 self.deny(
@@ -7343,6 +7528,10 @@ impl Services {
                 )
             })?;
             self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            if lifecycle == TopologyLifecycle::Archived {
+                self.archive_native_child(project_id, &node).await?;
+                self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            }
         }
         let moved = if replayed {
             node
@@ -7468,6 +7657,7 @@ impl Services {
                 .with_store(|store| store.list_seat_bindings(project_id, node.id))
                 .map_err(|error| self.refuse(&error))?;
             projected.push(TopologyNodeDto {
+                revision: node.revision,
                 topology_node_id: node.id,
                 parent_topology_node_id: node.parent_id,
                 kind_key: node.kind.clone(),
@@ -7714,6 +7904,11 @@ impl Services {
         request: &SeatBindingRequest,
         act: SeatAct,
     ) -> Result<SeatBindingOutcomeDto, ApiError> {
+        let _native_lifecycle = if act == SeatAct::Retire {
+            Some(self.native_lifecycle_change()?)
+        } else {
+            None
+        };
         let state = self.state()?;
         let now = kontor_api::now();
         let project = state
@@ -7734,14 +7929,6 @@ impl Services {
                     "no such seat binding exists in this project",
                 )
             })?;
-        if seat.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the seat binding moved since the caller read it",
-                )
-                .with_revision(Some(seat.revision)));
-        }
 
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -7753,6 +7940,15 @@ impl Services {
         let replayed = self
             .replayed(key, &intent, Some(&AggregateRef::Project { project_id }))?
             .is_some();
+        if !replayed && seat.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the seat binding moved since the caller read it",
+                )
+                .with_revision(Some(seat.revision)));
+        }
+
         if !replayed && act == SeatAct::Retire {
             let node = state
                 .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
@@ -7781,7 +7977,7 @@ impl Services {
                 store.get_topology_node_container(project_id, seat.topology_node_id)
             })
             .map_err(|error| self.refuse(&error))?;
-        let hosted = if act == SeatAct::Observe && seat.team_run_id.is_none() {
+        let hosted = if seat.team_run_id.is_none() {
             state
                 .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
                 .map_err(|error| self.refuse(&error))?
@@ -7798,15 +7994,103 @@ impl Services {
                         "the hosted-seat runtime is not configured in this daemon",
                     )
                 })?;
+            if act == SeatAct::Retire && !replayed {
+                let retired = adapter
+                    .retire_hosted_seat(&HostedSeatRetireRequest {
+                        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                            workspace_native_id: container
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    self.deny(
+                                        ApiErrorCode::StaleBinding,
+                                        "the hosted seat has no persisted native child",
+                                    )
+                                })?
+                                .identity
+                                .native_id
+                                .clone(),
+                            canonical_cwd: WorkspaceRoot::parse(
+                                container
+                                    .as_ref()
+                                    .and_then(|binding| binding.canonical_cwd.as_ref())
+                                    .ok_or_else(|| {
+                                        self.deny(
+                                            ApiErrorCode::StaleBinding,
+                                            "the hosted seat has no persisted directory",
+                                        )
+                                    })?
+                                    .as_str(),
+                            )
+                            .map_err(|error| self.refuse_domain(&error))?,
+                            provider_session_id: hosted.provider_session_id.clone(),
+                        }),
+                        seat_binding_id,
+                        identity: hosted.native_identity.clone(),
+                        model_rung: hosted.model_rung.clone(),
+                        requested_at: now,
+                    })
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                if retired.identity != hosted.native_identity {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "native retirement answered for another hosted identity",
+                    ));
+                }
+            }
             let inspection = adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
-                    model_rung: hosted.model_rung,
+                    model_rung: hosted.model_rung.clone(),
                     requested_at: now,
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            if inspection.identity != hosted.native_identity {
+                return Err(self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "native readback answered for another hosted identity",
+                ));
+            }
+            if act == SeatAct::Retire && !replayed {
+                if inspection.state.is_live() {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the hosted native remains live after retirement",
+                    ));
+                }
+                let unchanged = state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?;
+                let latest = state
+                    .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?;
+                if unchanged.as_ref() != Some(&hosted) || latest.as_ref() != Some(&seat) {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the seat changed during native retirement",
+                    ));
+                }
+                let node = state
+                    .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the retired seat has no topology node",
+                        )
+                    })?;
+                self.ensure_no_team_definition_migration(
+                    project_id,
+                    node.mini_project_id.ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the retired seat has no epic",
+                        )
+                    })?,
+                )?;
+            }
             let live = inspection.state.is_live();
             let observed = live.then(|| ObservedBindingDto {
                 runtime_kind: inspection.identity.runtime_kind,
@@ -7907,6 +8191,7 @@ impl Services {
                 )
             })?;
         Ok(TopologySeatDto {
+            revision: seat.revision,
             seat_binding_id: seat.id,
             role_slot_id: seat.role_slot_id.to_string(),
             role: ResolvedRoleRefDto {
@@ -8948,6 +9233,7 @@ impl Services {
         run: &StoredConsultationRun,
         profile: &AdvisorProfileSpec,
     ) -> Result<(), ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let project = self.project_row(run.project_id)?;
         let node = state
@@ -9448,6 +9734,7 @@ impl Services {
         template: &CommitteeTemplateSpec,
         include_judge: bool,
     ) -> Result<(), ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let project = self.project_row(run.project_id)?;
         let node = state
@@ -9653,6 +9940,7 @@ impl Services {
         model_rung: ModelRung,
         route_provenance: ConsultationRouteProvenance,
     ) -> Result<StoredConsultationSeat, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let slot = template
             .slots
@@ -10642,7 +10930,9 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
         ("claude" | "claude-work" | "claude-personal", "claude-opus-5") => {
             effort_is(&["off", "low", "medium", "high", "xhigh", "max", "ultracode"])
         }
-        ("claude" | "claude-work" | "claude-personal", "claude-fable-5") => {
+        // Historical frozen routes remain admissible during recovery. Only the
+        // current catalog below advertises the replacement release.
+        ("claude" | "claude-work" | "claude-personal", "claude-fable-5" | "claude-fable-5-1") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultracode"])
         }
         ("opencode", "deepseek/deepseek-v4-flash") => effort_is(&["low", "high", "max"]),
@@ -13171,6 +13461,7 @@ impl Services {
         project_id: ProjectId,
         epic_id: MiniProjectId,
     ) -> Result<bool, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let Some(stored) = state
             .with_store(|store| store.get_epic_completion(project_id, epic_id))
@@ -13317,6 +13608,34 @@ impl Services {
                 );
                 false
             }
+        }
+    }
+}
+
+/// Materialization reports the failed identity/content proof, never a workflow status.
+const fn jira_materialization_conflict_rule(
+    kind: kontor_jira::MaterializationConflict,
+) -> &'static str {
+    use kontor_jira::MaterializationConflict;
+    match kind {
+        MaterializationConflict::AmbiguousMarker => {
+            "several Jira issues carry the pending creation marker"
+        }
+        MaterializationConflict::ProjectMismatch => "the Jira issue belongs to another project",
+        MaterializationConflict::ParentMismatch => {
+            "the Jira issue parent differs from the confirmed epic binding"
+        }
+        MaterializationConflict::SummaryMismatch => {
+            "the Jira issue summary differs from the pending creation intent"
+        }
+        MaterializationConflict::DescriptionMismatch => {
+            "the Jira issue description differs from the pending creation intent"
+        }
+        MaterializationConflict::IssueTypeMismatch => {
+            "the Jira issue type differs from the materialization hierarchy or creation intent"
+        }
+        MaterializationConflict::MissingMarker => {
+            "the Jira issue lacks the pending creation marker"
         }
     }
 }
@@ -14075,7 +14394,7 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }),
             serde_json::json!({
-                "id": "claude-fable-5", "label": "Claude Fable 5", "provider": "claude",
+                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": "claude",
                 "isDefault": false,
                 "contextWindow": { "value": 1000000, "provenance": provenance },
                 "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
@@ -14116,7 +14435,7 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }));
             models.push(serde_json::json!({
-                "id": "claude-fable-5", "label": "Claude Fable 5", "provider": alias,
+                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": alias,
                 "isDefault": false,
                 "contextWindow": { "value": 1000000, "provenance": provenance },
                 "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
@@ -15535,6 +15854,7 @@ impl ApplicationOperations for Services {
         project_id: ProjectId,
         request: &SemanticTopologyRequest,
     ) -> Result<TopologyMutationDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.expected_revision)?;
         let scope = self.resolve_scope(project_id, &request.target)?;
@@ -15754,6 +16074,7 @@ impl ApplicationOperations for Services {
             request,
             TopologyLifecycle::Retired,
         )
+        .await
     }
 
     async fn archive_topology_node(
@@ -15770,6 +16091,7 @@ impl ApplicationOperations for Services {
             request,
             TopologyLifecycle::Archived,
         )
+        .await
     }
 
     fn preview_topology_upgrade(
@@ -16399,6 +16721,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &TopologyUpgradeApplyRequest,
     ) -> Result<AppliedTopologyUpgradeDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let now = kontor_api::now();
         let epic = self.epic_row(project_id, epic_id)?;
@@ -16511,6 +16834,7 @@ impl ApplicationOperations for Services {
         topology_node_id: TopologyNodeId,
         request: &ContainerRetitleRequest,
     ) -> Result<AppliedContainerRetitleDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let (retitle, adapter) = self.retitle_request(project_id, topology_node_id, request)?;
         let project = self.project_at(project_id, request.expected_revision)?;
@@ -16930,6 +17254,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &NativeNamesApplyRequest,
     ) -> Result<AppliedNativeNamesDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.expected_revision)?;
         let target = AggregateRef::MiniProject {
@@ -17058,6 +17383,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &TeamDefinitionUpgradeApplyRequest,
     ) -> Result<AppliedTeamDefinitionUpgradeDto, ApiError> {
+        let _native_lifecycle = self.native_lifecycle_change()?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.upgrade.expected_revision)?;
         let aggregate = AggregateRef::MiniProject {
@@ -17543,6 +17869,7 @@ impl ApplicationOperations for Services {
         agent_run_id: AgentRunId,
         request: &SessionLabelsReconcileRequest,
     ) -> Result<SessionLabelsReconciledDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let run = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
@@ -18272,6 +18599,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &CoreTeamMaterializeRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
         if epic.revision != request.expected_revision {
@@ -18509,6 +18837,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &CoreTeamRouteApplyRequest,
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let plan = self
             .core_team_route_plan(project_id, epic_id, &request.correction())
@@ -18548,6 +18877,7 @@ impl ApplicationOperations for Services {
             })?;
             let retired = adapter
                 .retire_hosted_seat(&HostedSeatRetireRequest {
+                    placement: None,
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
@@ -18748,6 +19078,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &CoreTeamSeatClaimApplyRequest,
     ) -> Result<CoreTeamSeatClaimOutcomeDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let plan = self
             .core_team_seat_claim_plan(project_id, epic_id, &request.claim())
@@ -18876,6 +19207,7 @@ impl ApplicationOperations for Services {
         message_id: MessageId,
         request: &HostedSeatMessageRequestDto,
     ) -> Result<HostedSeatMessageDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let binding = state
             .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
@@ -19547,6 +19879,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &InvokeAdvisorRequest,
     ) -> Result<AdvisorRunDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let request = InvokeConsultationRequest::from(request);
         let mut intent_value = serde_json::json!({
             "schema_version": 1,
@@ -19982,6 +20315,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &InvokeConsultationRequest,
     ) -> Result<CommitteeRunDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let mut intent_value = serde_json::json!({
             "schema_version": 1,
             "operation": "invoke_committee_run",
@@ -20242,6 +20576,7 @@ impl ApplicationOperations for Services {
         permission_id: ExternalId,
         decision: PermissionDecision,
     ) -> Result<ConsultationPermissionAckDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let run =
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
@@ -20413,6 +20748,7 @@ impl ApplicationOperations for Services {
         seat_binding_id: SeatBindingId,
         request: &RecoverConsultationSeatRequest,
     ) -> Result<ConsultationSeatRecoveryDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let mut run =
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
         let target = AggregateRef::MiniProject {
@@ -23682,23 +24018,6 @@ impl ApplicationOperations for Services {
     ) -> Result<GateVerdictDto, ApiError> {
         let state = self.state()?;
         let task = self.task_row(project_id, task_id)?;
-        let workflow = state
-            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "the task has no active workflow to record a verdict against",
-                )
-            })?;
-        if workflow.revision != request.expected_revision {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "the task's workflow moved since the caller read it",
-                )
-                .with_revision(Some(workflow.revision)));
-        }
         let gate_key = GateKey::parse(gate).map_err(|error| self.refuse_domain(&error))?;
         let verdict =
             GateVerdict::parse(&request.verdict).map_err(|error| self.refuse_domain(&error))?;
@@ -23772,8 +24091,28 @@ impl ApplicationOperations for Services {
         // A replay answers from the append-only history rather than appending a
         // second identical verdict: the history is evidence, and evidence that
         // duplicates itself under a retry is evidence about the retry.
-        if self.replayed(key, &intent, Some(&target))?.is_some() {
-            return self.gate_verdict_replay(project_id, task_id, &workflow.id, &gate_key, key);
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            return self.gate_verdict_replay(project_id, task_id, &gate_key, &receipt);
+        }
+        let workflow = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the task has no active workflow to record a verdict against",
+                )
+            })?;
+        // Passing a gate may advance the workflow. Its receipt still belongs
+        // to the revision that authorized it; only a new verdict needs today's
+        // workflow CAS, including a stale request with a fresh key.
+        if workflow.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task's workflow moved since the caller read it",
+                )
+                .with_revision(Some(workflow.revision)));
         }
 
         let durable = self.durable_artifact_keys(project_id, task_id)?;
@@ -23862,35 +24201,44 @@ impl ApplicationOperations for Services {
                 Some(evaluator.id)
             }
         };
-        let receipt = self.record(
-            key,
-            project_id,
-            CommandKind::RecordGateVerdict,
-            target,
-            task.revision,
-            &intent,
-        )?;
-        let session_evidence = recovery.clone();
-        let sequence = state
+        let now = kontor_api::now();
+        let command = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewCommandIntent {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecordGateVerdict,
+                target,
+                target_revision: task.revision,
+                intent: intent.clone(),
+                payload: intent,
+                desired: None,
+                not_before: now,
+                created_at: now,
+            },
+        );
+        let (sequence, receipt) = state
             .with_store(|store| {
-                store.append_gate_evaluation(&NewGateEvaluation {
-                    project_id,
-                    workflow_id: workflow.id,
-                    gate: gate_key.clone(),
-                    verdict,
-                    evaluator_role,
-                    evaluator_account: request.evaluator_account,
-                    evidence,
-                    agent_run_id: seat,
-                    session_evidence,
-                    reviewer_principal,
-                    policy_evaluation_id: None,
-                    recorded_at: kontor_api::now(),
-                })
+                store.append_gate_evaluation_with_intent(
+                    &NewGateEvaluation {
+                        project_id,
+                        workflow_id: workflow.id,
+                        gate: gate_key.clone(),
+                        verdict,
+                        evaluator_role,
+                        evaluator_account: request.evaluator_account,
+                        evidence,
+                        agent_run_id: seat,
+                        session_evidence: recovery.clone(),
+                        reviewer_principal,
+                        policy_evaluation_id: None,
+                        recorded_at: now,
+                    },
+                    request.expected_revision,
+                    &command,
+                )
             })
-            .map_err(|error| self.refuse(&error))?;
-        let gates = state
-            .with_store(|store| store.gate_states(project_id, workflow.id))
             .map_err(|error| self.refuse(&error))?;
         self.advance_workflow_from_evidence(project_id, task_id)?;
         state.signals().appended();
@@ -23900,15 +24248,12 @@ impl ApplicationOperations for Services {
             gate: gate_key.as_str().to_owned(),
             sequence,
             verdict: verdict.as_str().to_owned(),
-            state: gates
-                .get(&gate_key)
-                .map_or("not_ready", |state| state.as_str())
-                .to_owned(),
+            state: verdict.resulting_state().as_str().to_owned(),
             session_evidence: recovery.map(|citation| SessionVerdictCitationDto {
                 agent_run_id: citation.agent_run_id,
                 digest: citation.digest,
             }),
-            receipt_id: receipt.to_string(),
+            receipt_id: receipt.id.to_string(),
         })
     }
 
@@ -24977,6 +25322,7 @@ impl ApplicationOperations for Services {
         agent_run_id: AgentRunId,
         request: &ReplaceSeatRequest,
     ) -> Result<ReplacedSeatDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let now = kontor_api::now();
         // Two different facts with two different fences. "The provider was down
@@ -26662,6 +27008,38 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse(&error))?;
             (receipt.id, Applied::Unchanged, revision)
         } else {
+            // A shipped mapping is discoverable before its profile has been
+            // selected in this project. Keep the exact-profile foreign key,
+            // but explain that prerequisite before SQLite reports a generic
+            // persistence conflict. Successful receipt replay stays above this
+            // check and retains its original result revision.
+            if let (Some(profile), Some(version)) = (
+                compiled.spec().work_profile.as_ref(),
+                compiled.spec().work_profile_version,
+            ) {
+                let project = self.project_row(project_id)?;
+                if project.revision != request.expected_revision {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the project moved since the caller read it",
+                        )
+                        .with_revision(Some(project.revision)));
+                }
+                let installed = state
+                    .with_store(|store| store.get_work_profile(project_id, profile, version))
+                    .map_err(|error| self.refuse(&error))?;
+                if installed.is_none() {
+                    return Err(self
+                        .deny(
+                            ApiErrorCode::InvalidRequest,
+                            "this external-workflow specification requires a work-profile revision not installed in this project",
+                        )
+                        .advising(
+                            "apply an epic using the specification's exact work profile in this project, then retry the installation",
+                        ));
+                }
+            }
             let now = kontor_api::now();
             let command = ReceiptEnvelope::new(
                 state.realm_id(),
@@ -28075,6 +28453,7 @@ impl Services {
         &self,
         attempt: &SuccessionAttempt,
     ) -> Result<SuccessionSuccessorObservation, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let project_id = attempt.request.project_id;
         let now = kontor_api::now();
@@ -28326,6 +28705,7 @@ impl Services {
         binding: &RuntimeBinding,
         now: Timestamp,
     ) -> Result<SuccessionSuccessorObservation, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let held = state.sessions().get(binding.id).ok_or_else(|| {
             self.deny(
@@ -28629,6 +29009,7 @@ impl Services {
         quota: Option<(&kontor_api::applications::QuotaExhaustedSeatRequest, bool)>,
         now: Timestamp,
     ) -> Result<kontor_core::repository::AgentRun, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let held = state.sessions().get(binding.id).ok_or_else(|| {
             self.deny(
@@ -28952,6 +29333,7 @@ impl Services {
         expected_team_run_id: Option<TeamRunId>,
         expected_agent_run_id: Option<AgentRunId>,
     ) -> Result<Vec<StartedSeatDto>, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let now = kontor_api::now();
         let workflow = state
@@ -30118,6 +30500,7 @@ impl Services {
         project_id: ProjectId,
         task_id: TaskId,
     ) -> Result<SessionTopologyNode, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let existing_task = state
             .with_store(|store| store.get_task_topology_node(project_id, task_id))
@@ -30994,6 +31377,7 @@ impl Services {
         cwd: &kontor_runtime::workspace::WorkspaceRoot,
         adapter: &dyn RuntimeAdapter,
     ) -> Result<ContainerBindingSnapshot, ApiError> {
+        let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let epic_id = node.mini_project_id.ok_or_else(|| {
             self.deny(
@@ -31656,6 +32040,7 @@ impl Services {
         seating: &Seating<'_>,
         slot: &RoleSlotId,
     ) -> Result<StartedSeatDto, ApiError> {
+        let _native_activity = self.native_activity()?;
         let Seating {
             project_id,
             admitted,

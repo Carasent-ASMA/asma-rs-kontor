@@ -1,0 +1,12 @@
+[
+  {
+    "mutant": "direct-permission",
+    "exit_code": 101,
+    "killed_by_assertion": true
+  },
+  {
+    "mutant": "permission-refetch",
+    "exit_code": 101,
+    "killed_by_assertion": true
+  }
+]

@@ -63,9 +63,10 @@ const BUNDLED_FIELD_SPECS: [&str; 2] = [
 ];
 
 /// The ASMA workflow specifications this build ships, as data.
-const BUNDLED_WORKFLOW_SPECS: [&str; 3] = [
+const BUNDLED_WORKFLOW_SPECS: [&str; 4] = [
     include_str!("../fixtures/external-workflow-asma.json"),
     include_str!("../fixtures/external-workflow-asma-high-stakes.json"),
+    include_str!("../fixtures/external-workflow-asma-docs.json"),
     include_str!("../fixtures/external-workflow-asma-epic-v2.json"),
 ];
 

@@ -1,0 +1,33 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.03s
+     Running unittests src/lib.rs (target/debug/deps/kontor_runtime_paseo-c12ff2c92d534994)
+
+running 2 tests
+test client::tests::timeline_replacement_is_not_evicted_by_later_content ... FAILED
+test client::tests::timeline_replacement_survives_overflow_and_coalesces_per_agent ... FAILED
+
+failures:
+
+---- client::tests::timeline_replacement_is_not_evicted_by_later_content stdout ----
+
+thread 'client::tests::timeline_replacement_is_not_evicted_by_later_content' (72291296) panicked at crates/kontor-runtime-paseo/src/client.rs:2919:9:
+assertion `left == right` failed
+  left: []
+ right: [Object {"payload": Object {"agentId": String("agt_1"), "epoch": String("new")}, "type": String("agent.timeline.replacement")}]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- client::tests::timeline_replacement_survives_overflow_and_coalesces_per_agent stdout ----
+
+thread 'client::tests::timeline_replacement_survives_overflow_and_coalesces_per_agent' (72291297) panicked at crates/kontor-runtime-paseo/src/client.rs:2891:9:
+assertion `left == right` failed
+  left: []
+ right: [Object {"payload": Object {"agentId": String("agt_1"), "epoch": String("latest")}, "type": String("agent.timeline.replacement")}]
+
+
+failures:
+    client::tests::timeline_replacement_is_not_evicted_by_later_content
+    client::tests::timeline_replacement_survives_overflow_and_coalesces_per_agent
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 105 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --lib`

@@ -1,0 +1,15 @@
+Archived source: 4c51059e07a9517d57cb9bd2665dc537ff681a2c
+Command: target/qualification/debug/deps/live-385a0c88c9d76dfd --ignored --nocapture --skip live_adopted_root_places_and_archives_a_child_and_registers_no_project
+
+running 5 tests
+live Paseo announced version=Some("0.7.2") serverId=srv_xbEAfW_ifVnB
+test live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity ... ok
+test live_an_unknown_agent_is_refused_rather_than_answered_empty ... ok
+live Paseo holds 7 projects
+test live_a_correlated_session_read_round_trips ... ok
+test live_the_status_readback_agrees_with_the_pushed_identity ... ok
+live Paseo CLI reports 0.7.2
+test live_cli_reports_the_supported_baseline ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.31s
+

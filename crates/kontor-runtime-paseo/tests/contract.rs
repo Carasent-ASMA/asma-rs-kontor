@@ -3302,7 +3302,7 @@ async fn prelaunch_trusts_no_cli_answer_without_a_protocol_readback() {
 
 #[tokio::test]
 async fn prelaunch_refuses_a_route_the_readback_did_not_apply() {
-    for (field, value) in [("provider", "codex"), ("model", "claude-fable-5")] {
+    for (field, value) in [("provider", "codex"), ("model", "claude-fable-5-1")] {
         let recorded = daemon();
         let mut wrong = v(AGENT);
         wrong["agent"][field] = serde_json::json!(value);
@@ -4099,6 +4099,253 @@ async fn freshness_a_degraded_daemon_is_observed_but_never_driven() {
     assert!(plane.daemon.mutations().is_empty());
 }
 
+#[tokio::test]
+async fn security_declared_read_only_daemon_permissions_expose_only_reads() {
+    let mut identity = v(SERVER_INFO_NEWER_VERSION);
+    identity["permissions"] = serde_json::json!(["workspace.read"]);
+    let recorded = daemon();
+    recorded.set_identity(&identity);
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("a restricted daemon still declares its safe read surface");
+    assert_eq!(declared.trust_grade, TrustGrade::C);
+    assert!(declared.supports(RuntimeCapability::Discovery));
+    assert!(declared.supports(RuntimeCapability::Inspect));
+    assert!(!declared.supports(RuntimeCapability::Launch));
+    assert!(!declared.supports(RuntimeCapability::PrepareWorkspace));
+    assert!(!declared.supports(RuntimeCapability::RetitleContainer));
+
+    plane.daemon.take_calls();
+    let refused = plane
+        .prepare_workspace()
+        .await
+        .expect_err("workspace.read cannot authorize a workspace mutation");
+    assert_eq!(
+        refused,
+        RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace
+        }
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn security_session_permissions_bound_the_composed_surface_with_or_without_mcp() {
+    for with_mcp in [false, true] {
+        for (permissions, reads, drives, retitles) in [
+            (None, true, true, true),
+            (Some(serde_json::json!([])), false, false, false),
+            (
+                Some(serde_json::json!(["workspace.read"])),
+                true,
+                false,
+                false,
+            ),
+            (
+                Some(serde_json::json!(["workspace.write", "workspace.manage"])),
+                false,
+                false,
+                false,
+            ),
+            (
+                Some(serde_json::json!(["workspace.read", "workspace.write"])),
+                true,
+                false,
+                false,
+            ),
+            (
+                Some(serde_json::json!(["workspace.read", "workspace.manage"])),
+                true,
+                false,
+                true,
+            ),
+            (
+                Some(serde_json::json!([
+                    "workspace.read",
+                    "workspace.write",
+                    "workspace.manage"
+                ])),
+                true,
+                true,
+                true,
+            ),
+        ] {
+            let mut identity = v(SERVER_INFO_NEWER_VERSION);
+            if let Some(permissions) = permissions {
+                identity["permissions"] = permissions;
+            }
+            let recorded = daemon();
+            recorded.set_identity(&identity);
+            let plane = if with_mcp {
+                Plane::with_facade(recorded, RecordedMcp::new())
+            } else {
+                Plane::fresh(recorded)
+            };
+            let capabilities = plane
+                .adapter
+                .discover_capabilities()
+                .await
+                .expect("discovery");
+            assert_eq!(capabilities.supports(RuntimeCapability::Inspect), reads);
+            assert_eq!(capabilities.supports(RuntimeCapability::Launch), drives);
+            assert_eq!(
+                capabilities.supports(RuntimeCapability::RetitleContainer),
+                retitles
+            );
+            if !reads {
+                assert!(capabilities.supported.is_empty());
+            }
+            if !drives {
+                plane.daemon.take_calls();
+                assert!(matches!(
+                    plane.prepare_workspace().await,
+                    Err(RuntimeError::UnsupportedCapability {
+                        capability: RuntimeCapability::PrepareWorkspace
+                    })
+                ));
+                assert!(plane.daemon.mutations().is_empty());
+            }
+            if !retitles {
+                assert!(matches!(
+                    plane
+                        .adapter
+                        .retitle_container(&retitle(node(NODE_A)))
+                        .await,
+                    Err(RuntimeError::UnsupportedCapability {
+                        capability: RuntimeCapability::RetitleContainer
+                    })
+                ));
+                assert!(plane.daemon.mutations().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn security_restricted_connections_cannot_mutate_previously_valid_seats() {
+    for permissions in [
+        serde_json::json!([]),
+        serde_json::json!(["workspace.read"]),
+        serde_json::json!(["workspace.read", "workspace.manage"]),
+        serde_json::json!(["workspace.write", "workspace.manage"]),
+    ] {
+        let (plane, binding) = launched().await;
+        let mut identity = v(SERVER_INFO_NEWER_VERSION);
+        identity["permissions"] = permissions;
+        plane.daemon.set_identity(&identity);
+        plane.daemon.take_calls();
+        assert!(matches!(
+            plane
+                .adapter
+                .retire(&binding, at("2026-09-05T07:00:00Z"))
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(matches!(
+            plane
+                .adapter
+                .cancel(&CancelRequest {
+                    binding: binding.clone(),
+                    requested_at: at("2026-09-05T07:00:00Z")
+                })
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(matches!(
+            plane
+                .adapter
+                .send(&SendMessageRequest {
+                    binding: binding.clone(),
+                    message_id: MessageId::parse(MESSAGE).expect("message"),
+                    body: text("must not send"),
+                    sent_at: at("2026-09-05T07:00:00Z"),
+                })
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(matches!(
+            plane
+                .adapter
+                .respond_permission(&permission(&binding, PermissionDecision::Allow))
+                .await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        let request = RetitleSeatRequest {
+            identity: binding.identity().clone(),
+            provider_session_id: Some(external("prov_sess_1")),
+            container_native_id: external(WORKSPACE_ID),
+            desired_title: name("Must not rename"),
+            requested_at: at("2026-09-05T07:00:00Z"),
+        };
+        assert!(matches!(
+            plane.adapter.retitle_seat(&request).await,
+            Err(RuntimeError::UnsupportedCapability { .. })
+        ));
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a previously issued binding cannot bypass fresh connection permissions"
+        );
+        if !identity["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .any(|p| p == "workspace.read")
+        {
+            assert!(matches!(
+                plane.adapter.preview_retitle_seat(&request).await,
+                Err(RuntimeError::UnsupportedCapability { .. })
+            ));
+            assert!(matches!(
+                plane
+                    .adapter
+                    .reconcile_role_slots(team_run(), &[slot("implement-a")])
+                    .await,
+                Err(RuntimeError::UnsupportedCapability { .. })
+            ));
+        }
+    }
+    let recorded = daemon();
+    let mut identity = v(SERVER_INFO_NEWER_VERSION);
+    identity["permissions"] = serde_json::json!(["workspace.read", "workspace.write"]);
+    recorded.set_identity(&identity);
+    let plane = Plane::fresh(recorded);
+    assert!(matches!(
+        plane
+            .adapter
+            .prepare_project("no-management", &project_name())
+            .await,
+        Err(RuntimeError::UnsupportedCapability { .. })
+    ));
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "agent-write cannot create a project"
+    );
+}
+
+#[tokio::test]
+async fn security_declared_permissions_without_workspace_read_expose_nothing() {
+    let mut identity = v(SERVER_INFO_NEWER_VERSION);
+    identity["permissions"] = serde_json::json!(["workspace.write", "workspace.manage"]);
+    let recorded = daemon();
+    recorded.set_identity(&identity);
+    let plane = Plane::fresh(recorded);
+
+    let declared = plane
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("an explicit restricted identity is still parseable");
+    assert_eq!(declared.trust_grade, TrustGrade::C);
+    assert!(
+        declared.supported.is_empty(),
+        "without workspace.read the connection cannot even inspect a session"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // continuity_
 // ---------------------------------------------------------------------------
@@ -4607,6 +4854,220 @@ async fn timeline_a_declared_break_forces_a_canonical_refetch() {
         // And it changed no lifecycle state.
         let checkpoint = plane.adapter.checkpoint();
         assert_eq!(checkpoint.bindings.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn timeline_a_replacement_notification_invalidates_the_saved_cursor() {
+    let (plane, binding) = with_history().await;
+    let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+        .await
+        .expect("history");
+    plane.daemon.push_stream(
+        AGENT_ID,
+        vec![serde_json::json!({
+            "type": "agent.timeline.replacement",
+            "payload": {
+                "agentId": AGENT_ID,
+                "epoch": "8f2b1c34-0000-4000-8000-000000000051"
+            }
+        })],
+    );
+
+    let refused = plane
+        .adapter
+        .subscribe_live(&LiveSubscribeRequest {
+            binding: binding.clone(),
+            kinds: SESSION_KINDS.iter().copied().collect(),
+            strict_after: anchor,
+        })
+        .await
+        .expect_err("a replacement makes every saved cursor stale");
+    assert_eq!(
+        refused,
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::EpochChanged
+        }
+    );
+    // A new cursor-free canonical read is the recovery boundary. Its entries
+    // come from that read, never from the replacement notification.
+    let new_epoch = "8f2b1c34-0000-4000-8000-000000000051";
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_timeline_request",
+        serde_json::json!({
+            "requestId": "canonical-replacement", "agentId": AGENT_ID,
+            "agent": null, "direction": "tail", "projection": "canonical",
+            "epoch": new_epoch, "reset": false, "staleCursor": false, "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 1, "nextSeq": 2 },
+            "startCursor": { "epoch": new_epoch, "seq": 1 },
+            "endCursor": { "epoch": new_epoch, "seq": 1 },
+            "hasOlder": false, "hasNewer": false, "entries": [assistant_entry(1)], "error": null,
+        }),
+    );
+    let recovered = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("cursor-free canonical recovery");
+    assert_eq!(recovered.items.len(), 1);
+    assert_eq!(recovered.items[0].position.sequence, 1);
+    assert_ne!(recovered.items[0].position.epoch, anchor.epoch);
+}
+
+#[tokio::test]
+async fn timeline_replacement_recovers_requested_and_resolved_permissions_from_agent_state() {
+    for was_pending in [false, true] {
+        let (plane, binding) = if was_pending {
+            with_permission().await
+        } else {
+            with_history().await
+        };
+        let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+            .await
+            .expect("initial history");
+        let pending = |adapter: &PaseoAdapter| {
+            adapter
+                .checkpoint()
+                .pending_permissions
+                .iter()
+                .any(|(id, permission)| {
+                    *id == binding.binding_id() && permission.as_str() == "perm_1"
+                })
+        };
+        assert_eq!(pending(&plane.adapter), was_pending);
+        plane.daemon.push_stream(
+            AGENT_ID,
+            vec![serde_json::json!({
+                "type": "agent.timeline.replacement",
+                "payload": {"agentId": AGENT_ID, "epoch": EPOCH_RAW}
+            })],
+        );
+        assert!(matches!(
+            plane
+                .adapter
+                .subscribe_live(&LiveSubscribeRequest {
+                    binding: binding.clone(),
+                    kinds: SESSION_KINDS.iter().copied().collect(),
+                    strict_after: anchor,
+                })
+                .await,
+            Err(RuntimeError::TimelineRefetchRequired { .. })
+        ));
+        // A missing authoritative agent read cannot complete recovery merely
+        // because canonical history itself remains available.
+        plane.daemon.set_answer_rpc(
+            "fetch_agent_request",
+            v(fixture!("protocol/agent-not-found.json")),
+        );
+        plane
+            .daemon
+            .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+        let request = HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size: 10,
+        };
+        assert!(plane.adapter.history(&request).await.is_err());
+        assert_eq!(pending(&plane.adapter), was_pending);
+        plane.daemon.set_answer_rpc(
+            "fetch_agent_request",
+            v(if was_pending {
+                AGENT
+            } else {
+                AGENT_PERMISSION_OPEN
+            }),
+        );
+        plane
+            .adapter
+            .history(&request)
+            .await
+            .expect("canonical recovery refreshes permission state");
+        assert_eq!(
+            pending(&plane.adapter),
+            !was_pending,
+            "discarded lifecycle events are recovered from pendingPermissions"
+        );
+        if was_pending {
+            plane.daemon.take_calls();
+            assert!(
+                plane
+                    .adapter
+                    .respond_permission(&permission(&binding, PermissionDecision::Allow))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                plane.daemon.mutations().is_empty(),
+                "resolved permission is refused before sending a stale answer"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn timeline_canonical_history_remains_readable_for_archived_agents() {
+    let (plane, binding) = with_history().await;
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_request",
+        v(fixture!("protocol/agent-not-found.json")),
+    );
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
+    let page = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("terminal evidence may still read archived canonical history");
+    assert!(!page.items.is_empty());
+}
+
+#[tokio::test]
+async fn timeline_replacement_isolates_other_agents_and_rejects_malformed_notifications() {
+    for (payload, correlation_failure) in [
+        (
+            serde_json::json!({ "agentId": "another-agent", "epoch": "new" }),
+            true,
+        ),
+        (serde_json::json!({ "agentId": AGENT_ID }), false),
+        (
+            serde_json::json!({ "agentId": AGENT_ID, "epoch": "" }),
+            false,
+        ),
+        (serde_json::json!({ "epoch": "new" }), false),
+        (serde_json::Value::Null, false),
+    ] {
+        let (plane, binding) = with_history().await;
+        let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+            .await
+            .expect("history");
+        plane.daemon.push_stream(
+            AGENT_ID,
+            vec![serde_json::json!({
+                "type": "agent.timeline.replacement", "payload": payload,
+            })],
+        );
+        let result = plane
+            .adapter
+            .subscribe_live(&LiveSubscribeRequest {
+                binding,
+                kinds: SESSION_KINDS.iter().copied().collect(),
+                strict_after: anchor,
+            })
+            .await;
+        if correlation_failure {
+            result.expect("another agent's replacement does not invalidate this session");
+        } else {
+            assert!(matches!(result, Err(RuntimeError::Domain(_))));
+        }
     }
 }
 
@@ -6037,6 +6498,19 @@ async fn security_session_label_reconcile_repairs_the_external_epic_key_in_place
         container,
         requested_at: at("2026-08-20T05:01:00Z"),
     };
+    let mut restricted = v(SERVER_INFO_NEWER_VERSION);
+    restricted["permissions"] = serde_json::json!(["workspace.read", "workspace.manage"]);
+    plane.daemon.set_identity(&restricted);
+    plane.daemon.take_calls();
+    assert!(matches!(
+        plane.adapter.reconcile_session_labels(&request).await,
+        Err(RuntimeError::UnsupportedCapability { .. })
+    ));
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "workspace management cannot update agent labels"
+    );
+    plane.daemon.set_identity(&v(SERVER_INFO_NEWER_VERSION));
     let repaired = plane
         .adapter
         .reconcile_session_labels(&request)
@@ -6626,6 +7100,255 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
         team_run_id: None,
         requested_at: at("2026-08-16T09:05:00Z"),
     }
+}
+
+fn local_archive_workspace() -> serde_json::Value {
+    let mut workspace = v(WORKSPACE_LIST_ONE);
+    workspace["entries"][0]["workspaceKind"] = serde_json::json!("directory");
+    workspace
+}
+
+fn archive_daemon() -> RecordedPaseo {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", local_archive_workspace());
+    recorded.set_answer_rpc(
+        "list_terminals_request",
+        serde_json::json!({"cwd": CWD, "terminals": []}),
+    );
+    recorded.set_answer_rpc(
+        "workspace.script.list.request",
+        serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [], "error": null}),
+    );
+    recorded.set_answer_rpc(
+        "workspace_setup_status_request",
+        serde_json::json!({"workspaceId": WORKSPACE_ID, "snapshot": null}),
+    );
+    recorded
+}
+
+fn archive_child() -> kontor_runtime::container::ArchiveContainerRequest {
+    kontor_runtime::container::ArchiveContainerRequest {
+        topology_node_id: node(NODE_A),
+        container_binding_id: ContainerBindingId::generate(),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        bound_project_native_id: external(PROJECT_ID),
+        canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+        requested_at: at("2026-09-05T10:00:00Z"),
+    }
+}
+
+#[tokio::test]
+async fn native_child_archive_confirms_absence_and_replays_after_a_lost_ack() {
+    for lost_ack in [false, true] {
+        let plane = Plane::fresh(archive_daemon());
+        plane.daemon.forget_queued_rpc("fetch_workspaces_request");
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_workspaces_request", local_archive_workspace());
+        plane
+            .daemon
+            .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+        let command = PaseoCommand::workspace_archive(WORKSPACE_ID);
+        plane.daemon.set_answer(&command, "{}");
+        if lost_ack {
+            plane.daemon.lose_next(&command);
+        }
+        let request = archive_child();
+        let first = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("fresh absence settles cleanup");
+        assert!(first.changed);
+        assert_eq!(first.request, request);
+        assert_eq!(plane.daemon.mutations(), vec![command.route().to_owned()]);
+        plane.daemon.take_calls();
+        let retry = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("already absent is recovered");
+        assert!(!retry.changed);
+        assert_eq!(retry.request, request);
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "retry must not repeat native archive"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
+    for case in [
+        "foreign-parent",
+        "wrong-cwd",
+        "owned-worktree",
+        "root",
+        "foreign-host",
+        "future-generation",
+        "active-session",
+        "orphan-session",
+        "read-only",
+        "missing-read",
+        "git-worktree",
+        "running-script",
+        "terminal",
+        "running-setup",
+        "script-error",
+        "wrong-script-workspace",
+        "malformed-terminals",
+        "malformed-setup",
+    ] {
+        let plane = Plane::fresh(archive_daemon());
+        plane.daemon.forget_queued_rpc("fetch_workspaces_request");
+        let mut request = archive_child();
+        match case {
+            "foreign-parent" => request.bound_project_native_id = external("prj_somebody_else"),
+            "git-worktree" => plane.daemon.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE)),
+            "running-script" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [{"lifecycle": "running"}], "error": null})),
+            "terminal" => plane.daemon.set_answer_rpc("list_terminals_request", serde_json::json!({"cwd": CWD, "terminals": [{"id": "interactive-shell"}]})),
+            "running-setup" => plane.daemon.set_answer_rpc("workspace_setup_status_request", serde_json::json!({"workspaceId": WORKSPACE_ID, "snapshot": {"status": "running"}})),
+            "script-error" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [], "error": "unavailable"})),
+            "wrong-script-workspace" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": "foreign-workspace", "scripts": [], "error": null})),
+            "malformed-setup" => plane.daemon.set_answer_rpc("workspace_setup_status_request", serde_json::json!({"workspaceId": WORKSPACE_ID})),
+            "malformed-terminals" => plane.daemon.set_answer_rpc("list_terminals_request", serde_json::json!({"cwd": CWD})),
+            "wrong-cwd" => request.canonical_cwd = WorkspaceRoot::parse("/other/cwd").expect("cwd"),
+            "owned-worktree" => plane
+                .daemon
+                .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED)),
+            "root" => request.projection = ContainerProjection::NativeRoot,
+            "foreign-host" => request.identity.host = name("another-host"),
+            "future-generation" => request.identity.generation = 2,
+            "active-session" | "orphan-session" => {
+                plane
+                    .daemon
+                    .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+                if case == "orphan-session" {
+                    plane
+                        .daemon
+                        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+                }
+            }
+            "read-only" | "missing-read" => {
+                let mut identity = v(SERVER_INFO);
+                identity["permissions"] = if case == "read-only" {
+                    serde_json::json!(["workspace.read"])
+                } else {
+                    serde_json::json!(["workspace.manage"])
+                };
+                plane.daemon.set_identity(&identity);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            plane.adapter.archive_container(&request).await.is_err(),
+            "{case} must refuse"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} must mutate nothing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_child_archive_does_not_trust_a_successful_ack_without_absence() {
+    let plane = Plane::fresh(archive_daemon());
+    plane.daemon.forget_queued_rpc("fetch_workspaces_request");
+    plane
+        .daemon
+        .set_answer(&PaseoCommand::workspace_archive(WORKSPACE_ID), "{}");
+    assert_eq!(
+        plane
+            .adapter
+            .archive_container(&archive_child())
+            .await
+            .expect_err("workspace remains"),
+        RuntimeError::CorrelationFailed
+    );
+    assert_eq!(
+        plane.daemon.mutations(),
+        vec![
+            PaseoCommand::workspace_archive(WORKSPACE_ID)
+                .route()
+                .to_owned()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn native_child_archive_rejects_incomplete_censuses_and_adopted_targets() {
+    for route in [
+        "project.list.request",
+        "fetch_workspaces_request",
+        "fetch_agents_request",
+    ] {
+        for malformed in [
+            serde_json::json!({}),
+            serde_json::json!({"entries": [], "pageInfo": {}}),
+            serde_json::json!({"entries": [], "pageInfo": {"hasMore": true, "nextCursor": null}}),
+            serde_json::json!({"projects": [], "entries": [], "pageInfo": {"hasMore": false, "nextCursor": null}, "error": "unavailable"}),
+        ] {
+            let plane = Plane::fresh(archive_daemon());
+            plane.daemon.set_answer_rpc(route, malformed);
+            assert!(
+                plane
+                    .adapter
+                    .archive_container(&archive_child())
+                    .await
+                    .is_err(),
+                "{route} must not certify malformed absence"
+            );
+            assert!(plane.daemon.mutations().is_empty());
+        }
+    }
+    // A malformed post-mutation page is not a successful native readback.
+    let plane = Plane::fresh(archive_daemon());
+    plane
+        .daemon
+        .queue_answer_rpc("fetch_workspaces_request", local_archive_workspace());
+    plane
+        .daemon
+        .set_answer_rpc("fetch_workspaces_request", serde_json::json!({}));
+    plane
+        .daemon
+        .set_answer(&PaseoCommand::workspace_archive(WORKSPACE_ID), "{}");
+    assert!(
+        plane
+            .adapter
+            .archive_container(&archive_child())
+            .await
+            .is_err()
+    );
+    assert_eq!(plane.daemon.mutations().len(), 1);
+
+    let mut configured = config();
+    configured
+        .adopted_containers
+        .insert(node(NODE_A), external(WORKSPACE_ID));
+    let plane = Plane::build_with_config(
+        archive_daemon(),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        configured,
+    );
+    assert!(
+        plane
+            .adapter
+            .archive_container(&archive_child())
+            .await
+            .is_err()
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "an adopted child is preserved"
+    );
 }
 
 fn ecp_request(node_id: TopologyNodeId, parent: ContainerBinding) -> ContainerRequest {
@@ -7354,6 +8077,11 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
         .answering_rpc("fetch_agent_request", after);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+            workspace_native_id: external(WORKSPACE_ID),
+            canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+            provider_session_id: None,
+        }),
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -7411,6 +8139,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
         .answering_rpc("fetch_agents_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -7436,6 +8165,69 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
         .expect("a lost post-archive acknowledgement replays without a second effect");
     assert_eq!(replayed.identity, request.identity);
     assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
+}
+
+#[tokio::test]
+async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retirement() {
+    for case in [
+        "running",
+        "workspace",
+        "cwd",
+        "provider-conversation",
+        "read-only",
+        "missing-read",
+    ] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut before = v(AGENT);
+        before["agent"]["labels"] = serde_json::json!({"kontor.seat_binding_id": seat_binding_id.to_string(), "kontor.hosted_seat": "true"});
+        let mut request = HostedSeatRetireRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            requested_at: at("2026-09-05T12:00:00Z"),
+            placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+                provider_session_id: None,
+            }),
+        };
+        match case {
+            "running" => before["agent"]["status"] = serde_json::json!("running"),
+            "workspace" => before["agent"]["workspaceId"] = serde_json::json!("wks_other"),
+            "cwd" => before["agent"]["cwd"] = serde_json::json!("/somebody/else"),
+            "provider-conversation" => {
+                request
+                    .placement
+                    .as_mut()
+                    .expect("placement")
+                    .provider_session_id = Some(external("expected-prior-conversation"))
+            }
+            _ => {}
+        }
+        let plane = Plane::fresh(daemon().answering_rpc("fetch_agent_request", before));
+        if matches!(case, "read-only" | "missing-read") {
+            let mut identity = v(SERVER_INFO);
+            identity["permissions"] = if case == "read-only" {
+                serde_json::json!(["workspace.read"])
+            } else {
+                serde_json::json!(["workspace.write"])
+            };
+            plane.daemon.set_identity(&identity);
+        }
+        assert!(
+            plane.adapter.retire_hosted_seat(&request).await.is_err(),
+            "{case} refuses"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} does not archive"
+        );
+    }
 }
 
 #[tokio::test]
@@ -7526,6 +8318,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
         .answering_rpc("fetch_agent_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),

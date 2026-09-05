@@ -7223,11 +7223,32 @@ impl TopologyRepository for SqliteStore {
                 let parent = parent.transpose()?.ok_or(RepositoryError::NotFound {
                     subject: "topology parent",
                 })?;
+                // The unscoped project root outlives individual epic pins.
+                // Its direct epic boundary may span revisions of one lineage
+                // only when both immutable specifications permit that edge.
+                let historical_project_root = if parent.topology != request.topology
+                    && parent.lifecycle == TopologyLifecycle::Active
+                    && parent.topology.spec_id == request.topology.spec_id
+                    && parent.mini_project_id.is_none()
+                    && parent.parent_id.is_none()
+                    && request.mini_project_id.is_some()
+                    && request.task_id.is_none()
+                    && parent.kind == spec.root_kind
+                {
+                    let parent_spec =
+                        topology_spec_in(&transaction, request.project_id, &parent.topology)?;
+                    parent.kind == parent_spec.root_kind
+                        && parent_spec.node_kinds.iter().any(|kind| {
+                            kind.kind == request.kind && kind.allowed_parents.contains(&parent.kind)
+                        })
+                } else {
+                    false
+                };
                 if parent.lifecycle.is_terminal()
                     || parent
                         .mini_project_id
                         .is_some_and(|scope| Some(scope) != request.mini_project_id)
-                    || parent.topology != request.topology
+                    || (parent.topology != request.topology && !historical_project_root)
                     || !declared.allowed_parents.contains(&parent.kind)
                 {
                     return Err(conflict(
@@ -11219,6 +11240,249 @@ impl SqliteStore {
     }
 }
 
+fn append_gate_evaluation_in_transaction(
+    transaction: &Transaction<'_>,
+    request: &NewGateEvaluation,
+) -> RepositoryResult<u32> {
+    let (workflow, _) = load_workflow(transaction, request.project_id, request.workflow_id)?;
+    let gate = workflow
+        .snapshot
+        .definition
+        .gate(&request.gate)
+        .ok_or(RepositoryError::NotFound { subject: "gate" })?;
+
+    let authorized = if request.verdict == GateVerdict::Waived {
+        gate.waiver_allowed && gate.waiver_roles.contains(&request.evaluator_role)
+    } else {
+        gate.evaluator_roles.contains(&request.evaluator_role)
+    };
+    if !authorized {
+        return Err(DomainError::MissingAuthority {
+            subject: "gate evaluation",
+            rule: "the acting role is not an authority for this gate",
+        }
+        .into());
+    }
+    if request.verdict.requires_evidence() {
+        if request.evidence.is_empty() {
+            return Err(DomainError::MissingEvidence {
+                subject: "gate evaluation",
+                rule: "passing or waiving a gate requires evidence",
+            }
+            .into());
+        }
+        let provided: BTreeSet<&ArtifactKey> = request.evidence.iter().collect();
+        if !gate
+            .required_evidence
+            .iter()
+            .all(|required| provided.contains(required))
+        {
+            return Err(DomainError::MissingEvidence {
+                subject: "gate evaluation",
+                rule: "the evidence required by the pinned profile is incomplete",
+            }
+            .into());
+        }
+    }
+
+    let previous: Option<i64> = transaction
+        .query_row(
+            "SELECT MAX(sequence) FROM task_gate_evaluations
+             WHERE project_id = ?1 AND workflow_id = ?2 AND gate_key = ?3",
+            params![
+                request.project_id.to_string(),
+                request.workflow_id.to_string(),
+                request.gate.as_str()
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    let sequence = previous.unwrap_or(0) + 1;
+    let evidence = to_json(&request.evidence)?;
+    let session_run = request
+        .session_evidence
+        .as_ref()
+        .map(|citation| citation.agent_run_id.to_string());
+    let session_digest = request
+        .session_evidence
+        .as_ref()
+        .map(|citation| citation.digest.as_str().to_owned());
+    transaction
+        .execute(
+            "INSERT INTO task_gate_evaluations
+                 (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
+                  evaluator_account, evidence, recorded_at, agent_run_id, reviewer_principal,
+                  policy_evaluation_id, session_evidence_agent_run, session_evidence_digest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                request.project_id.to_string(),
+                request.workflow_id.to_string(),
+                request.gate.as_str(),
+                sequence,
+                request.verdict.as_str(),
+                request.evaluator_role.as_str(),
+                request.evaluator_account.to_string(),
+                evidence,
+                text(request.recorded_at),
+                request.agent_run_id.map(|run| run.to_string()),
+                request.reviewer_principal.as_ref().map(ExternalId::as_str),
+                request
+                    .policy_evaluation_id
+                    .map(|evaluation| evaluation.to_string()),
+                session_run,
+                session_digest,
+            ],
+        )
+        .map_err(backend)?;
+    u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
+        detail: "gate evaluation sequence exceeded its range".to_owned(),
+    })
+}
+
+fn parse_gate_record_result(
+    json: &str,
+    hash: &str,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<(TaskWorkflowId, u32)> {
+    let payload: serde_json::Value = stored_document(json, hash)?;
+    if receipt.kind != CommandKind::RecordGateVerdict
+        || payload["operation"] != "gate_record"
+        || payload["result"]["intent_hash"].as_str() != Some(receipt.intent.hash().as_str())
+    {
+        return Err(conflict(
+            "gate verdict receipt",
+            "the receipt has no exact verdict result bound to its intent",
+        ));
+    }
+    let workflow = payload["result"]["workflow_id"].as_str().ok_or_else(|| {
+        conflict(
+            "gate verdict receipt",
+            "the result has no exact workflow identity",
+        )
+    })?;
+    let sequence = payload["result"]["gate_sequence"]
+        .as_u64()
+        .and_then(|sequence| u32::try_from(sequence).ok())
+        .filter(|sequence| *sequence > 0)
+        .ok_or_else(|| {
+            conflict(
+                "gate verdict receipt",
+                "the result has no exact verdict sequence",
+            )
+        })?;
+    Ok((TaskWorkflowId::parse(workflow)?, sequence))
+}
+
+fn gate_record_result_in_transaction(
+    transaction: &Transaction<'_>,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<(TaskWorkflowId, u32)> {
+    let stored: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT payload, payload_hash FROM command_outbox
+         WHERE project_id = ?1 AND receipt_id = ?2",
+            params![receipt.project_id.to_string(), receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (json, hash) = stored.ok_or(RepositoryError::NotFound {
+        subject: "gate verdict result",
+    })?;
+    parse_gate_record_result(&json, &hash, receipt)
+}
+
+impl SqliteStore {
+    /// Append the verdict and its exact receipt result in one transaction.
+    pub fn append_gate_evaluation_with_intent(
+        &self,
+        request: &NewGateEvaluation,
+        expected_workflow_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<(u32, CommandReceipt)> {
+        let intent = envelope.peek(self.realm_id())?;
+        let transaction = self.begin()?;
+        let (workflow, _) = load_workflow(&transaction, request.project_id, request.workflow_id)?;
+        ensure_atomic_intent_matches(
+            intent,
+            request.project_id,
+            CommandKind::RecordGateVerdict,
+            &AggregateRef::Task {
+                task_id: workflow.task_id,
+            },
+            intent.target_revision,
+        )?;
+        if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
+            ensure_atomic_replay(&existing, intent)?;
+            let (recorded_workflow, sequence) =
+                gate_record_result_in_transaction(&transaction, &existing)?;
+            if recorded_workflow != request.workflow_id {
+                return Err(conflict(
+                    "gate verdict receipt",
+                    "the receipt belongs to another workflow",
+                ));
+            }
+            return Ok((sequence, existing));
+        }
+        if !workflow.active {
+            return Err(conflict(
+                "task workflow",
+                "a new verdict requires the active workflow",
+            ));
+        }
+        workflow
+            .revision
+            .expect("task workflow", expected_workflow_revision)?;
+        let task_revision: i64 = transaction
+            .query_row(
+                "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![request.project_id.to_string(), workflow.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        revision_of(task_revision)?.expect("task", intent.target_revision)?;
+        let sequence = append_gate_evaluation_in_transaction(&transaction, request)?;
+        let mut payload: serde_json::Value = from_json(intent.intent.json())?;
+        payload
+            .as_object_mut()
+            .ok_or_else(|| DomainError::invalid("gate verdict intent", "must be an object"))?
+            .insert(
+                "result".to_owned(),
+                serde_json::json!({
+                    "intent_hash": intent.intent.hash().as_str(),
+                    "workflow_id": request.workflow_id.to_string(),
+                    "gate_sequence": sequence,
+                }),
+            );
+        let mut recorded = intent.clone();
+        recorded.payload = CanonicalDocument::from_value(&payload)?;
+        if crate::commands::intent::insert_intent(&transaction, &recorded)?.is_some() {
+            return Err(conflict(
+                "command receipt",
+                "the idempotency key appeared during one atomic gate recording",
+            ));
+        }
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((sequence, receipt))
+    }
+
+    /// Read the original workflow and sequence without substituting later history.
+    pub fn gate_record_result(
+        &self,
+        receipt: &CommandReceipt,
+    ) -> RepositoryResult<(TaskWorkflowId, u32)> {
+        let transaction = self.begin()?;
+        gate_record_result_in_transaction(&transaction, receipt)
+    }
+}
+
 impl WorkflowRepository for SqliteStore {
     fn create_task_workflow(&self, request: &NewTaskWorkflow) -> RepositoryResult<TaskWorkflow> {
         request.snapshot.verify()?;
@@ -11362,102 +11626,9 @@ impl WorkflowRepository for SqliteStore {
 
     fn append_gate_evaluation(&self, request: &NewGateEvaluation) -> RepositoryResult<u32> {
         let transaction = self.begin()?;
-        let (workflow, _) = load_workflow(&transaction, request.project_id, request.workflow_id)?;
-        let gate = workflow
-            .snapshot
-            .definition
-            .gate(&request.gate)
-            .ok_or(RepositoryError::NotFound { subject: "gate" })?;
-
-        let authorized = if request.verdict == GateVerdict::Waived {
-            gate.waiver_allowed && gate.waiver_roles.contains(&request.evaluator_role)
-        } else {
-            gate.evaluator_roles.contains(&request.evaluator_role)
-        };
-        if !authorized {
-            return Err(DomainError::MissingAuthority {
-                subject: "gate evaluation",
-                rule: "the acting role is not an authority for this gate",
-            }
-            .into());
-        }
-        if request.verdict.requires_evidence() {
-            if request.evidence.is_empty() {
-                return Err(DomainError::MissingEvidence {
-                    subject: "gate evaluation",
-                    rule: "passing or waiving a gate requires evidence",
-                }
-                .into());
-            }
-            let provided: BTreeSet<&ArtifactKey> = request.evidence.iter().collect();
-            if !gate
-                .required_evidence
-                .iter()
-                .all(|required| provided.contains(required))
-            {
-                return Err(DomainError::MissingEvidence {
-                    subject: "gate evaluation",
-                    rule: "the evidence required by the pinned profile is incomplete",
-                }
-                .into());
-            }
-        }
-
-        let previous: Option<i64> = transaction
-            .query_row(
-                "SELECT MAX(sequence) FROM task_gate_evaluations
-                 WHERE project_id = ?1 AND workflow_id = ?2 AND gate_key = ?3",
-                params![
-                    request.project_id.to_string(),
-                    request.workflow_id.to_string(),
-                    request.gate.as_str()
-                ],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(backend)?
-            .flatten();
-        let sequence = previous.unwrap_or(0) + 1;
-        let evidence = to_json(&request.evidence)?;
-        let session_run = request
-            .session_evidence
-            .as_ref()
-            .map(|citation| citation.agent_run_id.to_string());
-        let session_digest = request
-            .session_evidence
-            .as_ref()
-            .map(|citation| citation.digest.as_str().to_owned());
-        transaction
-            .execute(
-                "INSERT INTO task_gate_evaluations
-                     (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
-                      evaluator_account, evidence, recorded_at, agent_run_id, reviewer_principal,
-                      policy_evaluation_id, session_evidence_agent_run, session_evidence_digest)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                params![
-                    request.project_id.to_string(),
-                    request.workflow_id.to_string(),
-                    request.gate.as_str(),
-                    sequence,
-                    request.verdict.as_str(),
-                    request.evaluator_role.as_str(),
-                    request.evaluator_account.to_string(),
-                    evidence,
-                    text(request.recorded_at),
-                    request.agent_run_id.map(|run| run.to_string()),
-                    request.reviewer_principal.as_ref().map(ExternalId::as_str),
-                    request
-                        .policy_evaluation_id
-                        .map(|evaluation| evaluation.to_string()),
-                    session_run,
-                    session_digest,
-                ],
-            )
-            .map_err(backend)?;
+        let sequence = append_gate_evaluation_in_transaction(&transaction, request)?;
         transaction.commit().map_err(backend)?;
-        u32::try_from(sequence).map_err(|_| RepositoryError::Backend {
-            detail: "gate evaluation sequence exceeded its range".to_owned(),
-        })
+        Ok(sequence)
     }
 
     fn gate_states(

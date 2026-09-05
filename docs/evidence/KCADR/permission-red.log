@@ -1,0 +1,33 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.89s
+     Running tests/contract.rs (target/debug/deps/contract-8d2dbf8a351e6ce1)
+
+running 2 tests
+test security_declared_read_only_daemon_permissions_expose_only_reads ... FAILED
+test security_declared_permissions_without_workspace_read_expose_nothing ... FAILED
+
+failures:
+
+---- security_declared_read_only_daemon_permissions_expose_only_reads stdout ----
+
+thread 'security_declared_read_only_daemon_permissions_expose_only_reads' (72199327) panicked at crates/kontor-runtime-paseo/tests/contract.rs:4074:5:
+assertion `left == right` failed
+  left: A
+ right: C
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- security_declared_permissions_without_workspace_read_expose_nothing stdout ----
+
+thread 'security_declared_permissions_without_workspace_read_expose_nothing' (72199326) panicked at crates/kontor-runtime-paseo/tests/contract.rs:4108:5:
+assertion `left == right` failed
+  left: A
+ right: C
+
+
+failures:
+    security_declared_permissions_without_workspace_read_expose_nothing
+    security_declared_read_only_daemon_permissions_expose_only_reads
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 182 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --test contract`

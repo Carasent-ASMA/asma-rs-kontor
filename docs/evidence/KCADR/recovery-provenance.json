@@ -1,0 +1,24 @@
+{
+  "recorded_at": "2026-09-04",
+  "source_checkout": "/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor",
+  "source_head": "e6da2708e455",
+  "source_file_sha256": {
+    "docs/RECOMMENDED-TEAMS-AND-SEATS.md": "6f57d97a8896a70829387cc105eed9baee5cce7955da9ae35fed21a83b39e1f5",
+    "ARCHITECTURE.md": "2eefb940a71dc75e327c122d015d1c0aed52749a52777f7b7039d760b9a3372b",
+    "README.md": "e7039f8b2b5bd5817bc93b701b40e1f471dc4ce316a3e7c2f6b66f7573a52b04",
+    "_docs/index.md": "33cd29dd6ab20916f3f1e9f0db7eea998b946c571587dd176521908df37fe7d3"
+  },
+  "baseline": "fd789a790a727a0d712933dcc6ca86c34695ad49",
+  "integrated_master": "ac7e788243050714d9722733cc6548d781e387d9",
+  "candidate": "4c51059e07a9517d57cb9bd2665dc537ff681a2c",
+  "disposition": "Narrow patches and useful paragraphs adapted and reviewed; no whole-checkout recovery. Existing source worktrees remain owned by EPIC SPECIAL NAMING.",
+  "excluded": [
+    "obsolete reservation migration",
+    "completion-recovery patch",
+    "succession",
+    "consultation recovery",
+    "naming migration",
+    "existing epic reconciliation",
+    "worktree cleanup"
+  ]
+}

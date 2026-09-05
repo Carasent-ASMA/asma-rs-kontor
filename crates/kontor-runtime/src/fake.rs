@@ -14,7 +14,7 @@
 //! new generation.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
@@ -289,6 +289,8 @@ pub enum AdapterCall {
     PrepareWorkspace(TeamRunId),
     /// A topology node's native container was prepared.
     PrepareContainer(TopologyNodeId),
+    /// A retired native child was archived.
+    ArchiveContainer(TopologyNodeId),
     /// A container's visible title was corrected.
     RetitleContainer(TopologyNodeId),
     /// A container's title correction was previewed, and nothing was written.
@@ -456,6 +458,62 @@ struct ScriptedSession {
     observed_at: Timestamp,
 }
 
+/// Coordinated test pause before a fake native effect, without an executor dependency.
+#[derive(Debug, Clone, Default)]
+pub struct FakeNativePause {
+    state: Arc<Mutex<FakeNativePauseState>>,
+}
+
+#[derive(Debug, Default)]
+struct FakeNativePauseState {
+    entered: bool,
+    released: bool,
+    entry_waker: Option<std::task::Waker>,
+    release_waker: Option<std::task::Waker>,
+}
+
+impl FakeNativePause {
+    /// Wait until the operation reaches the point immediately before its native effect.
+    pub async fn entered(&self) {
+        std::future::poll_fn(|context| {
+            let mut state = self.state.lock().expect("pause lock");
+            if state.entered {
+                std::task::Poll::Ready(())
+            } else {
+                state.entry_waker = Some(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    /// Allow the pending exact native effect to continue.
+    pub fn release(&self) {
+        let mut state = self.state.lock().expect("pause lock");
+        state.released = true;
+        if let Some(waker) = state.release_waker.take() {
+            waker.wake();
+        }
+    }
+
+    async fn pause(&self) {
+        std::future::poll_fn(|context| {
+            let mut state = self.state.lock().expect("pause lock");
+            state.entered = true;
+            if let Some(waker) = state.entry_waker.take() {
+                waker.wake();
+            }
+            if state.released {
+                std::task::Poll::Ready(())
+            } else {
+                state.release_waker = Some(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
 #[derive(Debug)]
 struct FakeState {
     /// Whether this runtime holds a plane-level container, and whether it has
@@ -510,6 +568,11 @@ struct FakeState {
     /// the container too would make "re-find it by its stored native id"
     /// untestable, and that path is the whole of the restart contract.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    container_parents: BTreeMap<TopologyNodeId, ExternalId>,
+    archived_containers: BTreeSet<TopologyNodeId>,
+    lose_archive_ack_once: BTreeSet<TopologyNodeId>,
+    lose_hosted_retire_ack_once: BTreeSet<SeatBindingId>,
+    pause_hosted_retire_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     consultation_runs: BTreeMap<SeatBindingId, ConsultationRunId>,
@@ -1001,6 +1064,11 @@ impl ScriptedFakeRuntime {
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
+                container_parents: BTreeMap::new(),
+                archived_containers: BTreeSet::new(),
+                lose_archive_ack_once: BTreeSet::new(),
+                lose_hosted_retire_ack_once: BTreeSet::new(),
+                pause_hosted_retire_once: None,
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
                 consultation_permissions: BTreeMap::new(),
@@ -1475,6 +1543,26 @@ impl ScriptedFakeRuntime {
         self.lock()
             .container_titles
             .insert(topology_node_id, title.to_owned());
+    }
+
+    /// Lose one acknowledgement after an exact native child archive commits.
+    pub fn lose_next_archive_ack(&self, topology_node_id: TopologyNodeId) {
+        self.lock().lose_archive_ack_once.insert(topology_node_id);
+    }
+
+    /// Pause the next hosted retirement immediately before its native effect.
+    #[must_use]
+    pub fn pause_next_hosted_retirement(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_hosted_retire_once = Some(pause.clone());
+        pause
+    }
+
+    /// Lose one acknowledgement after exact hosted native retirement has taken effect.
+    pub fn lose_next_hosted_retire_ack(&self, seat_binding_id: SeatBindingId) {
+        self.lock()
+            .lose_hosted_retire_ack_once
+            .insert(seat_binding_id);
     }
 
     /// Drop the next acknowledgement after this container's retitle has
@@ -2090,6 +2178,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .calls
             .push(AdapterCall::PrepareContainer(request.topology_node_id));
 
+        if state
+            .archived_containers
+            .contains(&request.topology_node_id)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the native child is archived",
+            });
+        }
         // Idempotent per *node*, and a contradiction is a contradiction rather
         // than a second container: the same node asked for at a different root,
         // or as a different shape, is not the retry it looks like.
@@ -2134,6 +2230,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .containers
             .insert(request.topology_node_id, snapshot.clone());
+        if let Some(parent) = &request.parent {
+            state
+                .container_parents
+                .insert(request.topology_node_id, parent.identity.native_id.clone());
+        }
         state.container_titles.insert(
             request.topology_node_id,
             request.display_name.as_str().to_owned(),
@@ -2179,6 +2280,52 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             changed: current != desired.as_str(),
             desired_title: desired,
             observed_title,
+        })
+    }
+
+    async fn archive_container(
+        &self,
+        request: &crate::container::ArchiveContainerRequest,
+    ) -> RuntimeResult<crate::container::ArchiveContainerOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        let bound =
+            state
+                .containers
+                .get(&request.topology_node_id)
+                .ok_or(RuntimeError::StaleBinding {
+                    rule: "the child binding is unknown",
+                })?;
+        if request.projection != ContainerProjection::NativeChild
+            || bound.binding.projection != ContainerProjection::NativeChild
+            || bound.binding.id != request.container_binding_id
+            || bound.binding.identity != request.identity
+            || bound.binding.root.as_ref() != Some(&request.canonical_cwd)
+            || state.container_parents.get(&request.topology_node_id)
+                != Some(&request.bound_project_native_id)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the archive request contradicts the native child binding",
+            });
+        }
+        let changed = state.archived_containers.insert(request.topology_node_id);
+        if changed {
+            state
+                .calls
+                .push(AdapterCall::ArchiveContainer(request.topology_node_id));
+        }
+        if state
+            .lose_archive_ack_once
+            .remove(&request.topology_node_id)
+        {
+            return Err(RuntimeError::Transport {
+                rule: "the native archive committed but its acknowledgement was lost",
+            });
+        }
+        Ok(crate::container::ArchiveContainerOutcome {
+            request: request.clone(),
+            changed,
+            observed_at: request.requested_at,
         })
     }
 
@@ -2777,6 +2924,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &HostedSeatRetireRequest,
     ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let pause = { self.lock().pause_hosted_retire_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         let mut state = self.lock();
         if let Some(held) = state.hosted_seats.get(&request.seat_binding_id) {
             if held.identity != request.identity {
@@ -2796,6 +2947,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .is_some_and(|held| held.identity != request.identity)
         {
             return Err(RuntimeError::CorrelationFailed);
+        }
+        if state
+            .lose_hosted_retire_ack_once
+            .remove(&request.seat_binding_id)
+        {
+            return Err(RuntimeError::Transport {
+                rule: "the native retirement acknowledgement was lost",
+            });
         }
         Ok(HostedSeatRetireOutcome {
             identity: request.identity.clone(),
@@ -3756,6 +3915,7 @@ mod retitle_seat_generation_tests {
         );
         runtime
             .retire_hosted_seat(&HostedSeatRetireRequest {
+                placement: None,
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
@@ -3778,6 +3938,7 @@ mod retitle_seat_generation_tests {
         );
         runtime
             .retire_hosted_seat(&HostedSeatRetireRequest {
+                placement: None,
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),

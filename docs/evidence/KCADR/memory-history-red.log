@@ -1,0 +1,66 @@
+   Compiling syn v2.0.119
+   Compiling memchr v2.8.3
+   Compiling getrandom v0.4.3
+   Compiling serde_json v1.0.151
+   Compiling synstructure v0.13.2
+   Compiling uuid v1.24.0
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerofrom v0.1.8
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling yoke v0.8.3
+   Compiling zerovec v0.11.8
+   Compiling tinystr v0.8.4
+   Compiling icu_locale_core v2.3.0
+   Compiling potential_utf v0.1.6
+   Compiling zerotrie v0.2.5
+   Compiling icu_provider v2.3.1
+   Compiling icu_collections v2.3.0
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-util v0.3.34
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling futures-channel v0.3.34
+   Compiling hyper v1.11.1
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling tracing v0.1.44
+   Compiling idna v1.1.0
+   Compiling nom v8.0.0
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling url v2.5.8
+   Compiling chrono v0.4.45
+   Compiling tower-http v0.6.11
+   Compiling hyper-rustls v0.27.9
+   Compiling iso8601 v0.6.5
+   Compiling nom-language v0.1.0
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
+   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling reqwest v0.13.4
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling icalendar v0.17.13
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+   Compiling tempfile v3.27.0
+   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.38s
+     Running unittests src/lib.rs (target/qualification/debug/deps/kontor_store-fadb9bdd90feb094)
+
+running 1 test
+
+thread 'memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart' (74953831) panicked at crates/kontor-store/src/memory.rs:984:14:
+a pending first proposal is inspectable: Sqlite(InvalidColumnType(9, "i.current_revision_id=r.id", Null))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart ... FAILED
+
+failures:
+
+failures:
+    memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 1.21s
+
+error: test failed, to rerun pass `-p kontor-store --lib`

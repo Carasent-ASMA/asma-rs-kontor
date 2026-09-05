@@ -1,0 +1,18 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.67s
+     Running unittests src/lib.rs (target/qualification/debug/deps/kontor_store-fadb9bdd90feb094)
+
+running 10 tests
+test memory::tests::ledger_conflicts_filters_rebuilds_and_freezes_context ... ok
+test memory::tests::proposal_never_enters_fts_before_approval ... ok
+test memory::tests::an_import_that_fails_while_recording_its_manifest_leaves_nothing_and_resumes ... ok
+test memory::tests::two_approvals_leave_exactly_one_current_revision ... ok
+test memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart ... ok
+test memory::tests::frozen_revision_hash_is_the_approved_stored_hash ... ok
+test memory::tests::purge_removes_payload_approval_and_index_but_keeps_receipts ... ok
+test memory::tests::reproposal_never_resets_the_aggregate_revision ... ok
+test memory::tests::cutover_is_attested_hashed_transactional_and_idempotent ... ok
+test memory::tests::concurrent_approvers_get_one_commit_and_one_typed_conflict ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 25.16s
+

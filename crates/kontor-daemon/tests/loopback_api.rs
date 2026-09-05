@@ -8266,22 +8266,27 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         .expect(1)
         .mount(&server)
         .await;
+    let task_readback = Arc::new(std::sync::Mutex::new(serde_json::json!({
+        "key": "ASMA-8050",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Task", "hierarchyLevel": 0},
+            "parent": {"key": "ASMA-8049"},
+            "summary": "Recover original Jira batch",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Fallback prose"}]
+            }]},
+            "labels": []
+        }
+    })));
+    let served_readback = Arc::clone(&task_readback);
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-8050"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "key": "ASMA-8050",
-            "fields": {
-                "project": {"key": "ASMA"},
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "parent": {"key": "ASMA-8049"},
-                "summary": "Recover original Jira batch",
-                "description": {"type":"doc","version":1,"content":[{
-                    "type":"paragraph","content":[{"type":"text","text":task_description}]
-                }]},
-                "labels": [task_marker]
-            }
-        })))
-        .expect(1)
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200)
+                .set_body_json(served_readback.lock().expect("readback lock").clone())
+        })
+        .expect(3)
         .mount(&server)
         .await;
 
@@ -8401,6 +8406,68 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         "preview_hash": preview.json()["preview_hash"],
         "expected_revision": 1
     });
+    let original_items = world.daemon.state().with_store(|store| {
+        store
+            .jira_materialization_items(project_id, &original_batch_id)
+            .expect("the original items read")
+    });
+    for (rule, repair) in [
+        (
+            "the Jira issue description differs from the pending creation intent",
+            "description",
+        ),
+        ("the Jira issue lacks the pending creation marker", "marker"),
+    ] {
+        let refused = Call::post(
+            format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+            &apply_body,
+        )
+        .signed_as(&world, "admin")
+        .with_key("recover-original-jira-batch")
+        .send(&world)
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(refused.json()["code"], "revision_conflict");
+        assert_eq!(refused.json()["rule"], rule);
+        assert_eq!(
+            refused.json()["action"],
+            "compare the exact Jira key, project, type, parent and pending creation metadata; repair the mismatch, then retry the same materialization key"
+        );
+        world.daemon.state().with_store(|store| {
+            let items = store
+                .jira_materialization_items(project_id, &original_batch_id)
+                .expect("the refused items read");
+            assert_eq!(
+                items.iter().map(|item| &item.id).collect::<Vec<_>>(),
+                original_items
+                    .iter()
+                    .map(|item| &item.id)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                items[1].confirmed_key.is_none(),
+                "refused task is not confirmed"
+            );
+            assert!(
+                store
+                    .confirmed_jira_task_key(project_id, task_id)
+                    .expect("binding read")
+                    .is_none()
+            );
+            assert!(
+                !store
+                    .asma_epic_is_active(project_id, epic_id)
+                    .expect("activation read")
+            );
+        });
+        let mut readback = task_readback.lock().expect("readback lock");
+        if repair == "description" {
+            readback["fields"]["description"]["content"][0]["content"][0]["text"] =
+                serde_json::json!(task_description);
+        } else {
+            readback["fields"]["labels"] = serde_json::json!([task_marker]);
+        }
+    }
     let applied = Call::post(
         format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
         &apply_body,
@@ -8447,6 +8514,15 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         "no replacement batch is created, including replay"
     );
     assert_eq!(recoveries, 2, "the exact recovery set is durable");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("Jira requests")
+            .iter()
+            .all(|request| request.method.as_str() == "GET"),
+        "link recovery never mutates Jira while refusing or retrying"
+    );
 }
 
 #[tokio::test]
@@ -9256,6 +9332,144 @@ async fn close_every_runtime_seat_without_turns(
         .await;
         assert_eq!(answer.status, 200, "seat {index}: {}", answer.body);
     }
+}
+
+/// A phase-completing verdict advances the workflow, but its receipt remains
+/// replayable against the revision that authorized the original operation.
+#[tokio::test]
+async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "gate-advance-replay").await;
+    settle_every_seat(&world, &seed, &runs, "gate-advance-replay-producer").await;
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    let workflow_before = active_workflow(&world, &seed);
+    let gate_spec = workflow_before
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the projected gate is frozen");
+    let request = serde_json::json!({
+        "expected_revision": revision,
+        "verdict": "passed",
+        "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+        "evaluator_account": seed.account,
+        "evidence": gate_spec.required_evidence.iter().map(|key| key.as_str()).collect::<Vec<_>>(),
+    });
+    let original = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(original.status, 200, "{}", original.body);
+    let workflow_after = active_workflow(&world, &seed);
+    assert!(workflow_after.revision.get() > revision);
+    assert_ne!(workflow_after.current_phase, workflow_before.current_phase);
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), original.json());
+
+    let stale = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-fresh-key")
+        .send(&world)
+        .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+    assert_eq!(
+        stale.json()["current_revision"],
+        workflow_after.revision.get()
+    );
+    let mut different = request.clone();
+    different["verdict"] = serde_json::json!("rejected");
+    let conflict = Call::post(&uri, &different)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.body);
+    assert_eq!(conflict.code(), "idempotency_conflict");
+
+    let mut later_request = request.clone();
+    later_request["expected_revision"] = serde_json::json!(workflow_after.revision.get());
+    later_request["verdict"] = serde_json::json!("rejected");
+    let later = Call::post(&uri, &later_request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-later-verdict")
+        .send(&world)
+        .await;
+    assert_eq!(later.status, 200, "{}", later.body);
+    assert_eq!(later.json()["verdict"], "rejected");
+    assert_eq!(later.json()["sequence"], 2);
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("gate-advance-replay-once")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json(),
+        original.json(),
+        "a later verdict cannot replace this receipt's result"
+    );
+
+    let operator = secret(&world, "operator");
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+    restarted.reconcile().await;
+    let replay = Call::post(&uri, &request)
+        .with_token(&operator)
+        .with_key("gate-advance-replay-once")
+        .send_to(&restarted.router())
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), original.json());
+    let evaluations = restarted
+        .state()
+        .with_store(|store| store.list_gate_evaluations(project, workflow_before.id))
+        .expect("durable verdict history reads");
+    assert_eq!(
+        evaluations.len(),
+        2,
+        "retries must append no duplicate verdict"
+    );
+    let preserved = restarted
+        .state()
+        .with_store(|store| {
+            store.get_active_task_workflow(project, TaskId::parse(&seed.task).expect("task id"))
+        })
+        .expect("workflow reads")
+        .expect("same workflow exists");
+    assert_eq!(preserved.id, workflow_before.id);
+    assert_eq!(preserved.revision, workflow_after.revision);
+    assert_eq!(preserved.current_phase, workflow_after.current_phase);
+    restarted.state().signals().stop();
 }
 
 /// A gate request cites evidence; it does not create that evidence.
@@ -10293,6 +10507,134 @@ async fn an_admin_installs_the_exact_shipped_workflow_revision_under_project_cas
         .await;
     assert_eq!(stale.status, 409, "{}", stale.body);
     assert_eq!(stale.code(), "revision_conflict");
+}
+
+#[tokio::test]
+async fn a_profile_workflow_install_retries_after_an_empty_epic_publishes_its_prerequisite() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "docs-workflow-prerequisite").await;
+    let project_uri = format!("/v1/projects/{}", seed.project);
+    let catalogue_uri = format!("{project_uri}/connectors/connector.jira/workflow-specs");
+    let install_uri = format!("{catalogue_uri}:install");
+    let catalogue = Call::get(&catalogue_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalogue.status, 200, "{}", catalogue.body);
+    let shipped = catalogue.json();
+    let docs = shipped
+        .as_array()
+        .expect("workflow catalogue")
+        .iter()
+        .find(|spec| spec["issue_type"] == "task" && spec["version"] == 3)
+        .expect("the exact docs workflow is shipped");
+    assert_eq!(docs["installed"], false);
+    let project = Call::get(&project_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = project.json()["revision"].as_u64().expect("revision");
+    let mut request = serde_json::json!({
+        "external_project": docs["external_project"],
+        "issue_type": docs["issue_type"],
+        "version": docs["version"],
+        "expected_revision": revision,
+    });
+    let refused = Call::post(&install_uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-install-after-admission")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert_eq!(
+        refused.json()["rule"],
+        "this external-workflow specification requires a work-profile revision not installed in this project"
+    );
+    let unchanged = Call::get(&project_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(unchanged.json()["revision"], revision);
+
+    // An empty reapply publishes the profile without adding a ready task or
+    // replacing the existing task's frozen workflow.
+    let task_uri = format!("{project_uri}/tasks/{}", seed.task);
+    let original_task = Call::get(&task_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(original_task.status, 200, "{}", original_task.body);
+    let body = serde_json::json!({
+        "expected_revision": revision,
+        "name": "Control epic",
+        "work_profile_category": "docs",
+        "runtime_family": "fake.runtime",
+        "tasks": [],
+    });
+    let admitted = Call::post(format!("{project_uri}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-prerequisite-admission")
+        .send(&world)
+        .await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    assert_eq!(admitted.json()["epic_id"], seed.epic);
+    assert_eq!(admitted.json()["tasks"], serde_json::json!([]));
+    let preserved_task = Call::get(&task_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(preserved_task.status, 200, "{}", preserved_task.body);
+    assert_eq!(
+        preserved_task.json()["value"],
+        original_task.json()["value"]
+    );
+    let project = Call::get(&project_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    request["expected_revision"] = project.json()["revision"].clone();
+    let installed = Call::post(&install_uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-install-after-admission")
+        .send(&world)
+        .await;
+    assert_eq!(installed.status, 200, "{}", installed.body);
+    assert_eq!(
+        installed.json()["spec"]["definition_hash"],
+        docs["definition_hash"]
+    );
+    assert_eq!(installed.json()["receipt"]["applied"], "created");
+    let replay = Call::post(&install_uri, &request)
+        .signed_as(&world, "admin")
+        .with_key("docs-workflow-install-after-admission")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        installed.json()["receipt"]["receipt_id"]
+    );
+    let readback = Call::get(&catalogue_uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert!(
+        readback
+            .json()
+            .as_array()
+            .expect("catalogue")
+            .iter()
+            .any(|spec| {
+                spec["issue_type"] == "task"
+                    && spec["version"] == 3
+                    && spec["definition_hash"] == docs["definition_hash"]
+                    && spec["installed"] == true
+            })
+    );
 }
 
 #[tokio::test]
@@ -24708,6 +25050,383 @@ async fn ensuring_a_control_plane_creates_the_chain_the_specification_declares()
     );
 }
 
+/// A crash may leave the immutable epic pins committed before any epic nodes.
+/// Retrying after the project default changes must finish that same admission.
+#[tokio::test]
+async fn partial_epic_admission_reuses_its_frozen_definition_after_default_changes() {
+    let composed = compose_realm("/tmp/kontor-partial-epic-pin").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let original_epic = MiniProjectId::parse(&composed.epic).expect("original epic");
+    let partial_epic = MiniProjectId::generate();
+    let frozen = world.daemon.state().with_store(|store| {
+        store
+            .create_mini_project(&NewMiniProject {
+                id: partial_epic,
+                project_id: project,
+                name: name("Interrupted admission"),
+                created_at: kontor_api::now(),
+            })
+            .expect("the epic graph committed before admission");
+        let mut topology = store
+            .get_mini_project_topology(project, original_epic)
+            .expect("topology reads")
+            .expect("original topology pin");
+        topology.mini_project_id = partial_epic;
+        store
+            .pin_mini_project_topology(&topology)
+            .expect("partial topology pin");
+        let mut definition = store
+            .get_mini_project_team_definition(project, original_epic)
+            .expect("definition reads")
+            .expect("original definition pin");
+        definition.mini_project_id = partial_epic;
+        store
+            .pin_mini_project_team_definition(&definition)
+            .expect("partial definition pin");
+        assert!(
+            store
+                .list_topology_nodes(project, Some(partial_epic))
+                .expect("nodes read")
+                .is_empty()
+        );
+        definition
+    });
+    register_test_delivery_slots(
+        world,
+        &composed.project,
+        &[("partial-admission-reviewer", "AUD")],
+    );
+    let selected = world.daemon.state().with_store(|store| {
+        store
+            .get_project_team_definition_default(project)
+            .expect("default reads")
+            .expect("selected default")
+    });
+    assert_ne!(
+        selected.definition, frozen.definition,
+        "the next epic will use the newer default"
+    );
+    let body = serde_json::json!({
+        "target": {"scope": "epic_control", "epic_id": partial_epic},
+        "expected_revision": composed.project_revision,
+    });
+    let uri = format!("/v1/projects/{project}/topology:ensure");
+    let first = Call::post(&uri, &body)
+        .signed_as(world, "operator")
+        .with_key("partial-epic-pin-resume")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let nodes = world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .get_mini_project_team_definition(project, partial_epic)
+                .expect("pin reads")
+                .expect("pin retained"),
+            frozen
+        );
+        store
+            .list_topology_nodes(project, Some(partial_epic))
+            .expect("nodes read")
+    });
+    assert_eq!(nodes.len(), 2, "exactly one ESW and ECP are created");
+    let retry = Call::post(&uri, &body)
+        .signed_as(world, "operator")
+        .with_key("partial-epic-pin-resume-again")
+        .send(world)
+        .await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .list_topology_nodes(project, Some(partial_epic))
+                .expect("nodes read"),
+            nodes,
+            "recovery does not replace nodes or pins"
+        );
+        assert_eq!(
+            store
+                .get_project_team_definition_default(project)
+                .expect("default reads")
+                .expect("default retained"),
+            selected
+        );
+    });
+}
+
+#[tokio::test]
+async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledgement() {
+    let composed = compose_realm("/tmp/kontor-native-child-cleanup").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let epic = MiniProjectId::parse(&composed.epic).expect("epic");
+    let materialized = Call::post(format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({"target": {"scope": "epic_control", "epic_id": epic}, "expected_revision": composed.project_revision}))
+        .signed_as(world, "operator").with_key("cleanup-materialize").send(world).await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let hosted_launch = Call::post(format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1, "routes": [{"role_code": "LSA", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}}]}))
+        .signed_as(world, "admin").with_key("cleanup-hosted-launch").send(world).await;
+    assert_eq!(hosted_launch.status, 200, "{}", hosted_launch.body);
+    let node = world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project, Some(epic))
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ECP")
+            .expect("child")
+    });
+    let binding = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node_container(project, node.id)
+            .expect("binding")
+            .expect("native child")
+    });
+    let archive_uri = format!("/v1/projects/{project}/topology/nodes/{}/archive", node.id);
+    let early = Call::post(
+        &archive_uri,
+        &serde_json::json!({"expected_revision": node.revision, "reason": "still active"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cleanup-active-refusal")
+    .send(world)
+    .await;
+    assert_eq!(early.status, 409, "{}", early.body);
+    assert!(
+        !world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::ArchiveContainer(_)))
+    );
+    let seats = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project, node.id).expect("seats"));
+    let projected = Call::get(format!("/v1/projects/{project}/topology:inspect"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projected.status, 200, "{}", projected.body);
+    let projected_child = projected.json()["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|candidate| candidate["topology_node_id"] == node.id.to_string())
+        .expect("the exact child")
+        .clone();
+    assert_eq!(
+        projected_child["revision"],
+        serde_json::json!(node.revision)
+    );
+    let mut native_retired = 0;
+    for seat in seats {
+        let hosted = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(project, seat.id)
+                .expect("hosted read")
+        });
+        let retire_uri = format!("/v1/projects/{project}/seat-bindings/{}/retire", seat.id);
+        let projected_seat = projected_child["seats"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .find(|candidate| candidate["seat_binding_id"] == seat.id.to_string())
+            .expect("the exact seat");
+        assert_eq!(projected_seat["revision"], serde_json::json!(seat.revision));
+        let retire_body = serde_json::json!({"expected_revision": projected_seat["revision"], "reason": "retire disposable role"});
+        let key = format!("cleanup-seat-{}", seat.id);
+        if hosted.is_some() {
+            native_retired += 1;
+            world.fake.lose_next_hosted_retire_ack(seat.id);
+            let pause = world.fake.pause_next_hosted_retirement();
+            let retiring = Call::post(&retire_uri, &retire_body)
+                .signed_as(world, "operator")
+                .with_key(&key)
+                .send(world);
+            let contenders = async {
+                pause.entered().await;
+                let message = Call::post(
+                    format!("/v1/projects/{project}/seat-bindings/{}/messages", seat.id),
+                    &serde_json::json!({"body": "must not start during retirement"}),
+                )
+                .signed_as(world, "operator")
+                .with_key(kontor_runtime::request::MessageId::generate().to_string())
+                .send(world)
+                .await;
+                let pin = world.daemon.state().with_store(|store| {
+                    store
+                        .get_mini_project_team_definition(project, epic)
+                        .expect("pin")
+                        .expect("frozen")
+                });
+                let migration = Call::post(format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+                    &serde_json::json!({"upgrade": {"target_definition": {"id": pin.definition.definition_id, "version": pin.definition.version}, "legacy_topics": {}, "expected_revision": composed.project_revision}, "preview_hash": "0".repeat(64)}))
+                    .signed_as(world, "admin").with_key("cleanup-concurrent-migration").send(world).await;
+                pause.release();
+                assert_eq!(message.status, 409, "{}", message.body);
+                assert!(
+                    message.body.contains("native topology cleanup"),
+                    "{}",
+                    message.body
+                );
+                assert_eq!(migration.status, 409, "{}", migration.body);
+                assert!(
+                    migration
+                        .body
+                        .contains("native topology work is in progress"),
+                    "{}",
+                    migration.body
+                );
+                assert!(!world.fake.calls().iter().any(
+                    |call| matches!(call, AdapterCall::MessageHostedSeat(id) if *id == seat.id)
+                ));
+            };
+            let (uncertain, ()) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                tokio::join!(retiring, contenders)
+            })
+            .await
+            .expect("coordinated cleanup and refusals finish");
+            assert_ne!(
+                uncertain.status, 200,
+                "native uncertainty must preserve the logical role"
+            );
+            assert_eq!(
+                world
+                    .daemon
+                    .state()
+                    .with_store(|store| store
+                        .get_seat_binding(project, seat.id)
+                        .expect("seat")
+                        .expect("retained"))
+                    .lifecycle,
+                TopologyLifecycle::Active
+            );
+        }
+        let retired = Call::post(&retire_uri, &retire_body)
+            .signed_as(world, "operator")
+            .with_key(&key)
+            .send(world)
+            .await;
+        assert_eq!(retired.status, 200, "{}", retired.body);
+        let replay = Call::post(&retire_uri, &retire_body)
+            .signed_as(world, "operator")
+            .with_key(&key)
+            .send(world)
+            .await;
+        assert_eq!(replay.status, 200, "{}", replay.body);
+        assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+        assert_eq!(
+            replay.json()["receipt"]["receipt_id"],
+            retired.json()["receipt"]["receipt_id"]
+        );
+        assert_eq!(
+            world.daemon.state().with_store(|store| store
+                .get_hosted_topology_seat(project, seat.id)
+                .expect("history retained")),
+            hosted
+        );
+    }
+    assert_eq!(
+        native_retired, 1,
+        "one real hosted LSA was retired under its original binding"
+    );
+    let retired = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{}/retire", node.id),
+        &serde_json::json!({"expected_revision": projected_child["revision"], "reason": "test work finished"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("cleanup-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let retired_node = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node(project, node.id)
+            .expect("node")
+            .expect("retired")
+    });
+    assert_eq!(retired_node.lifecycle, TopologyLifecycle::Retired);
+    let retired_projection = retired.json()["projection"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|candidate| candidate["topology_node_id"] == node.id.to_string())
+        .expect("retired child")
+        .clone();
+    assert_eq!(
+        retired_projection["revision"],
+        serde_json::json!(retired_node.revision)
+    );
+    let body = serde_json::json!({"expected_revision": retired_projection["revision"], "reason": "remove disposable native child"});
+    world.fake.lose_next_archive_ack(node.id);
+    let uncertain = Call::post(&archive_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("cleanup-archive")
+        .send(world)
+        .await;
+    assert_ne!(
+        uncertain.status, 200,
+        "an unconfirmed native effect must not close logical cleanup"
+    );
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .get_topology_node(project, node.id)
+                .expect("node")
+                .expect("retained"))
+            .lifecycle,
+        TopologyLifecycle::Retired
+    );
+    let retried = Call::post(&archive_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("cleanup-archive")
+        .send(world)
+        .await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    let replayed = Call::post(&archive_uri, &body)
+        .signed_as(world, "operator")
+        .with_key("cleanup-archive")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        retried.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .get_topology_node(project, node.id)
+                .expect("node")
+                .expect("history retained")
+                .lifecycle,
+            TopologyLifecycle::Archived
+        );
+        assert_eq!(
+            store
+                .get_topology_node_container(project, node.id)
+                .expect("binding")
+                .expect("binding retained"),
+            binding
+        );
+    });
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::ArchiveContainer(id) if *id == node.id))
+            .count(),
+        1,
+        "retry proves prior native absence instead of archiving twice"
+    );
+}
+
 /// A replayed key answers from what is durable, and a stale revision writes
 /// nothing.
 #[tokio::test]
@@ -35809,7 +36528,36 @@ async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
             "the Claude account alias advertises its governed default: {}",
             catalog.body
         );
+        assert!(
+            body["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["provider"] == alias && model["id"] == "claude-fable-5-1"),
+            "the Claude account alias advertises Fable 5.1: {}",
+            catalog.body
+        );
     }
+    assert!(
+        body["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["provider"] == "claude"
+                && model["id"] == "claude-fable-5-1"
+                && model["label"] == "Claude Fable 5.1"),
+        "the Claude catalog advertises Fable 5.1: {}",
+        catalog.body
+    );
+    assert!(
+        !body["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["id"] == "claude-fable-5"),
+        "the previous Fable release is removed from active routing: {}",
+        catalog.body
+    );
     assert!(providers.contains(&"opencode"), "{}", catalog.body);
     assert!(
         body["models"]

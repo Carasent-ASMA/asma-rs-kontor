@@ -1,8 +1,9 @@
 # ASMA Kontor Architecture
 
 > **Status:** Current pre-1.0 repository contract. Synchronized with the
-> 2026-09-04 candidate tree; KON-OP-21 succession remains locally verified,
-> not yet independently audited or live-runtime verified.
+> released source snapshot `082b63ad` (2026-09-05). KON-OP-21 is merged through
+> PR #170 (`080e2db3`); independent/live qualification and realm enablement
+> require separate receipts. See the [implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md).
 >
 > **Scope:** Governing principles, authority boundaries, consistency model,
 > technology choices and extension rules for `asma-rs-kontor`.
@@ -50,6 +51,32 @@ Beyond those, it exists because execution and control have different lifecycles:
 Putting both responsibilities into every runtime would duplicate authority and
 make cross-runtime recovery impossible to reason about.
 
+### Thin authority, not a small product
+
+"Thin" describes the authority boundary. It does not mean few lines of code,
+few capabilities or no user interface.
+
+Kontor reuses mature systems for the facts they already own:
+
+- Jira owns business workflow;
+- GitHub owns repositories, pull requests and releases;
+- Paseo or another selected runtime owns native sessions, transcripts, tools,
+  permissions and provider authentication.
+
+Kontor owns what none of them owns alone: cross-system orchestration,
+synchronization, dependency execution, admission, policy, evidence, derived safe
+state, completion and operator attention. It integrates through supported
+contracts, projects native facts, and embeds or deep-links to native detail
+instead of recreating a Jira editor, source host, terminal or transcript renderer.
+
+A narrow capability may move into Kontor when retaining or adopting an entire
+external product for that capability would create greater lifetime dependency,
+synchronization and split-authority cost. That decision must state the strong
+reason, preserve migration evidence and finish with one writer. AgentsRoom
+backlog and memory are the existing example: valid bootstrap sources, followed
+by attested per-project/per-subject cutover and legacy read-only state — never a
+permanent half-and-half authority.
+
 ## System context
 
 ```text
@@ -87,6 +114,7 @@ store.
 | Native process, session, transcript, tools and provider authentication | Selected runtime |
 | Provider capacity, cooldown and quota headroom | Kontor's native provider connector |
 | External ticket workflow | Jira, through Kontor's native `kontor-jira` connector |
+| Repositories, pull requests and releases | GitHub |
 | A project's backlog or memory before its cutover attestation | AgentsRoom, per `(project, subject)` |
 
 The core rule is **one writer per fact**. Kontor uses supported adapter or API
@@ -112,6 +140,25 @@ Kontor keeps three facts instead of one optimistic status:
 
 `stale`, `diverged`, `runtime_unavailable`, `orphaned` and `lost_contact` are
 non-terminal. Timeouts and closed streams do not become success or failure.
+
+### Operator surface contract
+
+Kontor requires a rich mission-control surface because the joined, derived truth
+does not exist in Jira, GitHub or Paseo. The operator must be able to understand,
+without reconstructing the project by hand:
+
+- the overall work picture and delivery state;
+- the dependency and execution graph, including what can run next;
+- what is running, waiting, blocked, failed, stale or orphaned;
+- which prepared decisions need the operator now, and the consequence of no
+  action;
+- whether the work is merely green or independently verified and closed out.
+
+The UI is a projection over `/v1`, never another writer or scheduler. It may
+embed or deep-link native Jira, GitHub and runtime views for their detail. It
+must not copy their general-purpose products. Until the joined graph, attention
+inbox and delivery truth are available in one coherent view, the operator
+surface is incomplete even if its individual pages work.
 
 ### Intent before effects
 
@@ -224,11 +271,11 @@ honours `Admit`. The delivery launch boundary still has to return a model rung,
 however, so it currently drops the reset/escalation payload from `Wait` and
 `NeedsHuman` and preserves the adapter's typed provider-outage refusal path.
 Automatic pre-launch parking until the computed reset is not shipped. The
-current candidate tree separately implements mid-run quota detection, durable
+released source snapshot separately implements mid-run quota detection, durable
 redacted handoff, successor placement and resident bounded reconciliation. It
 does so only under explicit schema-v2 supervision enablement; schema v1 and an
 absent or disabled policy remain inert. Those KON-OP-21 paths have local tests
-but are not claimed as merged, deployed or live-runtime verified here.
+and are merged through PR #170 (`080e2db3`, 2026-09-05). Deployment, live-runtime verification and realm enablement are separate receipt-backed stages.
 
 The calendar dimension is implemented in `kontor-calendar` and is reached by no
 route and no tool, so every project currently resolves to `unrestricted`. That
@@ -276,6 +323,17 @@ machine over observed evidence: no runtime, no clock, no filesystem, no external
 command. `NeedsHuman` is a real terminal reached by exhausted rounds, missing
 authority, unresolved disagreement or incomplete evidence — not a status an agent
 sets to make progress.
+
+Human interruption is the last safe step, not the first recovery action. Kontor
+first performs deterministic inspection and policy-permitted automatic recovery,
+including an eligible account, model or existing seat; then bounded Advisor and,
+for genuinely cross-cutting ambiguity, Committee consultation; then bounded
+evidence-backed remediation. If neither consultation establishes a safe,
+authorized path, the work reaches `NeedsHuman`. A decision inherently reserved
+to human authority goes directly there because an Advisor or Committee cannot
+manufacture authority. The escalation is one prepared decision brief containing
+the evidence, attempted paths, exact decision, options and no-action consequence
+rather than repeated raw "blocked" notifications.
 
 Three rules learned in the field and now binding:
 
@@ -407,6 +465,7 @@ The workspace is split by authority rather than by technical layer alone:
 
 - implementing an LLM, coding harness, terminal multiplexer or provider login;
 - replacing Paseo, Agent Orchestrator, Codex, AgentsRoom or Jira;
+- replacing GitHub or recreating Jira, GitHub or runtime general-purpose UI;
 - storing a duplicate native transcript/token stream;
 - remote bind, multi-host workers, multi-user tenancy or realm federation;
 - automatic task decomposition with model-written scheduler state;
@@ -420,6 +479,7 @@ baseline and active epic plan are maintained in the parent polyrepo:
 - [Kontor governing principles](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality in full, with the fourteen principles and their honest gaps
 - [Kontor control-plane architecture](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md)
 - [Kontor Operational MVP plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md)
+- [Kontor mission-control and attention plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-08-18-17-17-plan-kontor-operator-surface-and-attention.md)
 
 Those documents govern ASMA-specific rollout. This file governs the public
 repository boundary and must stay readable without the parent checkout.
