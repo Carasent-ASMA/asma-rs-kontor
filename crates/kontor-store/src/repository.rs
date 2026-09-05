@@ -7241,11 +7241,32 @@ impl TopologyRepository for SqliteStore {
                 let parent = parent.transpose()?.ok_or(RepositoryError::NotFound {
                     subject: "topology parent",
                 })?;
+                // The unscoped project root outlives individual epic pins.
+                // Its direct epic boundary may span revisions of one lineage
+                // only when both immutable specifications permit that edge.
+                let historical_project_root = if parent.topology != request.topology
+                    && parent.lifecycle == TopologyLifecycle::Active
+                    && parent.topology.spec_id == request.topology.spec_id
+                    && parent.mini_project_id.is_none()
+                    && parent.parent_id.is_none()
+                    && request.mini_project_id.is_some()
+                    && request.task_id.is_none()
+                    && parent.kind == spec.root_kind
+                {
+                    let parent_spec =
+                        topology_spec_in(&transaction, request.project_id, &parent.topology)?;
+                    parent.kind == parent_spec.root_kind
+                        && parent_spec.node_kinds.iter().any(|kind| {
+                            kind.kind == request.kind && kind.allowed_parents.contains(&parent.kind)
+                        })
+                } else {
+                    false
+                };
                 if parent.lifecycle.is_terminal()
                     || parent
                         .mini_project_id
                         .is_some_and(|scope| Some(scope) != request.mini_project_id)
-                    || parent.topology != request.topology
+                    || (parent.topology != request.topology && !historical_project_root)
                     || !declared.allowed_parents.contains(&parent.kind)
                 {
                     return Err(conflict(

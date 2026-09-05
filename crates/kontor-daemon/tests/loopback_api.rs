@@ -24209,6 +24209,111 @@ async fn ensuring_a_control_plane_creates_the_chain_the_specification_declares()
     );
 }
 
+/// A crash may leave the immutable epic pins committed before any epic nodes.
+/// Retrying after the project default changes must finish that same admission.
+#[tokio::test]
+async fn partial_epic_admission_reuses_its_frozen_definition_after_default_changes() {
+    let composed = compose_realm("/tmp/kontor-partial-epic-pin").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let original_epic = MiniProjectId::parse(&composed.epic).expect("original epic");
+    let partial_epic = MiniProjectId::generate();
+    let frozen = world.daemon.state().with_store(|store| {
+        store
+            .create_mini_project(&NewMiniProject {
+                id: partial_epic,
+                project_id: project,
+                name: name("Interrupted admission"),
+                created_at: kontor_api::now(),
+            })
+            .expect("the epic graph committed before admission");
+        let mut topology = store
+            .get_mini_project_topology(project, original_epic)
+            .expect("topology reads")
+            .expect("original topology pin");
+        topology.mini_project_id = partial_epic;
+        store
+            .pin_mini_project_topology(&topology)
+            .expect("partial topology pin");
+        let mut definition = store
+            .get_mini_project_team_definition(project, original_epic)
+            .expect("definition reads")
+            .expect("original definition pin");
+        definition.mini_project_id = partial_epic;
+        store
+            .pin_mini_project_team_definition(&definition)
+            .expect("partial definition pin");
+        assert!(
+            store
+                .list_topology_nodes(project, Some(partial_epic))
+                .expect("nodes read")
+                .is_empty()
+        );
+        definition
+    });
+    register_test_delivery_slots(
+        world,
+        &composed.project,
+        &[("partial-admission-reviewer", "AUD")],
+    );
+    let selected = world.daemon.state().with_store(|store| {
+        store
+            .get_project_team_definition_default(project)
+            .expect("default reads")
+            .expect("selected default")
+    });
+    assert_ne!(
+        selected.definition, frozen.definition,
+        "the next epic will use the newer default"
+    );
+    let body = serde_json::json!({
+        "target": {"scope": "epic_control", "epic_id": partial_epic},
+        "expected_revision": composed.project_revision,
+    });
+    let uri = format!("/v1/projects/{project}/topology:ensure");
+    let first = Call::post(&uri, &body)
+        .signed_as(world, "operator")
+        .with_key("partial-epic-pin-resume")
+        .send(world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let nodes = world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .get_mini_project_team_definition(project, partial_epic)
+                .expect("pin reads")
+                .expect("pin retained"),
+            frozen
+        );
+        store
+            .list_topology_nodes(project, Some(partial_epic))
+            .expect("nodes read")
+    });
+    assert_eq!(nodes.len(), 2, "exactly one ESW and ECP are created");
+    let retry = Call::post(&uri, &body)
+        .signed_as(world, "operator")
+        .with_key("partial-epic-pin-resume-again")
+        .send(world)
+        .await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .list_topology_nodes(project, Some(partial_epic))
+                .expect("nodes read"),
+            nodes,
+            "recovery does not replace nodes or pins"
+        );
+        assert_eq!(
+            store
+                .get_project_team_definition_default(project)
+                .expect("default reads")
+                .expect("default retained"),
+            selected
+        );
+    });
+}
+
 /// A replayed key answers from what is durable, and a stale revision writes
 /// nothing.
 #[tokio::test]

@@ -1,0 +1,16 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.15s
+     Running tests/operational_topology.rs (target/debug/deps/operational_topology-2fa9316bbb487eec)
+
+running 8 tests
+test an_unattributed_override_is_refused_by_the_schema ... ok
+test publishing_refuses_a_class_nobody_chose ... ok
+test a_published_classification_cannot_be_revised_after_the_fact ... ok
+test repinning_an_epic_migrates_compatible_nodes_without_changing_their_identities_or_revisions ... ok
+test operational_state_survives_restart_and_typed_export ... ok
+test a_human_override_is_stored_whole_and_read_back ... ok
+test a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes ... ok
+test a_new_epic_can_share_its_lineages_historical_project_root ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.97s
+

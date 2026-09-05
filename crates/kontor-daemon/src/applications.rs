@@ -6237,7 +6237,9 @@ impl Services {
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?;
         self.pin_epic_topology(project_id, epic_id, &topology)?;
-        if scoped.is_empty() {
+        // Admission can commit its immutable pin before creating any nodes.
+        // A retry must retain that pin even when the project default advanced.
+        if scoped.is_empty() && self.pinned_team_definition(project_id, epic_id)?.is_none() {
             let (definition, _) = self.project_team_definition(project_id)?;
             self.pin_epic_team_definition(project_id, epic_id, &definition)?;
         }
