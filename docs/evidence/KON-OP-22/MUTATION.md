@@ -90,3 +90,25 @@ the disarm call made the same test pass. This kills the failure mode that would
 make kickoff appear held while leaving its ready tasks admissible. No mutation
 remains in the tree; the full receipt and scheduler proof is in
 [ATOMIC-KICKOFF-HOLD.md](ATOMIC-KICKOFF-HOLD.md).
+
+## 2026-09-05 — terminal legacy TeamRun naming-census mutation
+
+The live Team Definition v2 apply safely refused with `revision_conflict`
+before changing any runtime title. Read-only diagnosis found nine bound child
+runs from succeeded OP-01 and OP-02 TeamRuns. Those teams closed before
+SeatBindings existed, so their child lifecycle projections remained
+nonterminal even though their immutable parent TeamRuns were terminal.
+
+The mutant is the original census predicate: omit the parent TeamRun terminal
+lifecycle filter and treat every seatless, bound, nonterminal child run as a
+live migration subject. With that predicate,
+`a_terminal_team_run_makes_legacy_seatless_bound_sessions_history` failed with
+the same `Conflict` as the live apply. Restoring the predicate that excludes
+terminal parent TeamRuns made that regression pass.
+
+The counter-proof
+`a_live_delivery_session_with_no_seat_at_its_slot_fails_closed` also passes, so
+the correction does not weaken refusal for a genuinely live team. The complete
+`team_definition_migration_completeness` suite passes all 14 tests, and
+`cargo clippy -p kontor-store --all-targets -- -D warnings` passes. No mutation
+remains in the tree.

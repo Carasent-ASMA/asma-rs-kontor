@@ -318,6 +318,33 @@ authority.
 - Owner/status: closed. The resumed migration then exposed a separate archived
   Advisor compatibility condition addressed by the regression below.
 
+## 2026-09-05 — terminal legacy teams were misclassified as live naming subjects
+
+- Intended Kontor operation: apply preview
+  `2919a00526776b78e71bb7301722e7686073e176b3dde2ef7de7ad732ca794cb`
+  for all 17 identity-preserving Team Definition v2 targets under project
+  revision 6. Preview proved the exact desired names and reported 16 native
+  title changes.
+- Failure class: `revision_conflict`. Apply refused because nine bound child
+  runs from the already-succeeded OP-01 and OP-02 TeamRuns predate
+  SeatBindings. Their child lifecycle projections remained nonterminal, so the
+  naming census incorrectly demanded one active seat for each historical run.
+- Containment: replaying the same idempotency key returned the same refusal;
+  no runtime title, Team Definition pin or project revision changed. Diagnosis
+  used only Kontor logs and read-only SQLite queries. No direct database write,
+  Jira mutation or Paseo fallback occurred.
+- Correction: the live delivery census now treats the terminal parent TeamRun
+  as closure authority. Seatless legacy children of `succeeded`, `failed`,
+  `cancelled` or `parked` teams are history; a seatless child of a nonterminal
+  team still fails closed. The new regression first failed with the same
+  conflict under the old predicate, then passed with the correction. The
+  existing live-seatless refusal and all 14 migration-completeness tests also
+  pass, together with store all-target Clippy with warnings denied.
+- Resume checkpoint: promote the correction through commit, PR, merge and the
+  same Kontor runtime fleet; then obtain a fresh preview, apply it through
+  Kontor and verify exact native identity/name readback. Owner/status: open
+  until that original Kontor operation completes.
+
 ## 2026-09-05 — archived Advisor exact fetch was misclassified as live drift
 
 - Intended Kontor operation: preflight the remaining ASW seat while preserving

@@ -18225,8 +18225,11 @@ impl TeamDefinitionRepository for SqliteStore {
                 ));
             }
         }
-        // Every live delivery session on active (or missing) task topology must
-        // resolve to exactly one active seat at its slot. Zero is the case
+        // Every delivery session on a nonterminal TeamRun and active (or
+        // missing) task topology must resolve to exactly one active seat at its
+        // slot. A terminal TeamRun is immutable closure authority, so legacy
+        // child sessions that predate SeatBindings are history even when their
+        // own lifecycle projection never reached a terminal value. Zero is the case
         // observed live — bound scope/implement/verify/audit runs whose active
         // TSW carries no seat rows at all — and more than one is corrupt. Both
         // are refused: excluding such a session silently is precisely the skip
@@ -18272,6 +18275,7 @@ impl TeamDefinitionRepository for SqliteStore {
                         AND node.project_id = seat.project_id
                       WHERE binding.project_id = ?1
                         AND task.mini_project_id = ?2
+                        AND team.lifecycle NOT IN ('succeeded', 'failed', 'cancelled', 'parked')
                         AND run.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')
                         AND (
                             task_node.id IS NOT NULL
