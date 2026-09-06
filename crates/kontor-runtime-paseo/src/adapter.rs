@@ -2552,7 +2552,6 @@ impl PaseoAdapter {
         declared: &RuntimeCapabilities,
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
-        let _ = declared;
         if let Some(adopted) = self
             .config
             .adopted_containers
@@ -2585,6 +2584,14 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "a native_root requires its own declared directory",
             })?;
+        // Paseo's project-add contract accepts only a directory and derives the
+        // first visible title from its basename. Kontor runtime roots use the
+        // epic UUID as that basename, so creating through a daemon that cannot
+        // immediately retitle would knowingly publish a non-canonical ESW.
+        // Refuse before the create effect when that correction route is absent.
+        if !declared.supports(RuntimeCapability::RetitleContainer) {
+            return Err(self.refuse(RuntimeCapability::RetitleContainer, declared));
+        }
         let command = PaseoRpc::project_add(self.next_request_id(), cwd.as_str());
         let frame = self.transport.request(&command).await?;
         let added: PaseoProjectAdded = frame.resolve(&command, "PaseoProjectAdded")?;
@@ -2594,6 +2601,14 @@ impl PaseoAdapter {
         // The answer to `add` is an acknowledgement. A binding is made from a
         // readback.
         let project = self.read_project_by_id(&added.id).await?;
+        if project.root_path != cwd.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the created native project came back rooted in another directory",
+            });
+        }
+        let project = self
+            .ensure_project_title(&project, request.display_name.as_str())
+            .await?;
         let identity = self.identity(ExternalId::parse(&project.id)?, generation);
         Ok((
             identity.clone(),
@@ -2604,6 +2619,44 @@ impl PaseoAdapter {
             ),
             true,
         ))
+    }
+
+    /// Apply one supported native-project title and prove it by exact readback.
+    ///
+    /// Project identity and root are immutable across this operation. The
+    /// daemon's acknowledgement is only evidence that it accepted the request;
+    /// the returned project is always selected again by its durable id.
+    async fn ensure_project_title(
+        &self,
+        before: &PaseoProject,
+        desired: &str,
+    ) -> RuntimeResult<PaseoProject> {
+        if before.display_name == desired {
+            return Ok(before.clone());
+        }
+        let rpc = PaseoRpc::project_rename(self.next_request_id(), &before.id, desired);
+        let frame = self.transport.request(&rpc).await?;
+        let renamed: PaseoProjectRenamed = frame.resolve(&rpc, "PaseoProjectRenamed")?;
+        if !renamed.accepted
+            || renamed.project_id != before.id
+            || renamed.custom_name.as_deref() != Some(desired)
+        {
+            return Err(RuntimeError::Transport {
+                rule: "Paseo refused or mis-correlated the native project rename",
+            });
+        }
+        let after = self.read_project_by_id(&before.id).await?;
+        if after.root_path != before.root_path {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the renamed native project came back rooted in another directory",
+            });
+        }
+        if after.display_name != desired {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the native project did not come back carrying the title it was renamed to",
+            });
+        }
+        Ok(after)
     }
 
     async fn remember_epic_project(

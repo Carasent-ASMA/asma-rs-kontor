@@ -54,6 +54,11 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Canonicalized every newly created Paseo epic project before binding it:
+  native-root creation now requires project-rename support, verifies the
+  registered directory by exact project ID, applies the Team Definition's ESW
+  title, and refuses the binding when the unchanged ID, root and exact title do
+  not read back (ASMA-8102).
 - Limited Team Definition migration previews and exact persistence censuses to
   active topology nodes and seats, leaving retired or archived native history
   untouched instead of requiring an unavailable historical workspace retitle.

@@ -153,6 +153,25 @@ The literal separator is space + U+2022 BULLET + space: ` • `.
 | task CSW | `CSW • <TASK_ITEM_CODE> • <TOPIC>` | `CSW • KOP-7869 • Naming contract` |
 | epic CSW | `CSW • <EPIC_ITEM_CODE> • <TOPIC>` | `CSW • KOP-8001 • Release readiness` |
 
+### Native-root creation invariant
+
+Paseo `project.add` accepts a directory and initially derives the project title
+from that directory's basename. Kontor runtime-root directories use durable epic
+UUIDs, so a newly added native root is not canonical until its ESW title has
+been applied through `project.rename`.
+
+Before creating a native root, the Paseo adapter requires the supported project
+rename capability. It then registers the exact root, reads the new project by
+its native ID, applies the Team Definition's complete ESW title, and reads the
+same ID back with the same root and exact title. Only that final readback may be
+persisted as the topology container binding. Missing rename support, a refused
+or mis-correlated acknowledgement, a changed root, or a different title leaves
+the node unbound and blocks downstream materialization and scheduling.
+
+The `project.add` acknowledgement is never title evidence. Contract fixtures
+must reproduce the daemon's basename-derived initial title; an already-correct
+fixture would hide this two-step native contract.
+
 ASW and CSW scopes follow the advised/debated subject, not the caller. A
 task-specific subject uses the task item code; an epic-wide subject uses the
 epic item code. An epic-global CSW remains a Committee workspace and is not an

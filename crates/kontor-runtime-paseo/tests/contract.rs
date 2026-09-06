@@ -8736,6 +8736,239 @@ async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
     );
 }
 
+/// A fresh native root receives the caller-rendered Team Definition title
+/// before Kontor persists its binding.
+///
+/// Paseo's `project.add` request accepts only a directory, so the daemon first
+/// derives the visible title from that directory's UUID basename. The adapter
+/// must correct that native default through the supported project-rename
+/// envelope and prove the same id, root and canonical title by readback.
+#[tokio::test]
+async fn a_fresh_native_root_is_canonicalized_before_binding() {
+    let raw_title = "01a0721b-ea30-7fe3-88a5-4d33ca613414";
+    let desired_title = "ESW • APIE-8101";
+    let root_path = "/state/runtime-roots/01a0721b-ea30-7fe3-88a5-4d33ca613414";
+    let project = |title: &str| {
+        serde_json::json!({
+            "projectId": PROJECT_ID,
+            "projectKey": "github.com/kontor/epic",
+            "projectDisplayName": title,
+            "projectCustomName": if title == raw_title { serde_json::Value::Null } else { serde_json::json!(title) },
+            "projectCustomIconRevision": null,
+            "projectRootPath": root_path,
+            "projectKind": "git"
+        })
+    };
+    let project_list = |title: &str| {
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "projects": [project(title)]
+        })
+    };
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO_NEWER_VERSION))
+            .answering_rpc(
+                "project.add.request",
+                serde_json::json!({
+                    "requestId": "req-fixture",
+                    "project": project(raw_title),
+                    "error": null,
+                    "errorCode": null
+                }),
+            )
+            .then_answering_rpc("project.list.request", project_list(raw_title))
+            .answering_rpc("project.list.request", project_list(desired_title))
+            .answering_rpc(
+                "project.rename.request",
+                serde_json::json!({
+                    "requestId": "req-fixture",
+                    "projectId": PROJECT_ID,
+                    "accepted": true,
+                    "customName": desired_title,
+                    "error": null
+                }),
+            ),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the plane builds");
+    let request = ContainerRequest {
+        container_binding_id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_B),
+        topology: topology(),
+        scope: epic_execution_scope(),
+        capabilities: vec![NodeProjectionCapability::NativeRoot],
+        display_name: name(desired_title),
+        parent: None,
+        cwd: Some(WorkspaceRoot::parse(root_path).expect("an absolute epic root")),
+        bound_native_id: None,
+        epic_container: true,
+        task_id: None,
+        team_run_id: None,
+        requested_at: at("2026-09-06T07:00:00Z"),
+    };
+
+    let outcome = adapter
+        .prepare_container(&request)
+        .await
+        .expect("the canonical project is prepared");
+
+    assert!(outcome.created);
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        PROJECT_ID
+    );
+    assert_eq!(
+        outcome
+            .snapshot
+            .binding
+            .root
+            .as_ref()
+            .map(WorkspaceRoot::as_str),
+        Some(root_path)
+    );
+    assert_eq!(recorded.count("rpc project.add.request"), 1);
+    assert_eq!(recorded.count("rpc project.rename.request"), 1);
+    assert!(adapter.container_binding(node(NODE_B)).is_some());
+}
+
+/// A daemon without the project-rename contract is refused before `project.add`.
+/// Otherwise Kontor would knowingly create a UUID-titled project it cannot
+/// correct through a supported surface.
+#[tokio::test]
+async fn a_fresh_native_root_requires_project_rename_before_creation() {
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.add.request", v(PROJECT_ADDED)),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the plane builds");
+
+    let error = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: node(NODE_B),
+            topology: topology(),
+            scope: epic_execution_scope(),
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("ESW • APIE-8101"),
+            parent: None,
+            cwd: Some(
+                WorkspaceRoot::parse("/state/runtime-roots/01a0721b-ea30-7fe3-88a5-4d33ca613414")
+                    .expect("an absolute epic root"),
+            ),
+            bound_native_id: None,
+            epic_container: true,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-09-06T07:00:00Z"),
+        })
+        .await
+        .expect_err("a UUID-titled native project must not be created without rename support");
+
+    assert_eq!(
+        error,
+        RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::RetitleContainer
+        }
+    );
+    assert_eq!(recorded.count("rpc project.add.request"), 0);
+    assert!(adapter.container_binding(node(NODE_B)).is_none());
+}
+
+/// An acknowledged rename is not completion. If exact readback still carries
+/// the derived UUID title, the native root remains unbound and therefore cannot
+/// become a schedulable Kontor container.
+#[tokio::test]
+async fn a_fresh_native_root_refuses_a_stale_title_readback() {
+    let raw_title = "01a0721b-ea30-7fe3-88a5-4d33ca613414";
+    let root_path = "/state/runtime-roots/01a0721b-ea30-7fe3-88a5-4d33ca613414";
+    let project = serde_json::json!({
+        "projectId": PROJECT_ID,
+        "projectKey": "github.com/kontor/epic",
+        "projectDisplayName": raw_title,
+        "projectCustomName": null,
+        "projectCustomIconRevision": null,
+        "projectRootPath": root_path,
+        "projectKind": "git"
+    });
+    let project_list = serde_json::json!({
+        "requestId": "req-fixture",
+        "projects": [project.clone()]
+    });
+    let recorded = Arc::new(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO_NEWER_VERSION))
+            .answering_rpc(
+                "project.add.request",
+                serde_json::json!({
+                    "requestId": "req-fixture",
+                    "project": project,
+                    "error": null,
+                    "errorCode": null
+                }),
+            )
+            .answering_rpc("project.list.request", project_list)
+            .answering_rpc(
+                "project.rename.request",
+                serde_json::json!({
+                    "requestId": "req-fixture",
+                    "projectId": PROJECT_ID,
+                    "accepted": true,
+                    "customName": "ESW • APIE-8101",
+                    "error": null
+                }),
+            ),
+    );
+    let adapter = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("the plane builds");
+
+    let error = adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: node(NODE_B),
+            topology: topology(),
+            scope: epic_execution_scope(),
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("ESW • APIE-8101"),
+            parent: None,
+            cwd: Some(WorkspaceRoot::parse(root_path).expect("an absolute epic root")),
+            bound_native_id: None,
+            epic_container: true,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-09-06T07:00:00Z"),
+        })
+        .await
+        .expect_err("a stale native title may not become a durable binding");
+
+    assert_eq!(
+        error,
+        RuntimeError::WorkspaceMismatch {
+            rule: "the native project did not come back carrying the title it was renamed to"
+        }
+    );
+    assert_eq!(recorded.count("rpc project.add.request"), 1);
+    assert_eq!(recorded.count("rpc project.rename.request"), 1);
+    assert!(adapter.container_binding(node(NODE_B)).is_none());
+}
+
 /// A root without its own directory is refused instead of silently becoming the
 /// first epic registered from the plane's shared checkout.
 #[tokio::test]
@@ -8842,7 +9075,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
         RecordedPaseo::new()
             .answering(&PaseoCommand::version(), VERSION)
             .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
-            .announcing(&v(SERVER_INFO))
+            .announcing(&v(SERVER_INFO_NEWER_VERSION))
             .then_answering_rpc("project.add.request", added(first_project))
             .then_answering_rpc("project.add.request", added(second_project))
             .answering_rpc("project.list.request", projects.clone())
