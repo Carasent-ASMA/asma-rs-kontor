@@ -6817,25 +6817,6 @@ export interface components {
             /** @description Whether it still holds a launch back, as of this read. */
             blocking: boolean;
             credit?: null | components["schemas"]["CreditBalanceDto"];
-            /**
-             * @description Whether the reading is recent enough for admission to rely on it.
-             *
-             *     Always `true` for a provider the realm does not poll, and for a
-             *     `cannot_report` answer, because neither has a fresher version to get.
-             */
-            evidence_fresh: boolean;
-            /**
-             * @description Why admission would or would not use this row, as a stable token:
-             *     `current`, `stale`, `unobservable`, or `cannot_report`.
-             */
-            evidence_state: string;
-            /**
-             * @description Whether this provider publishes headroom the realm polls for.
-             *
-             *     `false` means the provider is used reactively — it runs until it refuses
-             *     — so an absent or old reading is its normal condition rather than a gap.
-             */
-            observable: boolean;
             /** @description When it was concluded. */
             observed_at: string;
             provenance?: null | components["schemas"]["QuotaProvenanceDto"];
