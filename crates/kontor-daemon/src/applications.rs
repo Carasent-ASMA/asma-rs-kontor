@@ -25783,9 +25783,9 @@ impl ApplicationOperations for Services {
         // A downstream seat is materialized with its TeamRun, so it has no
         // admission event of its own. If its first native launch is refused,
         // `scheduler-resume` therefore has nothing it can address. The durable
-        // activation authority is the undelivered turn dispatch that names this
-        // exact run and role slot. Admin may move only that never-bound attempt,
-        // and must name the temporary route explicitly; a root admission still
+        // activation authority is the undelivered turn dispatch for this exact
+        // run and role slot. Admin may move only that never-bound attempt, and
+        // must name the temporary route explicitly; a root admission still
         // recovers through the scheduler's admission receipt.
         if unbound_recovery {
             if request.unavailable_provider.is_some() || request.quota_exhausted.is_some() {
@@ -25806,16 +25806,33 @@ impl ApplicationOperations for Services {
                     "abandon the exact never-bound run before replacing it",
                 ));
             }
-            let pending_dispatch = state
+            let undelivered: Vec<_> = state
                 .with_store(|store| store.list_turn_dispatches(project_id))
                 .map_err(|error| self.refuse(&error))?
                 .into_iter()
-                .any(|dispatch| {
+                .filter(|dispatch| {
                     !dispatch.dispatched
                         && dispatch.team_run_id == predecessor.team_run_id
                         && dispatch.to_role_slot_id == role_slot
-                        && dispatch.target_agent_run == Some(agent_run_id)
-                });
+                })
+                .collect();
+            let pending_dispatch = undelivered
+                .iter()
+                .any(|dispatch| dispatch.target_agent_run == Some(agent_run_id));
+            // A dispatch is targeted at derivation, from the slot's *live* seat
+            // -- and an abandoned seat is not one. Abandoning the refused launch
+            // before the upstream turn settles therefore derives the handoff
+            // with no target at all, and the seat it was meant for can never be
+            // named by it. That row is still the durable activation authority,
+            // but only when it is unambiguous: exactly one undelivered dispatch
+            // for this TeamRun and slot, holding no target. A second row, or one
+            // naming a different run, leaves the authority in question, and an
+            // Admin replacement is not the place to guess which handoff is being
+            // recovered.
+            let targetless_dispatch = matches!(
+                undelivered.as_slice(),
+                [only] if only.target_agent_run.is_none()
+            );
             let already_replaced = self
                 .team_members(project_id, predecessor.team_run_id)?
                 .into_iter()
@@ -25823,7 +25840,7 @@ impl ApplicationOperations for Services {
                     run.parent_agent_run_id == Some(agent_run_id)
                         && !run.is_operator_abandoned_unbound()
                 });
-            if !pending_dispatch && !already_replaced {
+            if !pending_dispatch && !targetless_dispatch && !already_replaced {
                 return Err(self.deny(
                     ApiErrorCode::RevisionConflict,
                     "no pending handoff dispatch or recorded successor authorizes this never-bound seat",
