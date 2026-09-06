@@ -532,8 +532,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // fact carrying its route-time TeamRun, which is also the fence the routed
     // phase is held behind until that same run authors it again. v91 adds the
     // server-derived consultation identity and immutable legacy topic
-    // correction evidence.
-    assert_eq!(SCHEMA_VERSION, 91);
+    // correction evidence. v92 admits that exact correction for an already
+    // settled consultation without making its verdict mutable.
+    assert_eq!(SCHEMA_VERSION, 92);
 }
 
 #[test]
