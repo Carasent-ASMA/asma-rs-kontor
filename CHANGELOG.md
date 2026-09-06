@@ -13,6 +13,20 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from the ASMA CLI — `<type>/<PROJECT>-<number>-<slug>` with stable refusal
   codes — and used it to derive a task's canonical `.worktrees/` placement from
   its confirmed Jira key when an epic apply declares none (ASMA-8101).
+- Added publication attestation (ASMA-8101): `publication:preview` judges a
+  branch, commit and pull-request title against the confirmed Kontor/Jira
+  binding of the epic or task the branch key names; `publication:attest`
+  records the accepted or refused decision idempotently (schema v89) and
+  `publication/{attestation_id}` reads it back. Exposed as the
+  `kontor_publication_preview`, `kontor_publication_attest` and
+  `kontor_publication_get` tools and CLI commands. The ASMA CLI calls the
+  attestation before every push and pull-request creation or reuse.
+- Added the GitHub App publication gateway (`config/github-app.json`): a
+  poller that judges every open pull request of the governed repositories and
+  posts the `asma/publication-identity` check run, and `publication:merge`
+  (`kontor_publication_merge`), a squash merge through the App identity bound to
+  the judged head commit that refuses a moved head. Inert until the App is
+  installed and the document exists.
 - Added immutable project-scoped epic backlog codes, deterministic
   collision-safe allocation, manual overrides and schema-v72 legacy evidence
   migration.

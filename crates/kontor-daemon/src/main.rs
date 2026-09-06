@@ -258,6 +258,15 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
         daemon.jira_reconciler(),
         daemon.state(),
     ));
+    // Publication checks run only where an operator installed the GitHub App;
+    // without the document the gateway is absent and nothing is posted.
+    if let Some(gateway) = daemon.github_publication() {
+        tokio::spawn(kontor_daemon::github_publication::poll_until_stopped(
+            gateway,
+            daemon.jira_reconciler(),
+            daemon.state(),
+        ));
+    }
     let _succession_supervisor = daemon.spawn_succession_supervisor(daemon.jira_reconciler());
     let _completion_scanner = daemon.spawn_completion_scanner(COMPLETION_SCAN_INTERVAL);
 

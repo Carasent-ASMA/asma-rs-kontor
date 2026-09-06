@@ -190,6 +190,9 @@ entity_ids! {
     /// without ending the session. A turn receipt is therefore never terminal
     /// evidence about the runtime.
     RoleTurnId,
+    /// Identifies one recorded publication decision: whether a branch, commit
+    /// and pull request were accepted under the confirmed tracker binding.
+    PublicationAttestationId,
     /// Identifies one authorized excuse for a declared, never-bound role slot.
     ///
     /// A waiver is not a turn and not a run: it records that the frozen template

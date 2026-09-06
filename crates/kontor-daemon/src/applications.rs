@@ -40,12 +40,14 @@ use kontor_api::applications::{
     EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, InitialExecutionHoldPreviewDto,
     InitialExecutionHoldRequest, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest,
     ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto, ProbeProviderQuotaRequest, ProjectDto,
-    ProviderQuotaStateDto, ProviderUsageObservationDto, PublishedTeamRevisionDto,
-    QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest,
-    RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
-    SeatProjectionDto, SeatProviderQuotaDto, SeatQuotaStateDto, StartRequest, StartedSeatDto,
-    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
-    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
+    ProviderQuotaStateDto, ProviderUsageObservationDto, PublicationDecisionDto,
+    PublicationIdentityRequest, PublicationMergeDto, PublicationMergeRequest,
+    PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto,
+    ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
+    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, SeatProviderQuotaDto,
+    SeatQuotaStateDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
+    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -143,14 +145,17 @@ use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
     ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
-    MiniProjectId, ModuleKey, Money, ProjectId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey,
-    RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId,
-    SpecVersion, StatusConflictId, SuccessionAttemptId, SuccessionReceiptId, TaskId,
-    TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId, TicketProjectionId, Timestamp,
-    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
+    MiniProjectId, ModuleKey, Money, ProjectId, PublicationAttestationId, QuickSessionId,
+    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION,
+    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, SuccessionAttemptId,
+    SuccessionReceiptId, TaskId, TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId,
+    TicketProjectionId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::naming::{
     NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
+};
+use kontor_core::publication::{
+    CommitSha, PublicationBinding, PublicationDecision, PublicationIdentity, evaluate,
 };
 use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
@@ -256,6 +261,7 @@ use kontor_scheduler::{
     RemediationAuthorization, RepositoryOutcome, SignalDelivery,
 };
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
+use kontor_store::publication::{NewPublicationAttestation, PublicationAttestation};
 use kontor_store::{
     AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport,
     ConsultationPermissionDecision, ConsultationPermissionResponseStatus, EpicApplication,
@@ -597,6 +603,8 @@ pub struct Services {
     runtime_roots: PathBuf,
     /// The only component allowed to resolve approved provider credential homes.
     usage_poller: crate::usage::UsagePoller,
+    /// The GitHub App gateway for publication checks and merges, when configured.
+    github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
     /// Serializes explicit provider probes so concurrent first use of one
     /// global idempotency key cannot contact the vendor twice.
     provider_probe_guard: tokio::sync::Mutex<()>,
@@ -660,9 +668,11 @@ impl Services {
         runtime_roots: PathBuf,
         usage_poller: crate::usage::UsagePoller,
         quota_signals: Vec<kontor_accounts::QuotaSignal>,
+        github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
+            github,
             state: OnceLock::new(),
             pack: kontor_profiles::seeds::bundled_pack()?,
             domain: kontor_profiles::bundled_operational_domain()?,
@@ -14324,6 +14334,171 @@ impl Services {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    async fn preview_publication(
+        &self,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+    ) -> Result<PublicationDecisionDto, ApiError> {
+        self.project_row(project_id)?;
+        let judged = self.judge_publication(project_id, request)?;
+        Ok(self.publication_decision_dto(
+            project_id,
+            None,
+            false,
+            judged.resolved.as_ref().map(|resolved| resolved.epic_id),
+            judged
+                .resolved
+                .as_ref()
+                .and_then(|resolved| resolved.task_id),
+            request.repository.clone(),
+            request.base_branch.clone(),
+            judged.head_branch,
+            judged.head_sha,
+            request.pull_request,
+            request.title.clone(),
+            judged.decision,
+            kontor_api::now(),
+        ))
+    }
+
+    async fn attest_publication(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+    ) -> Result<PublicationDecisionDto, ApiError> {
+        self.project_row(project_id)?;
+        let judged = self.judge_publication(project_id, request)?;
+        let now = kontor_api::now();
+        let new = NewPublicationAttestation {
+            id: PublicationAttestationId::generate(),
+            project_id,
+            mini_project_id: judged.resolved.as_ref().map(|resolved| resolved.epic_id),
+            task_id: judged
+                .resolved
+                .as_ref()
+                .and_then(|resolved| resolved.task_id),
+            repository: request.repository.clone(),
+            base_branch: request.base_branch.clone(),
+            head_branch: judged.head_branch,
+            head_sha: judged.head_sha,
+            pull_request: request.pull_request,
+            title: request.title.clone(),
+            decision: judged.decision,
+            idempotency_key: key.clone(),
+            recorded_at: now,
+        };
+        let record = self
+            .state()?
+            .with_store(|store| store.record_publication_attestation(&new))
+            .map_err(|error| self.refuse(&error))?;
+        let replayed = record.is_replay();
+        Ok(self.stored_publication_dto(record.attestation().clone(), replayed))
+    }
+
+    async fn merge_publication(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublicationMergeRequest,
+    ) -> Result<PublicationMergeDto, ApiError> {
+        use crate::github_publication::{MergeRefusal, ensure_mergeable, identity_of};
+
+        self.project_row(project_id)?;
+        let gateway = self.github.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "no GitHub App is configured for publication merges; install it and write config/github-app.json",
+            )
+        })?;
+        if !gateway.governs(request.repository.as_str()) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the repository is not governed by the configured GitHub App",
+            ));
+        }
+        let expected = CommitSha::parse(&request.expected_head_sha).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "expected_head_sha must be exactly forty lowercase hexadecimal digits",
+            )
+        })?;
+        let facts = gateway
+            .pull_request(request.repository.as_str(), request.pull_request)
+            .await
+            .map_err(|error| self.refuse_gateway(&error))?;
+        match ensure_mergeable(&facts, &expected) {
+            Ok(()) => {}
+            Err(MergeRefusal::NotOpen) => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the pull request is not open, or is a draft",
+                ));
+            }
+            Err(MergeRefusal::HeadMoved { .. }) => {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "head_sha_stale: the pull request head is no longer the judged commit; read it again and re-judge",
+                ));
+            }
+        }
+        let identity = identity_of(request.repository.as_str(), &facts)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let decision = self.attest_publication(key, project_id, &identity).await?;
+        if !decision.accepted {
+            return Ok(PublicationMergeDto {
+                realm_id: self.realm_id,
+                project_id,
+                repository: request.repository.clone(),
+                pull_request: request.pull_request,
+                head_sha: facts.head.sha,
+                merged: false,
+                merge_sha: None,
+                attestation_id: decision.attestation_id,
+                accepted: false,
+                reasons: decision.reasons,
+            });
+        }
+        let merge_sha = gateway
+            .merge_squash(
+                request.repository.as_str(),
+                request.pull_request,
+                &facts.head.sha,
+            )
+            .await
+            .map_err(|error| self.refuse_gateway(&error))?;
+        Ok(PublicationMergeDto {
+            realm_id: self.realm_id,
+            project_id,
+            repository: request.repository.clone(),
+            pull_request: request.pull_request,
+            head_sha: facts.head.sha,
+            merged: true,
+            merge_sha: Some(merge_sha),
+            attestation_id: decision.attestation_id,
+            accepted: true,
+            reasons: Vec::new(),
+        })
+    }
+
+    fn publication_attestation(
+        &self,
+        project_id: ProjectId,
+        attestation_id: PublicationAttestationId,
+    ) -> Result<PublicationDecisionDto, ApiError> {
+        let attestation = self
+            .state()?
+            .with_store(|store| store.get_publication_attestation(project_id, attestation_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such publication attestation exists in this project",
+                )
+            })?;
+        Ok(self.stored_publication_dto(attestation, false))
+    }
+
     fn complete_local_command(&self, key: &IdempotencyKey) -> Result<(), ApiError> {
         let state = self.state()?;
         let completed = state
@@ -33618,6 +33793,226 @@ fn phase_reached(
 /// closeout census. Withdrawal alone is the audited removal from active scope.
 const fn counts_towards_completion(state: TaskState) -> bool {
     !matches!(state, TaskState::Withdrawn)
+}
+
+// ---------------------------------------------------------------------------
+// Publication identity (ASMA-8101)
+// ---------------------------------------------------------------------------
+
+/// The only branch a publication may target. Both governed repositories use it
+/// and the plan records the assumption; a per-project default is a later field.
+const PUBLICATION_DEFAULT_BRANCH: &str = "master";
+
+/// The binding a publication's branch key resolved to.
+struct ResolvedPublicationBinding {
+    epic_id: MiniProjectId,
+    task_id: Option<TaskId>,
+    binding: PublicationBinding,
+}
+
+/// One judged publication, before or after recording.
+struct JudgedPublication {
+    head_branch: ExternalName,
+    head_sha: CommitSha,
+    decision: PublicationDecision,
+    resolved: Option<ResolvedPublicationBinding>,
+}
+
+impl Services {
+    /// The epic or task whose confirmed tracker key is `key`, with every key a
+    /// title under that epic may name.
+    ///
+    /// Only an epic with a confirmed key can bind: a task in an epic Kontor
+    /// holds no key for is not a confirmed publication identity, because the
+    /// epic branch is the publication default and would have nothing to be.
+    fn resolve_publication_binding(
+        &self,
+        project_id: ProjectId,
+        key: &TrackerKey,
+    ) -> Result<Option<ResolvedPublicationBinding>, ApiError> {
+        let state = self.state()?;
+        let default_branch = ExternalName::parse(PUBLICATION_DEFAULT_BRANCH)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let epics = state
+            .with_store(|store| store.list_mini_projects(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        for epic in epics {
+            let Some(epic_key) = self.epic_tracker_key(project_id, epic.id)? else {
+                continue;
+            };
+            let tasks = state
+                .with_store(|store| store.list_epic_tasks(project_id, epic.id))
+                .map_err(|error| self.refuse(&error))?;
+            let mut child_keys = Vec::with_capacity(tasks.len());
+            let mut matched_task = None;
+            for task in tasks {
+                let links = state
+                    .with_store(|store| store.list_task_ticket_links(project_id, task.id))
+                    .map_err(|error| self.refuse(&error))?;
+                let task_key = links
+                    .iter()
+                    .filter(|link| link.connector.as_str() == "connector.jira")
+                    .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
+                if let Some(task_key) = task_key {
+                    if task_key == *key {
+                        matched_task = Some((task.id, task_key.clone()));
+                    }
+                    child_keys.push(task_key);
+                }
+            }
+            if epic_key == *key {
+                return Ok(Some(ResolvedPublicationBinding {
+                    epic_id: epic.id,
+                    task_id: None,
+                    binding: PublicationBinding {
+                        epic_key,
+                        task_key: None,
+                        child_keys,
+                        default_branch,
+                    },
+                }));
+            }
+            if let Some((task_id, task_key)) = matched_task {
+                return Ok(Some(ResolvedPublicationBinding {
+                    epic_id: epic.id,
+                    task_id: Some(task_id),
+                    binding: PublicationBinding {
+                        epic_key,
+                        task_key: Some(task_key),
+                        child_keys,
+                        default_branch,
+                    },
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Judge one observed publication. A malformed commit is a malformed
+    /// request; everything else is a decision, refused or accepted.
+    fn judge_publication(
+        &self,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+    ) -> Result<JudgedPublication, ApiError> {
+        let head_sha = CommitSha::parse(&request.head_sha).map_err(|_| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "head_sha must be exactly forty lowercase hexadecimal digits",
+            )
+        })?;
+        let head_branch = request.head_branch.clone();
+        let (decision, resolved) = match BranchName::parse(head_branch.as_str()) {
+            Err(refusal) => (PublicationDecision::refused_branch(refusal), None),
+            Ok(branch) => match branch.key().cloned() {
+                None => (PublicationDecision::unconfirmed(), None),
+                Some(key) => match self.resolve_publication_binding(project_id, &key)? {
+                    None => (PublicationDecision::unconfirmed(), None),
+                    Some(resolved) => {
+                        let identity = PublicationIdentity {
+                            repository: request.repository.clone(),
+                            base_branch: request.base_branch.clone(),
+                            head_branch: branch,
+                            head_sha: head_sha.clone(),
+                            pull_request: request.pull_request,
+                            title: request.title.clone(),
+                        };
+                        (evaluate(&identity, &resolved.binding), Some(resolved))
+                    }
+                },
+            },
+        };
+        Ok(JudgedPublication {
+            head_branch,
+            head_sha,
+            decision,
+            resolved,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publication_decision_dto(
+        &self,
+        project_id: ProjectId,
+        attestation_id: Option<PublicationAttestationId>,
+        replayed: bool,
+        epic_id: Option<MiniProjectId>,
+        task_id: Option<TaskId>,
+        repository: ExternalName,
+        base_branch: ExternalName,
+        head_branch: ExternalName,
+        head_sha: CommitSha,
+        pull_request: Option<u64>,
+        title: Option<ExternalName>,
+        decision: PublicationDecision,
+        evaluated_at: Timestamp,
+    ) -> PublicationDecisionDto {
+        PublicationDecisionDto {
+            realm_id: self.realm_id,
+            project_id,
+            attestation_id,
+            replayed,
+            epic_id,
+            task_id,
+            repository,
+            base_branch,
+            head_branch,
+            head_sha: head_sha.as_str().to_owned(),
+            pull_request,
+            title,
+            accepted: decision.accepted,
+            reasons: decision.reasons,
+            policy_revision: decision.policy_revision,
+            evaluated_at,
+        }
+    }
+
+    /// Turn a GitHub gateway failure into the refusal the caller is owed.
+    fn refuse_gateway(&self, error: &crate::github_publication::GatewayError) -> ApiError {
+        use crate::github_publication::GatewayError;
+
+        match error {
+            GatewayError::Unconfigured => self.deny(
+                ApiErrorCode::UnsupportedCapability,
+                "no GitHub App is configured for publication merges",
+            ),
+            GatewayError::Refused {
+                status: 405 | 409, ..
+            } => self.deny(
+                ApiErrorCode::RevisionConflict,
+                "GitHub declined the merge: the head moved or the pull request is not mergeable",
+            ),
+            GatewayError::Refused { .. }
+            | GatewayError::Unreachable { .. }
+            | GatewayError::Unreadable { .. }
+            | GatewayError::Signing => self.deny(
+                ApiErrorCode::ProviderUnreachable,
+                "GitHub did not answer the publication operation; nothing was merged",
+            ),
+        }
+    }
+
+    fn stored_publication_dto(
+        &self,
+        attestation: PublicationAttestation,
+        replayed: bool,
+    ) -> PublicationDecisionDto {
+        self.publication_decision_dto(
+            attestation.project_id,
+            Some(attestation.id),
+            replayed,
+            attestation.mini_project_id,
+            attestation.task_id,
+            attestation.repository,
+            attestation.base_branch,
+            attestation.head_branch,
+            attestation.head_sha,
+            attestation.pull_request,
+            attestation.title,
+            attestation.decision,
+            attestation.recorded_at,
+        )
+    }
 }
 
 #[cfg(test)]

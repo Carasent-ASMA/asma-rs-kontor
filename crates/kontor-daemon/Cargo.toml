@@ -53,6 +53,9 @@ axum = { workspace = true }
 # outside the machine: it asks each account's provider what its own quota
 # is doing, because a refusal-derived state can never say a window reopened.
 reqwest = { workspace = true }
+aws-lc-rs = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 jiff = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

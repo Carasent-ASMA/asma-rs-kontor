@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 166 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 166 is forever — it is what makes a later change to the daemon's
+//! 170 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 170 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -542,7 +542,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        166,
+        170,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        165,
+        169,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -560,7 +560,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     );
     assert_eq!(
         documented().len(),
-        167,
+        171,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -828,6 +828,13 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_provider_quota_states_list", CallerTier::Observer),
         ("kontor_provider_quota_record", CallerTier::Admin),
         ("kontor_provider_quota_probe", CallerTier::Operator),
+        // Judging a publication is operator work: it names a branch and commit
+        // the caller is about to publish. Reading a recorded decision is
+        // observation, which is what a forge check does with it.
+        ("kontor_publication_preview", CallerTier::Operator),
+        ("kontor_publication_attest", CallerTier::Operator),
+        ("kontor_publication_get", CallerTier::Observer),
+        ("kontor_publication_merge", CallerTier::Operator),
     ]);
     for tool in REGISTRY {
         assert_eq!(

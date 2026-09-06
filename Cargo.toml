@@ -84,6 +84,9 @@ rmcp = { version = "=3.1.2", features = ["server"] }
 
 url = "=2.5.8"
 bytes = "=1.12.1"
+# RSA signing for GitHub App JWTs (ASMA-8101). Already in the graph through
+# rustls; taking it as a direct dependency adds no new package.
+aws-lc-rs = "=1.18.1"
 sha2 = "=0.11.0"
 hex = "=0.4.3"
 

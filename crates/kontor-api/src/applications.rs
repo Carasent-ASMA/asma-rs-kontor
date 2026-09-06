@@ -47,9 +47,9 @@ use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
-    ProjectId, ProviderUsageObservationId, QuickSessionId, RoleCatalogId, RoleCode, RoleSlotId,
-    RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamDefinitionId, TeamRunId, Timestamp,
-    TopologyKindKey, TopologyNodeId, TopologySpecId,
+    ProjectId, ProviderUsageObservationId, PublicationAttestationId, QuickSessionId, RoleCatalogId,
+    RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamDefinitionId,
+    TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
 use kontor_core::spec::{
@@ -6774,6 +6774,37 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ApplyEpicRequest,
     ) -> Result<PreviewEpicDto, ApiError>;
 
+    /// Judge one publication against the confirmed tracker binding; record nothing.
+    async fn preview_publication(
+        &self,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+    ) -> Result<PublicationDecisionDto, ApiError>;
+
+    /// Judge one publication and durably record the decision under the caller's key.
+    async fn attest_publication(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+    ) -> Result<PublicationDecisionDto, ApiError>;
+
+    /// One recorded publication decision.
+    fn publication_attestation(
+        &self,
+        project_id: ProjectId,
+        attestation_id: PublicationAttestationId,
+    ) -> Result<PublicationDecisionDto, ApiError>;
+
+    /// Squash-merge one attested pull request through the GitHub App, bound to
+    /// the exact head the caller judged.
+    async fn merge_publication(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublicationMergeRequest,
+    ) -> Result<PublicationMergeDto, ApiError>;
+
     /// Validate a final legacy backlog export without committing its graph.
     async fn preview_backlog_import(
         &self,
@@ -11361,4 +11392,241 @@ pub fn parse_ticket_link(
     )?;
     let issue = parse_id(state, ExternalId::parse(&request.external_issue_key))?;
     Ok((connector, issue))
+}
+
+// ---------------------------------------------------------------------------
+// Publication identity (ASMA-8101)
+// ---------------------------------------------------------------------------
+
+/// What a producer observed about the publication it is about to make.
+///
+/// The head branch is passed exactly as named. A name outside the publication
+/// grammar is not a malformed request: it is a publication Kontor refuses, and
+/// the refusal is the recorded decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationIdentityRequest {
+    /// The forge repository, as `owner/name`.
+    #[schema(value_type = String)]
+    pub repository: ExternalName,
+    /// The branch the publication targets; only the default branch is accepted.
+    #[schema(value_type = String)]
+    pub base_branch: ExternalName,
+    /// The branch being published, exactly as named.
+    #[schema(value_type = String)]
+    pub head_branch: ExternalName,
+    /// The forty-hex commit at the head of that branch.
+    pub head_sha: String,
+    /// The pull-request number, when one exists.
+    #[serde(default)]
+    pub pull_request: Option<u64>,
+    /// The pull-request title, when one exists or is about to be created.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub title: Option<ExternalName>,
+}
+
+/// One publication decision: what was observed, what it was bound to, and the
+/// typed answer with its stable reason codes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PublicationDecisionDto {
+    /// The Realm that judged it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The recorded decision, absent for a preview.
+    #[schema(value_type = Option<String>)]
+    pub attestation_id: Option<PublicationAttestationId>,
+    /// Whether an attest call returned an earlier decision under the same key.
+    pub replayed: bool,
+    /// The epic the branch key resolved to, when it resolved.
+    #[schema(value_type = Option<String>)]
+    pub epic_id: Option<MiniProjectId>,
+    /// The task the branch key resolved to, when the branch names a task.
+    #[schema(value_type = Option<String>)]
+    pub task_id: Option<TaskId>,
+    /// The forge repository, as observed.
+    #[schema(value_type = String)]
+    pub repository: ExternalName,
+    /// The target branch, as observed.
+    #[schema(value_type = String)]
+    pub base_branch: ExternalName,
+    /// The published branch, as observed.
+    #[schema(value_type = String)]
+    pub head_branch: ExternalName,
+    /// The commit at its head.
+    pub head_sha: String,
+    /// The pull-request number, when one exists.
+    pub pull_request: Option<u64>,
+    /// The pull-request title, when one exists.
+    #[schema(value_type = Option<String>)]
+    pub title: Option<ExternalName>,
+    /// Whether every rule held.
+    pub accepted: bool,
+    /// Every failed rule as a stable code, in evaluation order.
+    pub reasons: Vec<String>,
+    /// The rules revision the decision was computed under.
+    pub policy_revision: u32,
+    /// When it was judged.
+    #[schema(value_type = String)]
+    pub evaluated_at: Timestamp,
+}
+
+/// Judge one publication against the confirmed tracker binding and record nothing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/publication:preview", tag = "applications",
+    params(("project_id" = String, Path, description = "The owning project")),
+    request_body = PublicationIdentityRequest,
+    responses(
+        (status = 200, body = PublicationDecisionDto, description = "The decision, unrecorded"),
+        (status = 401), (status = 403), (status = 404)
+    )
+)]
+pub async fn preview_publication(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    Json(request): Json<PublicationIdentityRequest>,
+) -> Result<Json<PublicationDecisionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_publication(project_id, &request)
+            .await?,
+    ))
+}
+
+/// Judge one publication and durably record the decision.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/publication:attest", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublicationIdentityRequest,
+    responses(
+        (status = 200, body = PublicationDecisionDto, description = "The decision, recorded or replayed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "A reused key naming another publication")
+    )
+)]
+pub async fn attest_publication(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublicationIdentityRequest>,
+) -> Result<Json<PublicationDecisionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .attest_publication(&key, project_id, &request)
+            .await?,
+    ))
+}
+
+/// One recorded publication decision.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/publication/{attestation_id}", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("attestation_id" = String, Path, description = "The recorded decision")
+    ),
+    responses((status = 200, body = PublicationDecisionDto), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn publication_attestation(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, attestation_id)): Path<(String, String)>,
+) -> Result<Json<PublicationDecisionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let attestation_id = parse_id(&state, PublicationAttestationId::parse(&attestation_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .publication_attestation(project_id, attestation_id)?,
+    ))
+}
+
+/// One merge the caller wants performed through the GitHub App identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationMergeRequest {
+    /// The forge repository, as `owner/name`.
+    #[schema(value_type = String)]
+    pub repository: ExternalName,
+    /// The pull request to merge.
+    pub pull_request: u64,
+    /// The head commit the caller judged; a different current head is refused.
+    pub expected_head_sha: String,
+}
+
+/// What the merge gateway did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PublicationMergeDto {
+    /// The Realm that acted.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The repository.
+    #[schema(value_type = String)]
+    pub repository: ExternalName,
+    /// The pull request.
+    pub pull_request: u64,
+    /// The head commit GitHub reported at merge time.
+    pub head_sha: String,
+    /// Whether the squash merge happened.
+    pub merged: bool,
+    /// The merge commit GitHub created, when it merged.
+    pub merge_sha: Option<String>,
+    /// The recorded decision the merge was bound to.
+    #[schema(value_type = Option<String>)]
+    pub attestation_id: Option<PublicationAttestationId>,
+    /// Whether the publication was accepted.
+    pub accepted: bool,
+    /// Every failed rule as a stable code when it was not.
+    pub reasons: Vec<String>,
+}
+
+/// Squash-merge one attested pull request through the GitHub App identity.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/publication:merge", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = PublicationMergeRequest,
+    responses(
+        (status = 200, body = PublicationMergeDto, description = "Merged, or refused by the publication policy"),
+        (status = 400, description = "No GitHub App is configured, or the repository is not governed"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The head moved, the pull request is not open, or GitHub declined")
+    )
+)]
+pub async fn merge_publication(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PublicationMergeRequest>,
+) -> Result<Json<PublicationMergeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .merge_publication(&key, project_id, &request)
+            .await?,
+    ))
 }
