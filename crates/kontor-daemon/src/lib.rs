@@ -390,7 +390,7 @@ impl Daemon {
         let lock = StateRootLock::acquire(&config.state_root)?;
         match provider_config::reconcile(&config.state_root) {
             Ok(changed) if changed > 0 => {
-                info!(changed, "optional memory MCP startup policy reconciled")
+                info!(changed, "owned Codex provider startup policy reconciled")
             }
             Ok(_) => {}
             Err(_) => warn!("owned Codex provider configuration could not be reconciled"),
