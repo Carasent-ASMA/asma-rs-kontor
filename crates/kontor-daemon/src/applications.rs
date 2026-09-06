@@ -135,7 +135,7 @@ use kontor_core::authority::AuthoritySubject;
 use kontor_core::backlog_identity::{EpicBacklogCode, JiraItemCode};
 use kontor_core::branch::{
     BranchName, BranchRefusal, BranchType, MANAGED_WORKTREES_DIR, TrackerKey, managed_branch_text,
-    managed_worktree_path,
+    managed_catalog_worktree_parts, managed_worktree_path,
 };
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
@@ -33313,14 +33313,40 @@ impl Services {
             .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
         if let Some(worktree) = declared {
             if let Some(encoded) = managed_branch_text(project_root, worktree.as_str()) {
-                let branch = BranchName::parse(encoded)
-                    .map_err(|refusal| self.deny(ApiErrorCode::InvalidRequest, refusal.rule()))?;
                 let confirmed: Vec<TrackerKey> =
                     epic_key.cloned().into_iter().chain(task_key).collect();
-                if !confirmed.is_empty() {
-                    branch.ensure_bound_to(&confirmed).map_err(|refusal| {
-                        self.deny(ApiErrorCode::InvalidRequest, refusal.rule())
-                    })?;
+                match BranchName::parse(encoded) {
+                    Ok(branch) => {
+                        if !confirmed.is_empty() {
+                            branch.ensure_bound_to(&confirmed).map_err(|refusal| {
+                                self.deny(ApiErrorCode::InvalidRequest, refusal.rule())
+                            })?;
+                        }
+                    }
+                    Err(branch_refusal) => {
+                        let Some((slug, _module)) =
+                            managed_catalog_worktree_parts(project_root, worktree.as_str())
+                        else {
+                            return Err(
+                                self.deny(ApiErrorCode::InvalidRequest, branch_refusal.rule())
+                            );
+                        };
+                        if confirmed.is_empty() {
+                            return Err(self.deny(
+                                ApiErrorCode::InvalidRequest,
+                                BranchRefusal::BindingUnconfirmed.rule(),
+                            ));
+                        }
+                        if !confirmed
+                            .iter()
+                            .any(|key| slug == key.as_str().to_ascii_lowercase())
+                        {
+                            return Err(self.deny(
+                                ApiErrorCode::InvalidRequest,
+                                BranchRefusal::BindingMismatch.rule(),
+                            ));
+                        }
+                    }
                 }
             }
             return Ok((Some(worktree), None));

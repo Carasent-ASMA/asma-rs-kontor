@@ -41447,6 +41447,46 @@ async fn a_managed_task_worktree_bound_to_a_foreign_key_is_refused() {
 }
 
 #[tokio::test]
+async fn an_asma_cli_catalog_module_worktree_bound_to_the_task_key_is_accepted() {
+    let task_key = test_jira_key("catalog epic-task-0");
+    let worktree = format!(
+        "/tmp/kontor-catalog/.worktrees/{}/asma-rs-kontor",
+        task_key.to_ascii_lowercase()
+    );
+    let world = World::open_empty().await;
+    let (_, applied) = apply_one_task_epic(
+        &world,
+        "catalog",
+        "/tmp/kontor-catalog",
+        serde_json::json!(worktree),
+    )
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["tasks"][0]["worktree"],
+        serde_json::json!(worktree)
+    );
+}
+
+#[tokio::test]
+async fn an_asma_cli_catalog_module_worktree_bound_to_a_foreign_key_is_refused() {
+    let world = World::open_empty().await;
+    let (_, refused) = apply_one_task_epic(
+        &world,
+        "foreign-catalog",
+        "/tmp/kontor-foreign-catalog",
+        serde_json::json!("/tmp/kontor-foreign-catalog/.worktrees/asma-1/asma-rs-kontor"),
+    )
+    .await;
+    assert_eq!(refused.code(), "invalid_request", "{}", refused.body);
+    assert!(
+        refused.body.contains("branch_binding_mismatch"),
+        "{}",
+        refused.body
+    );
+}
+
+#[tokio::test]
 async fn a_managed_task_worktree_on_the_epic_branch_is_accepted() {
     let world = World::open_empty().await;
     let (_, applied) = apply_one_task_epic(
