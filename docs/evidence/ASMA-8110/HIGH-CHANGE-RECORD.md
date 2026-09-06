@@ -163,6 +163,25 @@ untouched.
 | `8f54fcb` | the three coverage gaps mutation testing exposed |
 | `c78f7d6` | fmt and clippy |
 | `0397318` | regenerated OpenAPI contract and console types |
+| `a7217ef` | schema version and table-set pins moved to v89 |
+
+### Deliberate-review pins this work had to move
+
+Four artefacts exist precisely so a change like this cannot land unreviewed.
+Each was moved deliberately, and none is a behaviour change:
+
+- `tests/contract/mcp_parity.rs` — the registry/tool/operation counts and the
+  per-tool tier map. The new tool is admin, and the counts move by one.
+- `crates/kontor-store/tests/schema_v1.rs` — the schema version pin (88 → 89)
+  and the exact expected table set, which now contains
+  `task_gate_rejection_routes`. Not a file the scope names, but a migration
+  cannot land without moving it; the alternative is a tree that fails its own
+  authoritative gate.
+- `crates/kontor-api/contract/openapi.json` — regenerated, because the recovery
+  route and its two DTOs are part of what the realm serves.
+- `apps/console/src/api/schema.d.ts` — regenerated from that document by the
+  project's own `pnpm --filter kontor-console generate:api`, which the contract
+  test's instructions require.
 
 ## Mutation results
 
@@ -229,3 +248,122 @@ Corrected to an identity comparison.
 | `reconcile()` does not itself call the evidence advance | Observed during MUT-8110-08. The fence test's reconcile assertions are therefore weaker than they look; the settlement assertions carry the proof, and those do kill both fence mutations |
 | A rejection recorded while the workflow already sits at the target | Recorded honestly as a route whose `from_phase` equals its target. Only the recorded path can produce one; recovery cannot |
 
+## Verification
+
+### Authoritative gate
+
+```text
+python3 scripts/verify-tree.py --mode archive
+```
+
+**Passed, exit 0**, against `git archive HEAD` at `a7217ef`. Every gate the
+script runs, in order:
+
+| Gate | Result |
+|---|---|
+| `cargo generate-lockfile` + byte-compare | `Cargo.lock byte-compare: identical` |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| `cargo test --workspace --locked` | **2304 passed, 0 failed** |
+| `cargo audit` | clean |
+| `cargo deny check` | clean |
+| `pnpm install --frozen-lockfile` | clean |
+| `pnpm -r typecheck` | clean |
+| `pnpm -r test` (Vitest) | clean |
+| `pnpm audit --prod` | clean |
+
+Two earlier archive runs failed and were fixed rather than worked around:
+`cargo fmt` (commit `c78f7d6`), then `the_committed_contract_document_is_the_one_this_crate_serves`
+and the two `schema_v1` pins (commits `0397318`, `a7217ef`).
+
+### Focused tests
+
+All green at `a7217ef`:
+
+| Command | Result |
+|---|---|
+| `cargo test -p kontor-store --test repository_roundtrip rejection` | 2 passed |
+| `cargo test -p kontor-daemon --test loopback_api rejection` | 3 passed |
+| `cargo test -p kontor-core --test domain_state command_kind` | 1 passed |
+| `cargo test -p kontor-mcp` | 63 passed |
+| `cargo test -p kontor-cli` | 22 passed |
+| `cargo test -p kontor-tests-contract --test mcp_parity` | 12 passed |
+| `cargo test -p kontor-store --test backup_snapshot` | 12 passed |
+| `cargo test -p kontor-store --test schema_v1` | 57 passed |
+| `cargo test -p kontor-daemon` (whole crate) | 392 passed, 0 failed, 1 ignored |
+
+The scope's spelling `--test repository_roundtrip gate_rejection` matches only
+one of the two store tests, because
+`a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reopen`
+does not contain that substring. `rejection` is the filter that runs both.
+
+### Tests added or extended
+
+| Test | File |
+|---|---|
+| `a_phase_advancing_gate_replays_after_revision_change_and_restart` (extended) | `crates/kontor-daemon/tests/loopback_api.rs` |
+| `a_historical_gate_rejection_recovery_routes_once_and_replays_after_restart` | same |
+| `gate_rejection_recovery_refuses_wrong_task_gate_sequence_receipt_phase_target_and_revisions_without_writes` | same |
+| `legacy_artifacts_do_not_advance_a_recovered_rejection_until_a_fresh_authoring_turn_settles` | same |
+| `a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together` | `crates/kontor-store/tests/repository_roundtrip.rs` |
+| `a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reopen` | same |
+| `the_gate_rejection_route_schema_migrates_and_survives_a_snapshot` | `crates/kontor-store/tests/backup_snapshot.rs` |
+| `the_gate_rejection_recovery_spelling_is_the_one_operators_are_given` | `crates/kontor-cli/src/commands.rs` |
+| command-kind row for `recover_gate_rejection` | `crates/kontor-core/tests/domain_state.rs` |
+| tier map row and canary counts | `tests/contract/mcp_parity.rs` |
+
+## Verifier handoff
+
+The implementation seat has done no deployment, no merge, no Jira mutation and
+has not settled the Kontor turn. What remains is the delivery owner's, per the
+scope's §"Qualification, same-realm deployment, and ASMA-8100 recovery".
+
+**Freeze `a7217ef`.** It is the reviewed implementation commit and the one the
+archive gate passed against. Its `Cargo.lock` byte-compares identical, so
+step 1's re-run should reproduce exit 0 without regenerating anything.
+
+**Before qualification, resolve OQ-8110-01 and OQ-8110-02.** Neither blocks the
+build, and both change what "the fence released correctly" means at step 10:
+
+- OQ-8110-01 — if scope confirms the edge *into* the rejection target, nothing
+  changes. If it insists on the edge *out of* it, the fence would be releasable
+  by the rejecting reviewer, and step 10's evidence would be meaningless.
+- OQ-8110-02 — implemented as TeamRun identity. Under a liveness reading, step
+  10 cannot succeed at all, because ASMA-8100's TeamRun is closed.
+
+**The exact recovery invocation is unchanged from the scope**, and the generated
+CLI spelling is pinned by a test so it cannot drift:
+
+```text
+kontor gate-rejection-recover   --project-id <fresh-confirmed-project-id>   --task-id <fresh-confirmed-task-id>   --gate-id technical-review-gate   --rejection-receipt-id 01a07373-0b66-7b93-905f-c2a21bee494f   --sequence 1   --expected-task-revision 2   --expected-workflow-revision 2   --expected-current-phase technical-review   --expected-rejection-target authoring   --idempotency-key asma-8100-technical-review-rejection-1-recovery   --tier admin
+```
+
+`--tier admin` is required: the route refuses an operator credential, and a
+loopback test asserts that refusal.
+
+**What the delivery owner should expect at each checkpoint.**
+
+- Step 5's `PRAGMA user_version` reads **89**, and migration 0089 appears once.
+  Both PRAGMAs and that count are asserted by
+  `the_gate_rejection_route_schema_migrates_and_survives_a_snapshot`, so a
+  divergence in the live realm is about the realm, not the build.
+- Step 7 returns `applied: "created"`, `prior_phase: "technical-review"`,
+  `current_phase: "authoring"`, `prior_revision: 2`, `current_revision: 3`.
+- Step 8's same-key retry returns the **same** `receipt_id` with
+  `applied: "unchanged"`; a fresh key returns `409 revision_conflict` whose
+  diagnostic `at` names `command-receipts/<the original recovery receipt>`.
+- Step 9 requires ASMA-8100 to stay in `authoring` while only legacy artifacts
+  exist. This is the fence, and it holds across reconciliation and restart.
+- Step 10 releases the fence only with a turn settled *after* the route, on the
+  preserved TeamRun, carrying `draft` — the `authoring` phase's required
+  artifact in `docs@1`. A turn carrying only `technical-review-notes` will not
+  release it, which is the intended behaviour and not a fault to debug.
+
+**One thing to watch that the tests cannot prove.** ASMA-8100's source receipt
+is a legacy one with no exact result binding, so the recovery accepts its
+`(gate, sequence)` only after comparing every immutable field the intent
+represents — evaluator role, evaluator account and the exact evidence list —
+against evaluation 1. If ASMA-8100's stored intent differs from its evaluation
+row in any of those, the command refuses and the refusal is correct. Per the
+scope's own closing rule, that is a newly discovered mismatch: it blocks the
+invocation and must be attached to ASMA-8110 before an alternative is chosen.
