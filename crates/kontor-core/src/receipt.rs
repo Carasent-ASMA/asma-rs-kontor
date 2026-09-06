@@ -555,10 +555,13 @@ impl CommandKind {
             }
             Self::UpgradeTopology
             | Self::UpgradeTeamDefinition
-            | Self::CorrectEpicBacklogCode
             | Self::ReconcileNativeNames => {
                 witness(matches!(target, A::MiniProject))
             }
+            // An epic code is unique across its whole project, so correcting
+            // one changes the project-owned namespace rather than only the
+            // epic that renders it.
+            Self::CorrectEpicBacklogCode => witness(matches!(target, A::Project)),
             // Neither a native container nor the topology node holding it is an
             // aggregate a command may name, and the epic is too wide: a retitle
             // touches one node's container. The project is the one aggregate it

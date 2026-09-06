@@ -30435,6 +30435,11 @@ async fn a_quarantined_qnr_code_is_corrected_without_weakening_canonical_assignm
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["correction"]["prior_code"], "QNR-P1");
     assert_eq!(applied.json()["correction"]["corrected_code"], "QNRP1");
+    assert_eq!(
+        applied.json()["receipt"]["revision"],
+        2,
+        "the receipt reports the project revision produced by the correction"
+    );
 
     let epic = Call::get(format!("/v1/projects/{project_id}/epics/{epic_id}"))
         .signed_as(&world, "observer")
@@ -30452,6 +30457,36 @@ async fn a_quarantined_qnr_code_is_corrected_without_weakening_canonical_assignm
         )
         .expect("the exact before and canonical after values are durable");
     assert_eq!(stored, ("QNR-P1".to_owned(), "QNRP1".to_owned()));
+
+    // Reproduce inconsistent stored evidence to prove a replay cannot answer
+    // from its request. Before authoritative readback, this returned the
+    // caller's QNRP1 even though the durable effective value below was QNRP2.
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .expect("the Realm database reopens");
+    connection
+        .execute_batch("DROP TRIGGER epic_backlog_code_corrections_are_immutable")
+        .expect("the test can reproduce corrupt historical evidence");
+    connection
+        .execute(
+            "UPDATE epic_backlog_code_corrections SET corrected_code = 'QNRP2'
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+        )
+        .expect("the test divergence is stored");
+    let replay = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply"),
+        &apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("correct-qnr-p1-to-qnrp1")
+    .send(&world)
+    .await;
+    assert_eq!(
+        replay.status, 409,
+        "request-shaped data must not mask a divergent durable correction: {}",
+        replay.body
+    );
 }
 
 /// A legacy topology-rendered epic migrates every exact native identity to the

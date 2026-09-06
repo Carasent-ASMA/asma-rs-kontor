@@ -2,7 +2,7 @@
 
 use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 use kontor_core::id::{
-    AggregateRevision, CanonicalDocument, CommandReceiptId, ExternalId, ExternalName,
+    AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, ExternalName,
     IdempotencyKey, MiniProjectId, ProjectId, RuntimeKindKey, Timestamp, TopologyKindKey,
     TopologyNodeId, parse_utc_timestamp,
 };
@@ -61,6 +61,38 @@ fn local_command(
     }
 }
 
+fn legacy_code_command(
+    correction: &LegacyEpicBacklogCodeCorrection,
+    expected_revision: AggregateRevision,
+    key: &str,
+    preview_hash: &ContentHash,
+) -> NewLocalCommand {
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "correct_epic_backlog_code",
+        "project_id": correction.project_id.to_string(),
+        "epic_id": correction.mini_project_id.to_string(),
+        "expected_revision": expected_revision.get(),
+        "prior_code": correction.expected_prior_code.as_str(),
+        "corrected_code": correction.corrected_code.as_str(),
+        "reason": correction.reason.as_str(),
+        "preview_hash": preview_hash.as_str(),
+    }))
+    .expect("the correction intent canonicalizes");
+    NewLocalCommand {
+        project_id: correction.project_id,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse(key).expect("an idempotency key"),
+        kind: CommandKind::CorrectEpicBacklogCode,
+        target: AggregateRef::Project {
+            project_id: correction.project_id,
+        },
+        target_revision: expected_revision,
+        intent,
+        created_at: correction.corrected_at,
+    }
+}
+
 #[test]
 fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
     let home = TempDir::new().expect("a temporary directory");
@@ -68,7 +100,7 @@ fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
-    store
+    let project = store
         .create_project(&NewProject {
             id: project_id,
             name: name("Legacy naming project"),
@@ -76,7 +108,7 @@ fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
             created_at: at("2026-09-04T08:00:00Z"),
         })
         .expect("the project is created");
-    let epic = store
+    store
         .create_mini_project(&NewMiniProject {
             id: epic_id,
             project_id,
@@ -107,20 +139,79 @@ fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
         reason: name("Remove the legacy separator from the QNR backlog code"),
         corrected_at: at("2026-09-04T09:00:00Z"),
     };
-    let command = local_command(
-        project_id,
+    let preview_hash = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "preview": "QNR-P1-to-QNRP1"
+    }))
+    .expect("the preview evidence canonicalizes")
+    .hash()
+    .clone();
+    let stale_command = legacy_code_command(
+        &correction,
+        project.revision,
+        "stale-legacy-code-qnr-p1-to-qnrp1",
+        &preview_hash,
+    );
+    let stale_envelope = ReceiptEnvelope::new(store.realm(), stale_command);
+    Connection::open(&database)
+        .expect("the fixture connection reopens")
+        .execute(
+            "UPDATE projects SET revision = revision + 1 WHERE id = ?1",
+            params![project_id.to_string()],
+        )
+        .expect("a concurrent project mutation commits after preview");
+    store
+        .correct_legacy_epic_backlog_code_with_intent(
+            &correction,
+            project.revision,
+            &stale_envelope,
+        )
+        .expect_err("the stale project revision is refused inside the correction transaction");
+    let after_stale: (i64, i64) = Connection::open(&database)
+        .expect("the fixture connection reopens")
+        .query_row(
+            "SELECT
+                 (SELECT count(*) FROM epic_backlog_code_corrections WHERE project_id = ?1),
+                 (SELECT count(*) FROM command_receipts WHERE idempotency_key = ?2)",
+            params![project_id.to_string(), "stale-legacy-code-qnr-p1-to-qnrp1"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the refused transaction reads back");
+    assert_eq!(
+        after_stale,
+        (0, 0),
+        "a stale preview writes neither its correction nor its receipt"
+    );
+
+    let current_project = store
+        .get_project(project_id)
+        .expect("the project reads")
+        .expect("the project exists");
+    let command = legacy_code_command(
+        &correction,
+        current_project.revision,
         "legacy-code-qnr-p1-to-qnrp1",
-        CommandKind::CorrectEpicBacklogCode,
-        AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        },
-        epic.revision,
+        &preview_hash,
     );
     let envelope = ReceiptEnvelope::new(store.realm(), command);
-    let (code, receipt, applied) = store
-        .correct_legacy_epic_backlog_code_with_intent(&correction, epic.revision, &envelope)
+    let (receipt, applied) = store
+        .correct_legacy_epic_backlog_code_with_intent(
+            &correction,
+            current_project.revision,
+            &envelope,
+        )
         .expect("the legacy correction commits");
-    assert_eq!(code.as_str(), "QNRP1");
+    let stored = store
+        .legacy_epic_backlog_code_correction_by_receipt(project_id, receipt.id)
+        .expect("the committed correction reads back by receipt");
+    assert_eq!(stored.corrected_code.as_str(), "QNRP1");
+    assert_eq!(stored.prior_code.as_str(), "QNR-P1");
+    assert_eq!(stored.receipt_id, receipt.id);
+    assert_eq!(stored.preview_hash, preview_hash);
+    assert_eq!(
+        stored.resulting_project_revision,
+        current_project.revision.next().expect("the next revision")
+    );
     assert_eq!(applied, kontor_store::Applied::Created);
     assert_eq!(
         store
@@ -142,12 +233,21 @@ fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
     assert_eq!(origin.1, "legacy");
     assert_eq!(origin.2.expect("a correction").as_str(), "QNRP1");
 
-    let (again, replayed_receipt, replayed) = store
-        .correct_legacy_epic_backlog_code_with_intent(&correction, epic.revision, &envelope)
+    let (replayed_receipt, replayed) = store
+        .correct_legacy_epic_backlog_code_with_intent(
+            &correction,
+            current_project.revision,
+            &envelope,
+        )
         .expect("the exact command replays");
-    assert_eq!(again.as_str(), "QNRP1");
     assert_eq!(replayed_receipt.id, receipt.id);
     assert_eq!(replayed, kontor_store::Applied::Unchanged);
+    assert_eq!(
+        store
+            .legacy_epic_backlog_code_correction_by_receipt(project_id, replayed_receipt.id)
+            .expect("the replay reads the same durable correction"),
+        stored
+    );
 }
 
 #[test]
