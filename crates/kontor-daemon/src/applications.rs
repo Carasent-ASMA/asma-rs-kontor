@@ -24742,7 +24742,7 @@ impl ApplicationOperations for Services {
                         Err(refusal) => blocked.push(seat_block(candidate.task_id, &refusal)),
                     }
                 }
-                self.mark_started_tasks_in_progress(project_id, &started)?;
+                self.mark_started_tasks_in_progress(project_id, &started, &blocked)?;
                 // A previous partial admission may have let an already-bound
                 // predecessor settle while a downstream seat was still
                 // unbound. Its handoff is durable and deliberately
@@ -24829,7 +24829,7 @@ impl ApplicationOperations for Services {
         // same closure certificate `in_progress` needs, so a task that misses
         // this transition is merely mislabelled rather than stuck. Moving it
         // here is still the point: a task being worked on should say so.
-        self.mark_started_tasks_in_progress(project_id, &started)?;
+        self.mark_started_tasks_in_progress(project_id, &started, &blocked)?;
         state.signals().appended();
         Ok(SchedulerStartDto {
             realm_id: state.realm_id(),
@@ -24991,7 +24991,7 @@ impl ApplicationOperations for Services {
                 Err(refusal) => blocked.push(seat_block(recovered.admitted.task_id, &refusal)),
             }
         }
-        self.mark_started_tasks_in_progress(project_id, &started)?;
+        self.mark_started_tasks_in_progress(project_id, &started, &blocked)?;
         self.retry_undelivered_dispatches().await?;
         state.signals().appended();
         Ok(SchedulerResumeDto {
@@ -30739,13 +30739,73 @@ impl Services {
             })
     }
 
+    /// Whether a task has durable proof of work underway.
+    ///
+    /// Deliberately stricter than the store's own re-proof, which admits an
+    /// open run with no seats yet as the transient moment between admission and
+    /// the runtime acknowledging them. That allowance is right for a seat that
+    /// is still arriving and wrong here: this asks about a launch that already
+    /// refused, where an unattached run means nothing was ever bound. Progress
+    /// is therefore claimed only for a live run holding at least one attached
+    /// seat, so a queued or unattached run reports nothing.
+    fn task_holds_an_attached_live_seat(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let runs = state
+            .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        for (team_run_id, lifecycle) in runs {
+            if lifecycle.is_terminal() {
+                continue;
+            }
+            let seats = state
+                .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+                .map_err(|error| self.refuse(&error))?;
+            // A binding row alone is not attachment: one exists from the
+            // moment the seat is reserved, including for a launch the runtime
+            // then refused. The runtime's own session id is the fact that
+            // separates a seat that is working from one that only has a place
+            // reserved for it.
+            if seats
+                .iter()
+                .any(|seat| seat.binding_id.is_some() && seat.native_id.is_some())
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn mark_started_tasks_in_progress(
         &self,
         project_id: ProjectId,
         started: &[StartedSeatDto],
+        blocked: &[BlockedTaskDto],
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        let seated: BTreeSet<TaskId> = started.iter().map(|seat| seat.task_id).collect();
+        let mut seated: BTreeSet<TaskId> = started.iter().map(|seat| seat.task_id).collect();
+        // Seating a candidate is not atomic with reporting it. `seat` commits
+        // the team run, the agent run and each earlier slot's binding before it
+        // reaches a later slot, so a refusal there — a fail-closed launch
+        // verification, say — returns no `StartedSeatDto` at all while leaving a
+        // running team run with attached seats behind. Deriving the task set
+        // from the reported seats alone therefore skipped exactly the tasks that
+        // had already begun, and they stayed `ready` while their seats worked.
+        //
+        // The refusal itself is untouched: the candidate stays blocked and its
+        // evidence stays fail-closed. Only the task's own state is corrected, and
+        // only where the durable rows prove it.
+        for block in blocked {
+            if seated.contains(&block.task_id) {
+                continue;
+            }
+            if self.task_holds_an_attached_live_seat(project_id, block.task_id)? {
+                seated.insert(block.task_id);
+            }
+        }
         for task_id in seated {
             let task = self.task_row(project_id, task_id)?;
             if task.state != TaskState::Ready {

@@ -41881,3 +41881,264 @@ async fn a_publication_merge_without_a_github_app_is_refused_as_unsupported() {
     assert_eq!(refused.code(), "unsupported_capability", "{}", refused.body);
     assert!(refused.body.contains("github-app.json"), "{}", refused.body);
 }
+/// Progress is derived from durable seats, not from what a start reported.
+///
+/// `seat` commits the team run, the agent run and each earlier slot's binding
+/// before it reaches a later slot, so a refusal there returns no
+/// `StartedSeatDto` at all while leaving attached seats behind. Deriving the
+/// task set from the reported seats alone skipped exactly the tasks that had
+/// already begun: they stayed `ready` while their seats worked, and Jira
+/// reconciliation then found no active implementation to converge on.
+///
+/// The three facts that together make the correction safe: an unattached
+/// refusal claims nothing, a partial one claims progress, and replaying either
+/// changes neither.
+#[tokio::test]
+async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does_not() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+
+    let created = ensure_project(&world, "partial-1", "Kontor", "/tmp/kontor-partial").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("partial-account")
+    .send(&world)
+    .await;
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Partially seated epic",
+            &category,
+            serde_json::json!([{"title": "Only task"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("partial-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    confirm_test_epic_identity(&world, &project, &epic);
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "budget": {"max_tokens": 1000, "max_commands": 10, "max_duration_seconds": 600,
+                       "max_cost_minor_units": 100, "cost_currency": "NOK"},
+            "granted_by": account_id,
+            "reason": "Start the epic"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("partial-arm")
+    .send(&world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+
+    let architect = kontor_core::id::RoleSlotId::parse("architect").expect("architect slot");
+    let builder = kontor_core::id::RoleSlotId::parse("builder").expect("builder slot");
+
+    // (2) Every declared slot refuses to launch. Admission is still durable, so
+    // a team run and its agent run exist, but nothing ever bound. A run holding
+    // no attached seat is not work in progress, and claiming otherwise would be
+    // exactly the false positive this correction must not introduce.
+    world.fake.refusing_launch_of(&architect);
+    world.fake.refusing_launch_of(&builder);
+    let unattached = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("partial-start")
+    .send(&world)
+    .await;
+    assert_eq!(unattached.status, 200, "{}", unattached.body);
+    assert!(
+        unattached.json()["started"]
+            .as_array()
+            .expect("started")
+            .is_empty(),
+        "no slot launched: {}",
+        unattached.body
+    );
+    assert_eq!(
+        unattached.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .len(),
+        1,
+        "{}",
+        unattached.body
+    );
+
+    let after_unattached = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task = &after_unattached.json()["tasks"][0];
+    assert_eq!(
+        task["team_runs"].as_array().expect("runs").len(),
+        1,
+        "admission is durable even though no slot launched: {}",
+        after_unattached.body
+    );
+    assert!(
+        !task["team_runs"][0]["seats"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .any(|seat| seat["attached"] == serde_json::json!(true)),
+        "no seat attached: {}",
+        after_unattached.body
+    );
+    assert_eq!(
+        task["state"], "ready",
+        "an unattached durable run is not work in progress: {}",
+        after_unattached.body
+    );
+
+    let preserved = &after_unattached.json()["tasks"][0]["team_runs"][0];
+    let preserved_team_run = preserved["team_run_id"]
+        .as_str()
+        .expect("a team run id")
+        .to_owned();
+    let preserved_agent_run = preserved["seats"][0]["agent_run_id"]
+        .as_str()
+        .expect("an agent run id")
+        .to_owned();
+
+    // (1) The earlier slot attaches and the later one still refuses. The
+    // candidate is reported blocked and contributes no started seat, but the
+    // task has demonstrably begun and its own state has to say so.
+    world.fake.allowing_launch_of(&architect);
+    let partial = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("partial-resume")
+    .send(&world)
+    .await;
+    assert_eq!(partial.status, 200, "{}", partial.body);
+    assert!(
+        partial.json()["started"]
+            .as_array()
+            .expect("started")
+            .is_empty(),
+        "the refused later slot yields no started seat: {}",
+        partial.body
+    );
+    assert_eq!(
+        partial.json()["blocked"].as_array().expect("blocked").len(),
+        1,
+        "the candidate is still blocked, and its refusal stays fail-closed: {}",
+        partial.body
+    );
+
+    let after_partial = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task = &after_partial.json()["tasks"][0];
+    assert!(
+        task["team_runs"][0]["seats"]
+            .as_array()
+            .expect("seats")
+            .iter()
+            .any(|seat| seat["attached"] == serde_json::json!(true)),
+        "the earlier slot attached: {}",
+        after_partial.body
+    );
+    assert_eq!(
+        task["state"], "in_progress",
+        "a task whose seat is working says so, even though a later slot is blocked: {}",
+        after_partial.body
+    );
+    let progressed_revision = task["revision"].as_u64().expect("a revision");
+
+    // (3) Replaying the exact same resume changes nothing: the transition is
+    // reached once, and a replay neither repeats it nor walks the task back.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("partial-resume")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+
+    let after_replay = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task = &after_replay.json()["tasks"][0];
+    assert_eq!(
+        task["state"], "in_progress",
+        "the replay holds the task where it was: {}",
+        after_replay.body
+    );
+    assert_eq!(
+        task["revision"].as_u64().expect("a revision"),
+        progressed_revision,
+        "an idempotent replay does not transition the task a second time: {}",
+        after_replay.body
+    );
+    assert_eq!(
+        task["team_runs"].as_array().expect("runs").len(),
+        1,
+        "the replay reuses the durable admission rather than creating another: {}",
+        after_replay.body
+    );
+}
