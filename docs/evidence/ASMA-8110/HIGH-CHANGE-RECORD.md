@@ -414,3 +414,30 @@ without any of this branch's commits.
 
 No deployment, no merge, no push to master, no Jira mutation, no recovery
 invocation, and no live-state change. ASMA-8100 remains untouched.
+
+## Second-remediation integration handoff
+
+The preceding `5743d7a` handoff is retained as the historical first-remediation
+record. It is not the current candidate.
+
+The second-remediation implementation and regression tests were integrated with
+current master `508a514` and frozen at `438f9760eb9faa1b5a830b751a476c3c7a24e44d`.
+That exact tree passed formatting, a locked all-target workspace check, and the
+focused null-binding, invalid-source non-disclosure, fresh-verdict fencing, and
+deterministic concurrent-recovery regressions. Its full locked workspace test
+run had one failure: the known parallel-load
+`a_concurrent_first_open_initializes_exactly_one_realm` transient, which passed
+three consecutive isolated reruns; every ASMA-8110 test passed.
+
+Independent verification then identified that the integrated master carries
+schema migrations 0091/0092 after this work's immutable 0090 migration. The
+scope's protected delivery readback was corrected to schema 92 in the
+documentation-only follow-up `4fd5b18`. Therefore the final candidate for PR
+#201 is **`4fd5b18`**: code tree `438f976` plus only that factual scope
+correction.
+
+The implementation seat reached its provider spend limit after completing the
+tests but before it could commit the already-authored change record or push.
+Root performed only that bounded integration remainder and recorded it as
+`operational_gap`; all task, TeamRun, AgentRun, seat, native-session,
+workspace, and `cwd` identities were preserved.
