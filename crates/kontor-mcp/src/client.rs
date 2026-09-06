@@ -222,10 +222,12 @@ impl fmt::Debug for Credential {
 }
 
 impl Credential {
-    /// Read one tier's secret out of a Realm's `0600` credential file.
+    /// Resolve one tier's credential for this process.
     ///
-    /// Exactly the configured tier is selected: a server told `observer` cannot
-    /// reach the operator secret sitting in the same file.
+    /// An identity-bound consultation process uses its inherited operator
+    /// credential. Every other caller reads exactly the configured tier from the
+    /// Realm's `0600` credential file: a server told `observer` cannot reach the
+    /// operator secret sitting beside it.
     ///
     /// # Errors
     /// Returns [`LocalError::NoCredentials`] when the state root holds no
@@ -241,6 +243,14 @@ impl Credential {
                 secret: SecretString::from(secret),
             });
         }
+        Self::read_file(state_root, tier)
+    }
+
+    /// Read exactly one disk tier, without consulting inherited seat identity.
+    ///
+    /// Kept separate so disk-format tests can exercise their stated contract
+    /// even when the test runner itself is an identity-bound Kontor seat.
+    fn read_file(state_root: &Path, tier: CallerTier) -> Result<Self, LocalError> {
         let path = state_root.join(CREDENTIAL_FILE);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
@@ -1024,7 +1034,7 @@ mod tests {
         .expect("the credential file is written");
 
         for tier in CallerTier::ALL {
-            let credential = Credential::read(root.path(), *tier).expect("the tier's secret");
+            let credential = Credential::read_file(root.path(), *tier).expect("the tier's secret");
             assert_eq!(credential.tier(), *tier);
             assert_eq!(
                 credential.secret.expose_secret(),

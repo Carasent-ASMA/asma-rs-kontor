@@ -465,6 +465,14 @@ credential precedence is not changed, the credential is neither read nor
 logged, and the focused parity test passes while the parent verification seat
 remains identity-bound.
 
+The resumed archive then found the same unstated assumption in
+`client::tests::a_credential_file_yields_exactly_the_tier_that_was_asked_for`.
+`Credential::read` now delegates its unchanged on-disk branch to a private
+`read_file` helper, and that disk-format unit calls the helper directly. The
+identity-bound operator branch remains first in the public production method.
+Both the exact unit and `memory_parity` pass with the parent seat credential
+still present.
+
 During the rejected verification turn, the registered native workspace and
 worktree disappeared while the exact branch, Kontor task, TeamRun, AgentRuns,
 SeatBindings and native sessions remained. Supported topology materialization
