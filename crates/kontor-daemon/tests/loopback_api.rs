@@ -6099,8 +6099,11 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             }),
         );
     }
-    let builder = kontor_core::id::RoleSlotId::parse("builder").expect("builder slot");
-    world.fake.refusing_launch_of(&builder);
+    // Let the immutable root and builder bind, then stop at the downstream
+    // inspector. This is the incident shape: a team is live and useful, while
+    // one already-created downstream AgentRun remains queued and unbound.
+    let inspector = kontor_core::id::RoleSlotId::parse("inspector").expect("inspector slot");
+    world.fake.refusing_launch_of(&inspector);
     let partial = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
         &serde_json::json!({
@@ -6127,7 +6130,7 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         1
     );
     assert_eq!(partial.json()["receipt"]["applied"], "created");
-    // Even though the later builder launch refused, the architect attachment
+    // Even though the later inspector launch refused, the architect attachment
     // is indexed and addressable immediately. No unrelated event is needed to
     // make `/v1/runs/{id}` catch up with the epic projection.
     let first_run = Call::get(format!("/v1/runs/{preserved_agent_run}"))
@@ -6140,7 +6143,43 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         preserved_agent_run
     );
 
-    world.fake.allowing_launch_of(&builder);
+    let partial_projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let partial_seats = partial_projection.json()["tasks"][0]["team_runs"][0]["seats"]
+        .as_array()
+        .expect("the partially seated team")
+        .clone();
+    let run_for = |role: &str| {
+        partial_seats
+            .iter()
+            .find(|seat| seat["role_slot"] == role)
+            .and_then(|seat| seat["agent_run_id"].as_str())
+            .and_then(|run| AgentRunId::parse(run).ok())
+            .unwrap_or_else(|| panic!("the partial team has a {role} AgentRun"))
+    };
+    let architect_run = run_for("architect");
+    let builder_run = run_for("builder");
+    let inspector_run = run_for("inspector");
+    for role in ["architect", "builder"] {
+        let seat = partial_seats
+            .iter()
+            .find(|seat| seat["role_slot"] == role)
+            .expect("the bound seat is projected");
+        assert_eq!(seat["attached"], true, "{role} stays bound");
+    }
+    assert_eq!(
+        partial_seats
+            .iter()
+            .find(|seat| seat["role_slot"] == "inspector")
+            .expect("the hole is projected")["attached"],
+        false,
+        "the refused downstream AgentRun is the exact recovery hole"
+    );
+    let calls_before_recovery = world.fake.calls();
+
+    world.fake.allowing_launch_of(&inspector);
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
         &serde_json::json!({
@@ -6152,7 +6191,10 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         }),
     )
     .signed_as(&world, "operator")
-    .with_key("resume-exact")
+    // The original scheduler and first recovery keys are both unavailable.
+    // A fresh key is valid only because the exact immutable root is bound and
+    // this same TeamRun still has the queued downstream inspector hole.
+    .with_key("resume-partial-under-a-fresh-key")
     .send(&world)
     .await;
     assert_eq!(started.status, 200, "{}", started.body);
@@ -6178,6 +6220,21 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             && seats.iter().any(|seat| seat["applied"] == "created"),
         "recovery must reuse the partial architect and create only missing seats: {}",
         started.body
+    );
+    let recovery_launches: Vec<AgentRunId> = world.fake.calls()[calls_before_recovery.len()..]
+        .iter()
+        .filter_map(|call| match call {
+            AdapterCall::Launch(run) => Some(*run),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !recovery_launches.contains(&architect_run) && !recovery_launches.contains(&builder_run),
+        "partial recovery must not prompt or relaunch bound root/builder seats: {recovery_launches:?}"
+    );
+    assert!(
+        recovery_launches.contains(&inspector_run),
+        "the queued inspector hole is the seat recovery launches: {recovery_launches:?}"
     );
     for role in ["builder", "inspector"] {
         let run = seats
@@ -6218,7 +6275,7 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         }),
     )
     .signed_as(&world, "operator")
-    .with_key("resume-exact")
+    .with_key("resume-partial-under-a-fresh-key")
     .send(&world)
     .await;
     assert_eq!(replayed.status, 200, "{}", replayed.body);
@@ -6325,6 +6382,55 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         runs[0]["lifecycle"], "launching",
         "runtime evidence advances the owning TeamRun too: {}",
         projection.body
+    );
+
+    // A second live row for one downstream role is not another hole to fill.
+    // It is divergent lineage, and choosing the newest row (what `fill_slot`
+    // would otherwise do) would make recovery silently pick a winner. The
+    // whole command refuses before another runtime call.
+    let duplicate_inspector = AgentRunId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_agent_run(&NewAgentRun {
+                id: duplicate_inspector,
+                project_id: ProjectId::parse(&project).expect("a project id"),
+                team_run_id: TeamRunId::parse(&team_run).expect("a team run id"),
+                parent_agent_run_id: Some(inspector_run),
+                role: inspector.clone().into_role_key(),
+                account_profile_id: None,
+                binding: None,
+                created_at: kontor_api::now(),
+            })
+            .expect("the divergent live successor is seeded");
+    });
+    let calls_before_ambiguity = world.fake.calls().len();
+    let ambiguous = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-ambiguous-downstream-lineage")
+    .send(&world)
+    .await;
+    assert_eq!(ambiguous.status, 409, "{}", ambiguous.body);
+    assert!(
+        ambiguous.json()["rule"]
+            .as_str()
+            .expect("a refusal rule")
+            .contains("more than one non-terminal seat"),
+        "the refusal names the ambiguity: {}",
+        ambiguous.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_ambiguity,
+        "ambiguous recovery reaches no runtime surface"
     );
 }
 

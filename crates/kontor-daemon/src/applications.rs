@@ -1970,6 +1970,125 @@ impl Services {
         Ok(runs)
     }
 
+    /// Prove a fresh exact-resume request names one partially seated team.
+    ///
+    /// The ordinary recovery shape is a queued, unbound root. This is the one
+    /// additional shape a caller may recover under a new key: the immutable
+    /// admission root is still the first root of the frozen handoff graph, it is
+    /// already bound and non-terminal, and a downstream run from that same
+    /// TeamRun is still queued and unbound. Bound seats are not recovery
+    /// targets; [`Self::seat_with_address`] returns them unchanged and
+    /// [`Self::fill_slot`] re-enters the runtime only for the exact hole.
+    fn validate_partial_team_resume(
+        &self,
+        project_id: ProjectId,
+        admitted: &AdmittedCandidate,
+        team_run: &kontor_core::repository::TeamRun,
+        root_run: &kontor_core::repository::AgentRun,
+    ) -> Result<(), ApiError> {
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let roots = eligible_roots(&template);
+        let Some(root_slot) = template
+            .slots
+            .iter()
+            .map(|slot| slot.id.clone())
+            .find(|slot| roots.contains(slot))
+        else {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the frozen team has no admission root",
+            ));
+        };
+
+        let Some(root_binding) = root_run.binding.as_ref() else {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "only an exact queued root or a bound root with a downstream hole may be freshly resumed",
+            ));
+        };
+        if root_run.parent_agent_run_id.is_some()
+            || &root_run.role != root_slot.as_role_key()
+            || root_binding.agent_run_id != root_run.id
+            || root_binding.identity.runtime_kind != admitted.runtime_kind
+            || root_run.projection.lifecycle.is_terminal()
+            || root_run.terminal.is_some()
+            || root_run.projection.desired != kontor_core::state::DesiredRunState::RunRequested
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable admission AgentRun no longer matches the bound non-terminal team root",
+            ));
+        }
+
+        let declared: BTreeSet<RoleKey> = template
+            .slots
+            .iter()
+            .map(|slot| slot.id.as_role_key().clone())
+            .collect();
+        let downstream: BTreeSet<RoleKey> = template
+            .handoffs
+            .iter()
+            .map(|handoff| handoff.to_slot.as_role_key().clone())
+            .collect();
+        let members = self.team_members(project_id, team_run.id)?;
+        let mut current = BTreeMap::new();
+        for member in &members {
+            if member.team_run_id != team_run.id || !declared.contains(&member.role) {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the partial TeamRun contains a seat outside its frozen definition",
+                ));
+            }
+            if member.projection.lifecycle.is_terminal() != member.terminal.is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the partial TeamRun contains an inconsistent terminal seat",
+                ));
+            }
+            if member.terminal.is_some() {
+                continue;
+            }
+            if current.insert(member.role.clone(), member).is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the partial TeamRun has more than one non-terminal seat for a role slot",
+                ));
+            }
+        }
+
+        if current.get(root_slot.as_role_key()).map(|run| run.id) != Some(root_run.id) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable admission AgentRun is not the live team root",
+            ));
+        }
+        let mut hole = false;
+        for role in downstream {
+            let Some(run) = current.get(&role) else {
+                continue;
+            };
+            if run.binding.is_none() {
+                if run.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                    || run.projection.desired != kontor_core::state::DesiredRunState::RunRequested
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "an unbound downstream AgentRun is not queued for its original launch",
+                    ));
+                }
+                hole = true;
+            }
+        }
+        if !hole {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the partially seated TeamRun has no queued and unbound downstream AgentRun",
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolve the one current run at the leaf of a delivery role's replacement
     /// chain. Repository enumeration is oldest-first, so selecting the first
     /// same-role row would target an archived predecessor after replacement.
@@ -24959,17 +25078,20 @@ impl ApplicationOperations for Services {
                     "a terminal admission cannot be resumed",
                 ));
             }
-            if !replayed
-                && (team.lifecycle != kontor_core::state::RunLifecycle::Queued
-                    || agent.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
-                    || agent.projection.desired
-                        != kontor_core::state::DesiredRunState::RunRequested
-                    || agent.binding.is_some())
-            {
-                return Err(self.deny(
-                    ApiErrorCode::RevisionConflict,
-                    "only an exact queued and unbound admission may be freshly resumed",
-                ));
+            if !replayed {
+                let queued_root = team.lifecycle == kontor_core::state::RunLifecycle::Queued
+                    && agent.projection.lifecycle == kontor_core::state::RunLifecycle::Queued
+                    && agent.projection.desired
+                        == kontor_core::state::DesiredRunState::RunRequested
+                    && agent.binding.is_none();
+                if !queued_root {
+                    self.validate_partial_team_resume(
+                        project_id,
+                        &recovered.admitted,
+                        &team,
+                        &agent,
+                    )?;
+                }
             }
             recoverable.push((address, recovered));
         }
