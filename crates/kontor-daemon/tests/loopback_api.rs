@@ -36950,6 +36950,16 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             "CSW operational gate evidence",
             "consultation_topic_repeats_container_prefix",
         ),
+        (
+            "committee-topic-embedded-jira-key",
+            "Operational gate evidence for ASMA-9001",
+            "consultation_topic_repeats_scope_code",
+        ),
+        (
+            "committee-topic-embedded-item-code",
+            "Operational gate evidence (PROMO-9001)",
+            "consultation_topic_repeats_scope_code",
+        ),
     ] {
         let mut invalid = invoke_body.clone();
         invalid["topic"] = serde_json::json!(bad_topic);
