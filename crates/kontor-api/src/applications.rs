@@ -4840,8 +4840,10 @@ pub struct ResumeAdmissionsRequest {
     /// The epic revision the caller observed before authorizing recovery.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Exact queued admissions to resume. This is a set: duplicate ids refuse
-    /// the whole request before a runtime is contacted.
+    /// Exact admissions to resume. A fresh key accepts either a queued unbound
+    /// root or a bound root whose same TeamRun has a queued downstream hole.
+    /// This is a set: duplicate ids refuse the whole request before a runtime
+    /// is contacted.
     pub admissions: Vec<AdmissionResumeRefDto>,
 }
 
@@ -7073,7 +7075,7 @@ pub trait ApplicationOperations: Send + Sync {
         request: &StartRequest,
     ) -> Result<SchedulerStartDto, ApiError>;
 
-    /// Resume exact queued admissions through their durable launch receipts.
+    /// Resume exact incomplete admissions through their durable launch receipts.
     async fn resume_admissions(
         &self,
         key: &IdempotencyKey,
@@ -10562,7 +10564,7 @@ pub async fn start(
     ))
 }
 
-/// Resume exact queued, unbound admissions without the original scheduler key.
+/// Resume exact incomplete admissions without the original scheduler key.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume", tag = "applications",
     params(

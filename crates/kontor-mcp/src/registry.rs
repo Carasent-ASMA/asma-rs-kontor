@@ -1764,7 +1764,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "A non-empty array of exact team_run_id/agent_run_id pairs.",
             ),
         ],
-        about: "Resume exact queued admissions without recreating their run identities.",
+        about: "Resume exact incomplete admissions without recreating their run identities.",
     },
     ToolSpec {
         name: "kontor_lifecycle_transition",
