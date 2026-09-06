@@ -18068,16 +18068,13 @@ impl ApplicationOperations for Services {
         request: &EpicBacklogCodeCorrectionApplyRequest,
     ) -> Result<AppliedEpicBacklogCodeCorrectionDto, ApiError> {
         let state = self.state()?;
-        self.project_at(project_id, request.expected_revision)?;
-        let epic = self.epic_row(project_id, epic_id)?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
+        let target = AggregateRef::Project { project_id };
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "correct_epic_backlog_code",
             "project_id": project_id.to_string(),
             "epic_id": epic_id.to_string(),
+            "expected_revision": request.expected_revision.get(),
             "prior_code": request.expected_prior_code.as_str(),
             "corrected_code": request.corrected_code.as_str(),
             "reason": request.reason.as_str(),
@@ -18103,9 +18100,6 @@ impl ApplicationOperations for Services {
             }
         }
         let now = kontor_api::now();
-        let target_revision = replayed
-            .as_ref()
-            .map_or(epic.revision, |receipt| receipt.target_revision);
         let envelope = ReceiptEnvelope::new(
             state.realm_id(),
             NewLocalCommand {
@@ -18114,12 +18108,12 @@ impl ApplicationOperations for Services {
                 idempotency_key: key.clone(),
                 kind: CommandKind::CorrectEpicBacklogCode,
                 target,
-                target_revision,
+                target_revision: request.expected_revision,
                 intent: intent.clone(),
                 created_at: now,
             },
         );
-        let (_, receipt, applied) = state
+        let (receipt, applied) = state
             .with_store(|store| {
                 store.correct_legacy_epic_backlog_code_with_intent(
                     &LegacyEpicBacklogCodeCorrection {
@@ -18130,27 +18124,41 @@ impl ApplicationOperations for Services {
                         reason: request.reason.clone(),
                         corrected_at: now,
                     },
-                    target_revision,
+                    request.expected_revision,
                     &envelope,
                 )
             })
             .map_err(|error| self.refuse(&error))?;
         state.signals().appended();
+        // Do not answer from either the request or the values returned before
+        // commit. Reopen the durable correction by receipt and require the
+        // store to prove its intent linkage and effective-code readback.
+        let confirmed = state
+            .with_store(|store| {
+                store.legacy_epic_backlog_code_correction_by_receipt(project_id, receipt.id)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        if confirmed.receipt_id != receipt.id {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the legacy epic-code correction did not read back with its authorizing receipt",
+            ));
+        }
         Ok(AppliedEpicBacklogCodeCorrectionDto {
             correction: EpicBacklogCodeCorrectionPreviewDto {
                 realm_id: state.realm_id(),
-                project_id,
-                epic_id,
-                prior_code: request.expected_prior_code.clone(),
-                corrected_code: request.corrected_code.clone(),
-                preview_hash: request.preview_hash.clone(),
+                project_id: confirmed.project_id,
+                epic_id: confirmed.mini_project_id,
+                prior_code: confirmed.prior_code,
+                corrected_code: confirmed.corrected_code,
+                preview_hash: confirmed.preview_hash,
                 snapshot_cursor: self.cursor()?,
             },
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt.id.to_string(),
                 applied: applied_dto(applied),
-                revision: target_revision,
+                revision: confirmed.resulting_project_revision,
                 snapshot_cursor: self.cursor()?,
             },
         })

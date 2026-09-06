@@ -953,6 +953,31 @@ pub struct LegacyEpicBacklogCodeCorrection {
     pub corrected_at: Timestamp,
 }
 
+/// Authoritative readback of one completed legacy epic-code correction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredLegacyEpicBacklogCodeCorrection {
+    /// Receipt that authorized the correction.
+    pub receipt_id: CommandReceiptId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose effective namespace changed.
+    pub mini_project_id: MiniProjectId,
+    /// Exact immutable legacy source value.
+    pub prior_code: LegacyEpicBacklogCode,
+    /// Canonical project-unique value that became effective.
+    pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained as immutable evidence.
+    pub reason: ExternalName,
+    /// Project revision against which the command was authorized.
+    pub expected_project_revision: AggregateRevision,
+    /// Project revision produced by the correction.
+    pub resulting_project_revision: AggregateRevision,
+    /// Exact preview hash recorded in the command intent.
+    pub preview_hash: ContentHash,
+    /// When the correction was authorized.
+    pub corrected_at: Timestamp,
+}
+
 /// One narrowly authorized repair of malformed pre-enforcement consultation
 /// topic material.
 #[derive(Debug, Clone, PartialEq, Eq)]
