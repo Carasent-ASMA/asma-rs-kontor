@@ -39161,6 +39161,104 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         consultation_cwds.len(),
         "two consultations claimed one directory: {consultation_cwds:?}"
     );
+    // A peer can submit while a retired seat's successor launch is unavailable.
+    // Resumption must preserve that finding and CAS the revision read on retry,
+    // rather than permanently requiring the revision at initial preparation.
+    let mut interrupted_invoke = invoke_body.clone();
+    interrupted_invoke["topic"] = serde_json::json!("Interrupted seat recovery");
+    let interrupted = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &interrupted_invoke,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-interrupted-recovery-invoke")
+    .send(world)
+    .await;
+    assert_eq!(interrupted.status, 200, "{}", interrupted.body);
+    let interrupted_json = interrupted.json();
+    let interrupted_run = interrupted_json["committee_run_id"].as_str().unwrap();
+    let interrupted_seats = interrupted_json["seats"].as_array().unwrap();
+    let target = interrupted_seats
+        .iter()
+        .find(|seat| {
+            seat["logical_role"] == "reviewer" && seat["model_route"]["provider"] != "opencode"
+        })
+        .unwrap();
+    let target_id = target["seat_binding_id"].as_str().unwrap();
+    let target_slot = RoleSlotId::parse(target["role_slot_id"].as_str().unwrap()).unwrap();
+    let peer = interrupted_seats
+        .iter()
+        .find(|seat| seat["logical_role"] == "reviewer" && seat["seat_binding_id"] != target_id)
+        .unwrap();
+    let interrupted_recovery = serde_json::json!({
+        "expected_revision": interrupted_json["revision"],
+        "expected_native_id": target["observed_binding"]["native_id"],
+        "reason": "credential_propagation"
+    });
+    let recovery_path = format!(
+        "/v1/projects/{project}/committee-runs/{interrupted_run}/seats/{target_id}/recover"
+    );
+    world.fake.refusing_launch_of(&target_slot);
+    let failed = Call::post(&recovery_path, &interrupted_recovery)
+        .signed_as(world, "admin")
+        .with_key("committee-interrupted-recovery")
+        .send(world)
+        .await;
+    assert_eq!(failed.status, 503, "{}", failed.body);
+    let fenced = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{interrupted_run}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(fenced.status, 200, "{}", fenced.body);
+    let peer_finding = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{interrupted_run}/findings:record"),
+        &serde_json::json!({
+            "round": 1, "verdict": "compliant", "evidence_complete": true,
+            "rationale": "Independent peer evidence arrived during recovery",
+            "evidence_refs": ["evidence:peer-during-recovery"],
+            "expected_revision": fenced.json()["revision"]
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(peer["seat_binding_id"].as_str().unwrap()).unwrap(),
+            ),
+    )
+    .with_key("committee-peer-during-recovery")
+    .send(world)
+    .await;
+    assert_eq!(peer_finding.status, 200, "{}", peer_finding.body);
+    world.fake.allowing_launch_of(&target_slot);
+    let resumed = Call::post(&recovery_path, &interrupted_recovery)
+        .signed_as(world, "admin")
+        .with_key("committee-interrupted-recovery")
+        .send(world)
+        .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(resumed.json()["committee"]["findings_recorded"], 1);
+    assert_eq!(resumed.json()["seat_binding_id"], target_id);
+    assert_ne!(
+        resumed.json()["successor_native_id"],
+        interrupted_recovery["expected_native_id"]
+    );
+    assert_eq!(
+        resumed.json()["committee"]["findings"][0]["evidence_refs"],
+        serde_json::json!(["evidence:peer-during-recovery"])
+    );
+    let calls_after_resume = world.fake.calls();
+    let replay = Call::post(&recovery_path, &interrupted_recovery)
+        .signed_as(world, "admin")
+        .with_key("committee-interrupted-recovery")
+        .send(world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(world.fake.calls(), calls_after_resume);
 }
 
 #[tokio::test]

@@ -6113,14 +6113,17 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
         let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
         before["agent"]["currentModeId"] = serde_json::json!(mode);
         before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
+        let mut archived_list = v(AGENT_LIST_ARCHIVED_ONLY);
+        archived_list["entries"][0]["agent"] =
+            consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id)["agent"].clone();
+        archived_list["entries"][0]["agent"]["labels"][label::READ_ONLY] =
+            serde_json::json!("true");
         let recorded = RecordedPaseo::new()
             .answering(&PaseoCommand::version(), VERSION)
             .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
             .then_answering_rpc("fetch_agent_request", before.clone())
-            .answering_rpc(
-                "fetch_agent_request",
-                consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id),
-            );
+            .answering_rpc("fetch_agent_request", v(AGENT_NOT_FOUND))
+            .answering_rpc("fetch_agents_request", archived_list);
         let plane = Plane::fresh(recorded);
         let request = ConsultationSeatRetireRequest {
             seat_binding_id,
@@ -6136,6 +6139,12 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
             ),
             requested_at: kontor_core::id::Timestamp::now(),
         };
+        plane
+            .adapter
+            .retire_consultation_seat(&request)
+            .await
+            .unwrap();
+        assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
         plane
             .adapter
             .retire_consultation_seat(&request)
@@ -6158,6 +6167,8 @@ async fn completed_consultation_release_checks_identity_and_replays_after_lost_c
     let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
     let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
     let archived = consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id);
+    let mut archived_list = v(AGENT_LIST_ARCHIVED_ONLY);
+    archived_list["entries"][0]["agent"] = archived["agent"].clone();
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
@@ -6165,7 +6176,8 @@ async fn completed_consultation_release_checks_identity_and_replays_after_lost_c
             "fetch_agent_request",
             consultation_agent(AGENT_PERMISSION_OPEN, run_id, seat_binding_id),
         )
-        .answering_rpc("fetch_agent_request", archived);
+        .answering_rpc("fetch_agent_request", v(AGENT_NOT_FOUND))
+        .answering_rpc("fetch_agents_request", archived_list);
     let plane = Plane::fresh(recorded);
     let request = ConsultationSessionReleaseRequest {
         run_id,

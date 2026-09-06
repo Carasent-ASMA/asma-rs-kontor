@@ -2309,7 +2309,7 @@ mod tests {
             ("claude", "claude-opus-5", "default"),
             ("codex", "gpt-5.6-sol", "auto-review"),
         ] {
-            let request = PaseoRpc::consultation_agent_create(
+            let mut request = PaseoRpc::consultation_agent_create(
                 "request-1".to_owned(),
                 "wks_1",
                 "/w/epic",
@@ -2321,6 +2321,27 @@ mod tests {
                 "seat-secret-value",
             )
             .expect("a consultation-safe provider");
+            request.with_consultation_mcp(&crate::seat_mcp::SeatMcp {
+                command: "kontor-mcp".to_owned(),
+                state_root: std::path::PathBuf::from("/realm"),
+            });
+            let server = &request.message["config"]["mcpServers"]["kontor"];
+            assert_eq!(
+                server["type"], "stdio",
+                "Paseo requires its stdio discriminator"
+            );
+            assert_eq!(server["command"], "kontor-mcp");
+            assert_eq!(
+                server["args"],
+                serde_json::json!([
+                    "--state-root",
+                    "/realm",
+                    "--credential-tier",
+                    "operator",
+                    "--serve-profile",
+                    "consultation"
+                ])
+            );
             assert_eq!(request.message["config"]["modeId"], expected_mode);
             if provider == "claude" {
                 let denied = request.message["config"]["providerOptions"]["disallowedTools"]

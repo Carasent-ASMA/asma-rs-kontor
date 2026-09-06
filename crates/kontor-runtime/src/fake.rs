@@ -551,6 +551,7 @@ struct FakeState {
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
     launched_prompts: BTreeMap<AgentRunId, BoundedText>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
+    retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
     unavailable_providers: BTreeSet<String>,
     provider_fallbacks: BTreeMap<String, ModelRung>,
     minted: u64,
@@ -1062,6 +1063,7 @@ impl ScriptedFakeRuntime {
                 launched_accounts: BTreeMap::new(),
                 launched_prompts: BTreeMap::new(),
                 consultation_routes: BTreeMap::new(),
+                retired_consultations: BTreeMap::new(),
                 unavailable_providers: BTreeSet::new(),
                 provider_fallbacks: BTreeMap::new(),
                 minted: 0,
@@ -2597,6 +2599,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             &state.capabilities,
             &OperationContext::new(RuntimeCapability::Retire),
         )?;
+        if let Some(retired) = state.retired_consultations.get(&request.identity.native_id) {
+            if retired.seat_binding_id != request.seat_binding_id
+                || retired.identity != request.identity
+                || retired.model_rung != request.model_rung
+                || retired.route_provenance != request.route_provenance
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            return Ok(ConsultationSeatRetireOutcome {
+                identity: retired.identity.clone(),
+                archived_at: retired.requested_at,
+            });
+        }
         let held = state.consultations.get(&request.seat_binding_id).ok_or(
             RuntimeError::StaleBinding {
                 rule: "the consultation seat is absent",
@@ -2607,6 +2622,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        state
+            .retired_consultations
+            .insert(request.identity.native_id.clone(), request.clone());
         state.consultations.remove(&request.seat_binding_id);
         state.consultation_runs.remove(&request.seat_binding_id);
         state
