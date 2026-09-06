@@ -38,6 +38,16 @@ closed_enum! {
         ResumeTask => "resume_task",
         /// Record a gate verdict.
         RecordGateVerdict => "record_gate_verdict",
+        /// Route one already-recorded rejected gate verdict that was never
+        /// routed, and fence the phase it returns to.
+        ///
+        /// Deliberately distinct from [`CommandKind::RecordGateVerdict`]. This
+        /// authority consumes a verdict that already exists and writes no
+        /// evaluation of its own; one kind covering both would let the receipt
+        /// that *recorded* a rejection be replayed as the authority that routed
+        /// it — and, worse, would make a recovery indistinguishable from a
+        /// second verdict in the very history the recovery exists to preserve.
+        RecoverGateRejection => "recover_gate_rejection",
         /// Approve an intake proposal.
         ApproveIntake => "approve_intake",
         /// Write a projection to an external ticket.
@@ -455,7 +465,12 @@ impl CommandKind {
             Self::CancelRun => run_intent(target, DesiredRunState::CancelRequested),
             Self::ParkRun => run_intent(target, DesiredRunState::ParkRequested),
             Self::AbandonRun => run_intent(target, DesiredRunState::AbandonRequested),
-            Self::ResumeTask | Self::RecordGateVerdict => witness(matches!(target, A::Task)),
+            // Recovering a rejection witnesses the task for the same reason
+            // recording the verdict does: the workflow it routes is not an
+            // aggregate a command may name, and the task is the one it has.
+            Self::ResumeTask | Self::RecordGateVerdict | Self::RecoverGateRejection => {
+                witness(matches!(target, A::Task))
+            }
             // A project is a legal target because an intake proposal is decided
             // *before* the work it proposes exists: at that moment there is no
             // goal and no task to name, and a receipt cannot target a row that

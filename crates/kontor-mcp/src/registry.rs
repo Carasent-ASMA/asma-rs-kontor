@@ -1894,6 +1894,73 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Record one gate verdict. A waiver requires admin authority.",
     },
     ToolSpec {
+        name: "kontor_gate_rejection_recover",
+        // Admin, and not for the reason a waiver is. A waiver decides whether a
+        // rule applies; this repairs a workflow that a defect left standing in
+        // the wrong phase. Both are authority over the process rather than work
+        // inside it, and neither belongs on an ordinary worker seat -- which is
+        // also why this tool is absent from the `worker` profile above.
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "gate_id",
+                Place::Path,
+                ArgType::OpenKey,
+                "The gate the pinned profile declares.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "rejection_receipt_id",
+                Place::Body,
+                ArgType::Text,
+                "The receipt of the `record_gate_verdict` command being consumed.",
+            ),
+            req(
+                "sequence",
+                Place::Body,
+                ArgType::U32,
+                "Which append-only evaluation of the gate that receipt recorded.",
+            ),
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The task revision the caller read.",
+            ),
+            req(
+                "expected_workflow_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The workflow revision the caller read.",
+            ),
+            req(
+                "expected_current_phase",
+                Place::Body,
+                ArgType::OpenKey,
+                "The phase the caller read the workflow at.",
+            ),
+            req(
+                "expected_rejection_target",
+                Place::Body,
+                ArgType::OpenKey,
+                "The pinned rejection target the caller read. Compared, never \
+                 applied: naming a different phase is refused rather than obeyed.",
+            ),
+        ],
+        about: "Route one already-recorded rejected gate verdict that was never routed. \
+                Records no verdict and chooses no phase.",
+    },
+    ToolSpec {
         name: "kontor_turn_settle",
         tier: CallerTier::Operator,
         method: Method::Post,

@@ -121,10 +121,11 @@ use kontor_api::applications::{
     ValidateTopologySpecRequest,
 };
 use kontor_api::applications::{
-    GateProjectionDto, GateVerdictDto, ProvenanceDto, RecordGateRequest, RedactionDto,
-    ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
-    SelectionRequest, SessionVerdictCitationDto, TicketFieldDiffDto, TicketReconcileAppliedDto,
-    TicketReconcileApplyRequest, TicketReconcilePlanDto,
+    GateProjectionDto, GateRejectionRecoveryDto, GateVerdictDto, ProvenanceDto, RecordGateRequest,
+    RecoverGateRejectionRequest, RedactionDto, ResolveContextRequest, ResolvedContextDto,
+    RuntimeSettlementDto, SelectionDto, SelectionRequest, SessionVerdictCitationDto,
+    TicketFieldDiffDto, TicketReconcileAppliedDto, TicketReconcileApplyRequest,
+    TicketReconcilePlanDto,
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
@@ -1090,6 +1091,142 @@ impl Services {
         current
     }
 
+    /// The refusal a fresh key gets for a rejection somebody already routed.
+    ///
+    /// It names the command that won, because the operator's next question is
+    /// always "then what happened to it?" and the answer is a receipt they can
+    /// go and read. Built in one place and used from both the pre-check and the
+    /// post-transaction path, so a concurrent loser cannot get a thinner
+    /// refusal than a sequential one.
+    fn already_routed_refusal(
+        &self,
+        route: &kontor_core::repository::GateRejectionRoute,
+    ) -> ApiError {
+        self.deny(
+            ApiErrorCode::RevisionConflict,
+            "this rejection was already routed",
+        )
+        .about("gate rejection route")
+        // A resource address rather than an echoed request value: this is
+        // exactly the "something a caller can go and look at" the diagnostic
+        // exists for, and reading it is how an operator finds the result its
+        // fresh key was never going to produce.
+        .located_at(format!("command-receipts/{}", route.route_receipt_id))
+        .with_revision(Some(route.to_revision))
+    }
+
+    /// One route row as the recovery surface reports it.
+    ///
+    /// Shared by the fresh call and its replay so the two cannot drift: a replay
+    /// that rendered different identity fields would defeat the point of being
+    /// able to retry.
+    fn rejection_recovery_dto(
+        realm_id: kontor_core::id::RealmId,
+        route: &kontor_core::repository::GateRejectionRoute,
+        applied: AppliedDto,
+        receipt_id: &str,
+    ) -> GateRejectionRecoveryDto {
+        GateRejectionRecoveryDto {
+            realm_id,
+            task_id: route.task_id,
+            workflow_id: route.workflow_id.to_string(),
+            gate: route.gate.as_str().to_owned(),
+            sequence: route.gate_sequence,
+            rejection_receipt_id: route.rejection_receipt_id.to_string(),
+            prior_phase: route.from_phase.as_str().to_owned(),
+            current_phase: route.rejection_target.as_str().to_owned(),
+            prior_revision: route.from_revision,
+            current_revision: route.to_revision,
+            applied,
+            receipt_id: receipt_id.to_owned(),
+        }
+    }
+
+    /// Whether a rejection route still fences this workflow where it sits.
+    ///
+    /// A rejected gate routes the work back to a pinned earlier phase. Every
+    /// artifact that existed at that moment is, by definition, work the reviewer
+    /// just rejected — so ordinary evidence advancement would immediately catch
+    /// the workflow forward again on exactly the evidence that failed. The route
+    /// row records when that happened, and the fence holds until the phase has
+    /// actually been authored again.
+    ///
+    /// Releasing it takes one role turn that is *all* of: settled strictly after
+    /// the route, on this task's preserved active TeamRun, by the role the
+    /// pinned profile puts on the edge out of the rejection target, carrying
+    /// every artifact that phase requires. A reviewer's turn, an empty turn, a
+    /// turn on another run and a turn that produced none of the required
+    /// artifacts each fail at least one of those and leave the fence closed.
+    fn rejection_fence_holds(
+        &self,
+        project_id: ProjectId,
+        workflow: &TaskWorkflow,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let Some(route) = state
+            .with_store(|store| {
+                store.active_gate_rejection_fence(project_id, workflow.id, &workflow.current_phase)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(false);
+        };
+        let definition = &workflow.snapshot.definition;
+        // The role that *performs* the phase the work returned to.
+        //
+        // A `handoff_role` on `from -> to` names the role the work is handed
+        // *to* -- the profile validator refuses one "a role the pinned team
+        // supplies no slot for", because it is the role that has to pick the
+        // work up. So the author of the rejection target is named by the edge
+        // leading *into* it, not the one leading out; the edge out of it names
+        // the reviewer who will judge the rework, and requiring that role here
+        // would let the very reviewer turn that rejected the work release the
+        // fence the rejection raised.
+        //
+        // An entry phase has no inbound edge and therefore names nobody. An
+        // unnameable role cannot be required, so the fence then rests on
+        // freshness, run and required artifacts alone rather than closing
+        // forever on a role that does not exist.
+        let handoff_role = definition
+            .edges
+            .iter()
+            .find(|edge| edge.to == route.rejection_target)
+            .and_then(|edge| edge.handoff_role.clone());
+        let required: BTreeSet<ArtifactKey> = definition
+            .phases
+            .iter()
+            .find(|phase| phase.id == route.rejection_target)
+            .map(|phase| phase.required_artifacts.iter().cloned().collect())
+            .unwrap_or_default();
+        // The route's own immutable TeamRun, read off the row rather than
+        // recomputed. Asking the repository for the task's *current* run would
+        // hand the answer to whichever TeamRun was created last, so a run that
+        // had nothing to do with this rejection could release its fence. The
+        // route-time id is a snapshot taken in the transaction that wrote the
+        // route, and it is the only run whose rework this fence accepts.
+        //
+        // Its lifecycle is deliberately not tested. A team that settled every
+        // seat closes as `succeeded` while its seats stay persistent and
+        // reusable, which is precisely the state a recovered rejection is found
+        // in and a new bounded turn is handed into.
+        let preserved_run = route.team_run_id;
+        let released = state
+            .with_store(|store| store.list_settled_turns(project_id, workflow.task_id))
+            .map_err(|error| self.refuse(&error))?
+            .iter()
+            .any(|turn| {
+                turn.settled_at > route.routed_at
+                    && turn.team_run_id == preserved_run
+                    && handoff_role
+                        .as_ref()
+                        .is_none_or(|role| turn.role_slot_id.as_role_key() == role)
+                    && required
+                        .iter()
+                        .all(|artifact| turn.artifacts.contains(artifact))
+            });
+        Ok(!released)
+    }
+
     /// Advance the stored phase only while its persisted requirements prove it
     /// complete. This is a deterministic projection of producer turns and gate
     /// states, never a phase claim from an API request.
@@ -1109,6 +1246,12 @@ impl Services {
                         "the task has no active workflow to advance",
                     )
                 })?;
+            // Checked before any evidence is read, so a fenced workflow is not
+            // merely refused an advance -- no advance is even computed from the
+            // artifacts the rejection was about.
+            if self.rejection_fence_holds(project_id, &workflow)? {
+                return Ok(workflow);
+            }
             let gates = state
                 .with_store(|store| store.gate_states(project_id, workflow.id))
                 .map_err(|error| self.refuse(&error))?;
@@ -24769,6 +24912,181 @@ impl ApplicationOperations for Services {
             }),
             receipt_id: receipt.id.to_string(),
         })
+    }
+
+    async fn recover_gate_rejection(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        gate: &str,
+        request: &RecoverGateRejectionRequest,
+    ) -> Result<GateRejectionRecoveryDto, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let gate_key = GateKey::parse(gate).map_err(|error| self.refuse_domain(&error))?;
+        let rejection_receipt_id = CommandReceiptId::parse(&request.rejection_receipt_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let expected_current_phase =
+            kontor_core::id::PhaseKey::parse(&request.expected_current_phase)
+                .map_err(|error| self.refuse_domain(&error))?;
+        let expected_rejection_target =
+            kontor_core::id::PhaseKey::parse(&request.expected_rejection_target)
+                .map_err(|error| self.refuse_domain(&error))?;
+        if request.sequence == 0 {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a gate evaluation sequence starts at 1",
+            ));
+        }
+
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "gate_rejection_recover",
+            "task_id": task_id.to_string(),
+            "gate": gate_key.as_str(),
+            "rejection_receipt_id": rejection_receipt_id.to_string(),
+            "sequence": request.sequence,
+            "expected_task_revision": request.expected_task_revision.get(),
+            "expected_workflow_revision": request.expected_workflow_revision.get(),
+            "expected_current_phase": expected_current_phase.as_str(),
+            "expected_rejection_target": expected_rejection_target.as_str(),
+        }))?;
+        let target = AggregateRef::Task { task_id };
+        // Replay is answered before any state precondition, exactly as the store
+        // does: by the time an honest retry arrives, the state it asserted has
+        // deliberately changed, so checking preconditions first would refuse it.
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            let route = state
+                .with_store(|store| {
+                    store.gate_rejection_route_by_rejection(project_id, rejection_receipt_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .filter(|route| route.route_receipt_id == receipt.id)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "the replayed receipt has no rejection route bound to it",
+                    )
+                })?;
+            return Ok(Self::rejection_recovery_dto(
+                state.realm_id(),
+                &route,
+                AppliedDto::Unchanged,
+                &receipt.id.to_string(),
+            ));
+        }
+        // A fresh key against a rejection somebody already consumed changes
+        // nothing and says which command consumed it, so the operator can read
+        // that result rather than concluding the recovery never happened.
+        if let Some(existing) = state
+            .with_store(|store| {
+                store.gate_rejection_route_by_rejection(project_id, rejection_receipt_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self.already_routed_refusal(&existing));
+        }
+
+        let now = kontor_api::now();
+        let command = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewCommandIntent {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecoverGateRejection,
+                target,
+                target_revision: task.revision,
+                intent: intent.clone(),
+                payload: intent,
+                desired: None,
+                not_before: now,
+                created_at: now,
+            },
+        );
+        let outcome = state.with_store(|store| {
+            store.recover_gate_rejection_with_intent(
+                &kontor_core::repository::GateRejectionRecovery {
+                    project_id,
+                    task_id,
+                    gate: gate_key.clone(),
+                    rejection_receipt_id,
+                    sequence: request.sequence,
+                    expected_task_revision: request.expected_task_revision,
+                    expected_workflow_revision: request.expected_workflow_revision,
+                    expected_current_phase: expected_current_phase.clone(),
+                    expected_rejection_target: expected_rejection_target.clone(),
+                    routed_at: now,
+                },
+                &command,
+            )
+        });
+        // The pre-check above and this transaction are different lock windows,
+        // so two fresh keys can both find no route and only one can commit. The
+        // loser's transaction refuses correctly, but its typed conflict carries
+        // no payload -- so the winning receipt is recovered from durable state
+        // here rather than lost. Re-reading is safe precisely because the winner
+        // committed before this transaction could see it.
+        let (route, applied, receipt) = match outcome {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                // A rejection can be spent under either of the route's two
+                // unique identities: the source receipt it consumed, or the
+                // evaluation it belongs to. The pre-check only knows the first,
+                // so a caller citing a different receipt for an already-routed
+                // evaluation reaches the transaction and would otherwise get a
+                // refusal naming nobody. Both are re-read here.
+                let by_source = state
+                    .with_store(|store| {
+                        store.gate_rejection_route_by_rejection(project_id, rejection_receipt_id)
+                    })
+                    .map_err(|read_error| self.refuse(&read_error))?;
+                let routed = match by_source {
+                    Some(existing) => Some(existing),
+                    None => {
+                        let workflow = state
+                            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+                            .map_err(|read_error| self.refuse(&read_error))?;
+                        match workflow {
+                            Some(workflow) => state
+                                .with_store(|store| {
+                                    store.gate_rejection_route(
+                                        project_id,
+                                        workflow.id,
+                                        &gate_key,
+                                        request.sequence,
+                                    )
+                                })
+                                .map_err(|read_error| self.refuse(&read_error))?,
+                            None => None,
+                        }
+                    }
+                };
+                // A durable route means the rejection is spent, whatever else
+                // the transaction objected to: that is the precise refusal, and
+                // it is the one that names the command which won.
+                return Err(match routed {
+                    Some(existing) => self.already_routed_refusal(&existing),
+                    None => self.refuse(&error),
+                });
+            }
+        };
+        // Deliberately no `advance_workflow_from_evidence` here. The route this
+        // just wrote is a fence, and calling the advance would ask it whether
+        // the artifacts the rejection was about release it -- which is the exact
+        // question this whole operation exists to answer with "not yet".
+        state.signals().appended();
+        Ok(Self::rejection_recovery_dto(
+            state.realm_id(),
+            &route,
+            if applied == Applied::Created {
+                AppliedDto::Created
+            } else {
+                AppliedDto::Unchanged
+            },
+            &receipt.id.to_string(),
+        ))
     }
 
     async fn select_profile(

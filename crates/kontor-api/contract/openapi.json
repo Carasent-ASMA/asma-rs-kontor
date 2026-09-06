@@ -7315,6 +7315,88 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Route one already-recorded rejected gate verdict that was never routed.",
+        "description": "The rejection is the addressed resource and `recover` is the action, so it is\nspelled as an action on the gate's rejection collection. It is admin-only and\ndeliberately narrow: it repairs workflows rejected before the routing fix\nexisted, and it can do nothing to a rejection that was already routed.\n\nIt is not a second way to record a gate. No verdict is written, no evaluation\nis appended, and the phase it routes to is the pinned target from the frozen\nprofile — never a phase the caller chose.",
+        "operationId": "recover_gate_rejection",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gate_id",
+            "in": "path",
+            "description": "The gate the pinned profile declares",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverGateRejectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateRejectionRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "A stale revision, a reused key, or an already-routed rejection"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/tasks/{task_id}/profile-selection": {
       "post": {
         "tags": [
@@ -15123,6 +15205,80 @@
           }
         }
       },
+      "GateRejectionRecoveryDto": {
+        "type": "object",
+        "description": "One recovered gate rejection route.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "workflow_id",
+          "gate",
+          "sequence",
+          "rejection_receipt_id",
+          "prior_phase",
+          "current_phase",
+          "prior_revision",
+          "current_revision",
+          "applied",
+          "receipt_id"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call wrote the route or replayed an earlier one."
+          },
+          "current_phase": {
+            "type": "string",
+            "description": "The pinned target it now sits at."
+          },
+          "current_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workflow revision after it.",
+            "minimum": 0
+          },
+          "gate": {
+            "type": "string",
+            "description": "The gate whose rejection was consumed."
+          },
+          "prior_phase": {
+            "type": "string",
+            "description": "The phase the workflow was in before the route."
+          },
+          "prior_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workflow revision before the route.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was recorded in."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The command receipt that authorizes it."
+          },
+          "rejection_receipt_id": {
+            "type": "string",
+            "description": "The verdict receipt this route consumed."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Which evaluation of that gate it was.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task."
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "The active workflow that was routed."
+          }
+        }
+      },
       "GateVerdictDto": {
         "type": "object",
         "description": "One recorded gate verdict.",
@@ -18692,6 +18848,50 @@
           }
         },
         "additionalProperties": false
+      },
+      "RecoverGateRejectionRequest": {
+        "type": "object",
+        "description": "What `gates/{gate_id}/rejections:recover` is asked for.\n\nEvery field is an expectation, not an instruction. There is deliberately no\nphase to route to and no verdict to record: the target comes from the frozen\nprofile and the verdict is already durable. What the caller may say is which\nexact facts it read, and the command refuses unless all of them still hold.",
+        "required": [
+          "rejection_receipt_id",
+          "sequence",
+          "expected_task_revision",
+          "expected_workflow_revision",
+          "expected_current_phase",
+          "expected_rejection_target"
+        ],
+        "properties": {
+          "expected_current_phase": {
+            "type": "string",
+            "description": "The phase the caller read the workflow at."
+          },
+          "expected_rejection_target": {
+            "type": "string",
+            "description": "The pinned rejection target the caller read from the frozen profile.\n\nCompared, never applied: naming a different phase is refused rather than\nobeyed, so this cannot become a way to choose where rejected work lands."
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The task revision the caller read.",
+            "minimum": 0
+          },
+          "expected_workflow_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workflow revision the caller read.",
+            "minimum": 0
+          },
+          "rejection_receipt_id": {
+            "type": "string",
+            "description": "The receipt of the `record_gate_verdict` command being consumed."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Which append-only evaluation of the gate that receipt recorded.",
+            "minimum": 0
+          }
+        }
       },
       "RedactionDto": {
         "type": "object",
