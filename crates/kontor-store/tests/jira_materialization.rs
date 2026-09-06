@@ -16,6 +16,16 @@ use kontor_store::{
     SqliteStore,
 };
 
+/// A stable immutable Jira issue id for a key.
+///
+/// Real Jira ids are opaque numerics unrelated to the key; deriving one here
+/// only keeps distinct keys in a project on distinct identities, so a test that
+/// means "another issue" does not accidentally say "the same issue renamed".
+fn issue_id(key: &str) -> ExternalId {
+    let digits: String = key.chars().filter(char::is_ascii_digit).collect();
+    external(format!("90{digits}"))
+}
+
 fn external(value: impl AsRef<str>) -> ExternalId {
     ExternalId::parse(value.as_ref()).expect("external id")
 }
@@ -159,6 +169,7 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
             .confirm_jira_materialization_item(
                 item,
                 &external(key),
+                &issue_id(key),
                 &ContentHash::of(key.as_bytes()),
                 now,
             )
@@ -199,6 +210,7 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
             .confirm_jira_materialization_item(
                 &items[0],
                 &external("ASMA-999"),
+                &issue_id("ASMA-999"),
                 &ContentHash::of(b"different-readback"),
                 now,
             )
@@ -309,6 +321,7 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
         store.confirm_jira_materialization_item(
             &duplicate,
             &external("ASMA-2"),
+            &issue_id("ASMA-2"),
             &ContentHash::of(b"duplicate-ASMA-2"),
             now,
         ),
@@ -389,6 +402,7 @@ fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery()
         .confirm_jira_materialization_item(
             &planned,
             &external("ASMA-8050"),
+            &issue_id("ASMA-8050"),
             &ContentHash::of(b"ASMA-8050-readback"),
             now,
         )
@@ -425,7 +439,8 @@ fn confirmation_adopts_a_migrated_legacy_jira_alias_binding() {
         .execute_batch(
             "DROP INDEX ux_status_conflicts_one_open_kind;
              DROP TRIGGER canonical_jira_task_links_permanent;
-             DROP TRIGGER canonical_jira_task_links_immutable;
+             DROP TRIGGER canonical_jira_task_links_key_change_requires_proof;
+             DROP TRIGGER canonical_jira_task_links_identity_immutable;
              DROP TRIGGER jira_links_require_canonical_jira_update;
              DROP TRIGGER jira_links_require_canonical_jira_insert;
              DROP TABLE canonical_jira_task_links;
@@ -495,6 +510,7 @@ fn confirmation_adopts_a_migrated_legacy_jira_alias_binding() {
         .confirm_jira_materialization_item(
             &planned,
             &external("ASMA-8051"),
+            &issue_id("ASMA-8051"),
             &ContentHash::of(b"ASMA-8051-readback"),
             now,
         )
@@ -561,6 +577,7 @@ fn a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch() {
         .confirm_jira_materialization_item(
             &first,
             &external("ASMA-8049"),
+            &issue_id("ASMA-8049"),
             &ContentHash::of(b"ASMA-8049"),
             now,
         )
@@ -602,6 +619,7 @@ fn a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch() {
             .confirm_jira_materialization_item(
                 &second,
                 &external("ASMA-9999"),
+                &issue_id("ASMA-9999"),
                 &ContentHash::of(b"ASMA-9999"),
                 now,
             )

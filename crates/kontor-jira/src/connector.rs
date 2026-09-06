@@ -179,6 +179,14 @@ pub struct JiraIssuePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JiraIssueReadback {
     pub issue_key: ExternalId,
+    /// Jira's immutable REST top-level issue id, observed in the same readback
+    /// that proved the key.
+    ///
+    /// The canonical key moves with the issue whenever it changes project; this
+    /// does not. It is the only observed value that tells a key change on one
+    /// issue apart from a rebind onto a different one, which the readback hash
+    /// cannot do because the key is itself part of the hashed document.
+    pub issue_id: ExternalId,
     pub readback_hash: ContentHash,
 }
 
@@ -854,8 +862,15 @@ impl JiraConnector {
         let readback_hash = CanonicalDocument::from_serializable(&readback)?
             .hash()
             .clone();
+        // Read after every conflict check, so a response that is going to be
+        // refused is still refused for its own exact reason. Jira returns the
+        // top-level id on every issue GET regardless of the `fields` filter, so
+        // a response without one is malformed rather than merely unsupported,
+        // and an accepted readback never carries an unproven identity.
+        let issue_id = external_at(&value, &["id"])?;
         Ok(JiraIssueReadback {
             issue_key: key.clone(),
+            issue_id,
             readback_hash,
         })
     }

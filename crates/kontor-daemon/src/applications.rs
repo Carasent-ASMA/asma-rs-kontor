@@ -18104,6 +18104,7 @@ impl ApplicationOperations for Services {
                     store.confirm_jira_materialization_item(
                         item,
                         &readback.issue_key,
+                        &readback.issue_id,
                         &readback.readback_hash,
                         kontor_api::now(),
                     )
@@ -18141,6 +18142,7 @@ impl ApplicationOperations for Services {
                     store.confirm_jira_materialization_item(
                         item,
                         &readback.issue_key,
+                        &readback.issue_id,
                         &readback.readback_hash,
                         kontor_api::now(),
                     )
