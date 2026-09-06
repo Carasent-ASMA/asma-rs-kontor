@@ -25031,14 +25031,41 @@ impl ApplicationOperations for Services {
         let (route, applied, receipt) = match outcome {
             Ok(recovered) => recovered,
             Err(error) => {
-                let routed = state
+                // A rejection can be spent under either of the route's two
+                // unique identities: the source receipt it consumed, or the
+                // evaluation it belongs to. The pre-check only knows the first,
+                // so a caller citing a different receipt for an already-routed
+                // evaluation reaches the transaction and would otherwise get a
+                // refusal naming nobody. Both are re-read here.
+                let by_source = state
                     .with_store(|store| {
                         store.gate_rejection_route_by_rejection(project_id, rejection_receipt_id)
                     })
                     .map_err(|read_error| self.refuse(&read_error))?;
-                // A durable route for this source means the rejection is spent,
-                // whatever else the transaction objected to: that is the precise
-                // refusal, and it is the one that names the winner.
+                let routed = match by_source {
+                    Some(existing) => Some(existing),
+                    None => {
+                        let workflow = state
+                            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+                            .map_err(|read_error| self.refuse(&read_error))?;
+                        match workflow {
+                            Some(workflow) => state
+                                .with_store(|store| {
+                                    store.gate_rejection_route(
+                                        project_id,
+                                        workflow.id,
+                                        &gate_key,
+                                        request.sequence,
+                                    )
+                                })
+                                .map_err(|read_error| self.refuse(&read_error))?,
+                            None => None,
+                        }
+                    }
+                };
+                // A durable route means the rejection is spent, whatever else
+                // the transaction objected to: that is the precise refusal, and
+                // it is the one that names the command which won.
                 return Err(match routed {
                     Some(existing) => self.already_routed_refusal(&existing),
                     None => self.refuse(&error),
