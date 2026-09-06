@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 90;
+pub const SCHEMA_VERSION: i64 = 91;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -348,6 +348,9 @@ const MIGRATIONS: &[&str] = &[
     // a recovered rejection is held behind until the routed phase is authored
     // again by that same run.
     include_str!("../migrations/0090_gate_rejection_routes.sql"),
+    // Schema v91. The server-derived semantic consultation identity replaces
+    // caller idempotency as the uniqueness boundary for new ASWs and CSWs.
+    include_str!("../migrations/0091_consultation_semantic_identity.sql"),
 ];
 
 const _: () = assert!(

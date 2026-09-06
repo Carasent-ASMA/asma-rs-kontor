@@ -458,6 +458,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_container_retitle),
             )
             .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-preview",
+                post(applications::preview_committee_topic_correction),
+            )
+            .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-apply",
+                post(applications::apply_committee_topic_correction),
+            )
+            .route(
                 "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
                 post(applications::preview_container_recovery),
             )

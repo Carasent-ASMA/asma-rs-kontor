@@ -51,6 +51,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "consultation_seat_recoveries",
     "consultation_seat_recovery_attempts",
     "consultation_seat_materialization_reroutes",
+    "consultation_topic_corrections",
     "consultation_topic_migration_provenance",
     // Schema v75 (ASMA-8050): immutable, exact-seat Committee permission
     // responses with durable dispatch and confirmation state.
@@ -529,8 +530,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // the binding Kontor resolved and the typed decision (ASMA-8101). v90 makes
     // a rejected gate verdict's workflow route one append-only, source-unique
     // fact carrying its route-time TeamRun, which is also the fence the routed
-    // phase is held behind until that same run authors it again.
-    assert_eq!(SCHEMA_VERSION, 90);
+    // phase is held behind until that same run authors it again. v91 adds the
+    // server-derived consultation identity and immutable legacy topic
+    // correction evidence.
+    assert_eq!(SCHEMA_VERSION, 91);
 }
 
 #[test]

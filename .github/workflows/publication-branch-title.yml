@@ -1,0 +1,60 @@
+name: Publication branch and title identity
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publication-branch-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  identity:
+    name: asma/publication-branch-title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require one Jira key across branch and title
+        env:
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          base = os.environ["BASE_BRANCH"]
+          branch = os.environ["HEAD_BRANCH"]
+          title = os.environ["PR_TITLE"]
+          branch_match = re.fullmatch(
+              r"(?:feat|fix|docs|chore|refactor|test|perf|build|ci|releases)/"
+              r"(?P<key>[A-Z][A-Z0-9]*-[1-9][0-9]*)-"
+              r"[a-z0-9]+(?:-[a-z0-9]+)*",
+              branch,
+          )
+          title_match = re.match(
+              r"^(?P<key>[A-Z][A-Z0-9]*-[1-9][0-9]*) (?=\S)", title
+          )
+          errors = []
+          if base != "master":
+              errors.append("base_branch_not_default")
+          if branch_match is None:
+              errors.append("branch_shape_invalid")
+          if title_match is None:
+              errors.append("pr_title_key_missing")
+          if (
+              branch_match is not None
+              and title_match is not None
+              and branch_match.group("key") != title_match.group("key")
+          ):
+              errors.append("pr_title_key_mismatch")
+          if errors:
+              print(", ".join(errors), file=sys.stderr)
+              sys.exit(1)
+          print(f"accepted: {branch_match.group('key')}")
+          PY

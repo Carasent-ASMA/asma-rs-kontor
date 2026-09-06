@@ -35757,9 +35757,11 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     // accepted SeatRecoveryProfile. Prove that credential-propagation recovery
     // validates that new provenance before it fences the logical generation or
     // archives the already-running filler.
+    let mut active_invoke_body = invoke_body.clone();
+    active_invoke_body["topic"] = serde_json::json!("Credential propagation recovery compliance");
     let active_opencode = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
-        &invoke_body,
+        &active_invoke_body,
     )
     .signed_as(world, "admin")
     .with_key("committee-opencode-pre-effect-recovery")
@@ -36711,6 +36713,10 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     assert_eq!(advisor_invoked.status, 200, "{}", advisor_invoked.body);
     assert_eq!(advisor_invoked.json()["state"], "running");
+    assert_eq!(
+        advisor_invoked.json()["container_name"],
+        "ASW • PROMO-9001 • Bounded operational decision"
+    );
     let advisor_run = advisor_invoked.json()["advisor_run_id"]
         .as_str()
         .expect("Advisor run")
@@ -36930,6 +36936,59 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "caller_seat_binding_id": caller,
         "expected_revision": epic_read.json()["revision"],
     });
+    for (key, bad_topic, expected_rule) in [
+        (
+            "committee-topic-jira-prefix",
+            "ASMA-9001 operational gate evidence",
+            "consultation_topic_repeats_scope_code",
+        ),
+        (
+            "committee-topic-item-prefix",
+            "PROMO-9001 operational gate evidence",
+            "consultation_topic_repeats_scope_code",
+        ),
+        (
+            "committee-topic-container-prefix",
+            "CSW operational gate evidence",
+            "consultation_topic_repeats_container_prefix",
+        ),
+        (
+            "committee-topic-embedded-jira-key",
+            "Operational gate evidence for ASMA-9001",
+            "consultation_topic_repeats_scope_code",
+        ),
+        (
+            "committee-topic-embedded-item-code",
+            "Operational gate evidence (PROMO-9001)",
+            "consultation_topic_repeats_scope_code",
+        ),
+    ] {
+        let mut invalid = invoke_body.clone();
+        invalid["topic"] = serde_json::json!(bad_topic);
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+            &invalid,
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 400, "{}", refused.body);
+        assert_eq!(refused.json()["code"], "invalid_request");
+        assert!(
+            refused.json()["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.contains(expected_rule)),
+            "{}",
+            refused.body
+        );
+        assert_eq!(
+            world.fake.calls().len(),
+            calls_before,
+            "an invalid topic reached the native runtime"
+        );
+    }
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke_body,
@@ -36940,6 +36999,33 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     assert_eq!(invoked.status, 200, "{}", invoked.body);
     assert_eq!(invoked.json()["state"], "running");
+    assert_eq!(
+        invoked.json()["container_name"],
+        "CSW • PROMO-9001 • Operational gate evidence"
+    );
+    let calls_after_first_invoke = world.fake.calls().len();
+    let duplicate = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-invoke-with-a-fresh-key")
+    .send(world)
+    .await;
+    assert_eq!(duplicate.status, 409, "{}", duplicate.body);
+    assert_eq!(duplicate.json()["code"], "idempotency_conflict");
+    assert!(
+        duplicate.json()["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("consultation_semantic_duplicate")),
+        "{}",
+        duplicate.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_first_invoke,
+        "a duplicate semantic identity reached the native runtime"
+    );
     let run = invoked.json()["committee_run_id"]
         .as_str()
         .expect("a Committee run id")
@@ -36975,6 +37061,133 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         *invocation_intent.hash(),
         "the invocation persisted a different topic or an empty recovery policy"
     );
+
+    // Reproduce the exact pre-enforcement defect: the caller's topic repeated
+    // the Jira scope key, the run had no server-derived semantic identity, and
+    // the native CSW therefore carried the redundant material. The supported
+    // correction must preserve the run, node, seats and native container while
+    // adopting one identity and the server-rendered title.
+    let project_read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let project_revision = project_read.json()["revision"]
+        .as_u64()
+        .expect("the project revision");
+    let run_revision = invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the initial Committee revision");
+    let topology_node = TopologyNodeId::parse(
+        invoked.json()["topology_node_id"]
+            .as_str()
+            .expect("the Committee topology node"),
+    )
+    .expect("a topology node id");
+    let native_id_before = world
+        .fake
+        .container_native_id(topology_node)
+        .expect("the Committee native container");
+    let malformed_topic = "ASMA-9001 Operational gate evidence";
+    let malformed_title = "CSW • PROMO-9001 • ASMA-9001 Operational gate evidence";
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    let reproduced = connection
+        .execute(
+            "UPDATE consultation_runs
+             SET topic = ?1, semantic_identity_hash = NULL
+             WHERE project_id = ?2 AND run_id = ?3 AND family = 'committee'",
+            rusqlite::params![malformed_topic, project, run],
+        )
+        .expect("the malformed pre-enforcement topic is reproduced");
+    assert_eq!(reproduced, 1);
+    drop(connection);
+    world
+        .fake
+        .set_container_title(topology_node, malformed_title);
+    let correction = serde_json::json!({
+        "expected_project_revision": project_revision,
+        "expected_run_revision": run_revision,
+        "expected_prior_topic": malformed_topic,
+        "corrected_topic": "Operational gate evidence",
+        "reason": "Remove caller-supplied Jira scope material from the legacy topic"
+    });
+    let under_privileged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/topic:correction-preview"),
+        &correction,
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(under_privileged.status, 403, "{}", under_privileged.body);
+    let correction_preview = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/topic:correction-preview"),
+        &correction,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(
+        correction_preview.status, 200,
+        "{}",
+        correction_preview.body
+    );
+    assert_eq!(correction_preview.json()["observed_title"], malformed_title);
+    assert_eq!(
+        correction_preview.json()["desired_title"],
+        "CSW • PROMO-9001 • Operational gate evidence"
+    );
+    assert_eq!(
+        correction_preview.json()["bound_native_id"],
+        native_id_before.as_str()
+    );
+    let mut correction_apply = correction.clone();
+    correction_apply["preview_hash"] = correction_preview.json()["preview_hash"].clone();
+    let corrected = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/topic:correction-apply"),
+        &correction_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-topic-correction")
+    .send(world)
+    .await;
+    assert_eq!(corrected.status, 200, "{}", corrected.body);
+    assert_eq!(corrected.json()["changed"], true);
+    assert_eq!(corrected.json()["committee"]["committee_run_id"], run);
+    assert_eq!(
+        corrected.json()["committee"]["container_name"],
+        "CSW • PROMO-9001 • Operational gate evidence"
+    );
+    assert_eq!(
+        corrected.json()["bound_native_id"],
+        native_id_before.as_str()
+    );
+    assert_eq!(
+        world.fake.container_native_id(topology_node),
+        Some(native_id_before.clone())
+    );
+    assert_eq!(
+        world.fake.container_title(topology_node).as_deref(),
+        Some("CSW • PROMO-9001 • Operational gate evidence")
+    );
+    let correction_replay = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{run}/topic:correction-apply"),
+        &correction_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-topic-correction")
+    .send(world)
+    .await;
+    assert_eq!(correction_replay.status, 200, "{}", correction_replay.body);
+    assert_eq!(correction_replay.json()["changed"], false);
+    assert_eq!(
+        correction_replay.json()["receipt"]["receipt_id"],
+        corrected.json()["receipt"]["receipt_id"]
+    );
+    let corrected_revision = corrected.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the corrected Committee revision");
+
     let invoked_json = invoked.json();
     let seats = invoked_json["seats"].as_array().expect("Committee seats");
     let ordinary_routes: std::collections::BTreeMap<_, _> = seats
@@ -37205,7 +37418,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .expect("the reviewer's exact predecessor")
         .to_owned();
     let recovery_body = serde_json::json!({
-        "expected_revision": invoked.json()["receipt"]["revision"],
+        "expected_revision": corrected_revision,
         "expected_native_id": predecessor_native.clone(),
         "reason": "credential_propagation",
     });
@@ -38628,9 +38841,11 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     // round freezes its result and remediation on the source run and leaves the
     // run terminal at round one; only a separately invoked re-review may own
     // round two.
+    let mut terminal_invoke_body = invoke_body.clone();
+    terminal_invoke_body["topic"] = serde_json::json!("Terminal failure evidence");
     let terminal_invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
-        &invoke_body,
+        &terminal_invoke_body,
     )
     .signed_as(world, "operator")
     .with_key("committee-terminal-failure-invoke")
@@ -41162,7 +41377,7 @@ async fn an_epic_branch_publication_is_attested_recorded_and_replayed() {
     let world = World::open_empty().await;
     let epic = keyed_epic(&world, "attest").await;
     let head = format!("feat/{}-publication-identity", epic.epic_key);
-    let title = format!("{} Enforce the grammar", epic.task_key);
+    let title = format!("{} Enforce the grammar", epic.epic_key);
     let body = publication(&head, "master", Some(&title));
 
     let attested = Call::post(

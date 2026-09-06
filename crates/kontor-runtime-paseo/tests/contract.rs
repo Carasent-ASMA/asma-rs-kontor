@@ -3037,7 +3037,7 @@ async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() 
     assert_eq!(
         error,
         RuntimeError::WorkspacePreparationFailed {
-            rule: "the managed catalog worktree branch does not match its ASMA slug"
+            rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
         }
     );
     assert_eq!(recorded.count("workspace create"), 0);

@@ -794,7 +794,10 @@ fn the_gate_rejection_route_schema_migrates_and_survives_a_snapshot() {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("the schema version reads");
         assert_eq!(version, SCHEMA_VERSION, "{context}: schema version");
-        assert_eq!(SCHEMA_VERSION, 90, "the route schema is generation 90");
+        assert_eq!(
+            SCHEMA_VERSION, 91,
+            "the consultation identity schema is generation 91"
+        );
 
         // Both database integrity checks the deployment runs, in the same order.
         let integrity: String = connection

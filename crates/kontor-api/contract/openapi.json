@@ -2326,6 +2326,153 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply one malformed Committee-topic correction and retitle the same CSW.",
+        "operationId": "apply_committee_topic_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The preserved Committee run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommitteeTopicCorrectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedCommitteeTopicCorrectionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview one malformed pre-enforcement Committee topic and its CSW retitle.",
+        "operationId": "preview_committee_topic_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "description": "The preserved Committee run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommitteeTopicCorrectionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeTopicCorrectionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/committee-templates": {
       "get": {
         "tags": [
@@ -10355,6 +10502,13 @@
             "type": "string",
             "description": "The consultation."
           },
+          "container_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Complete ASW title rendered by the server from the pinned Team\nDefinition and confirmed scope identity."
+          },
           "epic_id": {
             "type": "string",
             "description": "The epic it advises."
@@ -10510,6 +10664,39 @@
               "null"
             ],
             "description": "Which type, field or state machine refused, when the refusal names one.\n\nAlways a `&'static str` written in this workspace — a type name, a field\nname or an operation name — so it can never be a stored value."
+          }
+        }
+      },
+      "AppliedCommitteeTopicCorrectionDto": {
+        "type": "object",
+        "description": "Result of one identity-preserving Committee-topic and CSW correction.",
+        "required": [
+          "committee",
+          "bound_native_id",
+          "observed_title",
+          "changed",
+          "receipt"
+        ],
+        "properties": {
+          "bound_native_id": {
+            "type": "string",
+            "description": "Exact native container id preserved through retitle."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether this invocation performed the correction or replayed it."
+          },
+          "committee": {
+            "$ref": "#/components/schemas/CommitteeRunDto",
+            "description": "Fresh run projection carrying the corrected server-rendered name."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "Runtime title read after apply."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Durable command receipt."
           }
         }
       },
@@ -12137,6 +12324,13 @@
             "type": "string",
             "description": "The consultation."
           },
+          "container_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Complete CSW title rendered by the server from the pinned Team\nDefinition and confirmed scope identity."
+          },
           "epic_id": {
             "type": "string",
             "description": "The epic it advises."
@@ -12244,6 +12438,161 @@
             "description": "Dedicated CSW node."
           }
         }
+      },
+      "CommitteeTopicCorrectionApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to one exact Committee-topic correction preview.",
+        "required": [
+          "expected_project_revision",
+          "expected_run_revision",
+          "expected_prior_topic",
+          "corrected_topic",
+          "reason",
+          "preview_hash"
+        ],
+        "properties": {
+          "corrected_topic": {
+            "type": "string",
+            "description": "Semantic topic after removing only server-owned leading material."
+          },
+          "expected_prior_topic": {
+            "type": "string",
+            "description": "Exact malformed historical topic expected in the run."
+          },
+          "expected_project_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision observed before native-name preflight.",
+            "minimum": 0
+          },
+          "expected_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Committee run revision observed by the caller.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the preview."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommitteeTopicCorrectionPreviewDto": {
+        "type": "object",
+        "description": "Exact no-write plan for repairing one legacy Committee topic and CSW title.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "committee_run_id",
+          "topology_node_id",
+          "prior_topic",
+          "corrected_topic",
+          "semantic_identity_hash",
+          "bound_native_id",
+          "observed_title",
+          "desired_title",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "bound_native_id": {
+            "type": "string",
+            "description": "Exact native container being preserved."
+          },
+          "committee_run_id": {
+            "type": "string",
+            "description": "Existing Committee run; never replaced by this correction."
+          },
+          "corrected_topic": {
+            "type": "string",
+            "description": "Correct semantic topic."
+          },
+          "desired_title": {
+            "type": "string",
+            "description": "Complete title the server derived from the corrected topic."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Owning epic."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "Native title read during preview."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash binding the run, revisions, topics, native identity and titles."
+          },
+          "prior_topic": {
+            "type": "string",
+            "description": "Historical malformed topic."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that computed the plan."
+          },
+          "semantic_identity_hash": {
+            "type": "string",
+            "description": "Server-derived identity the run will adopt."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Projection cursor read with the plan."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Existing CSW node; never replaced by this correction."
+          }
+        }
+      },
+      "CommitteeTopicCorrectionPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request for one malformed pre-enforcement Committee topic.",
+        "required": [
+          "expected_project_revision",
+          "expected_run_revision",
+          "expected_prior_topic",
+          "corrected_topic",
+          "reason"
+        ],
+        "properties": {
+          "corrected_topic": {
+            "type": "string",
+            "description": "Semantic topic after removing only server-owned leading material."
+          },
+          "expected_prior_topic": {
+            "type": "string",
+            "description": "Exact malformed historical topic expected in the run."
+          },
+          "expected_project_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision observed before native-name preflight.",
+            "minimum": 0
+          },
+          "expected_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Committee run revision observed by the caller.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
+          }
+        },
+        "additionalProperties": false
       },
       "CommitteeVerdictDto": {
         "type": "string",
@@ -15757,7 +16106,7 @@
               "string",
               "null"
             ],
-            "description": "Short, explicit subject label used by the pinned Team Definition to\nrender the ASW name. It is never derived from the question."
+            "description": "Short semantic subject used by the pinned Team Definition to render the\nASW name. Supply only the topic: Jira keys, Kontor item codes, container\nprefixes and the configured separator are rejected because the server\ninserts them deterministically."
           }
         },
         "additionalProperties": false
@@ -15820,7 +16169,7 @@
               "string",
               "null"
             ],
-            "description": "Short, explicit debated subject used by the pinned Team Definition to\nrender the CSW name. It is never derived from the question."
+            "description": "Short semantic subject used by the pinned Team Definition to render the\nCSW name. Supply only the topic: Jira keys, Kontor item codes, container\nprefixes and the configured separator are rejected because the server\ninserts them deterministically."
           }
         },
         "additionalProperties": false

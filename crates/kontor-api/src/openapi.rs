@@ -107,6 +107,8 @@ impl Modify for RealmBearer {
         crate::applications::apply_project_team_definition_selection,
         crate::applications::preview_container_retitle,
         crate::applications::apply_container_retitle,
+        crate::applications::preview_committee_topic_correction,
+        crate::applications::apply_committee_topic_correction,
         crate::applications::preview_container_recovery,
         crate::applications::apply_container_recovery,
         crate::applications::preview_epic_backlog_code_correction,
