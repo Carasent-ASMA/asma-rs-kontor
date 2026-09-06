@@ -1068,12 +1068,39 @@ fn a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice() {
 fn a_legacy_topic_correction_preserves_the_run_and_replays_one_authority() {
     let f = fixture();
     let run = consultation_with_topic(&f, Some(name("ASMA-8111 operational completion")), None);
+    let result = serde_json::json!({
+        "schema_version": 1,
+        "verdict": "compliant",
+    });
+    let result_hash = CanonicalDocument::from_serializable(&result)
+        .expect("the settled result canonicalizes")
+        .hash()
+        .clone();
+    let settled = f
+        .store
+        .advance_consultation_run(
+            f.project_id,
+            run.id,
+            AggregateRevision::INITIAL,
+            ConsultationRunState::Settled,
+            Some((&result, &result_hash)),
+            at("2026-09-01T12:01:00Z"),
+        )
+        .expect("the legacy consultation settles before its title is corrected");
+    assert_eq!(settled.revision.get(), 2);
     let identity = ContentHash::of(b"corrected semantic consultation identity");
     let key = IdempotencyKey::parse("correct-legacy-consultation-topic").expect("a key");
     let intent = CanonicalDocument::from_serializable(&serde_json::json!({
         "schema_version": 1,
         "operation": "correct_consultation_topic",
-        "run_id": run.id.as_text(),
+        "project_id": f.project_id.to_string(),
+        "epic_id": f.mini_project_id.to_string(),
+        "committee_run_id": run.id.as_text(),
+        "expected_run_revision": settled.revision.get(),
+        "expected_prior_topic": "ASMA-8111 operational completion",
+        "corrected_topic": "operational completion",
+        "reason": "Remove the redundant confirmed Jira key",
+        "preview_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     }))
     .expect("a canonical intent");
     let envelope = ReceiptEnvelope::new(
@@ -1095,7 +1122,7 @@ fn a_legacy_topic_correction_preserves_the_run_and_replays_one_authority() {
         project_id: f.project_id,
         run_id: run.id,
         mini_project_id: f.mini_project_id,
-        expected_run_revision: AggregateRevision::INITIAL,
+        expected_run_revision: settled.revision,
         expected_prior_topic: name("ASMA-8111 operational completion"),
         corrected_topic: name("operational completion"),
         semantic_identity_hash: identity.clone(),
@@ -1117,7 +1144,41 @@ fn a_legacy_topic_correction_preserves_the_run_and_replays_one_authority() {
         Some("operational completion")
     );
     assert_eq!(corrected.semantic_identity_hash, Some(identity));
-    assert_eq!(corrected.revision.get(), 2);
+    assert_eq!(corrected.revision.get(), 3);
+    assert_eq!(corrected.state, ConsultationRunState::Settled);
+    assert_eq!(corrected.result, settled.result);
+    assert_eq!(corrected.result_hash, settled.result_hash);
+    assert_eq!(corrected.settled_at, settled.settled_at);
+
+    let rewritten_result = serde_json::json!({
+        "schema_version": 1,
+        "verdict": "non_compliant",
+    });
+    let rewritten_hash = CanonicalDocument::from_serializable(&rewritten_result)
+        .expect("the attempted replacement result canonicalizes")
+        .hash()
+        .clone();
+    let rewrite_error = f
+        .store
+        .advance_consultation_run(
+            f.project_id,
+            run.id,
+            corrected.revision,
+            ConsultationRunState::Settled,
+            Some((&rewritten_result, &rewritten_hash)),
+            at("2026-09-01T12:02:00Z"),
+        )
+        .expect_err("the correction exception cannot rewrite settled evidence");
+    assert!(
+        matches!(
+            rewrite_error,
+            RepositoryError::Conflict {
+                subject: "storage",
+                rule: "a uniqueness, check or immutability constraint refused the write",
+            }
+        ),
+        "the settled-evidence guard returned an unexpected refusal: {rewrite_error}"
+    );
 
     let (replayed, replayed_receipt, replayed_applied) = f
         .store
