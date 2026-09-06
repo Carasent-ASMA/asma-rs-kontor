@@ -8,13 +8,14 @@
 
 use kontor_core::consultation::{
     AdviceDisposition, AdvisorProfileSpec, AggregationProtocol, CommitteeRole, CommitteeSlotSpec,
-    CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationScope,
-    DiversityRule, MAX_COMMITTEE_ROUNDS, MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding,
-    conjunctive_outcome, validate_semantic_topic,
+    CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationFamily,
+    ConsultationIdentity, ConsultationScope, DiversityRule, MAX_COMMITTEE_ROUNDS,
+    MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding, conjunctive_outcome,
+    validate_semantic_topic,
 };
 use kontor_core::id::{
-    AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money, RoleKey,
-    RoleSlotId, SCHEMA_VERSION, SpecVersion,
+    AdvisorProfileId, BoundedText, CommitteeTemplateId, ContentHash, CurrencyCode, ExternalName,
+    MiniProjectId, Money, ProjectId, RoleKey, RoleSlotId, SCHEMA_VERSION, SpecVersion, TaskId,
 };
 use kontor_core::spec::{BudgetBounds, ModelChainPolicy, ModelRef, ModelRung, ProviderRef};
 
@@ -165,6 +166,93 @@ fn a_consultation_topic_cannot_repeat_server_owned_name_components() {
         validate_semantic_topic(&name(good), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
             .expect(good);
     }
+}
+
+#[test]
+fn logical_consultation_identity_ignores_retry_mechanics_and_changes_with_semantics() {
+    let project = ProjectId::generate();
+    let epic = MiniProjectId::generate();
+    let task = TaskId::generate();
+    let definition = ContentHash::of(b"immutable profile");
+    let topic = name("operational completion");
+    let identity = ConsultationIdentity {
+        project_id: project,
+        epic_id: epic,
+        task_id: Some(task),
+        family: ConsultationFamily::Committee,
+        profile_id: "independent-review",
+        profile_version: SpecVersion::FIRST,
+        definition_hash: &definition,
+        topic: &topic,
+        re_review_provenance_hash: None,
+    }
+    .hash()
+    .expect("identity");
+    assert_eq!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: Some(task),
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &topic,
+            re_review_provenance_hash: None,
+        }
+        .hash()
+        .expect("same logical consultation"),
+        identity,
+        "an idempotency key, caller, question or route cannot enter this function"
+    );
+    assert_ne!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: None,
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &topic,
+            re_review_provenance_hash: None,
+        }
+        .hash()
+        .expect("epic scope"),
+        identity
+    );
+    assert_ne!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: Some(task),
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &name("release readiness"),
+            re_review_provenance_hash: None,
+        }
+        .hash()
+        .expect("different topic"),
+        identity
+    );
+    assert_ne!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: Some(task),
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &topic,
+            re_review_provenance_hash: Some(&ContentHash::of(b"authorized re-review")),
+        }
+        .hash()
+        .expect("re-review"),
+        identity
+    );
 }
 
 #[test]

@@ -22,7 +22,8 @@
 
 use crate::id::{
     AdvisorProfileId, AdvisorRunId, ArtifactKey, BoundedText, CanonicalDocument, CommitteeRunId,
-    CommitteeTemplateId, ExternalName, RoleKey, RoleSlotId, SchemaVersion, SpecVersion,
+    CommitteeTemplateId, ContentHash, ExternalName, MiniProjectId, ProjectId, RoleKey, RoleSlotId,
+    SchemaVersion, SpecVersion, TaskId,
 };
 use crate::spec::{BudgetBounds, ModelChainPolicy, ProviderRef, SkillRef};
 use crate::{DomainError, DomainResult};
@@ -96,6 +97,63 @@ fn begins_with_reserved_token(text: &str, reserved: &str) -> bool {
             next.is_whitespace() || matches!(next, ':' | '-' | '–' | '—' | '/' | '•')
         })
     })
+}
+
+/// Derive the one durable identity of a logical consultation.
+///
+/// Questions, callers, provider routes and idempotency keys are deliberately
+/// absent. They describe how one logical consultation was requested or run;
+/// letting any of them distinguish identity would make a retry able to create
+/// a second ASW/CSW. An authorized re-review carries the hash of its immutable
+/// provenance so it remains a distinct governed consultation.
+///
+/// # Errors
+/// Returns the canonical-document error if an input cannot be represented by
+/// the closed identity document.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsultationIdentity<'a> {
+    /// Owning control-plane project.
+    pub project_id: ProjectId,
+    /// Owning epic.
+    pub epic_id: MiniProjectId,
+    /// Optional ticket scope; absence means the epic as a whole.
+    pub task_id: Option<TaskId>,
+    /// Advisor or Committee.
+    pub family: ConsultationFamily,
+    /// Immutable profile/template identity.
+    pub profile_id: &'a str,
+    /// Immutable profile/template revision.
+    pub profile_version: SpecVersion,
+    /// Hash of that immutable revision.
+    pub definition_hash: &'a ContentHash,
+    /// Validated semantic topic.
+    pub topic: &'a ExternalName,
+    /// Immutable re-review lineage, when this is an authorized re-review.
+    pub re_review_provenance_hash: Option<&'a ContentHash>,
+}
+
+impl ConsultationIdentity<'_> {
+    /// Canonical digest used by transactional duplicate enforcement.
+    ///
+    /// # Errors
+    /// Returns the canonical-document error if an input cannot be represented
+    /// by the closed identity document.
+    pub fn hash(&self) -> DomainResult<ContentHash> {
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "project_id": self.project_id.to_string(),
+            "epic_id": self.epic_id.to_string(),
+            "task_id": self.task_id.map(|id| id.to_string()),
+            "family": self.family.as_str(),
+            "profile_id": self.profile_id,
+            "profile_version": self.profile_version.get(),
+            "definition_hash": self.definition_hash.as_str(),
+            "topic": self.topic.as_str(),
+            "re_review_provenance_hash": self.re_review_provenance_hash.map(ContentHash::as_str),
+        });
+        let document = CanonicalDocument::from_value(&value)?;
+        Ok(document.hash().clone())
+    }
 }
 
 /// The stable identity of either consultation family.
