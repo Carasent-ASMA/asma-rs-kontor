@@ -11307,7 +11307,6 @@ impl SqliteStore {
 /// So the facts travel back out to the one transaction that has both.
 struct RejectionRouteFacts {
     task_id: TaskId,
-    team_run_id: TeamRunId,
     from_phase: PhaseKey,
     rejection_target: PhaseKey,
     from_revision: AggregateRevision,
@@ -11433,8 +11432,6 @@ fn append_gate_evaluation_in_transaction(
         }
         Some(RejectionRouteFacts {
             task_id: workflow.task_id,
-            // Resolved inside this transaction, beside the route it belongs to.
-            team_run_id: route_time_team_run(transaction, request.project_id, workflow.task_id)?,
             from_phase: workflow.current_phase.clone(),
             rejection_target: gate.rejection_target.clone(),
             from_revision: revision,
@@ -12021,6 +12018,13 @@ impl SqliteStore {
         // no window in which a workflow is routed and the reason it moved is
         // not yet durable.
         if let Some(routed) = routed {
+            // Resolved here rather than in the shared append: this is the
+            // transaction that writes the route, and it is the only caller that
+            // needs a TeamRun. The receiptless contract method deliberately
+            // records no route, so it must not acquire a precondition that a
+            // task without a TeamRun could fail.
+            let team_run_id =
+                route_time_team_run(&transaction, request.project_id, routed.task_id)?;
             insert_gate_rejection_route(
                 &transaction,
                 &GateRejectionRoute {
@@ -12034,7 +12038,7 @@ impl SqliteStore {
                     rejection_receipt_id: receipt.id,
                     route_receipt_id: receipt.id,
                     origin: GateRouteOrigin::Recorded,
-                    team_run_id: routed.team_run_id,
+                    team_run_id,
                     from_phase: routed.from_phase,
                     rejection_target: routed.rejection_target,
                     from_revision: routed.from_revision,
