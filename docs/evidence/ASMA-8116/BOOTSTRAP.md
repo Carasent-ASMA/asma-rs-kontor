@@ -78,3 +78,74 @@ workspace invocation green.
 
 Deployment and post-restart scheduler receipts belong in a separate live
 receipt after the exact reviewed commit is installed.
+
+## First deployment and canonical checkout refusal
+
+The first bootstrap correction was committed as
+`e0f46c1bf3ec541f1217b770c469ebbfc4008420`, reviewed in PR 203, attested by
+ASMA receipt `01a0777f-d67d-7002-ba13-73472341fde3`, and merged to
+`c4a0e6bd462a9880f45982a8058907b931b810c2`. The feature and merge trees are
+identical at `7d9a7ce0537677726636955008a6c256b30795ea`.
+
+The exact merge was built in a detached checkout and deployed to the complete
+local runtime fleet. The atomic backup and deployment receipt is:
+
+`/Users/igor/.local/state/kontor/asma/deploy-backups/20260906T161929Z-asma-8116-c4a0e6b/deployment.json`
+
+Post-restart readback preserved realm, schema 92, the project and epic IDs,
+the ESW/ECP identities, both TSW node IDs, all pinned Team Definition data,
+and the Paseo project/workspace inventory. SQLite integrity was `ok` and the
+foreign-key check returned zero rows. The installed daemon SHA-256 was
+`2ccc0a7ec55bb5d698572bfc1bd6260f5a5f4972afe144f1da7d451f590cc50d`.
+
+Scheduler plan `d53d0e3eb06862802bd697130c394c809495ffdd34fc1b2f1fbf5df13a4608b9`
+was started exactly once with idempotency key
+`asma-8049-jira-key-bootstrap-retry-20260906-1`. It started no TeamRuns and
+reported both tasks `placement_blocked`. The daemon log recorded the exact
+refusal `rule=the branch-encoded worktree belongs to another Git repository`.
+This was a safe pre-launch refusal: the two TSW nodes remained active and
+unbound, and no native identity was replaced.
+
+The originally declared paths encoded a feature branch directly under
+`.worktrees/`. The supported ASMA catalog shape for a module checkout is
+`.worktrees/<jira-key-lowercase>/asma-rs-kontor`. Identity-preserving Git
+worktree moves established:
+
+- `/Users/igor/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor`;
+- `/Users/igor/carasent/asma-modules/.worktrees/asma-8117/asma-rs-kontor`.
+
+The ASMA-8116 branch, HEAD and tree stayed unchanged and clean after the move;
+the ASMA-8117 branch stayed at its original clean `508a514` source state.
+
+## Catalog worktree compatibility correction
+
+A no-write whole-epic preview first replayed an unrelated historical worktree
+and refused its old `kbi-01` branch form. A second no-write preview specified
+only the two paths being corrected and exposed the remaining bootstrap defect:
+the daemon rejected the canonical catalog slug `asma-8116` as
+`branch_type_unknown` before reaching its existing Git common-directory and
+branch-binding checks. Neither preview changed stored state.
+
+`kontor-core` already defines `managed_catalog_worktree_parts` and documents
+the two-stage caller contract: parse a branch-encoded worktree first, then
+recognize the ASMA catalog module shape. `place_task_branch` now implements
+that contract. For a catalog path it requires a confirmed Jira epic/task key
+and accepts only an exact lowercase slug match. An unconfirmed binding returns
+the typed binding-unconfirmed refusal, and a foreign catalog slug returns the
+typed binding-mismatch refusal. Existing branch-token semantics and the later
+repository/module/actual-branch verification remain unchanged.
+
+Two focused regressions prove acceptance of the exact catalog shape and
+refusal of a foreign Jira-key slug. The complete daemon loopback suite passed
+302 tests with zero failures and one predeclared ignored live case, including
+the earlier null-short-code bootstrap, branch grammar, worktree, scheduler,
+topology and replay coverage. Fresh-target `cargo check --workspace
+--all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`, and `git diff --check` all passed. A first check
+attempt after the Git worktree move found only a stale Tauri cache file whose
+generated path referenced the old checkout; a fresh external target proved
+the source and all targets clean.
+
+This follow-up remains bounded to admission compatibility. Stored worktree
+paths will be updated only through the supported whole-epic preview/apply
+surface after this exact correction is reviewed, merged, and deployed.
