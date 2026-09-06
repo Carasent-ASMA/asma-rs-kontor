@@ -1091,6 +1091,30 @@ impl Services {
         current
     }
 
+    /// The refusal a fresh key gets for a rejection somebody already routed.
+    ///
+    /// It names the command that won, because the operator's next question is
+    /// always "then what happened to it?" and the answer is a receipt they can
+    /// go and read. Built in one place and used from both the pre-check and the
+    /// post-transaction path, so a concurrent loser cannot get a thinner
+    /// refusal than a sequential one.
+    fn already_routed_refusal(
+        &self,
+        route: &kontor_core::repository::GateRejectionRoute,
+    ) -> ApiError {
+        self.deny(
+            ApiErrorCode::RevisionConflict,
+            "this rejection was already routed",
+        )
+        .about("gate rejection route")
+        // A resource address rather than an echoed request value: this is
+        // exactly the "something a caller can go and look at" the diagnostic
+        // exists for, and reading it is how an operator finds the result its
+        // fresh key was never going to produce.
+        .located_at(format!("command-receipts/{}", route.route_receipt_id))
+        .with_revision(Some(route.to_revision))
+    }
+
     /// One route row as the recovery surface reports it.
     ///
     /// Shared by the fresh call and its replay so the two cannot drift: a replay
@@ -1174,26 +1198,25 @@ impl Services {
             .find(|phase| phase.id == route.rejection_target)
             .map(|phase| phase.required_artifacts.iter().cloned().collect())
             .unwrap_or_default();
-        // The task's *preserved* TeamRun: the current one, whatever its
-        // lifecycle. Identity is the test here, not liveness. A team that
-        // settled every seat closes as `succeeded`, and the seats stay
-        // persistent and reusable -- which is precisely the state a recovered
-        // rejection is found in, and precisely the state a new bounded turn is
-        // handed into. Requiring a non-terminal run would make the fence
-        // unreleasable in the one situation it exists for, while still not
-        // excluding anything an identity comparison does not already exclude.
-        let preserved_run = state
-            .with_store(|store| store.list_team_runs_for_task(project_id, workflow.task_id))
-            .map_err(|error| self.refuse(&error))?
-            .last()
-            .map(|(id, _)| *id);
+        // The route's own immutable TeamRun, read off the row rather than
+        // recomputed. Asking the repository for the task's *current* run would
+        // hand the answer to whichever TeamRun was created last, so a run that
+        // had nothing to do with this rejection could release its fence. The
+        // route-time id is a snapshot taken in the transaction that wrote the
+        // route, and it is the only run whose rework this fence accepts.
+        //
+        // Its lifecycle is deliberately not tested. A team that settled every
+        // seat closes as `succeeded` while its seats stay persistent and
+        // reusable, which is precisely the state a recovered rejection is found
+        // in and a new bounded turn is handed into.
+        let preserved_run = route.team_run_id;
         let released = state
             .with_store(|store| store.list_settled_turns(project_id, workflow.task_id))
             .map_err(|error| self.refuse(&error))?
             .iter()
             .any(|turn| {
                 turn.settled_at > route.routed_at
-                    && preserved_run.is_some_and(|run| turn.team_run_id == run)
+                    && turn.team_run_id == preserved_run
                     && handoff_role
                         .as_ref()
                         .is_none_or(|role| turn.role_slot_id.as_role_key() == role)
@@ -24962,18 +24985,7 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?
         {
-            return Err(self
-                .deny(
-                    ApiErrorCode::RevisionConflict,
-                    "this rejection was already routed",
-                )
-                .about("gate rejection route")
-                // A resource address rather than an echoed request value: this
-                // is exactly the "something a caller can go and look at" the
-                // diagnostic exists for, and reading it is how an operator finds
-                // the result its fresh key was never going to produce.
-                .located_at(format!("command-receipts/{}", existing.route_receipt_id))
-                .with_revision(Some(existing.to_revision)));
+            return Err(self.already_routed_refusal(&existing));
         }
 
         let now = kontor_api::now();
@@ -24993,25 +25005,46 @@ impl ApplicationOperations for Services {
                 created_at: now,
             },
         );
-        let (route, applied, receipt) = state
-            .with_store(|store| {
-                store.recover_gate_rejection_with_intent(
-                    &kontor_core::repository::GateRejectionRecovery {
-                        project_id,
-                        task_id,
-                        gate: gate_key.clone(),
-                        rejection_receipt_id,
-                        sequence: request.sequence,
-                        expected_task_revision: request.expected_task_revision,
-                        expected_workflow_revision: request.expected_workflow_revision,
-                        expected_current_phase: expected_current_phase.clone(),
-                        expected_rejection_target: expected_rejection_target.clone(),
-                        routed_at: now,
-                    },
-                    &command,
-                )
-            })
-            .map_err(|error| self.refuse(&error))?;
+        let outcome = state.with_store(|store| {
+            store.recover_gate_rejection_with_intent(
+                &kontor_core::repository::GateRejectionRecovery {
+                    project_id,
+                    task_id,
+                    gate: gate_key.clone(),
+                    rejection_receipt_id,
+                    sequence: request.sequence,
+                    expected_task_revision: request.expected_task_revision,
+                    expected_workflow_revision: request.expected_workflow_revision,
+                    expected_current_phase: expected_current_phase.clone(),
+                    expected_rejection_target: expected_rejection_target.clone(),
+                    routed_at: now,
+                },
+                &command,
+            )
+        });
+        // The pre-check above and this transaction are different lock windows,
+        // so two fresh keys can both find no route and only one can commit. The
+        // loser's transaction refuses correctly, but its typed conflict carries
+        // no payload -- so the winning receipt is recovered from durable state
+        // here rather than lost. Re-reading is safe precisely because the winner
+        // committed before this transaction could see it.
+        let (route, applied, receipt) = match outcome {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                let routed = state
+                    .with_store(|store| {
+                        store.gate_rejection_route_by_rejection(project_id, rejection_receipt_id)
+                    })
+                    .map_err(|read_error| self.refuse(&read_error))?;
+                // A durable route for this source means the rejection is spent,
+                // whatever else the transaction objected to: that is the precise
+                // refusal, and it is the one that names the winner.
+                return Err(match routed {
+                    Some(existing) => self.already_routed_refusal(&existing),
+                    None => self.refuse(&error),
+                });
+            }
+        };
         // Deliberately no `advance_workflow_from_evidence` here. The route this
         // just wrote is a fence, and calling the advance would ask it whether
         // the artifacts the rejection was about release it -- which is the exact

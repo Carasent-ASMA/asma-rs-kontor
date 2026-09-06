@@ -1413,6 +1413,16 @@ pub struct GateRejectionRoute {
     pub route_receipt_id: CommandReceiptId,
     /// Which path wrote it.
     pub origin: GateRouteOrigin,
+    /// The TeamRun this task had when the route was written.
+    ///
+    /// A route-time snapshot, never a lookup hint. The fence asks whether the
+    /// rework was authored by *this* run, so recomputing a "current" run at
+    /// evaluation time would let a TeamRun created later for the same task
+    /// release a route it had nothing to do with. Its lifecycle is deliberately
+    /// not part of the test: a team whose seats have all settled closes while
+    /// its seats stay reusable, which is the state a recovered rejection is
+    /// found in.
+    pub team_run_id: TeamRunId,
     /// The phase the workflow was in when it was routed: the gate's own phase.
     pub from_phase: PhaseKey,
     /// The pinned strict ancestor the work returned to.

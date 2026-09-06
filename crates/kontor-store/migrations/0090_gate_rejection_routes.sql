@@ -8,7 +8,8 @@
 -- prove it: nothing recorded which receipt caused the move, nothing stopped a
 -- second command from routing the same rejection again, and nothing
 -- distinguished the artifacts that existed *before* the rejection from the work
--- the rejection asked for. A row per rejected evaluation answers all three, and
+-- the rejection asked for, nor which TeamRun was the one being asked. A row per
+-- rejected evaluation answers all four, and
 -- answers them the same way whether the route was written when the verdict was
 -- recorded or recovered afterwards for a verdict recorded before the fix.
 -- ===========================================================================
@@ -97,6 +98,17 @@ CREATE TABLE task_gate_rejection_routes (
                                  CHECK (length(route_receipt_id) = 36
                                         AND route_receipt_id NOT GLOB '*[^0-9a-f-]*'),
     route_origin         TEXT    NOT NULL CHECK (route_origin IN ('recorded', 'recovered')),
+    -- The TeamRun this task had when the route was written.
+    --
+    -- A snapshot, never a lookup hint. The fence asks whether the rework was
+    -- authored by *this* run; recomputing a "current" run at evaluation time
+    -- would let any TeamRun created later for the same task release a route it
+    -- had nothing to do with. Lifecycle is deliberately not constrained: a team
+    -- whose seats have all settled closes as `succeeded` while its seats stay
+    -- reusable, which is exactly the state a recovered rejection is found in.
+    team_run_id          TEXT    NOT NULL
+                                 CHECK (length(team_run_id) = 36
+                                        AND team_run_id NOT GLOB '*[^0-9a-f-]*'),
     from_phase           TEXT    NOT NULL CHECK (length(from_phase) BETWEEN 1 AND 128),
     rejection_target     TEXT    NOT NULL CHECK (length(rejection_target) BETWEEN 1 AND 128),
     from_revision        INTEGER NOT NULL CHECK (from_revision >= 1),
@@ -127,6 +139,9 @@ CREATE TABLE task_gate_rejection_routes (
     FOREIGN KEY (project_id, workflow_id, gate_key, gate_sequence)
         REFERENCES task_gate_evaluations (project_id, workflow_id, gate_key, sequence)
         ON DELETE RESTRICT,
+    -- The route may only name a TeamRun that durably exists for this project.
+    FOREIGN KEY (project_id, team_run_id)
+        REFERENCES team_runs (project_id, id) ON DELETE RESTRICT,
     FOREIGN KEY (rejection_receipt_id) REFERENCES command_receipts (id) ON DELETE RESTRICT,
     FOREIGN KEY (route_receipt_id) REFERENCES command_receipts (id) ON DELETE RESTRICT
 ) STRICT;

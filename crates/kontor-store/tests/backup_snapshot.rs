@@ -794,7 +794,7 @@ fn the_gate_rejection_route_schema_migrates_and_survives_a_snapshot() {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("the schema version reads");
         assert_eq!(version, SCHEMA_VERSION, "{context}: schema version");
-        assert_eq!(SCHEMA_VERSION, 89, "the route schema is generation 89");
+        assert_eq!(SCHEMA_VERSION, 90, "the route schema is generation 90");
 
         // Both database integrity checks the deployment runs, in the same order.
         let integrity: String = connection
@@ -816,7 +816,7 @@ fn the_gate_rejection_route_schema_migrates_and_survives_a_snapshot() {
                 |row| row.get(0),
             )
             .expect("the route table is countable");
-        assert_eq!(table, 1, "{context}: migration 0089 exists exactly once");
+        assert_eq!(table, 1, "{context}: migration 0090 exists exactly once");
 
         // The append-only guarantees are schema, not convention: a restore that
         // dropped them would leave a ledger that could be rewritten.
@@ -850,6 +850,31 @@ fn the_gate_rejection_route_schema_migrates_and_survives_a_snapshot() {
         assert!(
             schema.contains("PRIMARY KEY (project_id, workflow_id, gate_key, gate_sequence)"),
             "{context}: one route per evaluation"
+        );
+        // The route-time TeamRun is immutable identity, and its referential
+        // binding is what stops a route naming a run this project never had.
+        assert!(
+            schema.contains("team_run_id          TEXT    NOT NULL"),
+            "{context}: the route-time TeamRun is required"
+        );
+        assert!(
+            schema.contains("FOREIGN KEY (project_id, team_run_id)")
+                && schema.contains("REFERENCES team_runs (project_id, id)"),
+            "{context}: the route-time TeamRun keeps its referential binding"
+        );
+        let team_run_fk: i64 = connection
+            .query_row(
+                // A composite key lists one row per column pair, so the
+                // constraint is counted by its own id rather than by rows.
+                "SELECT count(DISTINCT id) FROM pragma_foreign_key_list('task_gate_rejection_routes')
+                 WHERE \"table\" = 'team_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the route foreign keys are listable");
+        assert_eq!(
+            team_run_fk, 1,
+            "{context}: exactly one enforced TeamRun foreign key survives"
         );
 
         // The new command kind is accepted by the widened receipt vocabulary.

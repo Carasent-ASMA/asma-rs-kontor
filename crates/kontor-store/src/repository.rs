@@ -11307,6 +11307,7 @@ impl SqliteStore {
 /// So the facts travel back out to the one transaction that has both.
 struct RejectionRouteFacts {
     task_id: TaskId,
+    team_run_id: TeamRunId,
     from_phase: PhaseKey,
     rejection_target: PhaseKey,
     from_revision: AggregateRevision,
@@ -11432,6 +11433,8 @@ fn append_gate_evaluation_in_transaction(
         }
         Some(RejectionRouteFacts {
             task_id: workflow.task_id,
+            // Resolved inside this transaction, beside the route it belongs to.
+            team_run_id: route_time_team_run(transaction, request.project_id, workflow.task_id)?,
             from_phase: workflow.current_phase.clone(),
             rejection_target: gate.rejection_target.clone(),
             from_revision: revision,
@@ -11461,9 +11464,9 @@ fn insert_gate_rejection_route(
         .execute(
             "INSERT INTO task_gate_rejection_routes
                  (project_id, task_id, workflow_id, gate_key, gate_sequence,
-                  rejection_receipt_id, route_receipt_id, route_origin, from_phase,
-                  rejection_target, from_revision, to_revision, routed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                  rejection_receipt_id, route_receipt_id, route_origin, team_run_id,
+                  from_phase, rejection_target, from_revision, to_revision, routed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT DO NOTHING",
             params![
                 route.project_id.to_string(),
@@ -11474,6 +11477,7 @@ fn insert_gate_rejection_route(
                 route.rejection_receipt_id.to_string(),
                 route.route_receipt_id.to_string(),
                 route.origin.as_str(),
+                route.team_run_id.to_string(),
                 route.from_phase.as_str(),
                 route.rejection_target.as_str(),
                 revision_column(route.from_revision)?,
@@ -11489,6 +11493,35 @@ fn insert_gate_rejection_route(
         ));
     }
     Ok(())
+}
+
+/// The TeamRun this task has at route time, in the repository's canonical order.
+///
+/// Resolved once, inside the transaction that writes the route, and then frozen
+/// on the row. Lifecycle is deliberately not a filter: a team whose seats have
+/// all settled closes as `succeeded` while its seats stay persistent and
+/// reusable, and that is exactly the state a rejection is routed in. What the
+/// fence needs is *which* run was asked, not whether it is still running.
+fn route_time_team_run(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    task_id: TaskId,
+) -> RepositoryResult<TeamRunId> {
+    let id: Option<String> = transaction
+        .query_row(
+            "SELECT id FROM team_runs
+             WHERE project_id = ?1 AND task_id = ?2
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1",
+            params![project_id.to_string(), task_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let id = id.ok_or(RepositoryError::NotFound {
+        subject: "task team run",
+    })?;
+    Ok(TeamRunId::parse(&id)?)
 }
 
 /// The refusal a second consumption of one rejection gets.
@@ -11667,9 +11700,18 @@ fn ensure_source_records_this_rejection(
 
 /// The exact result a gate-recording receipt bound to itself, when it has one.
 ///
-/// `None` is the legacy shape -- no stored result, or one that carries no exact
-/// binding. It is deliberately not an error here: refusing every pre-binding
-/// receipt would refuse exactly the rejections this recovery exists for.
+/// `None` means one thing only: there is *no* exact binding to check -- either no
+/// stored payload at all, or a payload with no `result` object. That is the
+/// genuine legacy shape, and refusing it would refuse exactly the rejections
+/// this recovery exists for.
+///
+/// A binding that exists but does not hold up is a different fact and an error.
+/// A wrong payload hash, a partial `result`, an intent hash that does not match
+/// the receipt, or an unreadable workflow/sequence each mean the recording
+/// transaction's own record of what it did cannot be trusted -- and the legacy
+/// path would then let the caller's `(gate, sequence)` stand in for it. Failing
+/// closed here is what stops a corrupted binding from authorizing a
+/// caller-selected sequence.
 fn bound_gate_record_result(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
@@ -11683,10 +11725,19 @@ fn bound_gate_record_result(
         )
         .optional()
         .map_err(backend)?;
+    // No stored payload: nothing claims a binding.
     let Some((json, hash)) = stored else {
         return Ok(None);
     };
-    Ok(parse_gate_record_result(&json, &hash, receipt).ok())
+    // The hash is checked before the content is read. A payload that fails its
+    // own digest cannot be asked whether it has a result, because the answer
+    // would come from bytes nothing vouches for.
+    let payload: serde_json::Value = stored_document(&json, &hash)?;
+    // A stored payload with no `result` at all is the legacy shape.
+    if payload.get("result").is_none_or(serde_json::Value::is_null) {
+        return Ok(None);
+    }
+    parse_gate_record_result(&json, &hash, receipt).map(Some)
 }
 
 /// One receipt by its own id, refusing one that belongs to another project.
@@ -11789,7 +11840,8 @@ fn gate_rejection_route_in_transaction(
     transaction
         .query_row(
             "SELECT task_id, rejection_receipt_id, route_receipt_id, route_origin,
-                    from_phase, rejection_target, from_revision, to_revision, routed_at
+                    team_run_id, from_phase, rejection_target, from_revision,
+                    to_revision, routed_at
              FROM task_gate_rejection_routes
              WHERE project_id = ?1 AND workflow_id = ?2 AND gate_key = ?3 AND gate_sequence = ?4",
             params![
@@ -11806,9 +11858,10 @@ fn gate_rejection_route_in_transaction(
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)?,
-                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         )
@@ -11824,11 +11877,12 @@ fn gate_rejection_route_in_transaction(
                 rejection_receipt_id: CommandReceiptId::parse(&row.1)?,
                 route_receipt_id: CommandReceiptId::parse(&row.2)?,
                 origin: GateRouteOrigin::parse(&row.3)?,
-                from_phase: PhaseKey::parse(&row.4)?,
-                rejection_target: PhaseKey::parse(&row.5)?,
-                from_revision: revision_of(row.6)?,
-                to_revision: revision_of(row.7)?,
-                routed_at: read_timestamp(&row.8)?,
+                team_run_id: TeamRunId::parse(&row.4)?,
+                from_phase: PhaseKey::parse(&row.5)?,
+                rejection_target: PhaseKey::parse(&row.6)?,
+                from_revision: revision_of(row.7)?,
+                to_revision: revision_of(row.8)?,
+                routed_at: read_timestamp(&row.9)?,
             })
         })
         .transpose()
@@ -11980,6 +12034,7 @@ impl SqliteStore {
                     rejection_receipt_id: receipt.id,
                     route_receipt_id: receipt.id,
                     origin: GateRouteOrigin::Recorded,
+                    team_run_id: routed.team_run_id,
                     from_phase: routed.from_phase,
                     rejection_target: routed.rejection_target,
                     from_revision: routed.from_revision,
@@ -12170,6 +12225,11 @@ impl SqliteStore {
             return Err(already_routed());
         }
 
+        // The route-time TeamRun, resolved in this transaction and frozen on the
+        // row. A task with no TeamRun has nobody to hand the rework to, so it
+        // refuses here rather than writing a fence nothing can release.
+        let team_run_id = route_time_team_run(&transaction, recovery.project_id, recovery.task_id)?;
+
         let to_revision = workflow_revision.next()?;
         let changed = transaction
             .execute(
@@ -12231,6 +12291,7 @@ impl SqliteStore {
             rejection_receipt_id: recovery.rejection_receipt_id,
             route_receipt_id: receipt.id,
             origin: GateRouteOrigin::Recovered,
+            team_run_id,
             from_phase: workflow.current_phase.clone(),
             rejection_target,
             from_revision: workflow_revision,

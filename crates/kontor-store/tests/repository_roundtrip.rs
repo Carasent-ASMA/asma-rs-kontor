@@ -1177,6 +1177,45 @@ fn a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together() {
     );
 }
 
+/// One TeamRun on the fixture's task, created at `created_at`.
+///
+/// A route names the TeamRun the task had when it was written, so every routing
+/// test needs at least one. Passing the instant explicitly lets a test create a
+/// second, strictly later run and prove it cannot replace the first.
+fn with_team_run(fixture: &Fixture, created_at: Timestamp) -> TeamRunId {
+    let template = TeamTemplateId::generate();
+    fixture
+        .store
+        .insert_team_template(
+            fixture.project,
+            &TeamTemplateRevision {
+                template_id: template,
+                version: SpecVersion::FIRST,
+                name: name("Team"),
+                definition: document("team"),
+                role_authority: Vec::new(),
+            },
+        )
+        .expect("the team revision is stored");
+    let revision = fixture
+        .store
+        .get_team_template(fixture.project, template, SpecVersion::FIRST)
+        .expect("the read succeeds")
+        .expect("the revision exists");
+    let team_run = TeamRunId::generate();
+    fixture
+        .store
+        .create_team_run(&NewTeamRun {
+            id: team_run,
+            project_id: fixture.project,
+            task_id: fixture.task,
+            snapshot: TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION),
+            created_at,
+        })
+        .expect("the team run is created");
+    team_run
+}
+
 /// A workflow standing at the gate's own phase, ready to be rejected out of it.
 fn with_workflow_at_gate_phase(fixture: &Fixture) -> TaskWorkflowId {
     let profile = work_profile();
@@ -1216,6 +1255,7 @@ fn with_workflow_at_gate_phase(fixture: &Fixture) -> TaskWorkflowId {
 fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
     let fixture = fixture();
     let workflow = with_workflow_at_gate_phase(&fixture);
+    let team_run = with_team_run(&fixture, at("2026-01-01T00:00:00Z"));
     let gate = GateKey::parse("zz.gate").expect("gate");
 
     // An identity already spent on another command, so the receipt insert fails
@@ -1346,6 +1386,10 @@ fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
     assert_eq!(route.rejection_target, phase("zz.one"));
     assert_eq!(route.from_revision, AggregateRevision::INITIAL);
     assert_eq!(route.to_revision, routed.revision);
+    assert_eq!(
+        route.team_run_id, team_run,
+        "the route freezes the TeamRun the task had when it was written"
+    );
 
     // A retry is answered from the receipt: no second verdict, no second route
     // and no second increment.
@@ -1394,6 +1438,7 @@ fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
 fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reopen() {
     let fixture = fixture();
     let workflow = with_workflow_at_gate_phase(&fixture);
+    let team_run = with_team_run(&fixture, at("2026-01-01T00:00:00Z"));
     let gate = GateKey::parse("zz.gate").expect("gate");
 
     // The pre-fix shape: a durable rejected verdict and its receipt, with the
@@ -1521,6 +1566,10 @@ fn a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reo
     assert_eq!(route.from_phase, phase("zz.two"));
     assert_eq!(route.rejection_target, phase("zz.one"));
     assert_eq!(route.to_revision.get(), 2);
+    assert_eq!(
+        route.team_run_id, team_run,
+        "a recovered route freezes the route-time TeamRun too"
+    );
     assert_eq!(
         route.gate_sequence, 1,
         "the requested evaluation is routed, never the gate's latest"
