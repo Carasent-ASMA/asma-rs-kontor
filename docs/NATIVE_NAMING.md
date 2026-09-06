@@ -187,8 +187,9 @@ Advisor workspace.
 
 Consultation callers provide only a semantic topic such as `Release readiness`.
 They never include `ASMA-8111`, `KTHSR-8111`, `CSW`, `ASW`, or the configured
-separator. Kontor validates that input against the confirmed Jira binding and
-pinned Team Definition, derives a semantic identity from the scope, family,
+separator anywhere in that topic. Kontor validates the input against the
+confirmed Jira binding and pinned Team Definition, derives a semantic identity
+from the scope, family,
 pinned profile/template revision, topic and explicit re-review provenance, and
 renders the complete container title itself. The invocation response returns
 that title as `container_name`. A second invocation with the same semantic

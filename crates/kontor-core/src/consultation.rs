@@ -51,8 +51,9 @@ pub const MAX_COMMITTEE_ROUNDS: u32 = 2;
 /// codes have canonical ASCII spellings, while the stored topic remains exact.
 ///
 /// # Errors
-/// Refuses a topic containing the configured separator or beginning with a
-/// reserved scope code or container prefix as a complete leading token.
+/// Refuses a topic containing the configured separator, reserved scope code,
+/// or container prefix as a complete token. Server-owned name material has no
+/// semantic meaning wherever a caller places it, not only at the beginning.
 pub fn validate_semantic_topic(
     topic: &ExternalName,
     scope_codes: &[&str],
@@ -69,17 +70,17 @@ pub fn validate_semantic_topic(
     if scope_codes
         .iter()
         .copied()
-        .any(|code| begins_with_reserved_token(text, code))
+        .any(|code| contains_reserved_token(text, code))
     {
         return Err(DomainError::invalid(
             "ConsultationTopic",
-            "consultation_topic_repeats_scope_code: a topic cannot begin with its Jira key or derived Kontor item code",
+            "consultation_topic_repeats_scope_code: a topic cannot contain its Jira key or derived Kontor item code",
         ));
     }
-    if begins_with_reserved_token(text, container_prefix) {
+    if contains_reserved_token(text, container_prefix) {
         return Err(DomainError::invalid(
             "ConsultationTopic",
-            "consultation_topic_repeats_container_prefix: a topic cannot begin with its Team Definition container prefix",
+            "consultation_topic_repeats_container_prefix: a topic cannot contain its Team Definition container prefix",
         ));
     }
     Ok(())
@@ -166,8 +167,27 @@ fn begins_with_reserved_token(text: &str, reserved: &str) -> bool {
     }
     text.get(reserved.len()..).is_some_and(|tail| {
         tail.chars().next().is_none_or(|next| {
-            next.is_whitespace() || matches!(next, ':' | '-' | '–' | '—' | '/' | '•')
+            next.is_whitespace()
+                || matches!(
+                    next,
+                    ':' | '-' | '–' | '—' | '/' | '•' | ')' | ']' | ',' | '.' | ';'
+                )
         })
+    })
+}
+
+fn contains_reserved_token(text: &str, reserved: &str) -> bool {
+    text.char_indices().any(|(start, _)| {
+        let candidate = &text[start..];
+        let before_is_boundary = start == 0
+            || text[..start].chars().next_back().is_some_and(|previous| {
+                previous.is_whitespace()
+                    || matches!(
+                        previous,
+                        ':' | '-' | '–' | '—' | '/' | '•' | '(' | '[' | ',' | ';'
+                    )
+            });
+        before_is_boundary && begins_with_reserved_token(candidate, reserved)
     })
 }
 

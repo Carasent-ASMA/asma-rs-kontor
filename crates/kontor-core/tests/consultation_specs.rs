@@ -150,6 +150,9 @@ fn a_consultation_topic_cannot_repeat_server_owned_name_components() {
         "CSW operational completion",
         "csw/operational completion",
         "operational • completion",
+        "operational completion for ASMA-8111",
+        "operational completion (KTHSR-8111)",
+        "operational CSW review",
     ] {
         assert!(
             validate_semantic_topic(&name(bad), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
