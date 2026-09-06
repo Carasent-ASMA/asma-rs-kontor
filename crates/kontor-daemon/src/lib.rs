@@ -48,6 +48,7 @@ pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
+pub mod provider_config;
 pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
@@ -387,6 +388,13 @@ impl Daemon {
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
+        match provider_config::reconcile(&config.state_root) {
+            Ok(changed) if changed > 0 => {
+                info!(changed, "optional memory MCP startup policy reconciled")
+            }
+            Ok(_) => {}
+            Err(_) => warn!("owned Codex provider configuration could not be reconciled"),
+        }
         let store = SqliteStore::open(&config.state_root.join(DATABASE_FILE))
             .map_err(|source| StartupError::Store { source })?;
         let credentials = credentials::open_or_create(&config.state_root)?;
@@ -593,6 +601,45 @@ impl Daemon {
                                 "a completion reopening scan could not complete"
                             ),
                         }
+                    }
+                }
+            }
+        })
+    }
+
+    /// Release consultation sessions after durable settlement, including the
+    /// backlog left by older versions. Wait for startup reconciliation first.
+    #[must_use]
+    pub fn spawn_consultation_releaser(&self) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        let applications = Arc::clone(&self.applications);
+        tokio::spawn(async move {
+            let mut stopping = state.signals().stops();
+            if *stopping.borrow_and_update() {
+                return;
+            }
+            let barrier = tokio::select! {
+                barrier = state.barrier().settled() => barrier,
+                _ = stopping.changed() => return,
+            };
+            if barrier != BarrierState::Open {
+                return;
+            }
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    _ = ticker.tick() => {}
+                }
+                // Shutdown may interrupt a dispatch: the persisted effect
+                // remains pending, and replay always starts with readback.
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    result = applications.release_completed_consultations(16) => match result {
+                        Ok(released) if released > 0 => info!(released, "settled consultation sessions released"),
+                        Ok(_) => {},
+                        Err(_) => warn!("consultation session release scan could not complete"),
                     }
                 }
             }

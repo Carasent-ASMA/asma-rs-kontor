@@ -3262,6 +3262,11 @@ export interface components {
             /** @description Immutable output and caller disposition once settled. */
             result?: unknown;
             /**
+             * Format: int64
+             * @description Current aggregate revision required when this seat submits advice.
+             */
+            revision: number;
+            /**
              * @description Every Advisor seat declared by the pinned Team Definition, in its
              *     deterministic slot order.
              */

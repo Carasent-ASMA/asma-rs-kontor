@@ -36745,6 +36745,21 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .consultation_seat_credential(
             SeatBindingId::parse(&second_advisor_seat).expect("the second Advisor SeatBinding"),
         );
+    let own_advisor_read = Call::get(format!("/v1/projects/{project}/advisor-runs/{advisor_run}"))
+        .with_token(advisor_token.clone())
+        .send(world)
+        .await;
+    assert_eq!(own_advisor_read.status, 200, "{}", own_advisor_read.body);
+    assert!(own_advisor_read.json()["revision"].is_u64());
+    assert_eq!(
+        own_advisor_read.json()["seats"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        own_advisor_read.json()["seats"][0]["seat_binding_id"],
+        advisor_seat
+    );
+
     let unrelated_operator_route = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         &serde_json::json!({}),
@@ -36836,16 +36851,17 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         2
     );
 
-    let advisor_cannot_read_realm =
-        Call::get(format!("/v1/projects/{project}/advisor-runs/{advisor_run}"))
-            .with_token(advisor_token)
-            .send(world)
-            .await;
+    let private_advice = Call::get(format!("/v1/projects/{project}/advisor-runs/{advisor_run}"))
+        .with_token(advisor_token)
+        .send(world)
+        .await;
+    assert_eq!(private_advice.status, 200, "{}", private_advice.body);
+    assert_eq!(private_advice.json()["advice"].as_array().unwrap().len(), 1);
     assert_eq!(
-        advisor_cannot_read_realm.status, 403,
-        "a consultation seat inherited an Observer route: {}",
-        advisor_cannot_read_realm.body
+        private_advice.json()["advice"][0]["seat_binding_id"],
+        advisor_seat
     );
+    assert!(private_advice.json()["result"].is_null());
 
     let advisor_settled = Call::post(
         format!("/v1/projects/{project}/advisor-runs/{advisor_run}/settle"),
@@ -37334,10 +37350,16 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .send(world)
         .await;
     assert_eq!(
-        reviewer_read.status, 403,
-        "an independent reviewer could read the Committee projection: {}",
+        reviewer_read.status, 200,
+        "an independent reviewer must be able to read its own revision: {}",
         reviewer_read.body
     );
+    assert_eq!(reviewer_read.json()["seats"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        reviewer_read.json()["seats"][0]["seat_binding_id"],
+        reviewer_ids[0]
+    );
+    assert_eq!(reviewer_read.json()["findings"], serde_json::json!([]));
     let judge = seats
         .iter()
         .find(|seat| seat["role_slot_id"] == "judge")
@@ -37486,6 +37508,12 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "a recovery replay reached the runtime"
     );
 
+    let fenced_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .with_token(predecessor_token.clone())
+        .send(world)
+        .await;
+    assert_eq!(fenced_read.status, 403, "{}", fenced_read.body);
+
     // The predecessor's inherited bearer is invalid as soon as its occupancy
     // generation is fenced, even if that native process later wakes up.
     let zombie = Call::post(
@@ -37552,6 +37580,24 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .send(world)
     .await;
     assert_eq!(foreign.status, 403, "{}", foreign.body);
+
+    for inaccessible_seat in [foreign_binding, SeatBindingId::parse(&judge_id).unwrap()] {
+        let refused = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+            .with_token(
+                world
+                    .daemon
+                    .state()
+                    .credentials()
+                    .consultation_seat_credential(inaccessible_seat),
+            )
+            .send(world)
+            .await;
+        assert_eq!(
+            refused.status, 403,
+            "foreign and unbound seats cannot read: {}",
+            refused.body
+        );
+    }
 
     // The Judge cannot aggregate before both independent findings are durable.
     let premature_judge = Call::post(
@@ -37646,6 +37692,30 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             );
         }
     }
+    let private_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential_for_generation(
+                    SeatBindingId::parse(&reviewer_ids[0]).unwrap(),
+                    recovered_generation,
+                ),
+        )
+        .send(world)
+        .await;
+    assert_eq!(private_read.status, 200, "{}", private_read.body);
+    let private_view = private_read.json();
+    assert_eq!(private_view["revision"], revision);
+    assert_eq!(private_view["findings_recorded"], 1);
+    assert_eq!(private_view["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        private_view["findings"][0]["role_slot_id"],
+        private_view["seats"][0]["role_slot_id"]
+    );
+    assert!(private_view["result"].is_null());
+
     let awaiting_judge = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
         .signed_as(world, "observer")
         .send(world)

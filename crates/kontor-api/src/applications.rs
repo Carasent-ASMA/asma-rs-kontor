@@ -1506,6 +1506,9 @@ pub struct AdvisorRunDto {
     pub seats: Vec<ConsultationSeatDto>,
     /// Its lifecycle, in the server's own vocabulary.
     pub state: String,
+    /// Current aggregate revision required when this seat submits advice.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
     /// Independent immutable outputs submitted by every configured Advisor seat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advice: Vec<serde_json::Value>,
@@ -9597,14 +9600,53 @@ pub async fn advisor_run(
     caller: Caller,
     Path((project_id, advisor_run_id)): Path<(String, String)>,
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Observer)?;
+    if caller.seat().is_none() {
+        caller.require(&state, CallerCapability::Observer)?;
+    }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let advisor_run_id = parse_id(&state, AdvisorRunId::parse(&advisor_run_id))?;
-    Ok(Json(
-        state
-            .applications()
-            .advisor_run(project_id, advisor_run_id)?,
-    ))
+    let mut run = state
+        .applications()
+        .advisor_run(project_id, advisor_run_id)?;
+    if let Some(seat) = consultation_reader(&state, caller, &run.seats)? {
+        run.seats
+            .retain(|candidate| candidate.seat_binding_id == seat.seat_binding_id);
+        run.advice.retain(|advice| {
+            advice
+                .get("seat_binding_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(seat.seat_binding_id.to_string().as_str())
+        });
+        run.result = None;
+    }
+    Ok(Json(run))
+}
+
+/// Authenticate a consultation projection without granting realm-wide reads.
+/// The addressed run must contain this exact, currently attested occupancy.
+fn consultation_reader(
+    state: &ApiState,
+    caller: Caller,
+    seats: &[ConsultationSeatDto],
+) -> Result<Option<ConsultationSeatDto>, ApiError> {
+    let Some(id) = caller.seat() else {
+        return Ok(None);
+    };
+    seats
+        .iter()
+        .find(|seat| {
+            seat.seat_binding_id == id
+                && Some(seat.occupancy_generation) == caller.occupancy_generation()
+                && seat.observed_binding.is_some()
+        })
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::Forbidden,
+                "this credential is not the addressed consultation's active native seat",
+            )
+        })
 }
 
 /// Settle one Advisor consultation.
@@ -9814,14 +9856,29 @@ pub async fn committee_run(
     caller: Caller,
     Path((project_id, committee_run_id)): Path<(String, String)>,
 ) -> Result<Json<CommitteeRunDto>, ApiError> {
-    caller.require(&state, CallerCapability::Observer)?;
+    if caller.seat().is_none() {
+        caller.require(&state, CallerCapability::Observer)?;
+    }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
-    Ok(Json(
-        state
-            .applications()
-            .committee_run(project_id, committee_run_id)?,
-    ))
+    let mut run = state
+        .applications()
+        .committee_run(project_id, committee_run_id)?;
+    if let Some(seat) = consultation_reader(&state, caller, &run.seats)? {
+        run.seats
+            .retain(|candidate| candidate.seat_binding_id == seat.seat_binding_id);
+        run.findings
+            .retain(|finding| finding.role_slot_id == seat.role_slot_id);
+        run.findings_recorded = u32::try_from(run.findings.len()).unwrap_or(u32::MAX);
+        // Judges receive their authorized reviewer evidence in the frozen launch
+        // prompt. A generic scoped GET never exposes another seat's output.
+        run.result = None;
+        run.result_hash = None;
+        run.outcome = None;
+        run.remediation = None;
+        run.remediation_hash = None;
+    }
+    Ok(Json(run))
 }
 
 /// Read pending runtime permission requests from one exact Committee seat.

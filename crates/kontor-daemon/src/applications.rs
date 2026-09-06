@@ -229,10 +229,10 @@ use kontor_runtime::adapter::{
     ConsultationCredential, ConsultationFallbackDisposition, ConsultationLaunchRequest,
     ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationRouteSource, ConsultationSeatRetireRequest,
-    HostedSeatClaimPredecessor, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatInspectRequest, HostedSeatLaunchRequest, HostedSeatMessageRequest,
-    HostedSeatRetireRequest, PersistentSeatNativeState, RetitleSeatRequest, RuntimeAdapter,
-    RuntimeError,
+    ConsultationSessionReleaseRequest, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
+    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatLaunchRequest,
+    HostedSeatMessageRequest, HostedSeatRetireRequest, PersistentSeatNativeState,
+    RetitleSeatRequest, RuntimeAdapter, RuntimeError,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
@@ -703,6 +703,44 @@ impl Services {
     /// Hand the services the process state they run against. Once only.
     pub fn attach(&self, state: ApiState) {
         let _ = self.state.set(state);
+    }
+
+    /// Release a bounded batch of settled consultation sessions. Every intent
+    /// is durable before dispatch; unavailable or ambiguous effects remain
+    /// pending and are inspected again on the next pass or after restart.
+    pub async fn release_completed_consultations(&self, limit: u32) -> Result<usize, ApiError> {
+        let _activity = self.native_activity()?;
+        let state = self.state()?;
+        let releases = state
+            .with_store(|store| store.plan_consultation_releases(limit, kontor_api::now()))
+            .map_err(|error| self.refuse(&error))?;
+        let mut confirmed = 0;
+        for release in releases {
+            let Some(adapter) = state.runtimes().get(&release.identity.runtime_kind) else {
+                continue;
+            };
+            let result = adapter
+                .release_consultation_session(&ConsultationSessionReleaseRequest {
+                    run_id: release.run_id,
+                    seat_binding_id: release.seat_binding_id,
+                    identity: release.identity.clone(),
+                    requested_at: release.requested_at,
+                })
+                .await;
+            match result {
+                Ok(outcome) if outcome.identity == release.identity => {
+                    state
+                        .with_store(|store| {
+                            store.confirm_consultation_release(&release, outcome.archived_at)
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    confirmed += 1;
+                }
+                _ => tracing::warn!(seat_binding_id = %release.seat_binding_id,
+                    "settled consultation session release remains unconfirmed"),
+            }
+        }
+        Ok(confirmed)
     }
 
     /// The attached state, or the refusal a request is owed before one exists.
@@ -9652,11 +9690,15 @@ impl Services {
                     seat.occupancy_generation,
                 );
             let prompt = BoundedText::parse(&format!(
-                "Read-only Advisor seat. You may inspect evidence but must not mutate code, Jira, topology, scheduling, or runtime state. Expertise: {} Behavior: {} Question: {} Output requirements: {} Report only this seat's independent finding; do not aggregate other Advisors. Submit using the KONTOR_AUTH environment value. It is valid only for SeatBinding {} and must not be disclosed.",
+                "Read-only Advisor seat. You may inspect evidence but must not mutate code, Jira, topology, scheduling, or runtime state. Expertise: {} Behavior: {} Question: {} Output requirements: {} Report only this seat's independent finding; do not aggregate other Advisors. Submit through the scoped Kontor MCP tools, which inherit authentication automatically. Context: project_id {}, advisor_run_id {}, round {}, expected_revision {}, seat_binding_id {}. Read this run to refresh its revision before submission. Never disclose credentials.",
                 profile.expertise.as_str(),
                 profile.behavior.as_str(),
                 run.question.as_str(),
                 profile.output_requirements.as_str(),
+                run.project_id,
+                run.id.as_text(),
+                run.round,
+                run.revision.get(),
                 seat.seat_binding_id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
@@ -9786,6 +9828,7 @@ impl Services {
             })
             .transpose()?;
         Ok(AdvisorRunDto {
+            revision: run.revision,
             realm_id: state.realm_id(),
             advisor_run_id,
             epic_id: run.mini_project_id,
@@ -10271,14 +10314,19 @@ impl Services {
                  Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
                  Question: {} Durable reviewer findings available to this seat: {} \
                  Governed re-review evidence reconstructed by Kontor: {} \
-                 Submit this seat's own finding using the KONTOR_AUTH environment value. \
-                 It is valid only for SeatBinding {} and must not be disclosed.",
+                 Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
+                 Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
+                 Read this run to refresh its revision before submission. Never disclose credentials.",
                 authority,
                 template.charter.as_str(),
                 slot.behavior.as_str(),
                 run.question.as_str(),
                 evidence,
                 re_review_evidence,
+                run.project_id,
+                run.id.as_text(),
+                run.round,
+                run.revision.get(),
                 seat.seat_binding_id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
@@ -10440,13 +10488,18 @@ impl Services {
         let prompt = BoundedText::parse(&format!(
             "{} Jira, topology, scheduling, or runtime state. Charter: {} Role instructions: {} \
              Question: {} Durable reviewer findings available to this seat: {} \
-             Submit this seat's own finding using the KONTOR_AUTH environment value. \
-             It is valid only for SeatBinding {} and must not be disclosed.",
+             Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
+             Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
+             Read this run to refresh its revision before submission. Never disclose credentials.",
             authority,
             template.charter.as_str(),
             slot.behavior.as_str(),
             run.question.as_str(),
             evidence,
+            run.project_id,
+            run.id.as_text(),
+            run.round,
+            run.revision.get(),
             predecessor.seat_binding_id,
         ))
         .map_err(|error| self.refuse_domain(&error))?;

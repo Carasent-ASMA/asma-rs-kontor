@@ -308,6 +308,14 @@ conjunctive rule already produced, including dissent — it cannot turn a failin
 conjunction into a passing one. A committee seat runs under the `consultation`
 serve profile, which reaches its own consultation aggregate and nothing else.
 
+Consultation permissions and native session lifetime are distinct from the
+verdict. Claude seats use an ordinary turn with a registry-bound tool guard;
+Codex seats receive an explicit read-only sandbox. After durable settlement,
+the bounded session-release scanner persists an exact native-identity intent,
+archives through the runtime adapter, and confirms by readback. It never derives
+settlement from an idle session. See [consultation lifecycle](docs/CONSULTATION_LIFECYCLE.md)
+for startup configuration, recovery and rollback behavior.
+
 **Epic completion** compiles a pinned profile into ordinary task, team, gate and
 receipt nodes — there is no second scheduler and no workflow language:
 

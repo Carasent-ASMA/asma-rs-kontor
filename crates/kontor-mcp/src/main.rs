@@ -17,6 +17,8 @@
 
 use std::path::PathBuf;
 
+mod consultation_guard;
+
 use clap::Parser;
 use kontor_mcp::{CallerTier, KontorMcp, ServeProfile, connect, serve_stdio};
 
@@ -63,6 +65,11 @@ fn resolve_profile(name: &str) -> Result<&'static ServeProfile, String> {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    // A local permission hook has no credential and opens no control-plane
+    // connection. Keep its protocol separate from MCP argument parsing.
+    if std::env::args().skip(1).eq(["--consultation-tool-guard"]) {
+        return consultation_guard::run();
+    }
     let args = Args::parse();
     let tier = match CallerTier::parse(&args.credential_tier) {
         Ok(tier) => tier,
