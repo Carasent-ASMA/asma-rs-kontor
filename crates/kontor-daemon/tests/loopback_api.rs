@@ -383,6 +383,7 @@ impl Respond for MultiHopEpicJira {
             let status = VERIFIED_EPIC_ROUTE[index];
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8201",
+                "id": "908201",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -591,6 +592,7 @@ impl Respond for ClosedEpicJira {
             self.issue_reads.fetch_add(1, Ordering::SeqCst);
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8203",
+                "id": "908203",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -641,6 +643,7 @@ impl Respond for HeldEpicJira {
             self.issue_reads.fetch_add(1, Ordering::SeqCst);
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8205",
+                "id": "908205",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -691,6 +694,7 @@ impl Respond for FailingEpicJira {
             self.issue_reads.fetch_add(1, Ordering::SeqCst);
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8204",
+                "id": "908204",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -740,6 +744,7 @@ impl Respond for StatefulTaskJira {
             let transitioned = self.transitioned.load(Ordering::SeqCst);
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8202",
+                "id": "908202",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -793,6 +798,7 @@ impl Respond for HeldTaskJira {
             let transitioned = self.transitioned.load(Ordering::SeqCst);
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "ASMA-8206",
+                "id": "908206",
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -3344,6 +3350,7 @@ fn confirm_test_epic_identity_as(
                 .confirm_jira_materialization_item(
                     &item,
                     &key,
+                    &jira_issue_id(key.as_str()),
                     &ContentHash::of(format!("{key}-readback").as_bytes()),
                     now,
                 )
@@ -8938,6 +8945,7 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         .and(path("/rest/api/3/issue/ASMA-8049"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8049",
+            "id": "908049",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Epic", "hierarchyLevel": 1},
@@ -8954,6 +8962,7 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
         .await;
     let task_readback = Arc::new(std::sync::Mutex::new(serde_json::json!({
         "key": "ASMA-8050",
+        "id": "908050",
         "fields": {
             "project": {"key": "ASMA"},
             "issuetype": {"name": "Task", "hierarchyLevel": 0},
@@ -9218,6 +9227,7 @@ async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
         .and(path("/rest/api/3/issue/ASMA-8049"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8049",
+            "id": "908049",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Epic", "hierarchyLevel": 1},
@@ -9258,6 +9268,7 @@ async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
         .and(path("/rest/api/3/issue/ASMA-8050"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8050",
+            "id": "908050",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Task", "hierarchyLevel": 0},
@@ -13845,6 +13856,7 @@ async fn resolving_an_unchanged_held_task_conflict_allows_reconciliation_to_cont
             .confirm_jira_materialization_item(
                 &item,
                 &ExternalId::parse("ASMA-8206").expect("a Jira key"),
+                &jira_issue_id("ASMA-8206"),
                 &ContentHash::of(b"resolved held task readback"),
                 now,
             )
@@ -14207,6 +14219,7 @@ async fn request_and_resident_jira_reconciliation_ignore_an_unrelated_connector_
             .confirm_jira_materialization_item(
                 &item,
                 &ExternalId::parse("ASMA-8202").expect("a Jira key"),
+                &jira_issue_id("ASMA-8202"),
                 &ContentHash::of(b"task binding readback"),
                 now,
             )
@@ -31393,6 +31406,7 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
                 .confirm_jira_materialization_item(
                     item,
                     &ExternalId::parse(key).expect("a Jira key"),
+                    &jira_issue_id(key),
                     &ContentHash::of(format!("{key}-readback").as_bytes()),
                     now,
                 )
@@ -33297,6 +33311,7 @@ fn confirm_promoted_epic_identity(
             .confirm_jira_materialization_item(
                 &item,
                 &ExternalId::parse(jira_key).expect("a Jira key"),
+                &jira_issue_id(jira_key),
                 &ContentHash::of(format!("{jira_key}-readback").as_bytes()),
                 now,
             )
@@ -43705,4 +43720,13 @@ async fn a_publication_that_never_landed_is_still_refused() {
         placeholder,
         "a refused publication leaves the reader's body exactly as it was"
     );
+
+/// A stable immutable Jira issue id derived from a key.
+///
+/// Real Jira ids are opaque and unrelated to the key. Deriving one here only
+/// keeps distinct keys in a fixture on distinct identities, and keeps the id a
+/// mock returns equal to the id a direct store call records for the same key.
+fn jira_issue_id(key: &str) -> ExternalId {
+    let digits: String = key.chars().filter(char::is_ascii_digit).collect();
+    ExternalId::parse(&format!("90{digits}")).expect("an immutable Jira issue id")
 }
