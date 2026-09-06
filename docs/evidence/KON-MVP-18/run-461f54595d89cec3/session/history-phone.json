@@ -1,0 +1,176 @@
+{
+  "anchor": "0192f0c0-0000-7000-8000-0000000000fa:1:20",
+  "client": "phone",
+  "epoch": 1,
+  "item_count": 20,
+  "items": [
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "dd881ce28bb2f80691dc2f184d40d194460fb9ac03e968dcfa38c5910946d9ed",
+      "permission_id": null,
+      "sequence": 1
+    },
+    {
+      "epoch": 1,
+      "kind": "tool_call",
+      "message_id": null,
+      "payload_sha256": "4f63004b1cf1143c34abd0de133f6443436ce1eba76e24668a2ed685b3c87a2a",
+      "permission_id": null,
+      "sequence": 2
+    },
+    {
+      "epoch": 1,
+      "kind": "log",
+      "message_id": null,
+      "payload_sha256": "87a3b26ab240d635b82405da298511c360cac2f0ea193715bfe8ba81b3d89cfb",
+      "permission_id": null,
+      "sequence": 3
+    },
+    {
+      "epoch": 1,
+      "kind": "permission_request",
+      "message_id": null,
+      "payload_sha256": "249593fbdfb6b3f4b09eb78dfbfdbb6fed4f36048707776bd17952d439828430",
+      "permission_id": "pilot-permission-1",
+      "sequence": 4
+    },
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "d5b541b742ff6565c6c2dee303886d572a5b9ca47cd442a2cc7c08bafc602814",
+      "permission_id": null,
+      "sequence": 5
+    },
+    {
+      "epoch": 1,
+      "kind": "tool_call",
+      "message_id": null,
+      "payload_sha256": "35439ef9a821e05517be42cc73f579124a30534e2704d9a2a925539870bf8655",
+      "permission_id": null,
+      "sequence": 6
+    },
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "d13fe7cc199c7c80077ad87b4f7aefc3556ea3a3687d68e4a3256c13cf7f5b72",
+      "permission_id": null,
+      "sequence": 7
+    },
+    {
+      "epoch": 1,
+      "kind": "state_change",
+      "message_id": null,
+      "payload_sha256": "f3c7238b12d9aef1b51180296ff9fb13be5bfb10d3859cbbb3daa2ca97ce97f1",
+      "permission_id": null,
+      "sequence": 8
+    },
+    {
+      "epoch": 1,
+      "kind": "tool_call",
+      "message_id": null,
+      "payload_sha256": "34fef3f4e15748a815555a7e3fafd19a01e372ec3d33facac7461cd4c891c057",
+      "permission_id": null,
+      "sequence": 9
+    },
+    {
+      "epoch": 1,
+      "kind": "log",
+      "message_id": null,
+      "payload_sha256": "f8ea3f41ad9d5041abee13ae7b642e923c8f38d330a2ad1d1ab08365ef0d6a51",
+      "permission_id": null,
+      "sequence": 10
+    },
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "3b11109aac420b80b9981afacd1a3d2205661b8452a9db06de3127be0f185995",
+      "permission_id": null,
+      "sequence": 11
+    },
+    {
+      "epoch": 1,
+      "kind": "state_change",
+      "message_id": null,
+      "payload_sha256": "83ecd1847081921786d6ea06e53eaec368ad72138bac73d46cc1a2dc92390fce",
+      "permission_id": null,
+      "sequence": 12
+    },
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "1b54456c901d0fa21e54b8313da958937a7fb58023a9741227825af92d119fb9",
+      "permission_id": null,
+      "sequence": 13
+    },
+    {
+      "epoch": 1,
+      "kind": "log",
+      "message_id": null,
+      "payload_sha256": "ecba29992abeb405230be59e1a22df7a669dea13de4d4b230fac750155fbca85",
+      "permission_id": null,
+      "sequence": 14
+    },
+    {
+      "epoch": 1,
+      "kind": "tool_call",
+      "message_id": null,
+      "payload_sha256": "ea13be8d6efead5ba10871c8fd0e0643deb3950e93efb6fba78a47ed365e07fe",
+      "permission_id": null,
+      "sequence": 15
+    },
+    {
+      "epoch": 1,
+      "kind": "state_change",
+      "message_id": null,
+      "payload_sha256": "27a3c41c4a1b7ca03039dba5d6a9eeb77371db18a0624e32de8501eadb79f2d6",
+      "permission_id": null,
+      "sequence": 16
+    },
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "b38cbad968bc79de6e83f5050a505429c3c211ed194eea1bb96868a1224c545e",
+      "permission_id": null,
+      "sequence": 17
+    },
+    {
+      "epoch": 1,
+      "kind": "tool_call",
+      "message_id": null,
+      "payload_sha256": "c9e93932c3bf3fa58583f395b7cc51d998fdd2b22210ae7aeea6da624eff1820",
+      "permission_id": null,
+      "sequence": 18
+    },
+    {
+      "epoch": 1,
+      "kind": "message",
+      "message_id": null,
+      "payload_sha256": "3fcb07d89e5a8f2847bcca953f8a7b5d1b32350d69bda3bbf8dd760515cb8863",
+      "permission_id": null,
+      "sequence": 19
+    },
+    {
+      "epoch": 1,
+      "kind": "state_change",
+      "message_id": null,
+      "payload_sha256": "0e3a659f1f0f3f2e065350b69ad46b11aa8c9910b197495c029e1ac5fe088d1d",
+      "permission_id": null,
+      "sequence": 20
+    }
+  ],
+  "page_size": 8,
+  "pages_fetched": 3,
+  "permissions_raised": [
+    "pilot-permission-1"
+  ],
+  "redaction": "kinds, positions, subject ids and payload digests only; no payload body is written into any pilot artifact",
+  "stream_sha256": "90748f05d1d350f93bf993ac7d1ec087c75a0962c5dc09cb706ce2e9ac05822c",
+  "user_agent": "kontor-pilot/phone (390x844)"
+}

@@ -1,0 +1,7 @@
+{
+  "declared_instant_changes_the_answer": true,
+  "rule": "SchedulingSnapshot::taken_at is the only instant `plan` reads; the pass opens no clock, database, filesystem or environment variable, so there is no field a client could put its own time into",
+  "same_snapshot_twice_identical": true,
+  "second_taken_at": "2026-08-19T09:00:00Z",
+  "snapshot_taken_at": "2026-08-12T09:00:00Z"
+}

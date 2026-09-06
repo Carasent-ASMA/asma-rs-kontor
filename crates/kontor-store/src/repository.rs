@@ -21,6 +21,7 @@ use kontor_core::calendar::{
 };
 use kontor_core::consultation::{
     CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
+    ConsultationSubject,
 };
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
@@ -211,6 +212,8 @@ type ConsultationRunColumns = (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 fn consultation_run_id(
@@ -254,7 +257,15 @@ fn read_consultation_run(
         updated_at,
         settled_at,
         topic,
+        subject_kind,
+        subject_task_id,
     ) = columns;
+    // An absent pair stays absent. Nothing here reconstructs a subject from the
+    // caller's seat, the containing epic or the question beside it.
+    let subject = ConsultationSubject::from_stored(
+        subject_kind.as_deref(),
+        subject_task_id.as_deref().map(TaskId::parse).transpose()?,
+    )?;
     // A stored NULL stays None. Nothing here reconstructs a topic from the
     // question beside it, which is exactly the inference the contract forbids.
     let topic = topic.as_deref().map(ExternalName::parse).transpose()?;
@@ -300,6 +311,7 @@ fn read_consultation_run(
         profile_version: read_version(profile_version)?,
         definition_hash: ContentHash::parse(&definition_hash)?,
         semantic_identity_hash,
+        subject,
         question,
         question_hash,
         context: serde_json::from_str(context.json()).map_err(|error| {
@@ -2264,9 +2276,10 @@ impl SqliteStore {
                       profile_version, definition_hash, semantic_identity_hash, question, question_hash,
                       context, context_hash, caller_seat_binding_id, topology_node_id,
                       invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                      updated_at, settled_at, topic)
+                      updated_at, settled_at, topic, subject_kind, subject_task_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                         ?26, ?27)",
                 params![
                     run.id.as_text(),
                     run.project_id.to_string(),
@@ -2293,6 +2306,10 @@ impl SqliteStore {
                     text(run.updated_at),
                     run.settled_at.map(text),
                     run.topic.as_ref().map(ExternalName::as_str),
+                    run.subject.map(ConsultationSubject::as_str),
+                    run.subject
+                        .and_then(ConsultationSubject::task_id)
+                        .map(|task_id| task_id.to_string()),
                 ],
             )
             .map_err(|error| match error {
@@ -2443,7 +2460,7 @@ impl SqliteStore {
                         definition_hash, semantic_identity_hash, question, question_hash, context,
                         context_hash, caller_seat_binding_id, topology_node_id,
                         invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                        updated_at, settled_at, topic
+                        updated_at, settled_at, topic, subject_kind, subject_task_id
                  FROM consultation_runs
                  WHERE project_id = ?1 AND run_id = ?2 AND family = ?3",
                 params![project_id.to_string(), run_id.as_text(), run_id.family().as_str()],
@@ -2471,6 +2488,8 @@ impl SqliteStore {
                         row.get::<_, String>(19)?,
                         row.get::<_, Option<String>>(20)?,
                         row.get::<_, Option<String>>(21)?,
+                        row.get::<_, Option<String>>(22)?,
+                        row.get::<_, Option<String>>(23)?,
                     ))
                 },
             )

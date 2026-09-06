@@ -1,0 +1,24 @@
+{
+  "acting_role": "therapist-verifier",
+  "actor_role": "simulated-patient",
+  "any_other_gate": {
+    "gate": "design-review-gate",
+    "reason_code": "persona_cannot_evaluate",
+    "verdict": "block"
+  },
+  "gate_evaluation_rows": 0,
+  "gate_under_test": "functionality-qa-gate",
+  "independent_evaluator_roles": [
+    "therapist-verifier"
+  ],
+  "own_gate": {
+    "gate": "functionality-qa-gate",
+    "reason_code": "persona_self_approval",
+    "verdict": "block"
+  },
+  "persona": "simulated-patient",
+  "scenario_id": "01936f5a-0000-7000-8000-000000000003",
+  "scenario_version": 1,
+  "sequence_written": null,
+  "verdict_rung": 2
+}

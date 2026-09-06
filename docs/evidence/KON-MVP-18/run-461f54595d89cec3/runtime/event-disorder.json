@@ -1,0 +1,54 @@
+{
+  "contradiction": {
+    "anchor": "1:1",
+    "breaks": [
+      "the same position arrived with different content",
+      "the same position arrived with different content"
+    ],
+    "delivered": [
+      2
+    ],
+    "final_position": "1:2",
+    "history": [
+      1
+    ]
+  },
+  "dispatch": {
+    "control_without_gap": {
+      "admitted": 1,
+      "rejection": null
+    },
+    "with_open_replay_gap": {
+      "admitted": 0,
+      "rejection": "runtime_reconciliation_incomplete"
+    }
+  },
+  "duplicates_and_regression": {
+    "anchor": "1:1",
+    "breaks": [],
+    "delivered": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "final_position": "1:5",
+    "history": [
+      1
+    ]
+  },
+  "rule": "continuity is validated over every event before any filter, and the guard latches: once a stream is refused, every later read repeats the same typed refusal instead of resuming past the hole",
+  "sequence_gap": {
+    "anchor": "1:2",
+    "breaks": [
+      "events are missing before this one",
+      "events are missing before this one"
+    ],
+    "delivered": [],
+    "final_position": "1:2",
+    "history": [
+      1,
+      2
+    ]
+  }
+}

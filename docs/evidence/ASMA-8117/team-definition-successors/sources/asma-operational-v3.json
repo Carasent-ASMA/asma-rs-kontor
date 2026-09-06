@@ -1,0 +1,281 @@
+{
+  "containers": [
+    {
+      "kind": "ESW",
+      "name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "PREFIX"
+          },
+          {
+            "kind": "token",
+            "value": "EPIC_ITEM_CODE"
+          }
+        ]
+      },
+      "parent": null,
+      "prefix": "ESW",
+      "projection_capabilities": [
+        "native_root"
+      ],
+      "read_only": false
+    },
+    {
+      "kind": "ECP",
+      "name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "PREFIX"
+          },
+          {
+            "kind": "token",
+            "value": "EPIC_ITEM_CODE"
+          }
+        ]
+      },
+      "parent": "ESW",
+      "prefix": "ECP",
+      "projection_capabilities": [
+        "native_child",
+        "session_host"
+      ],
+      "read_only": false,
+      "seat_name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "ROLE_CODE"
+          }
+        ]
+      },
+      "slots": [
+        {
+          "capability_profile": "epic-leadership",
+          "role_code": "LSA",
+          "slot_id": "lsa"
+        },
+        {
+          "capability_profile": "epic-coordination",
+          "role_code": "TPM",
+          "slot_id": "tpm"
+        },
+        {
+          "capability_profile": "epic-ad-hoc",
+          "role_code": "SA",
+          "slot_id": "sa"
+        },
+        {
+          "capability_profile": "epic-ad-hoc",
+          "role_code": "SWE",
+          "slot_id": "swe"
+        },
+        {
+          "capability_profile": "epic-ad-hoc",
+          "role_code": "QA",
+          "slot_id": "qa"
+        },
+        {
+          "capability_profile": "epic-ad-hoc",
+          "role_code": "AUD",
+          "slot_id": "aud"
+        },
+        {
+          "capability_profile": "epic-ad-hoc",
+          "role_code": "UAT",
+          "slot_id": "uat"
+        }
+      ]
+    },
+    {
+      "kind": "TSW",
+      "name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "PREFIX"
+          },
+          {
+            "kind": "token",
+            "value": "TASK_ITEM_CODE"
+          }
+        ]
+      },
+      "parent": "ESW",
+      "prefix": "TSW",
+      "projection_capabilities": [
+        "native_child",
+        "session_host"
+      ],
+      "read_only": false,
+      "seat_name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "ROLE_CODE"
+          }
+        ]
+      },
+      "team_slots": [
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "SA",
+          "slot_id": "scope"
+        },
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "SWE",
+          "slot_id": "implement"
+        },
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "QA",
+          "slot_id": "verify"
+        },
+        {
+          "capability_profile": "delivery-high",
+          "role_code": "AUD",
+          "slot_id": "audit"
+        },
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "SA",
+          "slot_id": "architect"
+        },
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "SWE",
+          "slot_id": "builder"
+        },
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "QA",
+          "slot_id": "tester"
+        },
+        {
+          "capability_profile": "delivery-high",
+          "role_code": "AUD",
+          "slot_id": "inspector"
+        },
+        {
+          "capability_profile": "delivery-high",
+          "role_code": "UAT",
+          "slot_id": "verifier"
+        },
+        {
+          "capability_profile": "delivery-standard",
+          "role_code": "TPM",
+          "slot_id": "tpm"
+        }
+      ]
+    },
+    {
+      "kind": "ASW",
+      "name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "PREFIX"
+          },
+          {
+            "kind": "token",
+            "value": "SCOPE_ITEM_CODE"
+          },
+          {
+            "kind": "token",
+            "value": "TOPIC"
+          }
+        ]
+      },
+      "parent": "ESW",
+      "prefix": "ASW",
+      "projection_capabilities": [
+        "native_child",
+        "session_host"
+      ],
+      "read_only": true,
+      "seat_name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "ROLE_CODE"
+          }
+        ]
+      },
+      "slots": [
+        {
+          "capability_profile": "independent-advisor",
+          "role_code": "SA",
+          "slot_id": "advisor"
+        },
+        {
+          "capability_profile": "independent-advisor",
+          "role_code": "AUD",
+          "slot_id": "auditor"
+        }
+      ]
+    },
+    {
+      "kind": "CSW",
+      "name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "PREFIX"
+          },
+          {
+            "kind": "token",
+            "value": "SCOPE_ITEM_CODE"
+          },
+          {
+            "kind": "token",
+            "value": "TOPIC"
+          }
+        ]
+      },
+      "parent": "ESW",
+      "prefix": "CSW",
+      "projection_capabilities": [
+        "native_child",
+        "session_host"
+      ],
+      "read_only": true,
+      "seat_name_template": {
+        "segments": [
+          {
+            "kind": "token",
+            "value": "SLOT_DISPLAY_NAME"
+          }
+        ]
+      },
+      "slots": [
+        {
+          "capability_profile": "independent-reviewer",
+          "display_name": "SEAT A",
+          "slot_id": "reviewer-a"
+        },
+        {
+          "capability_profile": "independent-reviewer",
+          "display_name": "SEAT B",
+          "slot_id": "reviewer-b"
+        },
+        {
+          "capability_profile": "committee-judge",
+          "display_name": "JUDGE",
+          "slot_id": "judge"
+        }
+      ]
+    }
+  ],
+  "definition_id": "01936f5a-2000-7000-8000-000000000001",
+  "name": "ASMA Operational Team Definition — compatible delivery slots",
+  "schema_version": 1,
+  "separator": " • ",
+  "topology": {
+    "canonical_hash": "8002119bf101864ce4f8b34c6b9308b08a422210c9baf4f1d5d118e2a6b9b3cf",
+    "spec_id": "01936f5a-1000-7000-8000-000000000001",
+    "version": 4
+  },
+  "version": 3
+}

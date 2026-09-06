@@ -1,0 +1,58 @@
+{
+  "admitted": 5,
+  "decisions": [
+    {
+      "rejection": null,
+      "task_id": "0192f0c0-0000-7000-8000-000000000002"
+    },
+    {
+      "rejection": null,
+      "task_id": "0192f0c0-0000-7000-8000-000000000005"
+    },
+    {
+      "rejection": null,
+      "task_id": "0192f0c0-0000-7000-8000-000000000008"
+    },
+    {
+      "rejection": null,
+      "task_id": "0192f0c0-0000-7000-8000-00000000000b"
+    },
+    {
+      "rejection": null,
+      "task_id": "0192f0c0-0000-7000-8000-00000000000e"
+    }
+  ],
+  "distinct_verified_worktrees": 5,
+  "tasks": [
+    {
+      "key": "pilot-code",
+      "module": "pilot.code",
+      "title": "Pilot coding task",
+      "worktree": "pilot-code-tree"
+    },
+    {
+      "key": "pilot-ux",
+      "module": "pilot.ux",
+      "title": "Pilot UX/UI/layout task",
+      "worktree": "pilot-ux-tree"
+    },
+    {
+      "key": "pilot-research",
+      "module": "pilot.research",
+      "title": "Pilot research task",
+      "worktree": "pilot-research-tree"
+    },
+    {
+      "key": "pilot-docs",
+      "module": "pilot.docs",
+      "title": "Pilot documentation task",
+      "worktree": "pilot-docs-tree"
+    },
+    {
+      "key": "pilot-incident",
+      "module": "pilot.incident",
+      "title": "Pilot incident-response task",
+      "worktree": "pilot-incident-tree"
+    }
+  ]
+}

@@ -1215,21 +1215,31 @@ fn validate_team_definition_template(template: &NativeNameTemplate) -> DomainRes
             "legacy string templates are not valid Team Definition templates",
         ));
     };
-    if segments.iter().any(|segment| {
+    // An allow-list, so a token added to the closed vocabulary later is refused
+    // here until this contract deliberately admits it. The item-code tokens
+    // keep their exact historical spellings and meanings; the Jira-key tokens
+    // are the typed successors that render an exact confirmed binding.
+    if !segments.iter().all(|segment| {
         matches!(
             segment,
-            crate::naming::NativeNameSegment::Token(
-                NativeNameToken::AreaCode
-                    | NativeNameToken::JiraCode
-                    | NativeNameToken::KontorBacklogCode
-                    | NativeNameToken::ItemCode
-                    | NativeNameToken::AiShortName
-            )
+            crate::naming::NativeNameSegment::Literal(_)
+                | crate::naming::NativeNameSegment::Token(
+                    NativeNameToken::Prefix
+                        | NativeNameToken::EpicItemCode
+                        | NativeNameToken::TaskItemCode
+                        | NativeNameToken::ScopeItemCode
+                        | NativeNameToken::EpicJiraKey
+                        | NativeNameToken::TaskJiraKey
+                        | NativeNameToken::ScopeJiraKey
+                        | NativeNameToken::Topic
+                        | NativeNameToken::RoleCode
+                        | NativeNameToken::SlotDisplayName
+                )
         )
     }) {
         return Err(DomainError::invalid(
             "TeamDefinitionSpec",
-            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, TOPIC, ROLE_CODE and SLOT_DISPLAY_NAME",
+            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, EPIC_JIRA_KEY, TASK_JIRA_KEY, SCOPE_JIRA_KEY, TOPIC, ROLE_CODE and SLOT_DISPLAY_NAME",
         ));
     }
     Ok(())

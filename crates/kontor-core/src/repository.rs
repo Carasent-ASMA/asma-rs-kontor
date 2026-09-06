@@ -22,6 +22,7 @@ use crate::calendar::{
 };
 use crate::consultation::{
     CommitteeRole, CommitteeVerdict, ConsultationFamily, ConsultationRunId, ConsultationRunState,
+    ConsultationSubject,
 };
 use crate::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
@@ -291,6 +292,14 @@ pub struct StoredConsultationRun {
     /// ASW or CSW.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_identity_hash: Option<ContentHash>,
+    /// The exact epic or ticket this consultation was asked about.
+    ///
+    /// `None` is a run invoked before the subject was recorded. That value was
+    /// discarded rather than stored and cannot be recovered, so it is left
+    /// visibly absent: rendering a subject-bearing name for one of these fails
+    /// closed instead of substituting the containing epic or the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<ConsultationSubject>,
     /// The bounded topic this consultation is about, when one is authoritative.
     ///
     /// This is what the ASW/CSW name templates render, and it is deliberately

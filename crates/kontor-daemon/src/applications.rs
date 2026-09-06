@@ -134,7 +134,7 @@ use kontor_api::applications::{
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::authority::AuthoritySubject;
-use kontor_core::backlog_identity::{EpicBacklogCode, JiraItemCode};
+use kontor_core::backlog_identity::{ConfirmedJiraKey, EpicBacklogCode, JiraItemCode};
 use kontor_core::branch::{
     BranchName, BranchRefusal, BranchType, MANAGED_WORKTREES_DIR, TrackerKey, managed_branch_text,
     managed_catalog_worktree_parts, managed_worktree_path,
@@ -144,8 +144,9 @@ use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
     AdvisorProfileSpec, CommitteeRole, CommitteeTemplateSpec,
     CommitteeVerdict as ConsultationVerdict, ConsultationFamily, ConsultationIdentity,
-    ConsultationRunId, ConsultationRunState, ConsultationScope, RecordedFinding,
-    conjunctive_outcome, validate_semantic_topic, validate_semantic_topic_correction,
+    ConsultationRunId, ConsultationRunState, ConsultationScope, ConsultationSubject,
+    RecordedFinding, conjunctive_outcome, validate_semantic_topic,
+    validate_semantic_topic_correction,
 };
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
@@ -10254,6 +10255,9 @@ impl Services {
             profile_version: revision.version,
             definition_hash: revision.definition_hash.clone(),
             semantic_identity_hash: Some(semantic_identity_hash),
+            // Frozen with the rest of the invocation: the exact ticket the
+            // caller asked about, or the epic when it asked about no ticket.
+            subject: Some(ConsultationSubject::from_requested_task(request.task_id)),
             topic: Some(topic.clone()),
             question: request.question.clone(),
             question_hash,
@@ -10734,6 +10738,9 @@ impl Services {
             profile_version: template_revision.version,
             definition_hash: template_revision.definition_hash.clone(),
             semantic_identity_hash: Some(semantic_identity_hash),
+            // Frozen with the rest of the invocation: the exact ticket the
+            // caller asked about, or the epic when it asked about no ticket.
+            subject: Some(ConsultationSubject::from_requested_task(request.task_id)),
             topic: Some(topic.clone()),
             question: request.question.clone(),
             question_hash,
@@ -34389,6 +34396,82 @@ impl Services {
         )
     }
 
+    /// Resolve the one exact confirmed Jira key for an explicit subject.
+    ///
+    /// This is the single confirmed-binding lookup behind both the historical
+    /// item-code projection and the typed Jira-key tokens. A missing,
+    /// ambiguous or non-canonical binding refuses here, before any native
+    /// prepare, retitle, launch or materialization effect. No title, numeric
+    /// suffix, legacy item code or native id is ever consulted instead.
+    fn jira_key_for_subject(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+    ) -> Result<ConfirmedJiraKey, ApiError> {
+        let jira_key = self
+            .state()?
+            .with_store(|store| {
+                if let Some(task_id) = task_id {
+                    store.confirmed_jira_task_key(project_id, task_id)
+                } else {
+                    store.confirmed_jira_epic_key(project_id, epic_id)
+                }
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the scope has no unambiguous confirmed Jira binding",
+                )
+            })?;
+        ConfirmedJiraKey::parse(&jira_key).map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the confirmed Jira binding is not a canonical issue key",
+            )
+        })
+    }
+
+    /// The exact subject one Team Definition container renders its key from.
+    ///
+    /// A delivery workspace carries its task on the node itself. A
+    /// consultation cannot: `ux_topology_node_task` reserves
+    /// `topology_nodes.task_id` for the one active delivery node per task, so
+    /// an ASW or CSW about a ticket would collide with that ticket's own TSW.
+    /// Its advised or debated subject is therefore frozen on the run, and this
+    /// is the only place the two shapes are reconciled.
+    ///
+    /// A consultation invoked before the subject was recorded refuses. That
+    /// value was discarded rather than stored, and neither the seat that
+    /// called the consultation nor the epic that contains it is a substitute
+    /// for it.
+    fn subject_task_for_container(
+        &self,
+        node: &SessionTopologyNode,
+    ) -> Result<Option<TaskId>, ApiError> {
+        if let Some(task_id) = node.task_id {
+            return Ok(Some(task_id));
+        }
+        let Some(run) = self
+            .state()?
+            .with_store(|store| {
+                store.get_consultation_run_by_topology_node(node.project_id, node.id)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        match run.subject {
+            Some(ConsultationSubject::Task(task_id)) => Ok(Some(task_id)),
+            Some(ConsultationSubject::Epic) => Ok(None),
+            None => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the consultation has no durably recorded subject to name",
+            )),
+        }
+    }
+
     /// Derive the one display item code for an explicit epic or task subject.
     fn item_code_for_subject(
         &self,
@@ -34396,36 +34479,20 @@ impl Services {
         epic_id: MiniProjectId,
         task_id: Option<TaskId>,
     ) -> Result<JiraItemCode, ApiError> {
-        let (backlog_code, jira_key) = self
+        let backlog_code = self
             .state()?
-            .with_store(|store| {
-                let backlog_code = store.epic_backlog_code(project_id, epic_id)?;
-                let jira_key = if let Some(task_id) = task_id {
-                    store.confirmed_jira_task_key(project_id, task_id)?
-                } else {
-                    store.confirmed_jira_epic_key(project_id, epic_id)?
-                };
-                Ok::<_, RepositoryError>((backlog_code, jira_key))
-            })
-            .map_err(|error| self.refuse(&error))?;
-        let backlog_code = backlog_code.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the epic has no active immutable backlog code",
-            )
-        })?;
-        let jira_key = jira_key.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the scope has no unambiguous confirmed Jira binding",
-            )
-        })?;
-        JiraItemCode::derive(&backlog_code, &jira_key).map_err(|_| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the confirmed Jira binding cannot produce a canonical item code",
-            )
-        })
+            .with_store(|store| store.epic_backlog_code(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the epic has no active immutable backlog code",
+                )
+            })?;
+        Ok(JiraItemCode::from_confirmed(
+            &backlog_code,
+            &self.jira_key_for_subject(project_id, epic_id, task_id)?,
+        ))
     }
 
     /// Validate the caller's topic as semantic input and derive the one
@@ -34649,6 +34716,48 @@ impl Services {
             values = values.with_task_item_code(task_item_code.as_str());
             if template_uses_token(template, NativeNameToken::ScopeItemCode) {
                 values = values.with_scope_item_code(task_item_code.as_str());
+            }
+        }
+
+        // The typed Jira-key tokens take their subject from durable state that
+        // belongs to the container itself — the node's task for a delivery
+        // workspace, the run's frozen subject for a consultation — never from
+        // the caller's execution scope. A caller seated in another task, or in
+        // the containing epic, cannot change which confirmed key is rendered.
+        // Both vocabularies are supplied to the one renderer; each value is
+        // resolved only when the pinned template actually asks for it, so a
+        // Jira-key-only epic never has to produce a legacy item code to be
+        // named.
+        let subject_task_id = if template_uses_token(template, NativeNameToken::TaskJiraKey)
+            || template_uses_token(template, NativeNameToken::ScopeJiraKey)
+        {
+            self.subject_task_for_container(node)?
+        } else {
+            None
+        };
+        if template_uses_token(template, NativeNameToken::EpicJiraKey)
+            || (subject_task_id.is_none()
+                && template_uses_token(template, NativeNameToken::ScopeJiraKey))
+        {
+            let epic_jira_key = self.jira_key_for_subject(node.project_id, epic_id, None)?;
+            if template_uses_token(template, NativeNameToken::EpicJiraKey) {
+                values = values.with_epic_jira_key(&epic_jira_key);
+            }
+            if subject_task_id.is_none() {
+                values = values.with_scope_jira_key(&epic_jira_key);
+            }
+        }
+        if let Some(task_id) = subject_task_id
+            && (template_uses_token(template, NativeNameToken::TaskJiraKey)
+                || template_uses_token(template, NativeNameToken::ScopeJiraKey))
+        {
+            let task_jira_key =
+                self.jira_key_for_subject(node.project_id, epic_id, Some(task_id))?;
+            if template_uses_token(template, NativeNameToken::TaskJiraKey) {
+                values = values.with_task_jira_key(&task_jira_key);
+            }
+            if template_uses_token(template, NativeNameToken::ScopeJiraKey) {
+                values = values.with_scope_jira_key(&task_jira_key);
             }
         }
         if template_uses_token(&container.name_template, NativeNameToken::Topic) {
