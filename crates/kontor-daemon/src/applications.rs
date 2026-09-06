@@ -17833,7 +17833,7 @@ impl ApplicationOperations for Services {
                     receipt_id: CommandReceiptId::generate(),
                     idempotency_key: key.clone(),
                     kind: CommandKind::ReconcileNativeNames,
-                    target: target.clone(),
+                    target,
                     target_revision: project.revision,
                     intent: intent.clone(),
                     created_at: now,
@@ -33340,6 +33340,10 @@ impl Services {
 
     /// Validate the caller's topic as semantic input and derive the one
     /// server-owned identity that may freeze a native consultation container.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the identity hash must receive every authority field explicitly"
+    )]
     fn consultation_semantic_identity(
         &self,
         project_id: ProjectId,
