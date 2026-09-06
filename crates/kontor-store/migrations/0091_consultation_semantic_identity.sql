@@ -1,4 +1,4 @@
--- Schema v90. One server-derived semantic identity for every new Advisor or
+-- Schema v91. One server-derived semantic identity for every new Advisor or
 -- Committee invocation. Legacy runs remain NULL until a supported correction
 -- adopts an identity; a caller-controlled idempotency key is never the
 -- uniqueness boundary for a native consultation container.

@@ -380,6 +380,12 @@ fn canonical(path: &str) -> RuntimeResult<PathBuf> {
     })
 }
 
+fn git(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd);
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,10 +431,4 @@ mod tests {
                 .is_err()
         );
     }
-}
-
-fn git(cwd: &Path) -> Command {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(cwd);
-    command
 }

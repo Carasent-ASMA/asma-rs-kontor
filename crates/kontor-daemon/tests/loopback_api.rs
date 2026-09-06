@@ -35757,9 +35757,11 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     // accepted SeatRecoveryProfile. Prove that credential-propagation recovery
     // validates that new provenance before it fences the logical generation or
     // archives the already-running filler.
+    let mut active_invoke_body = invoke_body.clone();
+    active_invoke_body["topic"] = serde_json::json!("Credential propagation recovery compliance");
     let active_opencode = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
-        &invoke_body,
+        &active_invoke_body,
     )
     .signed_as(world, "admin")
     .with_key("committee-opencode-pre-effect-recovery")
