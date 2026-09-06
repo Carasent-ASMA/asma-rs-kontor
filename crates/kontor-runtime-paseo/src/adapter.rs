@@ -3702,26 +3702,35 @@ impl PaseoAdapter {
             .iter()
             .filter(|agent| agent.matches_labels(&labels))
             .collect::<Vec<_>>();
+        let live_slot = census
+            .iter()
+            .filter(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
+            .collect::<Vec<_>>();
         // A delivery seat keeps the whole snapshot, not just the id: it is judged
         // and bound from this read, and a follow-up fetch would answer about a
         // later moment. The CLI providers keep taking the id and reading back,
         // exactly as before.
-        let recovered = match (expected_existing_native_id, exact.as_slice()) {
-            (Some(expected), [agent])
-                if agent.id == expected.as_str()
-                    && !agent.is_archived()
-                    && agent.status.is_reusable_seat() =>
-            {
-                Some((*agent).clone())
+        let recovered = if let Some(expected) = expected_existing_native_id {
+            match live_slot.as_slice() {
+                [agent]
+                    if agent.matches_labels(&labels)
+                        && agent.id == expected.as_str()
+                        && agent.status.is_reusable_seat() =>
+                {
+                    Some((*agent).clone())
+                }
+                _ => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the adoption-only recovery census did not prove exactly the expected live native",
+                    });
+                }
             }
-            (Some(_), _) => {
-                return Err(RuntimeError::DeliveryConfirmationUnknown {
-                    rule: "the adoption-only recovery census did not prove exactly the expected live native",
-                });
+        } else {
+            match exact.as_slice() {
+                [agent] if !agent.is_archived() => Some((*agent).clone()),
+                [] => None,
+                _ => return Err(RuntimeError::CorrelationFailed),
             }
-            (None, [agent]) if !agent.is_archived() => Some((*agent).clone()),
-            (None, []) => None,
-            (None, _) => return Err(RuntimeError::CorrelationFailed),
         };
         let recovered_id = recovered.as_ref().map(|agent| agent.id.clone());
         if recovered_id.is_none()
