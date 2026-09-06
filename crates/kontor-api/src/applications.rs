@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
-use kontor_core::backlog_identity::EpicBacklogCode;
+use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
@@ -3095,9 +3095,9 @@ pub struct EpicBacklogCodeCorrectionPreviewRequest {
     /// Project revision the caller read.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Exact active legacy value expected in the store.
+    /// Exact stored legacy value expected in the store.
     #[schema(value_type = String)]
-    pub expected_prior_code: EpicBacklogCode,
+    pub expected_prior_code: LegacyEpicBacklogCode,
     /// Correct project-unique value to make effective.
     #[schema(value_type = String)]
     pub corrected_code: EpicBacklogCode,
@@ -3113,9 +3113,9 @@ pub struct EpicBacklogCodeCorrectionApplyRequest {
     /// Project revision the caller read.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Exact active legacy value expected in the store.
+    /// Exact stored legacy value expected in the store.
     #[schema(value_type = String)]
-    pub expected_prior_code: EpicBacklogCode,
+    pub expected_prior_code: LegacyEpicBacklogCode,
     /// Correct project-unique value to make effective.
     #[schema(value_type = String)]
     pub corrected_code: EpicBacklogCode,
@@ -3141,7 +3141,7 @@ pub struct EpicBacklogCodeCorrectionPreviewDto {
     pub epic_id: MiniProjectId,
     /// Immutable legacy source value.
     #[schema(value_type = String)]
-    pub prior_code: EpicBacklogCode,
+    pub prior_code: LegacyEpicBacklogCode,
     /// Proposed effective value.
     #[schema(value_type = String)]
     pub corrected_code: EpicBacklogCode,
@@ -4824,7 +4824,8 @@ pub struct SchedulerStartDto {
 ///
 /// Both identities are required. Kontor resolves the original launch receipt
 /// internally; callers neither know nor recreate its idempotency key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AdmissionResumeRefDto {
     /// The preserved TeamRun envelope.
     #[schema(value_type = String)]
@@ -4832,6 +4833,25 @@ pub struct AdmissionResumeRefDto {
     /// The preserved first AgentRun committed with that admission.
     #[schema(value_type = String)]
     pub agent_run_id: AgentRunId,
+    /// Exact already-created downstream native to adopt. Absent for an
+    /// ordinary queued-root recovery; required for a partially seated team.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downstream: Option<PartialAdmissionSeatDto>,
+}
+
+/// Exact queued downstream run and already-created native a partial recovery adopts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartialAdmissionSeatDto {
+    /// The unique current replacement-chain leaf for its frozen role slot.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// The AgentRun revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact native session the runtime census must rediscover.
+    #[schema(value_type = String)]
+    pub expected_native_id: ExternalId,
 }
 
 /// What `scheduler:resume` is asked for.
@@ -4840,8 +4860,10 @@ pub struct ResumeAdmissionsRequest {
     /// The epic revision the caller observed before authorizing recovery.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Exact queued admissions to resume. This is a set: duplicate ids refuse
-    /// the whole request before a runtime is contacted.
+    /// Exact admissions to resume. A fresh key accepts either a queued unbound
+    /// root or a bound root naming one exact already-created downstream native.
+    /// This is a set: duplicate ids refuse the whole request before a runtime
+    /// is contacted.
     pub admissions: Vec<AdmissionResumeRefDto>,
 }
 
@@ -7073,7 +7095,7 @@ pub trait ApplicationOperations: Send + Sync {
         request: &StartRequest,
     ) -> Result<SchedulerStartDto, ApiError>;
 
-    /// Resume exact queued admissions through their durable launch receipts.
+    /// Resume exact incomplete admissions through their durable launch receipts.
     async fn resume_admissions(
         &self,
         key: &IdempotencyKey,
@@ -10562,7 +10584,7 @@ pub async fn start(
     ))
 }
 
-/// Resume exact queued, unbound admissions without the original scheduler key.
+/// Resume exact incomplete admissions without the original scheduler key.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume", tag = "applications",
     params(

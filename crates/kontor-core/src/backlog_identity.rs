@@ -167,6 +167,57 @@ impl<'de> Deserialize<'de> for EpicBacklogCode {
     }
 }
 
+/// Exact spelling of one backlog code imported before canonical enforcement.
+///
+/// This type exists only as a comparison and evidence value for the bounded
+/// legacy-correction path. New assignments remain [`EpicBacklogCode`] and
+/// therefore cannot use a historical non-canonical spelling.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LegacyEpicBacklogCode(ExternalId);
+
+impl LegacyEpicBacklogCode {
+    /// Parse one historical code that entered through the legacy external-id
+    /// field.
+    ///
+    /// # Errors
+    /// Uses the original external-id bound: the value must be non-empty, at
+    /// most 256 characters, whitespace/control-free and non-sensitive.
+    pub fn parse(value: impl AsRef<str>) -> DomainResult<Self> {
+        ExternalId::parse(value.as_ref()).map(Self)
+    }
+
+    /// Borrow the exact historical spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::fmt::Display for LegacyEpicBacklogCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for LegacyEpicBacklogCode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for LegacyEpicBacklogCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(D::Error::custom)
+    }
+}
+
 /// Display-only projection of an epic namespace and a confirmed Jira number.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JiraItemCode(String);

@@ -1503,7 +1503,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume exact queued, unbound admissions without the original scheduler key. */
+        /** Resume exact incomplete admissions without the original scheduler key. */
         post: operations["resume_admissions"];
         delete?: never;
         options?: never;
@@ -3224,6 +3224,7 @@ export interface components {
         AdmissionResumeRefDto: {
             /** @description The preserved first AgentRun committed with that admission. */
             agent_run_id: string;
+            downstream?: null | components["schemas"]["PartialAdmissionSeatDto"];
             /** @description The preserved TeamRun envelope. */
             team_run_id: string;
         };
@@ -5294,7 +5295,7 @@ export interface components {
         EpicBacklogCodeCorrectionApplyRequest: {
             /** @description Correct project-unique value to make effective. */
             corrected_code: string;
-            /** @description Exact active legacy value expected in the store. */
+            /** @description Exact stored legacy value expected in the store. */
             expected_prior_code: string;
             /**
              * Format: int64
@@ -5330,7 +5331,7 @@ export interface components {
         EpicBacklogCodeCorrectionPreviewRequest: {
             /** @description Correct project-unique value to make effective. */
             corrected_code: string;
-            /** @description Exact active legacy value expected in the store. */
+            /** @description Exact stored legacy value expected in the store. */
             expected_prior_code: string;
             /**
              * Format: int64
@@ -6297,6 +6298,18 @@ export interface components {
             observed_at: string;
             /** @description The runtime family that answered. */
             runtime_kind: string;
+        };
+        /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
+        PartialAdmissionSeatDto: {
+            /** @description The unique current replacement-chain leaf for its frozen role slot. */
+            agent_run_id: string;
+            /** @description Exact native session the runtime census must rediscover. */
+            expected_native_id: string;
+            /**
+             * Format: int64
+             * @description The AgentRun revision the caller read.
+             */
+            expected_revision: number;
         };
         /** @description The runtime's answer to one permission response. */
         PermissionAckDto: {
@@ -7702,8 +7715,10 @@ export interface components {
         /** @description What `scheduler:resume` is asked for. */
         ResumeAdmissionsRequest: {
             /**
-             * @description Exact queued admissions to resume. This is a set: duplicate ids refuse
-             *     the whole request before a runtime is contacted.
+             * @description Exact admissions to resume. A fresh key accepts either a queued unbound
+             *     root or a bound root naming one exact already-created downstream native.
+             *     This is a set: duplicate ids refuse the whole request before a runtime
+             *     is contacted.
              */
             admissions: components["schemas"]["AdmissionResumeRefDto"][];
             /**

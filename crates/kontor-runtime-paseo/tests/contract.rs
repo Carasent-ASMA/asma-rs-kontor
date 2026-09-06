@@ -727,6 +727,48 @@ impl Plane {
         }))
     }
 
+    /// Admit an adoption-only recovery for one already-created native.
+    async fn recovery_request(
+        &self,
+        agent_run_id: AgentRunId,
+        slot_id: &RoleSlotId,
+        workspace: &WorkspaceBindingSnapshot,
+        expected_native_id: &str,
+    ) -> RuntimeResult<LaunchRequest> {
+        let binding_id = RuntimeBindingId::generate();
+        let authority = self
+            .adapter
+            .admit_launch(&AdmissionRequest {
+                slot: RoleSlotKey::new(team_run(), slot_id.clone()),
+                agent_run_id,
+                binding_id,
+                replaces: None,
+                requested_at: at("2026-08-10T09:00:00Z"),
+            })
+            .await?
+            .into_authority()?;
+        Ok(authority.into_recovery_request(
+            LaunchParts {
+                scope: execution_scope(),
+                display_name: name("Implement • KON-19"),
+                agent_run_id,
+                team_run_id: team_run(),
+                role_slot_id: slot_id.clone(),
+                task_id: task(),
+                binding_id,
+                placement: Some(LaunchPlacement::Workspace(workspace.clone())),
+                cwd: root(),
+                account_profile_id: None,
+                prompt: text("bootstrap the role"),
+                model_rung: model_rung(),
+                context_policy: standard_context_policy(),
+                autonomy: kontor_core::spec::SeatAutonomy::standard(),
+                requested_at: at("2026-08-10T09:00:00Z"),
+            },
+            ExternalId::parse(expected_native_id)?,
+        ))
+    }
+
     async fn launch(
         &self,
         agent_run_id: AgentRunId,
@@ -789,6 +831,164 @@ async fn shared_reconciliation_contract_holds() {
 async fn shared_native_ids_are_not_kontor_ids() {
     for native in [PROJECT_ID, WORKSPACE_ID, AGENT_ID, ORCHESTRATOR, EPOCH_RAW] {
         assert_native_id_is_not_a_kontor_id(native);
+    }
+}
+
+/// A partial-TeamRun recovery is an adoption of one exact, already-created
+/// native. The complete census snapshot is bound directly; no CLI launch or
+/// prompt is available on this request shape.
+#[tokio::test]
+async fn adoption_only_launch_binds_exactly_one_existing_native_without_an_effect() {
+    let (plane, workspace) = Plane::prepared(daemon()).await;
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    let request = plane
+        .recovery_request(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            AGENT_ID,
+        )
+        .await
+        .expect("the exact recovery is admitted");
+
+    let outcome = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("the one exact live native is adopted");
+    assert_eq!(outcome.snapshot.identity().native_id.as_str(), AGENT_ID);
+    assert_eq!(
+        plane.daemon.count("agent run"),
+        0,
+        "adoption-only recovery never launches a native"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        0,
+        "and never switches to the provider-native create path"
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        0,
+        "the existing seat is not prompted by recovery"
+    );
+}
+
+/// The expected full-label native is not sufficient when a second live native
+/// carries the same TeamRun and role-slot labels. Recovery holds the claim: it
+/// neither chooses between the two occupants nor creates or prompts anything.
+#[tokio::test]
+async fn adoption_only_launch_refuses_a_second_live_native_in_the_same_slot() {
+    let mut mixed = v(AGENT_LIST_IMPLEMENT);
+    let mut other = mixed["entries"][0].clone();
+    other["agent"]["id"] = serde_json::json!("agt_other");
+    other["agent"]["labels"][label::AGENT_RUN] = serde_json::json!("kontor-run-other");
+    mixed["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(other);
+
+    let (plane, workspace) = Plane::prepared(daemon()).await;
+    plane.daemon.set_answer_rpc("fetch_agents_request", mixed);
+    let request = plane
+        .recovery_request(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            AGENT_ID,
+        )
+        .await
+        .expect("the exact recovery is admitted before its census");
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("two live slot occupants make adoption ambiguous");
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "ambiguity holds the claim: {error:?}"
+    );
+    let retry = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_QA),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: at("2026-08-10T09:05:00Z"),
+        })
+        .await;
+    let held = match retry {
+        Err(_) => true,
+        Ok(outcome) => outcome.into_authority().is_err(),
+    };
+    assert!(held, "the unresolved adoption must retain its launch claim");
+    assert_eq!(plane.daemon.count("agent run"), 0);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+/// None, many, wrong-id, terminal, and incomplete are all the same authority
+/// answer: the census did not prove the exact existing live native. The claim
+/// is held and no create or prompt is attempted.
+#[tokio::test]
+async fn adoption_only_launch_refuses_every_non_exact_census_without_an_effect() {
+    let mut many = v(AGENT_LIST_IMPLEMENT);
+    let mut second = many["entries"][0].clone();
+    second["agent"]["id"] = serde_json::json!("agt_other");
+    many["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(second);
+
+    let mut terminal = v(AGENT_LIST_IMPLEMENT);
+    terminal["entries"][0]["agent"]["status"] = serde_json::json!("closed");
+
+    let mut incomplete = v(AGENT_LIST_EMPTY);
+    incomplete["pageInfo"] = serde_json::json!({ "nextCursor": "cur_next", "hasMore": true });
+
+    let cases = [
+        ("zero", v(AGENT_LIST_EMPTY), AGENT_ID),
+        ("many", many, AGENT_ID),
+        ("mismatch", v(AGENT_LIST_IMPLEMENT), "agt_other"),
+        ("terminal", terminal, AGENT_ID),
+        ("incomplete", incomplete, AGENT_ID),
+    ];
+    for (name, census, expected_native_id) in cases {
+        let (plane, workspace) = Plane::prepared(daemon()).await;
+        plane.daemon.set_answer_rpc("fetch_agents_request", census);
+        let request = plane
+            .recovery_request(
+                run(RUN_IMPLEMENT),
+                &slot("implement-a"),
+                &workspace,
+                expected_native_id,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{name} recovery admits before census: {error:?}"));
+        let error = plane
+            .adapter
+            .launch(&request)
+            .await
+            .expect_err("a non-exact census cannot authorize adoption");
+        assert!(
+            matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+            "{name} holds the claim: {error:?}"
+        );
+        assert_eq!(plane.daemon.count("agent run"), 0, "{name} must not launch");
+        assert_eq!(
+            plane.daemon.count("rpc create_agent_request"),
+            0,
+            "{name} must not create"
+        );
+        assert_eq!(
+            plane.daemon.count("rpc send_agent_message_request"),
+            0,
+            "{name} must not prompt"
+        );
     }
 }
 

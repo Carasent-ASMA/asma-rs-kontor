@@ -69,10 +69,11 @@ use kontor_core::repository::{
     StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
     StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
     StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    StoredLegacyEpicBacklogCodeCorrection, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, StoredTopologyContainerRecovery, SuccessionRepository, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::repository::{
     LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
@@ -11235,17 +11236,17 @@ impl SqliteStore {
     pub fn correct_legacy_epic_backlog_code_with_intent(
         &self,
         correction: &LegacyEpicBacklogCodeCorrection,
-        expected_revision: AggregateRevision,
+        expected_project_revision: AggregateRevision,
         envelope: &ReceiptEnvelope<NewLocalCommand>,
-    ) -> RepositoryResult<(EpicBacklogCode, CommandReceipt, crate::graph::Applied)> {
+    ) -> RepositoryResult<(CommandReceipt, crate::graph::Applied)> {
         let intent = envelope.peek(self.realm_id())?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: correction.mini_project_id,
+        let target = AggregateRef::Project {
+            project_id: correction.project_id,
         };
         if intent.project_id != correction.project_id
             || intent.kind != CommandKind::CorrectEpicBacklogCode
             || intent.target != target
-            || intent.target_revision != expected_revision
+            || intent.target_revision != expected_project_revision
         {
             return Err(DomainError::invalid(
                 "CommandReceipt",
@@ -11256,25 +11257,42 @@ impl SqliteStore {
         let transaction = self.begin()?;
         if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
         {
-            let code: String = transaction
-                .query_row(
-                    "SELECT corrected_code FROM epic_backlog_code_corrections
-                     WHERE project_id = ?1 AND receipt_id = ?2",
-                    params![correction.project_id.to_string(), existing.id.to_string()],
-                    |row| row.get(0),
-                )
-                .map_err(backend)?;
-            return Ok((
-                EpicBacklogCode::parse(code)?,
-                existing,
-                crate::graph::Applied::Unchanged,
-            ));
+            return Ok((existing, crate::graph::Applied::Unchanged));
         }
+
+        // The code is unique across the project, so the project revision is
+        // the aggregate CAS. Keeping this read inside the same IMMEDIATE
+        // transaction as allocation closes the preview-to-apply race.
+        let current_project_revision: i64 = transaction
+            .query_row(
+                "SELECT revision FROM projects WHERE id = ?1",
+                params![correction.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::NotFound { subject: "project" })?;
+        let current_project_revision = revision_of(current_project_revision)?;
+        current_project_revision.expect("project", expected_project_revision)?;
 
         let source: Option<(String, String)> = transaction
             .query_row(
                 "SELECT code, provenance FROM epic_backlog_codes
-                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND (
+                       status = 'active'
+                       OR (
+                           provenance = 'legacy'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM epic_backlog_codes active
+                               WHERE active.project_id = epic_backlog_codes.project_id
+                                 AND active.mini_project_id = epic_backlog_codes.mini_project_id
+                                 AND active.status = 'active'
+                           )
+                       )
+                   )
+                 ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END
+                 LIMIT 1",
                 params![
                     correction.project_id.to_string(),
                     correction.mini_project_id.to_string()
@@ -11285,7 +11303,7 @@ impl SqliteStore {
             .map_err(backend)?;
         let Some((prior_code, provenance)) = source else {
             return Err(RepositoryError::NotFound {
-                subject: "active epic backlog code",
+                subject: "correctable legacy epic backlog code",
             });
         };
         if provenance != "legacy" {
@@ -11362,12 +11380,34 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        let resulting_project_revision = current_project_revision.next()?;
+        let changed = transaction
+            .execute(
+                "UPDATE projects SET revision = ?1 WHERE id = ?2 AND revision = ?3",
+                params![
+                    revision_column(resulting_project_revision)?,
+                    correction.project_id.to_string(),
+                    revision_column(current_project_revision)?,
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "project",
+                "the project revision moved during the epic-code correction",
+            ));
+        }
         transaction.commit().map_err(backend)?;
-        Ok((
-            correction.corrected_code.clone(),
-            receipt,
-            crate::graph::Applied::Created,
-        ))
+        Ok((receipt, crate::graph::Applied::Created))
+    }
+
+    /// Read one correction by its authorizing receipt and verify its effective code.
+    pub fn legacy_epic_backlog_code_correction_by_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<StoredLegacyEpicBacklogCodeCorrection> {
+        legacy_epic_backlog_code_correction_by_receipt(&self.connection, project_id, receipt_id)
     }
 
     /// Replace one stale native container identity and record the authority atomically.
@@ -11995,11 +12035,11 @@ fn bound_gate_record_result(
 
 /// One receipt by its own id, refusing one that belongs to another project.
 fn command_receipt_by_id(
-    transaction: &Transaction<'_>,
+    connection: &Connection,
     project_id: ProjectId,
     receipt_id: CommandReceiptId,
 ) -> RepositoryResult<Option<CommandReceipt>> {
-    let receipt: Option<CommandReceipt> = transaction
+    let receipt: Option<CommandReceipt> = connection
         .query_row(
             &format!("SELECT {RECEIPT_COLUMNS} FROM command_receipts WHERE id = ?1"),
             params![receipt_id.to_string()],
@@ -12014,6 +12054,153 @@ fn command_receipt_by_id(
         }),
         other => Ok(other),
     }
+}
+
+/// Read the immutable correction and prove that its receipt, intent and
+/// effective project namespace all name the same operation.
+fn legacy_epic_backlog_code_correction_by_receipt(
+    connection: &Connection,
+    project_id: ProjectId,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<StoredLegacyEpicBacklogCodeCorrection> {
+    let stored: Option<(String, String, String, String, String, String)> = connection
+        .query_row(
+            "SELECT mini_project_id, prior_code, corrected_code, reason, receipt_id, corrected_at
+             FROM epic_backlog_code_corrections
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![project_id.to_string(), receipt_id.to_string()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    let (mini_project_id, prior_code, corrected_code, reason, stored_receipt_id, corrected_at) =
+        stored.ok_or(RepositoryError::NotFound {
+            subject: "epic backlog code correction",
+        })?;
+    let mini_project_id = MiniProjectId::parse(&mini_project_id)?;
+    let prior_code = kontor_core::backlog_identity::LegacyEpicBacklogCode::parse(prior_code)?;
+    let corrected_code = EpicBacklogCode::parse(corrected_code)?;
+    let reason = ExternalName::parse(&reason)?;
+    let stored_receipt_id = CommandReceiptId::parse(&stored_receipt_id)?;
+    let corrected_at = read_timestamp(&corrected_at)?;
+    if stored_receipt_id != receipt_id {
+        return Err(conflict(
+            "epic backlog code correction",
+            "the correction row names a different command receipt",
+        ));
+    }
+
+    let receipt = command_receipt_by_id(connection, project_id, receipt_id)?.ok_or(
+        RepositoryError::NotFound {
+            subject: "epic backlog code correction receipt",
+        },
+    )?;
+    let target = AggregateRef::Project { project_id };
+    if receipt.kind != CommandKind::CorrectEpicBacklogCode || receipt.target != target {
+        return Err(conflict(
+            "epic backlog code correction receipt",
+            "the linked receipt does not authorize this project namespace correction",
+        ));
+    }
+    let intent: serde_json::Value = from_json(receipt.intent.json())?;
+    let preview_hash = intent
+        .get("preview_hash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            conflict(
+                "epic backlog code correction receipt",
+                "the recorded intent has no preview hash",
+            )
+        })?;
+    if intent
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        || intent.get("operation").and_then(serde_json::Value::as_str)
+            != Some("correct_epic_backlog_code")
+        || intent.get("project_id").and_then(serde_json::Value::as_str)
+            != Some(project_id.to_string().as_str())
+        || intent.get("epic_id").and_then(serde_json::Value::as_str)
+            != Some(mini_project_id.to_string().as_str())
+        || intent
+            .get("expected_revision")
+            .and_then(serde_json::Value::as_u64)
+            != Some(receipt.target_revision.get())
+        || intent.get("prior_code").and_then(serde_json::Value::as_str) != Some(prior_code.as_str())
+        || intent
+            .get("corrected_code")
+            .and_then(serde_json::Value::as_str)
+            != Some(corrected_code.as_str())
+        || intent.get("reason").and_then(serde_json::Value::as_str) != Some(reason.as_str())
+    {
+        return Err(conflict(
+            "epic backlog code correction receipt",
+            "the recorded intent does not match the durable correction",
+        ));
+    }
+    let preview_hash = ContentHash::parse(preview_hash)?;
+    let resulting_project_revision = receipt.target_revision.next()?;
+    let current_project_revision: i64 = connection
+        .query_row(
+            "SELECT revision FROM projects WHERE id = ?1",
+            params![project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .ok_or(RepositoryError::NotFound { subject: "project" })?;
+    if revision_of(current_project_revision)?.get() < resulting_project_revision.get() {
+        return Err(conflict(
+            "epic backlog code correction",
+            "the project revision does not include the linked correction",
+        ));
+    }
+    let effective: Option<String> = connection
+        .query_row(
+            "SELECT effective.code
+             FROM (
+                 SELECT corrected_code AS code, 0 AS precedence
+                 FROM epic_backlog_code_corrections
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                 UNION ALL
+                 SELECT code, 1 AS precedence
+                 FROM epic_backlog_codes
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'
+             ) AS effective
+             ORDER BY effective.precedence
+             LIMIT 1",
+            params![project_id.to_string(), mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if effective.as_deref() != Some(corrected_code.as_str()) {
+        return Err(conflict(
+            "epic backlog code correction",
+            "the durable correction is not the epic's effective code",
+        ));
+    }
+    Ok(StoredLegacyEpicBacklogCodeCorrection {
+        receipt_id,
+        project_id,
+        mini_project_id,
+        prior_code,
+        corrected_code,
+        reason,
+        expected_project_revision: receipt.target_revision,
+        resulting_project_revision,
+        preview_hash,
+        corrected_at,
+    })
 }
 
 /// The route one recovery receipt wrote, for answering its own replay.

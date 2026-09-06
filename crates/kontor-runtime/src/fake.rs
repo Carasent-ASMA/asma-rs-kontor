@@ -349,6 +349,124 @@ pub enum AdapterCall {
 }
 
 impl FakeState {
+    /// Adopt the one scripted native named by an adoption-only launch.
+    ///
+    /// Discovery is the only runtime contact on this path. An empty, ambiguous,
+    /// stale, terminal, or differently identified census leaves the admission
+    /// claim held as confirmation-unknown; none of those observations licenses
+    /// minting or prompting another native.
+    fn recover_admitted(
+        &mut self,
+        request: &LaunchRequest,
+        expected_native_id: &ExternalId,
+    ) -> RuntimeResult<LaunchOutcome> {
+        let declared = self.capabilities.clone();
+        let generation = self.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Launch,
+                autonomous: true,
+                account_pinned: request.account_profile_id().is_some(),
+                binding: None,
+                placement: Some(request.placement_claim()),
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::ConcurrentSessions(self.sessions.len() as u32)),
+                context_policy: Some(request.context_policy()),
+            },
+        )?;
+        self.ensure_registered_workspace(request.workspace())?;
+        self.take_step(RuntimeCapability::Discovery, RequestKey::Sessions)?;
+        self.calls.push(AdapterCall::DiscoverSessions);
+
+        let correlation = request.correlation().to_string();
+        let mut matches = self
+            .scripted_sessions
+            .iter()
+            .filter(|session| session.correlation_text.as_deref() == Some(correlation.as_str()));
+        let candidate = matches.next().cloned();
+        if matches.next().is_some() {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the adoption-only recovery census found more than one correlated native",
+            });
+        }
+        let candidate = candidate.ok_or(RuntimeError::DeliveryConfirmationUnknown {
+            rule: "the adoption-only recovery census found no correlated native",
+        })?;
+        if &candidate.native_id != expected_native_id
+            || candidate.generation != generation
+            || candidate.state.observed_terminal_outcome().is_some()
+            || self.sessions.contains_key(&candidate.native_id)
+        {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the adoption-only recovery census did not prove the expected live native",
+            });
+        }
+
+        let container_native_id = request
+            .container()
+            .map(|container| container.binding.identity.native_id.clone())
+            .or_else(|| {
+                request
+                    .workspace()
+                    .map(|workspace| workspace.binding.identity.native_id.clone())
+            })
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "an adopted seat has no verified native host",
+            })?;
+        let identity = self.identity(candidate.native_id.clone());
+        let snapshot = ScriptedFakeRuntime::bind(
+            self,
+            request.agent_run_id(),
+            request.binding_id(),
+            identity,
+            &correlation,
+            request.requested_at(),
+        )?;
+        let mut content = self.staged_history.clone();
+        let history_len = content.len();
+        content.extend(self.staged_live.clone());
+        let session = FakeSession {
+            agent_run_id: request.agent_run_id(),
+            binding_id: request.binding_id(),
+            correlation_text: candidate.correlation_text,
+            state: candidate.state,
+            refusal: None,
+            epoch: self.epoch,
+            content,
+            history_len,
+            messages: MessageLedger::new(),
+        };
+        self.admissions
+            .occupy(request, candidate.native_id.clone())?;
+        self.scripted_sessions
+            .retain(|session| session.native_id != candidate.native_id);
+        self.sessions.insert(candidate.native_id.clone(), session);
+        self.seat_titles.insert(
+            candidate.native_id.clone(),
+            (
+                container_native_id,
+                None,
+                request.display_name().as_str().to_owned(),
+            ),
+        );
+        self.placements.insert(request.binding_id());
+        self.bindings.insert(request.binding_id(), snapshot.clone());
+
+        let observation = ScriptedFakeRuntime::observation(
+            &snapshot,
+            RuntimeContact::Reachable,
+            candidate.state,
+            ObservationSource::Inspect,
+            0,
+            candidate.observed_at,
+        )?;
+        Ok(LaunchOutcome {
+            snapshot,
+            observation,
+        })
+    }
+
     /// Refuse any operation addressed inside a plane that was never prepared.
     ///
     /// The refusal is deliberately the *same* one a real Paseo adapter raises,
@@ -910,6 +1028,9 @@ impl FakeState {
     /// [`Self::release`] at the call site; spelling the release out on
     /// each path is how one of them ends up forgotten.
     fn launch_admitted(&mut self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
+        if let Some(expected_native_id) = request.expected_existing_native_id() {
+            return self.recover_admitted(request, expected_native_id);
+        }
         // The run-keyed half of AC-4 is not restated here. Every session below is
         // created in the same step that marks its seat occupied, so a session this
         // runtime holds is always a seat the shared ledger can see — and the ledger
@@ -2392,7 +2513,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         // already spending.
         state.admissions.claim(request)?;
 
-        if state.unlaunchable.contains(request.role_slot_id().as_str()) {
+        if request.expected_existing_native_id().is_none()
+            && state.unlaunchable.contains(request.role_slot_id().as_str())
+        {
             state.admissions.release(request);
             return Err(RuntimeError::Transport {
                 rule: "this runtime will not launch that role slot",
@@ -2404,7 +2527,12 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         // effect either way; what it must not also leave is a seat holding a
         // claim nobody can ever spend or replace.
         let outcome = state.launch_admitted(request);
-        if outcome.is_err() {
+        if outcome.is_err()
+            && !matches!(
+                outcome,
+                Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+            )
+        {
             state.admissions.release(request);
         }
         outcome

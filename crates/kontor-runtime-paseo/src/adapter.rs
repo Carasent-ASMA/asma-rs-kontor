@@ -3610,6 +3610,8 @@ impl PaseoAdapter {
         generation: u64,
         posture: &crate::posture::SeatPosture,
     ) -> RuntimeResult<LaunchOutcome> {
+        let expected_existing_native_id = request.expected_existing_native_id();
+        let adoption_only = expected_existing_native_id.is_some();
         self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
         // The posture arrives already resolved, from `launch` — see there for why
         // it has to be decided before this function is reachable at all.
@@ -3654,7 +3656,7 @@ impl PaseoAdapter {
         // launch-intent digest and the census must match the labels the created
         // agent will actually have. This is also the reconciliation claim: the
         // digest exists, and is identical on every attempt, before any effect.
-        let delivery = if opencode_delivery {
+        let delivery = if opencode_delivery && !adoption_only {
             let allowances = self
                 .config
                 .scope
@@ -3687,19 +3689,48 @@ impl PaseoAdapter {
         // A native census before the first effect. An exact full-label match is
         // a launch whose acknowledgement was lost; adopt it before the broader
         // occupied-slot guard so a retry never creates a second session.
-        let census = self.fetch_agents(&slot_labels, false).await?;
+        let census = match self.fetch_agents(&slot_labels, false).await {
+            Ok(census) => census,
+            Err(_) if adoption_only => {
+                return Err(RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "the adoption-only recovery census was incomplete",
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let exact = census
             .iter()
-            .filter(|agent| agent.matches_labels(&labels) && !agent.is_archived())
+            .filter(|agent| agent.matches_labels(&labels))
+            .collect::<Vec<_>>();
+        let live_slot = census
+            .iter()
+            .filter(|agent| agent.matches_labels(&slot_labels) && !agent.is_archived())
             .collect::<Vec<_>>();
         // A delivery seat keeps the whole snapshot, not just the id: it is judged
         // and bound from this read, and a follow-up fetch would answer about a
         // later moment. The CLI providers keep taking the id and reading back,
         // exactly as before.
-        let recovered = match exact.as_slice() {
-            [agent] => Some((*agent).clone()),
-            [] => None,
-            _ => return Err(RuntimeError::CorrelationFailed),
+        let recovered = if let Some(expected) = expected_existing_native_id {
+            match live_slot.as_slice() {
+                [agent]
+                    if agent.matches_labels(&labels)
+                        && agent.id == expected.as_str()
+                        && agent.status.is_reusable_seat() =>
+                {
+                    Some((*agent).clone())
+                }
+                _ => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the adoption-only recovery census did not prove exactly the expected live native",
+                    });
+                }
+            }
+        } else {
+            match exact.as_slice() {
+                [agent] if !agent.is_archived() => Some((*agent).clone()),
+                [] => None,
+                _ => return Err(RuntimeError::CorrelationFailed),
+            }
         };
         let recovered_id = recovered.as_ref().map(|agent| agent.id.clone());
         if recovered_id.is_none()
@@ -3752,18 +3783,20 @@ impl PaseoAdapter {
         // also why two OpenCode seats can share one worktree — they have no file
         // to race over. `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
         // holds it to that against a real directory.
-        crate::seat_mcp::compose_for_seat(
-            self.config.seat_mcp.as_ref(),
-            request.model_rung().provider.0.as_str(),
-            posture,
-            std::path::Path::new(task_scope.worktree.as_str()),
-        )
-        .map_err(|error| {
-            tracing::warn!(%error, "seat MCP composition failed");
-            RuntimeError::LaunchNotAdmitted {
-                rule: "seat MCP composition failed in the task worktree",
-            }
-        })?;
+        if !adoption_only {
+            crate::seat_mcp::compose_for_seat(
+                self.config.seat_mcp.as_ref(),
+                request.model_rung().provider.0.as_str(),
+                posture,
+                std::path::Path::new(task_scope.worktree.as_str()),
+            )
+            .map_err(|error| {
+                tracing::warn!(%error, "seat MCP composition failed");
+                RuntimeError::LaunchNotAdmitted {
+                    rule: "seat MCP composition failed in the task worktree",
+                }
+            })?;
+        }
 
         // The CLI create, for every provider whose posture is its mode. OpenCode
         // does not come through here: its posture has to travel in
@@ -3783,6 +3816,10 @@ impl PaseoAdapter {
             // An OpenCode seat this launch already made, found by its exact
             // launch intent. The census snapshot is this attempt's own read.
             (Some(agent), Some(_)) => agent,
+            // An adoption-only recovery binds the complete census snapshot. It
+            // never starts or prompts another native and does not need a second
+            // read to rediscover the identity the request already pinned.
+            (Some(agent), None) if adoption_only => agent,
             // Every CLI provider keeps the path it had: the census gives an id,
             // and every placement rule is decided from a session readback.
             (Some(agent), None) => self.fetch_agent(&agent.id).await?,
@@ -3828,7 +3865,7 @@ impl PaseoAdapter {
                 Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())
             })
             .and_then(|()| {
-                if delivery.is_none() || agent.provider_options_applied() {
+                if !opencode_delivery || agent.provider_options_applied() {
                     Ok(())
                 } else {
                     Err(RuntimeError::LaunchNotAdmitted {
@@ -3865,7 +3902,9 @@ impl PaseoAdapter {
         };
         let snapshot = match bound {
             Ok(snapshot) => snapshot,
-            Err(error) if delivery.is_some() => return Err(unresolved(error, &agent.id)),
+            Err(error) if delivery.is_some() || adoption_only => {
+                return Err(unresolved(error, &agent.id));
+            }
             Err(error) => return Err(error),
         };
         let observation = self.observation(

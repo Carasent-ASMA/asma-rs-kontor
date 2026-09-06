@@ -1,6 +1,6 @@
 //! Durable epic backlog identity and Jira-derived item-code behavior.
 
-use kontor_core::backlog_identity::{EpicBacklogCode, JiraItemCode};
+use kontor_core::backlog_identity::{EpicBacklogCode, JiraItemCode, LegacyEpicBacklogCode};
 use kontor_core::id::{ExternalId, ExternalName};
 
 #[test]
@@ -51,6 +51,23 @@ fn manual_epic_codes_are_canonical_namespaces_not_issue_numbers() {
     );
     for rejected in ["K", "kop", "KO-P", "8050", &"K".repeat(33)] {
         assert!(EpicBacklogCode::parse(rejected).is_err(), "{rejected}");
+    }
+}
+
+#[test]
+fn a_legacy_correction_basis_preserves_a_bounded_noncanonical_spelling() {
+    assert_eq!(
+        LegacyEpicBacklogCode::parse("QNR-P1")
+            .expect("the historical spelling")
+            .as_str(),
+        "QNR-P1"
+    );
+    assert!(EpicBacklogCode::parse("QNR-P1").is_err());
+    for rejected in ["", " QNR-P1", "QNR P1", &"Q".repeat(257)] {
+        assert!(
+            LegacyEpicBacklogCode::parse(rejected).is_err(),
+            "{rejected}"
+        );
     }
 }
 
