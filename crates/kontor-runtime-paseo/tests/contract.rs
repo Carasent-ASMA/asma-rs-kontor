@@ -876,6 +876,61 @@ async fn adoption_only_launch_binds_exactly_one_existing_native_without_an_effec
     );
 }
 
+/// The expected full-label native is not sufficient when a second live native
+/// carries the same TeamRun and role-slot labels. Recovery holds the claim: it
+/// neither chooses between the two occupants nor creates or prompts anything.
+#[tokio::test]
+async fn adoption_only_launch_refuses_a_second_live_native_in_the_same_slot() {
+    let mut mixed = v(AGENT_LIST_IMPLEMENT);
+    let mut other = mixed["entries"][0].clone();
+    other["agent"]["id"] = serde_json::json!("agt_other");
+    other["agent"]["labels"][label::AGENT_RUN] = serde_json::json!("kontor-run-other");
+    mixed["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(other);
+
+    let (plane, workspace) = Plane::prepared(daemon()).await;
+    plane.daemon.set_answer_rpc("fetch_agents_request", mixed);
+    let request = plane
+        .recovery_request(
+            run(RUN_IMPLEMENT),
+            &slot("implement-a"),
+            &workspace,
+            AGENT_ID,
+        )
+        .await
+        .expect("the exact recovery is admitted before its census");
+
+    let error = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect_err("two live slot occupants make adoption ambiguous");
+    assert!(
+        matches!(error, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "ambiguity holds the claim: {error:?}"
+    );
+    let retry = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_QA),
+            binding_id: RuntimeBindingId::generate(),
+            replaces: None,
+            requested_at: at("2026-08-10T09:05:00Z"),
+        })
+        .await;
+    let held = match retry {
+        Err(_) => true,
+        Ok(outcome) => outcome.into_authority().is_err(),
+    };
+    assert!(held, "the unresolved adoption must retain its launch claim");
+    assert_eq!(plane.daemon.count("agent run"), 0);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
 /// None, many, wrong-id, terminal, and incomplete are all the same authority
 /// answer: the census did not prove the exact existing live native. The claim
 /// is held and no create or prompt is attempted.
