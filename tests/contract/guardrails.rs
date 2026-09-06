@@ -100,7 +100,7 @@ fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
         TaskScope {
             task_id,
             external_issue_key: external("ASMA-TEST-1"),
-            short_code: external("TEST-1"),
+            short_code: Some(external("TEST-1")),
             worktree,
         },
     )

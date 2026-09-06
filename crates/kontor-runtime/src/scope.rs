@@ -61,13 +61,14 @@ pub struct TaskScope {
     pub task_id: TaskId,
     /// The tracker key the ticket is followed as, e.g. `ASMA-7676`.
     pub external_issue_key: ExternalId,
-    /// The short code seats and workspaces are titled by, e.g. `OP-01`.
+    /// A compatibility-only short code used by legacy runtime templates.
     ///
-    /// Defaults to [`Self::external_issue_key`], because no durable Kontor state
-    /// carries a second, shorter code and inventing one from a task title would
-    /// be exactly the display-name parsing this module refuses. A plane may
-    /// override it for compatibility with titles that already exist.
-    pub short_code: ExternalId,
+    /// New-policy tasks deliberately have no second backlog identifier. Their
+    /// confirmed Jira key remains in [`Self::external_issue_key`], while old
+    /// imported tasks retain this value so their pinned templates render
+    /// byte-for-byte as before. Callers must never put a Jira key here merely
+    /// to satisfy a legacy placeholder.
+    pub short_code: Option<ExternalId>,
     /// The filesystem-canonical worktree this ticket's work happens in.
     ///
     /// Authority, never display data, and read from the task's own declared
@@ -162,7 +163,7 @@ mod tests {
             TaskScope {
                 task_id,
                 external_issue_key: ExternalId::parse("ASMA-7676").expect("issue"),
-                short_code: ExternalId::parse("ASMA-7676").expect("code"),
+                short_code: None,
                 worktree: worktree.clone(),
             },
         );
