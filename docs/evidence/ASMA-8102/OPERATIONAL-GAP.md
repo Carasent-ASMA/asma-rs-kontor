@@ -1,7 +1,8 @@
 # ASMA-8102 native epic-project title operational gap
 
-> Status: root cause reproduced and source correction validated. Live deployment
-> and post-deployment readback remain required before closure.
+> Status: closed on 2026-09-06. PR #196 merged as
+> `12e140b813794e77ce4de95006041a8c1f1a6e5c`; the exact release build is
+> deployed and verified by the [deployment receipt](DEPLOYMENT.md).
 
 ## Incident
 
@@ -83,12 +84,22 @@ remain evidence for their owning CLI and topology-inspection follow-up tasks.
 
 ## Closure requirements
 
-- all Paseo adapter contract tests pass, including the three new native-root
-  tests;
-- formatting and Clippy pass with warnings denied;
-- the correction is merged from a Jira-keyed branch and deployed from current
-  master;
-- daemon health, schema integrity and foreign keys pass after restart;
-- the two contained project IDs, roots and canonical titles read back unchanged;
-- a post-deployment Kontor materialization proves that no UUID-titled project is
-  accepted as a bound epic root.
+All closure requirements passed:
+
+- all 312 runnable Paseo adapter tests passed, including the three new
+  native-root cases; the six live-only tests remained intentionally ignored;
+- formatting and Clippy passed with warnings denied;
+- publication receipt `01a075a1-f5b1-7280-b8f2-01a70934b402` attested the exact
+  PR head, and PR #196 merged as current master `12e140b8`;
+- the exact detached-master release build was installed and the daemon
+  restarted healthy as PID `16258`;
+- schema 89 returned SQLite integrity `ok` and no foreign-key violations;
+- the complete 11-project Paseo inventory was byte-for-byte equal before and
+  after restart;
+- both contained native project IDs, roots and canonical titles read back
+  unchanged;
+- post-deployment Kontor materialization receipt
+  `01a075aa-573b-78b3-ab13-1ff265bc006f` re-attested the existing ASMA-8101 ESW
+  and ECP identities. Fresh-root behavior is proven by the live-shaped contract
+  that starts from Paseo's UUID-derived title and refuses persistence without
+  exact canonical readback.
