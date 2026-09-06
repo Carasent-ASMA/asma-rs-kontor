@@ -76,6 +76,8 @@ Jira-keyed branch and checkout.
     refused rather than synthesized under a guessed branch.
 11. Every branch and pull-request title carry the same confirmed Jira key. Epic
     work uses the epic branch; a child task uses its own branch.
+12. The forge runs an independent branch/title grammar check on every pull
+    request, and the default-branch ruleset requires it before merge.
 
 ## Live reconciliation targets
 
@@ -107,6 +109,8 @@ Exactly one active CSW may remain for the second logical consultation.
   readback, preserved project/epic/task/run/seat identities, and native titles.
 - Mutation test that removes either topic-prefix rejection or semantic uniqueness
   and demonstrates a failing regression test.
+- GitHub Actions positive and negative branch/title fixtures, plus repository
+  ruleset readback proving `asma/publication-branch-title` is required.
 
 ### Mutation receipts
 

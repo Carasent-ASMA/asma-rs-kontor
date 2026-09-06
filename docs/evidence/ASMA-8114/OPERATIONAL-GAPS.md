@@ -68,3 +68,25 @@
   implementation scope.
 - Status: open until the message-confirmation path is reproduced and assigned a
   non-overlapping correction or shown already corrected by the merged runtime.
+
+## OG-05 — the forge did not require publication identity
+
+- Intended Kontor command: attest every push and pull request, post the
+  `asma/publication-identity` GitHub App check, and require it before merge.
+- Failure class: deployment/configuration gap after source delivery.
+- Exact readback: neither governed repository has
+  `config/github-app.json`; recent pull-request heads carry no App check, and
+  the active repository rulesets require a pull request but no status check.
+- Effect: the ASMA CLI normally attests through Kontor, but direct GitHub use or
+  its explicit `--without-attestation` exception can bypass that local gate.
+- Correction in this change: the dependency-free
+  `asma/publication-branch-title` Actions check independently refuses the exact
+  observed defect: noncanonical branch, non-master base, missing title key, or
+  different branch/title Jira keys. After merge the repository ruleset will
+  require that check. The existing App path remains the stronger confirmation
+  of the key against Kontor's durable Jira binding.
+- Owner: ASMA-8114 for the Kontor repository. The superproject requires the
+  same workflow/ruleset under its own Jira-bound module change.
+- Status: open until both rulesets read back the required check; App installation
+  remains a separately visible configuration prerequisite rather than a claim
+  that the absent credential is live.
