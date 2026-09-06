@@ -108,3 +108,15 @@ Exactly one active CSW may remain for the second logical consultation.
   readback, preserved project/epic/task/run/seat identities, and native titles.
 - Mutation test that removes either topic-prefix rejection or semantic uniqueness
   and demonstrates a failing regression test.
+
+### Mutation receipts
+
+- Replacing publication policy revision 2's task-only title set with the former
+  epic-wide set made
+  `a_task_branch_binds_through_its_own_key` fail with exit 101: the observed
+  reasons were empty instead of `pr_title_key_mismatch`.
+- Removing `UNIQUE` from the consultation semantic-identity index made
+  `a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice`
+  fail with exit 101 because the second run was inserted.
+- Restoring both production implementations returned the complete publication
+  contract (7/7) and the focused semantic-identity regression to green.
