@@ -10,7 +10,7 @@ use kontor_core::consultation::{
     AdviceDisposition, AdvisorProfileSpec, AggregationProtocol, CommitteeRole, CommitteeSlotSpec,
     CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationScope,
     DiversityRule, MAX_COMMITTEE_ROUNDS, MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding,
-    conjunctive_outcome,
+    conjunctive_outcome, validate_semantic_topic,
 };
 use kontor_core::id::{
     AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money, RoleKey,
@@ -138,6 +138,33 @@ fn independent_review_is_publishable() {
     independent_review()
         .validate()
         .expect("the preset validates");
+}
+
+#[test]
+fn a_consultation_topic_cannot_repeat_server_owned_name_components() {
+    for bad in [
+        "ASMA-8111 operational completion",
+        "asma-8111: operational completion",
+        "KTHSR-8111 — operational completion",
+        "CSW operational completion",
+        "csw/operational completion",
+        "operational • completion",
+    ] {
+        assert!(
+            validate_semantic_topic(&name(bad), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
+                .is_err(),
+            "{bad}"
+        );
+    }
+    for good in [
+        "operational completion",
+        "ASMA compatibility review",
+        "CSWorkspace migration",
+        "KTHSR-81110 collision analysis",
+    ] {
+        validate_semantic_topic(&name(good), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
+            .expect(good);
+    }
 }
 
 #[test]

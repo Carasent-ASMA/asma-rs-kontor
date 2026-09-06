@@ -41,6 +41,63 @@ pub const MAX_COMMITTEE_SLOTS: usize = 16;
 /// a ceiling that would promise one.
 pub const MAX_COMMITTEE_ROUNDS: u32 = 2;
 
+/// Validate that a consultation topic is only its semantic subject.
+///
+/// The Team Definition owns the container prefix, separator and scope item
+/// code. Accepting any of those again inside `topic` lets a caller smuggle a
+/// pre-rendered or partially rendered name into an otherwise deterministic
+/// template. Comparisons are ASCII-case-insensitive because tracker and role
+/// codes have canonical ASCII spellings, while the stored topic remains exact.
+///
+/// # Errors
+/// Refuses a topic containing the configured separator or beginning with a
+/// reserved scope code or container prefix as a complete leading token.
+pub fn validate_semantic_topic(
+    topic: &ExternalName,
+    scope_codes: &[&str],
+    container_prefix: &str,
+    separator: &str,
+) -> DomainResult<()> {
+    let text = topic.as_str();
+    if !separator.is_empty() && text.contains(separator) {
+        return Err(DomainError::invalid(
+            "ConsultationTopic",
+            "consultation_topic_contains_separator: a topic cannot contain the Team Definition separator",
+        ));
+    }
+    if scope_codes
+        .iter()
+        .copied()
+        .any(|code| begins_with_reserved_token(text, code))
+    {
+        return Err(DomainError::invalid(
+            "ConsultationTopic",
+            "consultation_topic_repeats_scope_code: a topic cannot begin with its Jira key or derived Kontor item code",
+        ));
+    }
+    if begins_with_reserved_token(text, container_prefix) {
+        return Err(DomainError::invalid(
+            "ConsultationTopic",
+            "consultation_topic_repeats_container_prefix: a topic cannot begin with its Team Definition container prefix",
+        ));
+    }
+    Ok(())
+}
+
+fn begins_with_reserved_token(text: &str, reserved: &str) -> bool {
+    let Some(prefix) = text.get(..reserved.len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case(reserved) {
+        return false;
+    }
+    text.get(reserved.len()..).is_some_and(|tail| {
+        tail.chars().next().is_none_or(|next| {
+            next.is_whitespace() || matches!(next, ':' | '-' | '–' | '—' | '/' | '•')
+        })
+    })
+}
+
 /// The stable identity of either consultation family.
 ///
 /// The public routes remain family-specific, but persistence and runtime
