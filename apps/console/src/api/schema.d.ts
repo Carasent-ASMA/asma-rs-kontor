@@ -4196,9 +4196,25 @@ export interface components {
             topology_node_id: string;
         };
         /** @description Apply request bound to one exact Committee-topic correction preview. */
-        CommitteeTopicCorrectionApplyRequest: components["schemas"]["CommitteeTopicCorrectionPreviewRequest"] & {
+        CommitteeTopicCorrectionApplyRequest: {
+            /** @description Semantic topic after removing only server-owned leading material. */
+            corrected_topic: string;
+            /** @description Exact malformed historical topic expected in the run. */
+            expected_prior_topic: string;
+            /**
+             * Format: int64
+             * @description Project revision observed before native-name preflight.
+             */
+            expected_project_revision: number;
+            /**
+             * Format: int64
+             * @description Committee run revision observed by the caller.
+             */
+            expected_run_revision: number;
             /** @description Hash returned by the preview. */
             preview_hash: string;
+            /** @description Operator rationale retained with the immutable correction. */
+            reason: string;
         };
         /** @description Exact no-write plan for repairing one legacy Committee topic and CSW title. */
         CommitteeTopicCorrectionPreviewDto: {

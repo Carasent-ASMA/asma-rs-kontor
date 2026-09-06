@@ -12440,25 +12440,47 @@
         }
       },
       "CommitteeTopicCorrectionApplyRequest": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/CommitteeTopicCorrectionPreviewRequest",
-            "description": "The exact correction request that was previewed."
-          },
-          {
-            "type": "object",
-            "required": [
-              "preview_hash"
-            ],
-            "properties": {
-              "preview_hash": {
-                "type": "string",
-                "description": "Hash returned by the preview."
-              }
-            }
-          }
+        "type": "object",
+        "description": "Apply request bound to one exact Committee-topic correction preview.",
+        "required": [
+          "expected_project_revision",
+          "expected_run_revision",
+          "expected_prior_topic",
+          "corrected_topic",
+          "reason",
+          "preview_hash"
         ],
-        "description": "Apply request bound to one exact Committee-topic correction preview."
+        "properties": {
+          "corrected_topic": {
+            "type": "string",
+            "description": "Semantic topic after removing only server-owned leading material."
+          },
+          "expected_prior_topic": {
+            "type": "string",
+            "description": "Exact malformed historical topic expected in the run."
+          },
+          "expected_project_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision observed before native-name preflight.",
+            "minimum": 0
+          },
+          "expected_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Committee run revision observed by the caller.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the preview."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator rationale retained with the immutable correction."
+          }
+        },
+        "additionalProperties": false
       },
       "CommitteeTopicCorrectionPreviewDto": {
         "type": "object",

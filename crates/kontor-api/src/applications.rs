@@ -2992,12 +2992,38 @@ pub struct CommitteeTopicCorrectionPreviewRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommitteeTopicCorrectionApplyRequest {
-    /// The exact correction request that was previewed.
-    #[serde(flatten)]
-    pub correction: CommitteeTopicCorrectionPreviewRequest,
+    /// Project revision observed before native-name preflight.
+    #[schema(value_type = u64)]
+    pub expected_project_revision: AggregateRevision,
+    /// Committee run revision observed by the caller.
+    #[schema(value_type = u64)]
+    pub expected_run_revision: AggregateRevision,
+    /// Exact malformed historical topic expected in the run.
+    #[schema(value_type = String)]
+    pub expected_prior_topic: ExternalName,
+    /// Semantic topic after removing only server-owned leading material.
+    #[schema(value_type = String)]
+    pub corrected_topic: ExternalName,
+    /// Operator rationale retained with the immutable correction.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
     /// Hash returned by the preview.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
+}
+
+impl CommitteeTopicCorrectionApplyRequest {
+    /// Rebuild the exact preview request the apply is bound to.
+    #[must_use]
+    pub fn correction(&self) -> CommitteeTopicCorrectionPreviewRequest {
+        CommitteeTopicCorrectionPreviewRequest {
+            expected_project_revision: self.expected_project_revision,
+            expected_run_revision: self.expected_run_revision,
+            expected_prior_topic: self.expected_prior_topic.clone(),
+            corrected_topic: self.corrected_topic.clone(),
+            reason: self.reason.clone(),
+        }
+    }
 }
 
 /// Exact no-write plan for repairing one legacy Committee topic and CSW title.

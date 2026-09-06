@@ -17772,7 +17772,8 @@ impl ApplicationOperations for Services {
     ) -> Result<AppliedCommitteeTopicCorrectionDto, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
-        let project = self.project_at(project_id, request.correction.expected_project_revision)?;
+        let correction = request.correction();
+        let project = self.project_at(project_id, correction.expected_project_revision)?;
         let initial =
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
         let target = AggregateRef::MiniProject {
@@ -17784,10 +17785,10 @@ impl ApplicationOperations for Services {
             "project_id": project_id.to_string(),
             "epic_id": initial.mini_project_id.to_string(),
             "committee_run_id": committee_run_id.to_string(),
-            "expected_run_revision": request.correction.expected_run_revision.get(),
-            "expected_prior_topic": request.correction.expected_prior_topic.as_str(),
-            "corrected_topic": request.correction.corrected_topic.as_str(),
-            "reason": request.correction.reason.as_str(),
+            "expected_run_revision": correction.expected_run_revision.get(),
+            "expected_prior_topic": correction.expected_prior_topic.as_str(),
+            "corrected_topic": correction.corrected_topic.as_str(),
+            "reason": correction.reason.as_str(),
             "preview_hash": request.preview_hash.as_str(),
         }))?;
         let replayed = self.replayed(key, &intent, Some(&target))?;
@@ -17795,7 +17796,7 @@ impl ApplicationOperations for Services {
         let (run, receipt_id, applied, retitle, adapter) = if let Some(receipt) = replayed {
             let run =
                 self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
-            if run.topic.as_ref() != Some(&request.correction.corrected_topic)
+            if run.topic.as_ref() != Some(&correction.corrected_topic)
                 || run.semantic_identity_hash.is_none()
             {
                 return Err(self.deny(
@@ -17807,17 +17808,13 @@ impl ApplicationOperations for Services {
                 project_id,
                 run.topology_node_id,
                 &ContainerRetitleRequest {
-                    expected_revision: request.correction.expected_project_revision,
+                    expected_revision: correction.expected_project_revision,
                 },
             )?;
             (run, receipt.id, Applied::Unchanged, retitle, adapter)
         } else {
             let prepared = self
-                .prepare_committee_topic_correction(
-                    project_id,
-                    committee_run_id,
-                    &request.correction,
-                )
+                .prepare_committee_topic_correction(project_id, committee_run_id, &correction)
                 .await?;
             if prepared.preview.preview_hash != request.preview_hash {
                 return Err(self.deny(
@@ -17846,11 +17843,11 @@ impl ApplicationOperations for Services {
                             project_id,
                             run_id: prepared.run.id,
                             mini_project_id: prepared.run.mini_project_id,
-                            expected_run_revision: request.correction.expected_run_revision,
-                            expected_prior_topic: request.correction.expected_prior_topic.clone(),
-                            corrected_topic: request.correction.corrected_topic.clone(),
+                            expected_run_revision: correction.expected_run_revision,
+                            expected_prior_topic: correction.expected_prior_topic.clone(),
+                            corrected_topic: correction.corrected_topic.clone(),
                             semantic_identity_hash: prepared.preview.semantic_identity_hash.clone(),
-                            reason: request.correction.reason.clone(),
+                            reason: correction.reason.clone(),
                             corrected_at: now,
                         },
                         project.revision,
