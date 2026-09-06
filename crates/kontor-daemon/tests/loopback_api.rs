@@ -30345,6 +30345,115 @@ async fn bundled_item_code_revision_is_published_and_contains_item_code() {
     assert!(definition.contains("ITEM_CODE"));
 }
 
+#[tokio::test]
+async fn a_quarantined_qnr_code_is_corrected_without_weakening_canonical_assignments() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("QNR legacy naming project"),
+                root_path: name("/tmp/kontor-qnr-legacy-code"),
+                created_at: at("2026-09-06T16:00:00Z"),
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("QNR v2 Nonprod Delivery"),
+                created_at: at("2026-09-06T16:01:00Z"),
+            })
+            .expect("the epic is created");
+    });
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    rusqlite::Connection::open(&database)
+        .expect("the Realm database opens")
+        .execute(
+            "INSERT INTO epic_backlog_codes
+                 (project_id, mini_project_id, code, provenance, status, assigned_at)
+             VALUES (?1, ?2, 'QNR-P1', 'legacy', 'legacy_invalid',
+                     '2026-09-06T16:02:00Z')",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+        )
+        .expect("the v72 quarantined legacy spelling is reproduced");
+
+    let endpoint =
+        format!("/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview");
+    let correction = serde_json::json!({
+        "expected_revision": 1,
+        "expected_prior_code": "QNR-P1",
+        "corrected_code": "QNRP1",
+        "reason": "Remove the pre-enforcement separator from the QNR namespace"
+    });
+
+    let mut noncanonical_replacement = correction.clone();
+    noncanonical_replacement["corrected_code"] = serde_json::json!("QNR-P2");
+    let refused_replacement = Call::post(&endpoint, &noncanonical_replacement)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(
+        refused_replacement.status, 400,
+        "a correction must not widen the type used by new assignments: {}",
+        refused_replacement.body
+    );
+
+    let mut unbounded_prior = correction.clone();
+    unbounded_prior["expected_prior_code"] = serde_json::json!("QNR P1");
+    let refused_prior = Call::post(&endpoint, &unbounded_prior)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(
+        refused_prior.status, 400,
+        "the historical comparison value is bounded and validated: {}",
+        refused_prior.body
+    );
+
+    let preview = Call::post(&endpoint, &correction)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["prior_code"], "QNR-P1");
+    assert_eq!(preview.json()["corrected_code"], "QNRP1");
+
+    let mut apply = correction;
+    apply["preview_hash"] = preview.json()["preview_hash"].clone();
+    let applied = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply"),
+        &apply,
+    )
+    .signed_as(&world, "admin")
+    .with_key("correct-qnr-p1-to-qnrp1")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["correction"]["prior_code"], "QNR-P1");
+    assert_eq!(applied.json()["correction"]["corrected_code"], "QNRP1");
+
+    let epic = Call::get(format!("/v1/projects/{project_id}/epics/{epic_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    assert_eq!(epic.json()["epic_backlog_code"], "QNRP1");
+    let stored: (String, String) = rusqlite::Connection::open(database)
+        .expect("the Realm database reopens")
+        .query_row(
+            "SELECT prior_code, corrected_code FROM epic_backlog_code_corrections
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the exact before and canonical after values are durable");
+    assert_eq!(stored, ("QNR-P1".to_owned(), "QNRP1".to_owned()));
+}
+
 /// A legacy topology-rendered epic migrates every exact native identity to the
 /// pinned Team Definition and switches its pin only after complete readback.
 #[tokio::test]

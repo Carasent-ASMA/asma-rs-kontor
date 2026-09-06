@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
 use kontor_core::authority::{AuthoritySubject, SubjectAuthority};
-use kontor_core::backlog_identity::EpicBacklogCode;
+use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 use kontor_core::calendar::ExecutionAuthorization;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
@@ -461,13 +461,19 @@ impl SqliteStore {
         let found: Option<String> = self
             .connection
             .query_row(
-                "SELECT COALESCE(c.corrected_code, b.code)
-                 FROM epic_backlog_codes b
-                 LEFT JOIN epic_backlog_code_corrections c
-                   ON c.project_id = b.project_id
-                  AND c.mini_project_id = b.mini_project_id
-                 WHERE b.project_id = ?1 AND b.mini_project_id = ?2
-                   AND b.status = 'active'",
+                "SELECT effective.code
+                 FROM (
+                     SELECT corrected_code AS code, 0 AS precedence
+                     FROM epic_backlog_code_corrections
+                     WHERE project_id = ?1 AND mini_project_id = ?2
+                     UNION ALL
+                     SELECT code, 1 AS precedence
+                     FROM epic_backlog_codes
+                     WHERE project_id = ?1 AND mini_project_id = ?2
+                       AND status = 'active'
+                 ) AS effective
+                 ORDER BY effective.precedence
+                 LIMIT 1",
                 params![project_id.to_string(), mini_project_id.to_string()],
                 |row| row.get(0),
             )
@@ -481,7 +487,7 @@ impl SqliteStore {
         &self,
         project_id: ProjectId,
         mini_project_id: MiniProjectId,
-    ) -> RepositoryResult<Option<(EpicBacklogCode, String, Option<EpicBacklogCode>)>> {
+    ) -> RepositoryResult<Option<(LegacyEpicBacklogCode, String, Option<EpicBacklogCode>)>> {
         let found: Option<(String, String, Option<String>)> = self
             .connection
             .query_row(
@@ -491,7 +497,20 @@ impl SqliteStore {
                    ON c.project_id = b.project_id
                   AND c.mini_project_id = b.mini_project_id
                  WHERE b.project_id = ?1 AND b.mini_project_id = ?2
-                   AND b.status = 'active'",
+                   AND (
+                       b.status = 'active'
+                       OR (
+                           b.provenance = 'legacy'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM epic_backlog_codes active
+                               WHERE active.project_id = b.project_id
+                                 AND active.mini_project_id = b.mini_project_id
+                                 AND active.status = 'active'
+                           )
+                       )
+                   )
+                 ORDER BY CASE b.status WHEN 'active' THEN 0 ELSE 1 END
+                 LIMIT 1",
                 params![project_id.to_string(), mini_project_id.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -500,7 +519,7 @@ impl SqliteStore {
         found
             .map(|(source, provenance, corrected)| {
                 Ok((
-                    EpicBacklogCode::parse(source)?,
+                    LegacyEpicBacklogCode::parse(source)?,
                     provenance,
                     corrected
                         .as_deref()
@@ -2630,13 +2649,19 @@ fn ensure_epic_backlog_code(
 ) -> RepositoryResult<EpicBacklogCode> {
     let existing: Option<String> = transaction
         .query_row(
-            "SELECT COALESCE(c.corrected_code, b.code)
-             FROM epic_backlog_codes b
-             LEFT JOIN epic_backlog_code_corrections c
-               ON c.project_id = b.project_id
-              AND c.mini_project_id = b.mini_project_id
-             WHERE b.project_id = ?1 AND b.mini_project_id = ?2
-               AND b.status = 'active'",
+            "SELECT effective.code
+             FROM (
+                 SELECT corrected_code AS code, 0 AS precedence
+                 FROM epic_backlog_code_corrections
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                 UNION ALL
+                 SELECT code, 1 AS precedence
+                 FROM epic_backlog_codes
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND status = 'active'
+             ) AS effective
+             ORDER BY effective.precedence
+             LIMIT 1",
             params![project_id.to_string(), mini_project_id.to_string()],
             |row| row.get(0),
         )

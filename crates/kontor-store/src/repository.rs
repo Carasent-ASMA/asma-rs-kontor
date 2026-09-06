@@ -11274,7 +11274,21 @@ impl SqliteStore {
         let source: Option<(String, String)> = transaction
             .query_row(
                 "SELECT code, provenance FROM epic_backlog_codes
-                 WHERE project_id = ?1 AND mini_project_id = ?2 AND status = 'active'",
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND (
+                       status = 'active'
+                       OR (
+                           provenance = 'legacy'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM epic_backlog_codes active
+                               WHERE active.project_id = epic_backlog_codes.project_id
+                                 AND active.mini_project_id = epic_backlog_codes.mini_project_id
+                                 AND active.status = 'active'
+                           )
+                       )
+                   )
+                 ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END
+                 LIMIT 1",
                 params![
                     correction.project_id.to_string(),
                     correction.mini_project_id.to_string()
@@ -11285,7 +11299,7 @@ impl SqliteStore {
             .map_err(backend)?;
         let Some((prior_code, provenance)) = source else {
             return Err(RepositoryError::NotFound {
-                subject: "active epic backlog code",
+                subject: "correctable legacy epic backlog code",
             });
         };
         if provenance != "legacy" {

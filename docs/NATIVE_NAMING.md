@@ -139,12 +139,15 @@ held. A malformed commit identity is a malformed request, not a decision.
 Normal assignments cannot be renamed. Eligible legacy-imported epics may receive
 one effective-code correction through
 `kontor_epic_backlog_code_correction_preview` / `_apply`. The original row is
-preserved as immutable evidence. Supply the exact project/epic, current project
-`expected_revision`, `expected_prior_code`, project-unique `corrected_code` and
-immutable `reason`; apply also requires the preview hash and stable idempotency
-key. Read back the correction receipt and effective code. A revision conflict
-requires a fresh preview. This changes no confirmed Jira key and grants no
-permission to rewrite historical native names; native migration remains a
+preserved as immutable evidence, including a pre-enforcement spelling that was
+quarantined as `legacy_invalid` or `legacy_duplicate`. Supply the exact
+project/epic, current project `expected_revision`, exact stored
+`expected_prior_code`, project-unique canonical `corrected_code` and immutable
+`reason`; apply also requires the preview hash and stable idempotency key. A
+quarantined source is eligible only while the epic has no later active
+assignment. Read back the correction receipt and effective code. A revision
+conflict requires a fresh preview. This changes no confirmed Jira key and grants
+no permission to rewrite historical native names; native migration remains a
 separate preview/apply against the pinned definition.
 
 ## Recommended Team Definition values

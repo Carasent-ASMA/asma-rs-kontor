@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
-use kontor_core::backlog_identity::EpicBacklogCode;
+use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
     ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
@@ -3095,9 +3095,9 @@ pub struct EpicBacklogCodeCorrectionPreviewRequest {
     /// Project revision the caller read.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Exact active legacy value expected in the store.
+    /// Exact stored legacy value expected in the store.
     #[schema(value_type = String)]
-    pub expected_prior_code: EpicBacklogCode,
+    pub expected_prior_code: LegacyEpicBacklogCode,
     /// Correct project-unique value to make effective.
     #[schema(value_type = String)]
     pub corrected_code: EpicBacklogCode,
@@ -3113,9 +3113,9 @@ pub struct EpicBacklogCodeCorrectionApplyRequest {
     /// Project revision the caller read.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// Exact active legacy value expected in the store.
+    /// Exact stored legacy value expected in the store.
     #[schema(value_type = String)]
-    pub expected_prior_code: EpicBacklogCode,
+    pub expected_prior_code: LegacyEpicBacklogCode,
     /// Correct project-unique value to make effective.
     #[schema(value_type = String)]
     pub corrected_code: EpicBacklogCode,
@@ -3141,7 +3141,7 @@ pub struct EpicBacklogCodeCorrectionPreviewDto {
     pub epic_id: MiniProjectId,
     /// Immutable legacy source value.
     #[schema(value_type = String)]
-    pub prior_code: EpicBacklogCode,
+    pub prior_code: LegacyEpicBacklogCode,
     /// Proposed effective value.
     #[schema(value_type = String)]
     pub corrected_code: EpicBacklogCode,

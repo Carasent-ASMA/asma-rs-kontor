@@ -18009,10 +18009,10 @@ impl ApplicationOperations for Services {
         if source.0 != request.expected_prior_code {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the active legacy epic code differs from the caller's preview basis",
+                "the stored legacy epic code differs from the caller's preview basis",
             ));
         }
-        if request.corrected_code == request.expected_prior_code {
+        if request.corrected_code.as_str() == request.expected_prior_code.as_str() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "the corrected epic code must differ from the legacy value",

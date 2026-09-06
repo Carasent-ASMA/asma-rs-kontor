@@ -426,6 +426,7 @@ fn check_value(
         | ArgType::ExternalName
         | ArgType::ExternalId
         | ArgType::EpicBacklogCode
+        | ArgType::LegacyEpicBacklogCode
         | ArgType::IdempotencyKey
         | ArgType::Timestamp => {
             let text = value.as_str().ok_or_else(|| wrong("a string"))?;
@@ -581,6 +582,9 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::EpicBacklogCode => {
             kontor_core::backlog_identity::EpicBacklogCode::parse(text).map(drop)
         }
+        ArgType::LegacyEpicBacklogCode => {
+            kontor_core::backlog_identity::LegacyEpicBacklogCode::parse(text).map(drop)
+        }
         ArgType::IdempotencyKey => id::IdempotencyKey::parse(text).map(drop),
         ArgType::Timestamp => id::parse_utc_timestamp(text).map(drop),
         // Every other type is checked by shape, above. Spelled out rather than
@@ -620,6 +624,35 @@ mod tests {
         assert!(parse_domain(ArgType::EpicBacklogCode, "KOP").is_ok());
         assert!(parse_domain(ArgType::EpicBacklogCode, "kop").is_err());
         assert!(parse_domain(ArgType::EpicBacklogCode, "8001").is_err());
+    }
+
+    #[test]
+    fn a_legacy_epic_code_is_bounded_without_weakening_the_replacement() {
+        assert!(parse_domain(ArgType::LegacyEpicBacklogCode, "QNR-P1").is_ok());
+        assert!(parse_domain(ArgType::LegacyEpicBacklogCode, "QNR P1").is_err());
+        assert!(parse_domain(ArgType::EpicBacklogCode, "QNR-P1").is_err());
+        for tool in [
+            "kontor_epic_backlog_code_correction_preview",
+            "kontor_epic_backlog_code_correction_apply",
+        ] {
+            let spec = spec(tool);
+            assert_eq!(
+                spec.args
+                    .iter()
+                    .find(|argument| argument.name == "expected_prior_code")
+                    .expect("the historical comparison argument")
+                    .ty,
+                ArgType::LegacyEpicBacklogCode
+            );
+            assert_eq!(
+                spec.args
+                    .iter()
+                    .find(|argument| argument.name == "corrected_code")
+                    .expect("the replacement argument")
+                    .ty,
+                ArgType::EpicBacklogCode
+            );
+        }
     }
 
     #[test]
