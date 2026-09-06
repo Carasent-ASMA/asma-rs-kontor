@@ -3224,6 +3224,11 @@ export interface components {
         AdmissionResumeRefDto: {
             /** @description The preserved first AgentRun committed with that admission. */
             agent_run_id: string;
+            /**
+             * @description Exact already-created downstream native to adopt. Absent for an
+             *     ordinary queued-root recovery; required for a partially seated team.
+             */
+            downstream?: null | components["schemas"]["PartialAdmissionSeatDto"];
             /** @description The preserved TeamRun envelope. */
             team_run_id: string;
         };
@@ -6297,6 +6302,18 @@ export interface components {
             observed_at: string;
             /** @description The runtime family that answered. */
             runtime_kind: string;
+        };
+        /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
+        PartialAdmissionSeatDto: {
+            /** @description The unique current replacement-chain leaf for its frozen role slot. */
+            agent_run_id: string;
+            /** @description Exact native session the runtime census must rediscover. */
+            expected_native_id: string;
+            /**
+             * Format: int64
+             * @description The AgentRun revision the caller read.
+             */
+            expected_revision: number;
         };
         /** @description The runtime's answer to one permission response. */
         PermissionAckDto: {

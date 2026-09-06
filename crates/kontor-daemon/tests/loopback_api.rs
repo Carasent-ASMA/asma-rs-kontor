@@ -86,7 +86,8 @@ use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
-use kontor_runtime::fake::{AdapterCall, RequestKey, ScriptStep};
+use kontor_runtime::fake::{AdapterCall, RequestKey, RuntimeScript, ScriptStep, SessionScript};
+use kontor_runtime::request::CorrelationLabel;
 use kontor_scheduler::model::CapacityConfig;
 use kontor_store::{
     ConsultationPermissionResponseStatus, IdempotencyBinding, JiraIntentKind, JiraItemKind,
@@ -6162,6 +6163,16 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
     let architect_run = run_for("architect");
     let builder_run = run_for("builder");
     let inspector_run = run_for("inspector");
+    let inspector_revision = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(
+                ProjectId::parse(&project).expect("a project id"),
+                inspector_run,
+            )
+            .expect("the inspector reads")
+            .expect("the inspector exists")
+            .revision
+    });
     for role in ["architect", "builder"] {
         let seat = partial_seats
             .iter()
@@ -6177,9 +6188,54 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         false,
         "the refused downstream AgentRun is the exact recovery hole"
     );
-    let calls_before_recovery = world.fake.calls();
+    let calls_before_stale_target = world.fake.calls().len();
+    let stale_target = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        &serde_json::json!({
+            "expected_revision": epic_revision,
+            "admissions": [{
+                "team_run_id": preserved_team_run,
+                "agent_run_id": preserved_agent_run,
+                "downstream": {
+                    "agent_run_id": inspector_run,
+                    "expected_revision": inspector_revision.get() + 1,
+                    "expected_native_id": "native-existing-inspector",
+                },
+            }],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("resume-partial-stale-target")
+    .send(&world)
+    .await;
+    assert_eq!(stale_target.status, 409, "{}", stale_target.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_stale_target,
+        "a stale downstream revision reaches no runtime surface"
+    );
 
-    world.fake.allowing_launch_of(&inspector);
+    // The native already exists under the exact durable AgentRun correlation.
+    // Partial recovery may adopt it, but may neither create nor prompt one.
+    let existing_observed_at = kontor_api::now().to_string();
+    world
+        .fake
+        .load_script(
+            &RuntimeScript {
+                sessions: vec![SessionScript {
+                    native_id: "native-existing-inspector".to_owned(),
+                    generation_delta: 0,
+                    correlation_slot: Some(0),
+                    correlation_text: None,
+                    state: ObservedRunState::WaitingInput,
+                    observed_at: existing_observed_at,
+                }],
+                ..RuntimeScript::default()
+            },
+            &[CorrelationLabel::for_run(inspector_run)],
+        )
+        .expect("the existing inspector is visible to the complete census");
+    let calls_before_adoption = world.fake.calls();
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
         &serde_json::json!({
@@ -6187,6 +6243,11 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             "admissions": [{
                 "team_run_id": preserved_team_run,
                 "agent_run_id": preserved_agent_run,
+                "downstream": {
+                    "agent_run_id": inspector_run,
+                    "expected_revision": inspector_revision.get(),
+                    "expected_native_id": "native-existing-inspector",
+                },
             }],
         }),
     )
@@ -6218,10 +6279,10 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
     assert!(
         seats.iter().any(|seat| seat["applied"] == "unchanged")
             && seats.iter().any(|seat| seat["applied"] == "created"),
-        "recovery must reuse the partial architect and create only missing seats: {}",
+        "recovery must reuse bound seats and bind only the exact adopted native: {}",
         started.body
     );
-    let recovery_launches: Vec<AgentRunId> = world.fake.calls()[calls_before_recovery.len()..]
+    let recovery_launches: Vec<AgentRunId> = world.fake.calls()[calls_before_adoption.len()..]
         .iter()
         .filter_map(|call| match call {
             AdapterCall::Launch(run) => Some(*run),
@@ -6230,13 +6291,14 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         .collect();
     assert!(
         !recovery_launches.contains(&architect_run) && !recovery_launches.contains(&builder_run),
-        "partial recovery must not prompt or relaunch bound root/builder seats: {recovery_launches:?}"
+        "partial recovery must not prompt or relaunch any seat: {recovery_launches:?}"
     );
     assert!(
-        recovery_launches.contains(&inspector_run),
-        "the queued inspector hole is the seat recovery launches: {recovery_launches:?}"
+        recovery_launches.is_empty(),
+        "the exact inspector is adopted, never launched: {recovery_launches:?}"
     );
-    for role in ["builder", "inspector"] {
+    {
+        let role = "builder";
         let run = seats
             .iter()
             .find(|seat| seat["role_slot"] == role)
@@ -6271,6 +6333,11 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             "admissions": [{
                 "team_run_id": preserved_team_run,
                 "agent_run_id": preserved_agent_run,
+                "downstream": {
+                    "agent_run_id": inspector_run,
+                    "expected_revision": inspector_revision.get(),
+                    "expected_native_id": "native-existing-inspector",
+                },
             }],
         }),
     )
@@ -6300,6 +6367,11 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             "admissions": [{
                 "team_run_id": preserved_team_run,
                 "agent_run_id": preserved_agent_run,
+                "downstream": {
+                    "agent_run_id": inspector_run,
+                    "expected_revision": inspector_revision.get(),
+                    "expected_native_id": "native-existing-inspector",
+                },
             }],
         }),
     )
@@ -6359,10 +6431,15 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             "every native launch has durable launch intent: {}",
             run.body
         );
+        let adopted = seat["role_slot"] == "inspector";
         assert_eq!(
             run.json()["value"]["projection"]["observed"],
-            "launching",
-            "the runtime-issued launch observation is durable: {}",
+            if adopted {
+                "waiting_input"
+            } else {
+                "launching"
+            },
+            "the runtime-issued observation is durable: {}",
             run.body
         );
         assert_eq!(
@@ -6373,35 +6450,99 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         );
         assert_eq!(
             run.json()["value"]["projection"]["lifecycle"],
-            "launching",
+            if adopted {
+                "waiting_input"
+            } else {
+                "launching"
+            },
             "runtime evidence advances the AgentRun lifecycle: {}",
             run.body
         );
     }
     assert_eq!(
-        runs[0]["lifecycle"], "launching",
-        "runtime evidence advances the owning TeamRun too: {}",
+        runs[0]["lifecycle"], "waiting_input",
+        "the adopted seat's current runtime evidence advances the owning TeamRun too: {}",
         projection.body
     );
 
-    // A second live row for one downstream role is not another hole to fill.
-    // It is divergent lineage, and choosing the newest row (what `fill_slot`
-    // would otherwise do) would make recovery silently pick a winner. The
-    // whole command refuses before another runtime call.
+    // A terminal row is still part of the immutable replacement graph. Seeding
+    // an unrelated terminal inspector leaf beside the live inspector makes the
+    // role lineage divergent; filtering terminal rows during validation and
+    // then selecting the newest row during execution would resurrect it. The
+    // shared graph-leaf resolver refuses the whole command before runtime.
     let duplicate_inspector = AgentRunId::generate();
+    let duplicate_binding = RuntimeBinding {
+        id: RuntimeBindingId::generate(),
+        agent_run_id: duplicate_inspector,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: fake_family(),
+            host: name("fake-host"),
+            generation: 1,
+            native_id: ExternalId::parse("terminal-divergent-inspector").expect("a native id"),
+        },
+        bound_at: at("2026-08-10T09:20:00Z"),
+    };
+    let terminal_payload = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "observed_state": "cancelled",
+        "contact": "reachable",
+        "native_sequence": 1,
+        "observed_at": "2026-08-10T09:21:00Z"
+    }))
+    .expect("terminal control metadata");
     world.daemon.state().with_store(|store| {
-        store
+        let created = store
             .create_agent_run(&NewAgentRun {
                 id: duplicate_inspector,
                 project_id: ProjectId::parse(&project).expect("a project id"),
                 team_run_id: TeamRunId::parse(&team_run).expect("a team run id"),
-                parent_agent_run_id: Some(inspector_run),
+                parent_agent_run_id: Some(builder_run),
                 role: inspector.clone().into_role_key(),
                 account_profile_id: None,
-                binding: None,
+                binding: Some(duplicate_binding.clone()),
                 created_at: kontor_api::now(),
             })
             .expect("the divergent live successor is seeded");
+        let observed = store
+            .record_observation(&NewObservation {
+                event: NewRuntimeEvent {
+                    project_id: ProjectId::parse(&project).expect("a project id"),
+                    agent_run_id: duplicate_inspector,
+                    identity: duplicate_binding.identity.clone(),
+                    native_event_id: None,
+                    native_sequence: 1,
+                    payload: terminal_payload.clone(),
+                    observed_at: at("2026-08-10T09:21:00Z"),
+                },
+                observed: ObservedRunState::Cancelled,
+                contact: RuntimeContact::Reachable,
+                freshness: Freshness::Fresh,
+                expected_revision: created.revision,
+                quota_state: None,
+            })
+            .expect("the divergent terminal observation is durable");
+        let observed_run = store
+            .get_agent_run(
+                ProjectId::parse(&project).expect("a project id"),
+                duplicate_inspector,
+            )
+            .expect("the divergent inspector reads")
+            .expect("the divergent inspector exists");
+        store
+            .close_agent_run(&RunClosure {
+                project_id: ProjectId::parse(&project).expect("a project id"),
+                agent_run_id: duplicate_inspector,
+                expected_revision: observed_run.revision,
+                evidence: TerminalEvidence {
+                    outcome: TerminalOutcome::Cancelled,
+                    source: TerminalEvidenceSource::RuntimeObservation {
+                        cursor: observed.last_cursor.expect("the observation has a cursor"),
+                    },
+                    evidence_hash: terminal_payload.hash().clone(),
+                    closed_at: at("2026-08-10T09:22:00Z"),
+                },
+            })
+            .expect("the divergent inspector is terminal");
     });
     let calls_before_ambiguity = world.fake.calls().len();
     let ambiguous = Call::post(
@@ -6411,6 +6552,11 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             "admissions": [{
                 "team_run_id": preserved_team_run,
                 "agent_run_id": preserved_agent_run,
+                "downstream": {
+                    "agent_run_id": inspector_run,
+                    "expected_revision": inspector_revision.get(),
+                    "expected_native_id": "native-existing-inspector",
+                },
             }],
         }),
     )
@@ -6423,7 +6569,7 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
         ambiguous.json()["rule"]
             .as_str()
             .expect("a refusal rule")
-            .contains("more than one non-terminal seat"),
+            .contains("ambiguous current replacement-chain leaves"),
         "the refusal names the ambiguity: {}",
         ambiguous.body
     );

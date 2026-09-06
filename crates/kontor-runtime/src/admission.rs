@@ -222,6 +222,19 @@ impl LaunchAuthority {
     pub fn into_request(self, parts: LaunchParts) -> LaunchRequest {
         LaunchRequest::admitted(self, parts)
     }
+
+    /// Spend this authority only by adopting the exact existing native.
+    ///
+    /// Unlike an ordinary launch, a complete empty census is a refusal: this
+    /// request carries no authority to create a replacement session.
+    #[must_use]
+    pub fn into_recovery_request(
+        self,
+        parts: LaunchParts,
+        expected_existing_native_id: kontor_core::id::ExternalId,
+    ) -> LaunchRequest {
+        LaunchRequest::recovering(self, parts, expected_existing_native_id)
+    }
 }
 
 /// What the runtime decided about one admission request.
