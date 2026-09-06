@@ -22419,6 +22419,536 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
     }
 }
 
+/// The ASMA-8112 world: the refused downstream launch is abandoned *before* the
+/// upstream turn that hands to it settles.
+///
+/// A dispatch records its target at derivation, from the slot's *live* seat, and
+/// `seat_for_slot` reads only non-terminal members. An abandoned run is terminal,
+/// so deciding the handoff after the abandonment persists the authority to
+/// activate that slot with `target_agent_run` NULL. Nothing later re-targets the
+/// row: `mark_turn_dispatched` writes a target only once delivery succeeds.
+async fn abandoned_before_its_handoff(slug: &'static str) -> (UnboundWorld, AgentRunId, u64) {
+    let seeded = omega_with_one_unbound_slot(slug, "omega-u-cat").await;
+    let project_id = ProjectId::parse(&seeded.project).expect("a project id");
+    let team_run_id = TeamRunId::parse(&seeded.team_run).expect("a team run id");
+    let seat = seeded
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .into_iter()
+        .find(|seat| seat.role.as_str() == "omega-k3" && seat.native_id.is_none())
+        .expect("the refused downstream launch left one exact unbound run");
+    let predecessor = seeded.world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, seat.agent_run_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{}/runtime:abandon",
+            seeded.project, predecessor.id
+        ),
+        &serde_json::json!({
+            "expected_revision": predecessor.revision.get(),
+            "reason": "The downstream launch was refused before it bound a session"
+        }),
+    )
+    .signed_as(&seeded.world, "operator")
+    .with_key(format!("{slug}-abandon"))
+    .send(&seeded.world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    let revision = abandoned.json()["revision"]
+        .as_u64()
+        .expect("the abandoned revision");
+    (seeded, predecessor.id, revision)
+}
+
+/// Settle one bounded turn in the upstream `omega-k1` seat.
+///
+/// `omega-u-cat` hands `omega-k1` to `omega-k3` unconditionally, so each
+/// settlement decides exactly one follow-up into the never-bound slot.
+async fn hand_off_to_the_unbound_slot(seeded: &UnboundWorld, key: &str) -> serde_json::Value {
+    let giver = seeded
+        .seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k1")
+        .expect("the upstream seat exists")["agent_run_id"]
+        .as_str()
+        .expect("an agent run id");
+    let revision = alpha_revision(&seeded.world, &seeded.project, &seeded.epic).await;
+    let settled = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{giver}/turns:settle",
+            seeded.project
+        ),
+        &serde_json::json!({
+            "role_slot": "omega-k1",
+            "expected_task_revision": revision,
+            "runtime_proof": observe_current_turn(&seeded.world, &seeded.project, giver),
+            "artifacts": []
+        }),
+    )
+    .signed_as(&seeded.world, "operator")
+    .with_key(key)
+    .send(&seeded.world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    settled.json().clone()
+}
+
+/// How many runs the never-bound slot has ever held.
+fn omega_k3_seats(seeded: &UnboundWorld) -> usize {
+    let project_id = ProjectId::parse(&seeded.project).expect("a project id");
+    let team_run_id = TeamRunId::parse(&seeded.team_run).expect("a team run id");
+    seeded
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .into_iter()
+        .filter(|seat| seat.role.as_str() == "omega-k3")
+        .count()
+}
+
+/// Every undelivered handoff decided for the never-bound slot.
+fn undelivered_to_omega_k3(seeded: &UnboundWorld) -> Vec<kontor_store::TurnDispatch> {
+    let project_id = ProjectId::parse(&seeded.project).expect("a project id");
+    seeded
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.list_turn_dispatches(project_id))
+        .expect("the dispatches read")
+        .into_iter()
+        .filter(|dispatch| !dispatch.dispatched && dispatch.to_role_slot_id.as_str() == "omega-k3")
+        .collect()
+}
+
+/// The Admin reroute request the never-bound recovery requires.
+fn reroute_request(predecessor_revision: u64, task_revision: u64) -> serde_json::Value {
+    serde_json::json!({
+        "role_slot": "omega-k3",
+        "expected_predecessor_revision": predecessor_revision,
+        "expected_task_revision": task_revision,
+        "binding_generation": 0,
+        "model_route": {
+            "provider": "codex-personal",
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh"
+        }
+    })
+}
+
+/// ASMA-8112. The durable authority to reroute a never-bound seat is the
+/// undelivered handoff decided for its slot — but that row only *names* the seat
+/// when the seat was still live when the handoff was decided. Abandoning the
+/// refused launch first, which is the order the reroute itself demands, leaves
+/// the authority intact and the target NULL. Requiring the row to name the run
+/// stranded exactly the seat the recovery exists for: no admission event to
+/// resume, and no dispatch that would admit to being about it.
+#[tokio::test]
+async fn an_admin_reroutes_a_never_bound_seat_whose_handoff_recorded_no_target() {
+    let (seeded, predecessor_id, abandoned_revision) =
+        abandoned_before_its_handoff("reroute-targetless").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        team_run,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Recovery verifier",
+            "harness": "fake.runtime",
+            "credential_alias": "recovery-verifier",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-targetless-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(recovery_account.status, 200, "{}", recovery_account.body);
+    let recovery_account_id = recovery_account.json()["account_profile_id"]
+        .as_str()
+        .expect("the recovery account id")
+        .to_owned();
+
+    let handed_off = hand_off_to_the_unbound_slot(&seeded, "reroute-targetless-handoff").await;
+    assert!(
+        handed_off["follow_ups"][0]["target_agent_run_id"].is_null(),
+        "an abandoned seat is not a live target, so the handoff names none: {handed_off}"
+    );
+    assert_eq!(
+        handed_off["follow_ups"][0]["dispatched"],
+        serde_json::json!(false),
+        "and nothing was delivered: {handed_off}"
+    );
+    // The exact ASMA-8112 precondition, read from the store rather than inferred
+    // from the response: one unambiguous undelivered authority, naming nothing.
+    let derived = undelivered_to_omega_k3(&seeded);
+    assert_eq!(derived.len(), 1, "one handoff was decided: {derived:?}");
+    assert_eq!(
+        derived[0].target_agent_run, None,
+        "and it recorded no target: {derived:?}"
+    );
+
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let body = reroute_request(abandoned_revision, task_revision);
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-targetless-seat")
+    .send(world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert_eq!(replaced.json()["applied"], "created");
+    assert_eq!(replaced.json()["role_slot"], "omega-k3");
+    assert_eq!(replaced.json()["team_run_id"], serde_json::json!(team_run));
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("a successor id"),
+    )
+    .expect("a successor id");
+
+    let (closed, successor, dispatches) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_agent_run(project_id, predecessor_id)
+                .expect("the predecessor reads")
+                .expect("the predecessor remains"),
+            store
+                .get_agent_run(project_id, successor_id)
+                .expect("the successor reads")
+                .expect("the successor exists"),
+            store
+                .list_turn_dispatches(project_id)
+                .expect("the dispatches read"),
+        )
+    });
+    assert_eq!(
+        closed.terminal.expect("the predecessor closed").outcome,
+        TerminalOutcome::Abandoned,
+        "the abandoned predecessor stays as lineage"
+    );
+    assert_eq!(
+        successor.parent_agent_run_id,
+        Some(predecessor_id),
+        "the successor names the exact run it replaces"
+    );
+    assert!(successor.binding.is_some(), "the successor is bound");
+    assert_eq!(
+        successor.account_profile_id.map(|id| id.to_string()),
+        Some(recovery_account_id),
+        "the exact recovery alias must pin the account before launch"
+    );
+    // The handoff the reroute was authorized by is the one the successor
+    // receives. A targetless row that authorized a launch and then stayed
+    // pending would be a seat working with no instructions.
+    assert_eq!(dispatches.len(), 1, "no second handoff was derived");
+    assert!(
+        dispatches[0].dispatched,
+        "the targetless handoff reached the successor: {dispatches:?}"
+    );
+    assert_eq!(
+        dispatches[0].target_agent_run,
+        Some(successor_id),
+        "and delivery is what recorded the seat it reached"
+    );
+
+    let replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-targetless-seat")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["successor_agent_run_id"],
+        successor_id.to_string()
+    );
+    // The delivered row is no longer undelivered, so the replay passes the gate
+    // on the recorded successor rather than on the dispatch. A replay that
+    // depended on the row still being pending would wedge here.
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        2,
+        "the replay creates no third seat in the slot"
+    );
+    let replayed = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the replayed successor reads")
+            .expect("the replayed successor remains")
+    });
+    assert_eq!(
+        replayed.binding, successor.binding,
+        "the replay relaunches nothing"
+    );
+
+    // The scheduler's exact admission replay walks every frozen slot again. The
+    // recovered lineage must hydrate, or the recovered seat is stranded behind
+    // the immutable abandoned row it succeeds.
+    let admission_replay = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": seeded.plan_hash}),
+    )
+    .signed_as(world, "operator")
+    .with_key("reroute-targetless-start")
+    .send(world)
+    .await;
+    assert_eq!(admission_replay.status, 200, "{}", admission_replay.body);
+    assert!(
+        admission_replay.json()["blocked"]
+            .as_array()
+            .expect("the blocked list")
+            .is_empty(),
+        "the exact admission replay reuses the recovered successor: {}",
+        admission_replay.body
+    );
+}
+
+/// Two undelivered targetless handoffs are two decisions, and neither of them
+/// says which one an Admin is recovering. Widening the authority to "some row
+/// exists" would let one reroute answer a handoff it was never authorized by,
+/// and leave the other pending against a seat that already moved on.
+#[tokio::test]
+async fn two_targetless_handoffs_refuse_a_never_bound_replacement() {
+    let (seeded, predecessor_id, abandoned_revision) =
+        abandoned_before_its_handoff("reroute-ambiguous").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        ..
+    } = &seeded;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-ambiguous-handoff-1").await;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-ambiguous-handoff-2").await;
+    let derived = undelivered_to_omega_k3(&seeded);
+    assert_eq!(
+        derived.len(),
+        2,
+        "two turns each decided their own handoff: {derived:?}"
+    );
+    assert!(
+        derived
+            .iter()
+            .all(|dispatch| dispatch.target_agent_run.is_none()),
+        "and neither names the abandoned seat: {derived:?}"
+    );
+
+    // Allowed on purpose: a gate that wrongly authorizes must fail here on a
+    // created successor, not be rescued by a runtime that refuses the launch.
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-ambiguous-seat")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "revision_conflict");
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        1,
+        "an ambiguous authority is a side-effect-free refusal"
+    );
+    assert_eq!(
+        undelivered_to_omega_k3(&seeded).len(),
+        2,
+        "and it delivers neither handoff"
+    );
+}
+
+/// One undelivered handoff that names a *different* run is not this seat's
+/// authority. The targetless widening is about a row that recorded no target at
+/// all; a row that recorded another one has already answered the question.
+#[tokio::test]
+async fn a_handoff_naming_another_run_refuses_a_never_bound_replacement() {
+    let (seeded, predecessor_id, abandoned_revision) =
+        abandoned_before_its_handoff("reroute-mistargeted").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-mistargeted-handoff").await;
+    assert_eq!(undelivered_to_omega_k3(&seeded).len(), 1);
+
+    // Re-point the one pending handoff at a live sibling. The row stays
+    // undelivered, for this TeamRun and this slot — only its target changes,
+    // which is precisely the difference the gate must not read past.
+    let sibling = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k4")
+        .expect("the sibling seat exists")["agent_run_id"]
+        .as_str()
+        .expect("an agent run id")
+        .to_owned();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    let repointed = connection
+        .execute(
+            "UPDATE turn_dispatches SET target_agent_run = ?2
+             WHERE project_id = ?1 AND to_role_slot_id = 'omega-k3' AND dispatched = 0",
+            rusqlite::params![project, sibling],
+        )
+        .expect("the fixture re-points the pending handoff");
+    drop(connection);
+    assert_eq!(repointed, 1, "exactly the one pending handoff moved");
+
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-mistargeted-seat")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "revision_conflict");
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        1,
+        "a handoff naming another run authorizes nothing here"
+    );
+}
+
+/// The mixed candidate set, which pins which set the "exactly one" is counted
+/// over. One undelivered handoff names another run and one names nothing, for
+/// the same TeamRun and slot. Counting only the targetless rows would find its
+/// single row and authorize; counting the whole undelivered candidate set finds
+/// two decisions and refuses. Kontor refuses: a row that already answered the
+/// question does not stop being an answer because a later one abstained, and an
+/// Admin replacement creates a seat and launches it, while a refusal costs a new
+/// idempotency key.
+#[tokio::test]
+async fn a_mixed_targetless_and_mistargeted_pair_refuses_a_never_bound_replacement() {
+    let (seeded, predecessor_id, abandoned_revision) =
+        abandoned_before_its_handoff("reroute-mixed").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-mixed-handoff-1").await;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-mixed-handoff-2").await;
+    let derived = undelivered_to_omega_k3(&seeded);
+    assert_eq!(
+        derived.len(),
+        2,
+        "two turns each decided their own handoff: {derived:?}"
+    );
+
+    // Re-point exactly one of them at a live sibling, named by its own settling
+    // turn so the other is untouched. Both rows stay undelivered, for this
+    // TeamRun and this slot: the set now holds one target naming another run and
+    // one naming nothing at all.
+    let sibling = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k4")
+        .expect("the sibling seat exists")["agent_run_id"]
+        .as_str()
+        .expect("an agent run id")
+        .to_owned();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    let repointed = connection
+        .execute(
+            "UPDATE turn_dispatches SET target_agent_run = ?2
+             WHERE project_id = ?1 AND settled_turn_id = ?3 AND dispatched = 0",
+            rusqlite::params![project, sibling, derived[0].settled_turn_id.to_string()],
+        )
+        .expect("the fixture re-points one pending handoff");
+    drop(connection);
+    assert_eq!(repointed, 1, "exactly one of the two handoffs moved");
+    let mixed = undelivered_to_omega_k3(&seeded);
+    assert_eq!(
+        mixed
+            .iter()
+            .filter(|dispatch| dispatch.target_agent_run.is_none())
+            .count(),
+        1,
+        "exactly one targetless row remains, which is what a narrower count \
+         would have authorized on: {mixed:?}"
+    );
+    assert_eq!(
+        mixed
+            .iter()
+            .filter(|dispatch| dispatch.target_agent_run.is_some())
+            .count(),
+        1,
+        "alongside one that already names another run: {mixed:?}"
+    );
+
+    // Allowed on purpose: a gate that wrongly authorizes must fail here on a
+    // created successor, not be rescued by a runtime that refuses the launch.
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    // A recorded successor is a *separate* authority in the same gate. Pinning
+    // its absence here keeps this test about the candidate set: if a seat ever
+    // exists by this point, the refusal below would be passing for a reason this
+    // test is not making, and it fails here instead with the reason named.
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        1,
+        "the slot holds only the abandoned predecessor when the gate is reached"
+    );
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-mixed-seat")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "revision_conflict");
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        1,
+        "a mixed candidate set is a side-effect-free refusal"
+    );
+    assert_eq!(
+        undelivered_to_omega_k3(&seeded),
+        mixed,
+        "and it delivers, re-targets and derives nothing"
+    );
+}
+
 /// An unbound launch may be abandoned before its already-seated siblings end.
 /// Replaying that same operator decision after the siblings settle is the only
 /// immutable-row-safe opportunity to abandon the now-fully-terminal TeamRun.
