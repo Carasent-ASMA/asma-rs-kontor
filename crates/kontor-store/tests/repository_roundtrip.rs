@@ -1432,6 +1432,215 @@ fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
     );
 }
 
+/// Two fresh keys whose pre-checks both observe no route: only one commits.
+///
+/// The interleaving the contract cares about is not a timing accident, so it is
+/// not tested with one. The service's route pre-check is performed here for
+/// *both* keys and asserted absent before either transaction opens, which is the
+/// barrier: from that point on both requests are provably in the state a
+/// concurrent pair would be in, and the store alone decides the outcome.
+///
+/// Racing two HTTP calls cannot show this. The store takes one process-wide
+/// lock, so the winner commits before the loser's pre-check runs and the loser
+/// never reaches the transaction at all.
+#[test]
+fn concurrent_recovery_keys_both_observe_no_route_before_either_commits() {
+    let fixture = fixture();
+    let workflow = with_workflow_at_gate_phase(&fixture);
+    with_team_run(&fixture, at("2026-01-01T00:00:00Z"));
+    let gate = GateKey::parse("zz.gate").expect("gate");
+
+    let source_id = CommandReceiptId::generate();
+    let source_intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "gate_record",
+        "task_id": fixture.task.to_string(),
+        "gate": "zz.gate",
+        "verdict": "rejected",
+        "evaluator_role": "zz.reviewer",
+        "evaluator_account": fixture.account.to_string(),
+        "evidence": [],
+    }))
+    .expect("canonical intent");
+    fixture
+        .store
+        .record_intent(&NewCommandIntent {
+            project_id: fixture.project,
+            receipt_id: source_id,
+            idempotency_key: IdempotencyKey::parse("race-legacy-rejection").expect("key"),
+            kind: CommandKind::RecordGateVerdict,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: source_intent.clone(),
+            payload: source_intent,
+            desired: None,
+            not_before: now(),
+            created_at: now(),
+        })
+        .expect("the legacy verdict receipt exists");
+    {
+        let connection = Connection::open(&fixture.path).expect("a raw connection opens");
+        connection
+            .execute(
+                "INSERT INTO task_gate_evaluations
+                     (project_id, workflow_id, gate_key, sequence, verdict, evaluator_role,
+                      evaluator_account, evidence, recorded_at)
+                 VALUES (?1, ?2, 'zz.gate', 1, 'rejected', 'zz.reviewer', ?3, '[]', ?4)",
+                rusqlite::params![
+                    fixture.project.to_string(),
+                    workflow.to_string(),
+                    fixture.account.to_string(),
+                    "2026-01-01T00:00:00Z",
+                ],
+            )
+            .expect("the historical rejected evaluation is seeded");
+    }
+
+    // The barrier. Both requests take the service's pre-check now, and both must
+    // see nothing, before either transaction is allowed to open.
+    for key in ["race-a", "race-b"] {
+        assert!(
+            fixture
+                .store
+                .gate_rejection_route_by_rejection(fixture.project, source_id)
+                .expect("the pre-check reads")
+                .is_none(),
+            "{key}: the pre-check must observe no route"
+        );
+    }
+
+    let recovery = kontor_core::repository::GateRejectionRecovery {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        gate: gate.clone(),
+        rejection_receipt_id: source_id,
+        sequence: 1,
+        expected_task_revision: AggregateRevision::INITIAL,
+        expected_workflow_revision: AggregateRevision::INITIAL,
+        expected_current_phase: phase("zz.two"),
+        expected_rejection_target: phase("zz.one"),
+        routed_at: now(),
+    };
+    let envelope = |key: &str| {
+        let intent = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "gate_rejection_recover",
+            "task_id": fixture.task.to_string(),
+            "gate": "zz.gate",
+            "rejection_receipt_id": source_id.to_string(),
+            "sequence": 1,
+        }))
+        .expect("canonical intent");
+        ReceiptEnvelope::new(
+            fixture.store.realm(),
+            NewCommandIntent {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: IdempotencyKey::parse(key).expect("key"),
+                kind: CommandKind::RecoverGateRejection,
+                target: AggregateRef::Task {
+                    task_id: fixture.task,
+                },
+                target_revision: AggregateRevision::INITIAL,
+                intent: intent.clone(),
+                payload: intent,
+                desired: None,
+                not_before: now(),
+                created_at: now(),
+            },
+        )
+    };
+
+    let (winner, applied, winning_receipt) = fixture
+        .store
+        .recover_gate_rejection_with_intent(&recovery, &envelope("race-a"))
+        .expect("the first key routes the rejection");
+    assert_eq!(applied, Applied::Created);
+
+    let before = census(&fixture);
+    let loser = fixture
+        .store
+        .recover_gate_rejection_with_intent(&recovery, &envelope("race-b"))
+        .expect_err("the second key cannot route the same rejection");
+    // The loser is stopped *earlier* than route uniqueness, and that is the
+    // correct behaviour rather than a gap. Both requests were built against
+    // workflow revision 1; the winner moved it to 2, so the loser's
+    // compare-and-swap fails before any identity is even consulted. The refusal
+    // names the revision to re-read, which is exactly what that caller needs.
+    //
+    // This corrects the model in the verification report, which assumed a
+    // same-source loser would reach the route-uniqueness check. It cannot: the
+    // workflow CAS guards the door. Route uniqueness guards the *other* way in,
+    // exercised below.
+    assert!(
+        matches!(
+            loser,
+            RepositoryError::Domain(kontor_core::DomainError::RevisionConflict {
+                subject: "task workflow",
+                expected: 1,
+                found: 2,
+            })
+        ),
+        "a same-source loser is stopped by the workflow CAS: {loser:?}"
+    );
+    assert_unchanged(&before, &census(&fixture), "the losing recovery key");
+
+    let routes = fixture
+        .store
+        .list_gate_rejection_routes(fixture.project, workflow)
+        .expect("routes read");
+    assert_eq!(routes.len(), 1, "two keys, one route");
+    assert_eq!(routes[0].route_receipt_id, winning_receipt.id);
+    assert_eq!(routes[0], winner);
+    assert_eq!(
+        fixture
+            .store
+            .get_active_task_workflow(fixture.project, fixture.task)
+            .expect("the workflow reads")
+            .expect("the workflow exists")
+            .revision
+            .get(),
+        2,
+        "exactly one revision increment across both keys"
+    );
+
+    // The other way in: a caller whose expectations are current, whose source is
+    // valid, and whose rejection is nonetheless already spent. This is the only
+    // error the service may decorate with the winning receipt, so the test pins
+    // that it is the one produced here.
+    fixture
+        .store
+        .advance_phase(&PhaseAdvance {
+            project_id: fixture.project,
+            workflow_id: workflow,
+            expected_revision: AggregateRevision::parse(2).expect("revision"),
+            next_phase: phase("zz.two"),
+            advanced_at: now(),
+        })
+        .expect("the workflow returns to the gate's phase");
+    let mut current = recovery.clone();
+    current.expected_workflow_revision = AggregateRevision::parse(3).expect("revision");
+    current.expected_current_phase = phase("zz.two");
+    let before = census(&fixture);
+    let spent = fixture
+        .store
+        .recover_gate_rejection_with_intent(&current, &envelope("race-c"))
+        .expect_err("an already-spent rejection cannot be routed again");
+    assert!(
+        matches!(
+            spent,
+            RepositoryError::Conflict {
+                subject: "gate rejection route",
+                ..
+            }
+        ),
+        "a current-state caller loses on route uniqueness: {spent:?}"
+    );
+    assert_unchanged(&before, &census(&fixture), "the spent-rejection key");
+}
+
 /// A rejection recorded before the routing fix is routed exactly once,
 /// afterwards, and the record of that survives a reopen.
 #[test]

@@ -47,6 +47,15 @@ fallback for the remediation handoff. No Kontor receipt exists for the failed
 delivery, so none may be recorded or inferred. Every existing task, TeamRun,
 AgentRun, seat, native-session, workspace, and `cwd` identity remains fixed.
 
+## Schema generation
+
+This work's route migration is **`0090_gate_rejection_routes.sql`** and
+`SCHEMA_VERSION` is **90**. It was scoped as 0089/89, but current master claimed
+v89 for ASMA-8101 publication attestations before this landed, so the route
+migration renumbered behind it. Every instruction below — including the
+protected delivery readback — names 90, and the deployed realm reads back at 90
+with `task_gate_rejection_routes` present.
+
 ## Required behavior
 
 ### 1. Future rejections
@@ -187,7 +196,7 @@ AgentRun, seat binding, native session, or workflow history.
 
 ### 4. Append-only route and fresh-authoring fence
 
-Add migration `crates/kontor-store/migrations/0089_gate_rejection_routes.sql`
+Add migration `crates/kontor-store/migrations/0090_gate_rejection_routes.sql`
 with one append-only `task_gate_rejection_routes` row per rejected evaluation.
 Its immutable fields are:
 
@@ -247,7 +256,7 @@ seat must not rewrite it. It owns only this corrective delta:
 
 - [`crates/kontor-core/src/repository.rs`](../../../crates/kontor-core/src/repository.rs):
   add immutable `team_run_id` to the typed route record.
-- `crates/kontor-store/migrations/0089_gate_rejection_routes.sql`: add the
+- `crates/kontor-store/migrations/0090_gate_rejection_routes.sql`: add the
   route-time TeamRun column and referential binding before v89 is deployed.
 - [`crates/kontor-store/src/repository.rs`](../../../crates/kontor-store/src/repository.rs):
   capture/read the route-time TeamRun, distinguish absent legacy bindings from
@@ -404,7 +413,7 @@ the scope or implementation seat—performs this sequence:
    TeamRun, reopen a task, or issue a recovery command. Restart against the same
    state root.
 6. Run SQLite `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require
-   `ok`, zero foreign-key rows, schema version 89, and migration 0089 exactly
+   `ok`, zero foreign-key rows, schema version 90, and migration 0090 exactly
    once.
 7. Read the realm, topology, ASMA-8100, its workflow, source receipt, gate
    history, and route ledger back. Require exact identity equality with step 4,

@@ -10517,6 +10517,272 @@ fn seed_passed_evaluation(
         .expect("a passed evaluation of the same gate is seeded");
 }
 
+/// A real receipt in this project that recorded something other than a verdict.
+fn any_non_verdict_receipt(world: &World, seed: &Bootstrapped) -> String {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    connection
+        .query_row(
+            "SELECT id FROM command_receipts
+             WHERE project_id = ?1 AND kind <> 'record_gate_verdict'
+             ORDER BY created_at LIMIT 1",
+            rusqlite::params![seed.project],
+            |row| row.get(0),
+        )
+        .expect("this realm has recorded some other command")
+}
+
+/// Once the fence releases, the workflow settles in the gate's own phase and
+/// stays there until a *new* verdict is recorded.
+///
+/// The live realm showed the shape this guards against: only rejection sequence
+/// 1 ever existed, yet the workflow was observed back at the rejection target
+/// after a fresh implementation turn had already settled. A route that could be
+/// re-consumed, or an advance that re-applied a spent rejection, would produce
+/// exactly that — work bouncing out of verification without anyone judging it.
+///
+/// The rejection is consumed once. Nothing but a fresh gate verdict moves the
+/// workflow again.
+#[tokio::test]
+async fn a_released_rejection_stays_in_verification_until_a_fresh_gate_verdict() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rejection-stays").await;
+    let rejection = record_a_rejection(&world, &seed, &runs, "rejection-stays").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+
+    let (target, recovered) =
+        recover_the_rejection(&world, &seed, &rejection, "rejection-stays-recover").await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let routed_revision = rejection.revision_before + 1;
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision)
+    );
+
+    // The rework releases the fence.
+    let builder = run_with_role(&world, &runs, "builder").await;
+    let rework = settle_turn(
+        &world,
+        &seed,
+        &builder,
+        "builder",
+        serde_json::json!(["code-change"]),
+        "rejection-stays-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+
+    // It lands in the gate's own phase -- the work is back up for judgement --
+    // and not one step further, because the gate is still rejected.
+    let gate_phase = rejection.phase_before.clone();
+    let (phase_after, revision_after) = workflow_position(&world, &seed);
+    assert_eq!(
+        phase_after, gate_phase,
+        "released work returns to the phase whose gate must judge it"
+    );
+    assert!(revision_after > routed_revision);
+
+    // Nothing moves it from there. Not reconciliation, not further settlements
+    // by other roles, not a restart.
+    for round in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, &seed),
+            (gate_phase.clone(), revision_after),
+            "reconcile round {round} moved a workflow awaiting a verdict"
+        );
+    }
+    let inspector = run_with_role(&world, &runs, "inspector").await;
+    let review = settle_turn(
+        &world,
+        &seed,
+        &inspector,
+        "inspector",
+        serde_json::json!(["review-notes"]),
+        "rejection-stays-review",
+    )
+    .await;
+    assert_eq!(review.status, 200, "{}", review.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (gate_phase.clone(), revision_after),
+        "a reviewer's turn is not a verdict"
+    );
+
+    // The rejection was consumed exactly once and stays consumed.
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let routes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, rejection.workflow))
+        .expect("routes read");
+    assert_eq!(routes.len(), 1, "one rejection, one route, still");
+    let evaluations = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_evaluations(project, rejection.workflow))
+        .expect("history reads");
+    assert_eq!(
+        evaluations.len(),
+        usize::try_from(rejection.sequence).expect("a small sequence"),
+        "no verdict was invented while the workflow waited"
+    );
+
+    // A fresh verdict is the only thing that moves it.
+    let gate_spec = active_workflow(&world, &seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == rejection.gate)
+        .expect("the gate is frozen")
+        .clone();
+    let verdict = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/gates/{}/record",
+            seed.project, seed.task, rejection.gate
+        ),
+        &serde_json::json!({
+            "expected_revision": revision_after,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("rejection-stays-fresh-verdict")
+    .send(&world)
+    .await;
+    assert_eq!(verdict.status, 200, "{}", verdict.body);
+    let (phase_final, revision_final) = workflow_position(&world, &seed);
+    assert_ne!(
+        phase_final, gate_phase,
+        "a fresh passing verdict is what moves the work on"
+    );
+    assert!(revision_final > revision_after);
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_gate_rejection_routes(project, rejection.workflow))
+            .expect("routes read")
+            .len(),
+        1,
+        "passing the gate writes no route"
+    );
+}
+
+/// After a route exists, an invalid source receipt keeps its own refusal.
+///
+/// The service decorates the repository's route-uniqueness conflict so a
+/// concurrent loser learns which command won. That decoration must not become a
+/// catch-all: a receipt belonging to another task, naming another gate, or not
+/// recording a verdict at all is a statement about the caller's identity claim,
+/// and rewriting it as "already routed" would answer a question nobody asked
+/// and hand out an unrelated route receipt.
+#[tokio::test]
+async fn a_post_route_invalid_source_keeps_its_refusal_and_discloses_no_route_receipt() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "rejection-mask").await;
+    let rejection = record_a_rejection(&world, &seed, &runs, "rejection-mask").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+
+    let (target, recovered) =
+        recover_the_rejection(&world, &seed, &rejection, "rejection-mask-recover").await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let winning_receipt = recovered.json()["receipt_id"]
+        .as_str()
+        .expect("the recovery receipt")
+        .to_owned();
+    let routed_revision = rejection.revision_before + 1;
+
+    // Every probe reuses the already-routed gate and sequence, so only the
+    // source receipt distinguishes them. The workflow is returned to the gate's
+    // phase first so each request reaches source validation rather than
+    // stopping at the phase precondition.
+    let other_task = duplicate_task_row(&world, &seed);
+    let cross_task = twin_gate_receipt(
+        &world,
+        &rejection.receipt,
+        Some(&serde_json::json!({ "kind": "task", "task_id": other_task })),
+        None,
+    );
+    let other_gate = twin_gate_receipt(&world, &rejection.receipt, None, Some("zz.other-gate"));
+    let not_a_verdict = any_non_verdict_receipt(&world, &seed);
+
+    for (index, (name, receipt)) in [
+        ("a receipt targeting another task", cross_task),
+        ("a receipt naming another gate", other_gate),
+        ("a receipt that recorded no verdict", not_a_verdict),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rewind_workflow_to_gate_phase(&world, &seed, &rejection);
+        let workflow = active_workflow(&world, &seed);
+        let before = rejection_census(&world);
+        let refused = Call::post(
+            recovery_uri(&seed, &rejection.gate),
+            &serde_json::json!({
+                "rejection_receipt_id": receipt,
+                "sequence": rejection.sequence,
+                "expected_task_revision": task_revision_of(&world, &seed).await,
+                "expected_workflow_revision": workflow.revision.get(),
+                "expected_current_phase": rejection.phase_before,
+                "expected_rejection_target": target,
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key(format!("rejection-mask-{index}"))
+        .send(&world)
+        .await;
+
+        assert_ne!(
+            refused.status, 200,
+            "{name} must be refused: {}",
+            refused.body
+        );
+        // The decisive assertion: the refusal must not have been rewritten into
+        // the already-routed answer, and must disclose no route receipt.
+        assert!(
+            !refused.body.contains(&winning_receipt),
+            "{name} disclosed the unrelated route receipt: {}",
+            refused.body
+        );
+        assert_eq!(
+            refused.json()["at"].as_str(),
+            None,
+            "{name} must name no route resource: {}",
+            refused.body
+        );
+        assert_eq!(
+            before,
+            rejection_census(&world),
+            "{name}: a refusal wrote a row"
+        );
+    }
+
+    // The route itself is untouched, and still exactly one.
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let routes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, rejection.workflow))
+        .expect("routes read");
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].route_receipt_id.to_string(), winning_receipt);
+    assert_eq!(routed_revision, rejection.revision_before + 1);
+}
+
 /// Two fresh keys racing the same rejection: one routes it, and the other is
 /// told which command did, not merely that it failed.
 #[tokio::test]
@@ -10764,6 +11030,7 @@ async fn gate_rejection_recovery_refuses_invalid_exact_bindings_but_accepts_an_a
         ("a corrupted payload hash", Corruption::PayloadHash),
         ("a partial result object", Corruption::PartialResult),
         ("a mismatched exact binding", Corruption::MismatchedBinding),
+        ("a present but null result", Corruption::NullResult),
         ("no result binding at all", Corruption::NoResultBinding),
     ] {
         let world = World::open_empty().await;
@@ -10835,6 +11102,12 @@ enum Corruption {
     PartialResult,
     /// The binding is complete and names another evaluation.
     MismatchedBinding,
+    /// The `result` member is present and null.
+    ///
+    /// Deliberately distinct from `NoResultBinding`: a present null is a
+    /// malformed claim about what the recording transaction wrote, not the
+    /// absence of a claim, and the two must not share a code path.
+    NullResult,
     /// There is no `result` object at all: the genuine legacy shape.
     NoResultBinding,
 }
@@ -10900,6 +11173,9 @@ fn corrupt_binding_unguarded(
         }
         Corruption::MismatchedBinding => {
             document["result"]["gate_sequence"] = serde_json::json!(99);
+        }
+        Corruption::NullResult => {
+            document["result"] = serde_json::Value::Null;
         }
         Corruption::NoResultBinding => {
             document
