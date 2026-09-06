@@ -14888,7 +14888,7 @@
           },
           "expected_prior_code": {
             "type": "string",
-            "description": "Exact active legacy value expected in the store."
+            "description": "Exact stored legacy value expected in the store."
           },
           "expected_revision": {
             "type": "integer",
@@ -14967,7 +14967,7 @@
           },
           "expected_prior_code": {
             "type": "string",
-            "description": "Exact active legacy value expected in the store."
+            "description": "Exact stored legacy value expected in the store."
           },
           "expected_revision": {
             "type": "integer",

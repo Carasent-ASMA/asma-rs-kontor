@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backlog_identity::EpicBacklogCode;
+use crate::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 
 use crate::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExecutionAuthorization,
@@ -943,8 +943,8 @@ pub struct LegacyEpicBacklogCodeCorrection {
     pub project_id: ProjectId,
     /// Epic whose effective namespace changes.
     pub mini_project_id: MiniProjectId,
-    /// Exact active legacy value the caller previewed.
-    pub expected_prior_code: EpicBacklogCode,
+    /// Exact stored legacy value the caller previewed.
+    pub expected_prior_code: LegacyEpicBacklogCode,
     /// Correct, project-unique value to render after this command.
     pub corrected_code: EpicBacklogCode,
     /// Operator rationale retained as immutable evidence.

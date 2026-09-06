@@ -110,6 +110,8 @@ pub enum ArgType {
     ExternalId,
     /// A canonical, project-scoped epic backlog namespace.
     EpicBacklogCode,
+    /// Exact bounded spelling of a backlog code imported before enforcement.
+    LegacyEpicBacklogCode,
     /// A caller's stable idempotency key.
     IdempotencyKey,
     /// Free text the daemon interprets.
@@ -213,6 +215,7 @@ impl ArgType {
             | Self::ExternalName
             | Self::ExternalId
             | Self::EpicBacklogCode
+            | Self::LegacyEpicBacklogCode
             | Self::IdempotencyKey
             | Self::Text
             | Self::Timestamp
@@ -236,6 +239,11 @@ impl ArgType {
         match self {
             Self::EpicBacklogCode => {
                 fragment.insert("pattern".into(), "^[A-Z0-9]{2,32}$".into());
+            }
+            Self::LegacyEpicBacklogCode => {
+                fragment.insert("minLength".into(), 1.into());
+                fragment.insert("maxLength".into(), 256.into());
+                fragment.insert("pattern".into(), "^\\S+$".into());
             }
             Self::Enum(allowed) => {
                 fragment.insert("enum".into(), allowed.iter().copied().collect());
@@ -4339,13 +4347,13 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "expected_prior_code",
                 Place::Body,
-                ArgType::Text,
-                "The exact active legacy code.",
+                ArgType::LegacyEpicBacklogCode,
+                "The exact stored legacy code, including its historical spelling.",
             ),
             req(
                 "corrected_code",
                 Place::Body,
-                ArgType::Text,
+                ArgType::EpicBacklogCode,
                 "The proposed project-unique replacement.",
             ),
             req(
@@ -4386,13 +4394,13 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "expected_prior_code",
                 Place::Body,
-                ArgType::Text,
-                "The exact active legacy code.",
+                ArgType::LegacyEpicBacklogCode,
+                "The exact stored legacy code, including its historical spelling.",
             ),
             req(
                 "corrected_code",
                 Place::Body,
-                ArgType::Text,
+                ArgType::EpicBacklogCode,
                 "The exact previewed project-unique replacement.",
             ),
             req(
