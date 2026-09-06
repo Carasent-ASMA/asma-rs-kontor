@@ -127,29 +127,47 @@ restored.
 
 ## Validation
 
-`cargo test -p kontor-daemon` at the production commit — **390 passed, 0 failed,
-1 ignored**; 0 doc-tests.
+`cargo test -p kontor-daemon` at the production commit `9854faa` — **392 passed,
+0 failed, 1 ignored**; 0 doc-tests.
+
+At current `HEAD` `92eab94`, which adds the mixed-candidate-set test below —
+**393 passed, 0 failed, 1 ignored**; 0 doc-tests. Measured on a clean rebuild
+from a pristine worktree and confirmed independently in a separate target
+directory.
+
+An earlier revision of this section recorded 391, then 390. Both were short: the
+`unittests src/main.rs` target of 2 tests was omitted from the table, and 391
+also counted the ignored test as passed. The figures here are the measured ones.
 
 The one ignored test is pre-existing and unrelated to this change:
 `a_configured_jira_boundary_distinguishes_historical_from_native_completion` in
 `tests/loopback_api.rs`, carrying
 `#[ignore = "superseded by kontor-jira native connector contract tests"]`.
 
-| Target | Tests enumerated |
-| --- | --- |
-| `lib` (unit) | 71 |
-| `tests/account_pinning.rs` | 5 |
-| `tests/loopback_api.rs` | 283 (282 run, 1 ignored) |
-| `tests/mcp_journey.rs` | 2 |
-| `tests/quota_observation.rs` | 21 |
-| `tests/recovery_security.rs` | 6 |
-| `tests/succession_handoff.rs` | 3 |
+| Target | At `9854faa` | At `92eab94` |
+| --- | --- | --- |
+| `unittests src/lib.rs` | 71 | 71 |
+| `unittests src/main.rs` | 2 | 2 |
+| `tests/account_pinning.rs` | 5 | 5 |
+| `tests/loopback_api.rs` | 283 enumerated (282 run, 1 ignored) | 284 enumerated (283 run, 1 ignored) |
+| `tests/mcp_journey.rs` | 2 | 2 |
+| `tests/quota_observation.rs` | 21 | 21 |
+| `tests/recovery_security.rs` | 6 | 6 |
+| `tests/succession_handoff.rs` | 3 | 3 |
+| **Passed** | **392** | **393** |
 
 `cargo fmt -p kontor-daemon -- --check` — clean.
 `cargo clippy -p kontor-daemon --all-targets` — clean, no warnings.
 
 The mixed-candidate-set test was added afterwards, in review remediation, and
 takes `tests/loopback_api.rs` to 284 enumerated. Production code is unchanged by
-that commit; the four ASMA-8112 tests were rerun individually and pass.
+that commit — `git diff 9854faa 92eab94 -- 'crates/*/src'` is empty — and the
+full suite is green at `92eab94` as recorded above.
+
+An apparent full-suite failure of that test, reported during review, was traced
+to the reviewer reusing a target directory contaminated by an earlier mutation
+build; it cleared on an isolated clean rebuild and rerun. See
+`REVIEW-NOTES.md`, "A false failure this review produced, and how it was
+cleared". No product defect was involved.
 
 Only `kontor-daemon` is touched, so no other crate's suite was rerun.

@@ -6,6 +6,12 @@ Reviewed commit: `9854faad10ce191960801de9c2a2c0a096c2fd33`
 ("fix(kontor): Authorize a targetless never-bound handoff (ASMA-8112)") on
 `fix/ASMA-8112-targetless-handoff`, parent `7ec7d0e`.
 
+Remediation re-reviewed: `92eab949df25b64b470430f2b150a8173f3bc33f`
+("test(kontor): Pin the mixed never-bound candidate set"). Both findings below
+are closed; see "Remediation disposition". The verdict is unchanged. The full
+`kontor-daemon` suite is green at `92eab94` — 393 passed, 0 failed, 1 ignored —
+measured on a clean rebuild; see "Final verification".
+
 Verdict: **PASS**. The repair is minimal, correctly fenced, and every invariant
 this review was handed is satisfied. Two low-severity findings are recorded
 below; neither is a production defect and neither blocks merge. Two open
@@ -72,7 +78,7 @@ is a real second fence, and it materially bounds the blast radius of Finding 1.
 
 ## Findings
 
-### 1. The recorded interpretation of "exactly one" is not pinned by any test (low)
+### 1. The recorded interpretation of "exactly one" is not pinned by any test (low) — RESOLVED in `92eab94`
 
 `IMPLEMENTATION.md` records a deliberate choice: the authorizing count is taken
 over the *whole* candidate set, so `[targeted-at-another-run, targetless]`
@@ -108,14 +114,24 @@ Scope of the mutation evidence: the focused `never_bound` family (7 tests). The
 claim that no *other* test pins the interpretation rests on inspection of the
 fixtures, not on a full-suite mutation run.
 
-### 2. The validation line in `IMPLEMENTATION.md` overstates the result (low)
+### 2. The validation line in `IMPLEMENTATION.md` overstates the result (low) — RESOLVED in `92eab94`
 
 `IMPLEMENTATION.md` states `cargo test -p kontor-daemon` — "391 passed, 0
-failed, 0 ignored". Reproduced from a clean tree at the reviewed commit:
+failed, 0 ignored". That is wrong in two ways: it counts the ignored test as
+passed, and it omits a target.
+
+The measured figure at the reviewed commit `9854faa` is:
 
 ```
-390 passed; 0 failed; 1 ignored
+392 passed; 0 failed; 1 ignored
 ```
+
+**Correction to this review's first round.** The figure originally recorded here
+was `390 passed`, which was also wrong. `cargo test -p kontor-daemon` runs a
+`unittests src/main.rs` target of 2 tests in addition to `unittests src/lib.rs`,
+and the first round's arithmetic omitted it. The builder then adopted `390` in
+good faith. Both numbers are superseded by the measurements in "Final
+verification" below.
 
 `tests/loopback_api.rs` reports `282 passed; 0 failed; 1 ignored` against 283
 test functions. The ignored one is
@@ -124,10 +140,10 @@ test functions. The ignored one is
 connector contract tests"]`. It is pre-existing, unrelated to ASMA-8112, and
 outside the single hunk this commit adds.
 
-The per-target table in the note is correct as a count of test *functions*; only
-the "0 ignored" assertion and the "391 passed" total are wrong. Worth correcting
-because the evidence document is the durable receipt, and "0 ignored" is
-specifically a claim that nothing was skipped.
+The per-target table in the note is correct as a count of test *functions* for
+the targets it lists, but it omits the `src/main.rs` unit target entirely. Worth
+correcting because the evidence document is the durable receipt, and "0 ignored"
+is specifically a claim that nothing was skipped.
 
 ### 3. The zero-candidate refusal has no direct test (informational)
 
@@ -202,12 +218,48 @@ reviewed tree was never modified.
 
 | Check | Result |
 | --- | --- |
-| `cargo test -p kontor-daemon` (full) | exit 0 — 390 passed, 0 failed, 1 ignored; `lib` 71, `account_pinning` 5, `loopback_api` 282+1 ignored, `mcp_journey` 2, `quota_observation` 21, `recovery_security` 6, `succession_handoff` 3, doc-tests 0 |
+| `cargo test -p kontor-daemon` (full) | exit 0 — 392 passed, 0 failed, 1 ignored (see the correction in Finding 2; first recorded here as 390) |
 | Focused `never_bound` (7 tests) on the reviewed build | 7 passed, 0 failed |
 | Mutation A — `targetless_dispatch = false` (the unrepaired gate) | `an_admin_reroutes_a_never_bound_seat_whose_handoff_recorded_no_target` fails with exactly `409 revision_conflict` / "no pending handoff dispatch or recorded successor authorizes this never-bound seat"; other 6 pass |
 | Mutation B — narrower "count only targetless rows" | all 7 pass — see Finding 1 |
 | `cargo fmt -p kontor-daemon -- --check` | clean |
 | `cargo clippy -p kontor-daemon --all-targets` | clean, no diagnostics |
+
+Re-review of `92eab94`, same method:
+
+| Check | Result |
+| --- | --- |
+| `crates/*/src` vs `9854faa` | byte-identical |
+| Focused `never_bound` at `92eab94` (8 tests) | 8 passed, 0 failed; 284 enumerated in `loopback_api` |
+| Mutation B repeated at `92eab94` | only `a_mixed_targetless_and_mistargeted_pair_...` fails, with `400 invalid_request` / subject `ModelRoute`; other 7 pass |
+| Mixed test × 20 under concurrent load | 20 passed, 0 failed — no intermittent 400 |
+
+### Final verification at `92eab94`
+
+Measured after `cargo clean -p kontor-daemon` and a rebuild from the pristine
+main worktree, with no mutation artifacts anywhere in the target directory:
+
+```
+393 passed; 0 failed; 1 ignored
+```
+
+| Target | Result |
+| --- | --- |
+| `unittests src/lib.rs` | 71 passed |
+| `unittests src/main.rs` | 2 passed |
+| `tests/account_pinning.rs` | 5 passed |
+| `tests/loopback_api.rs` | 283 passed, 1 ignored (284 enumerated) |
+| `tests/mcp_journey.rs` | 2 passed |
+| `tests/quota_observation.rs` | 21 passed |
+| `tests/recovery_security.rs` | 6 passed |
+| `tests/succession_handoff.rs` | 3 passed |
+| Doc-tests | 0 |
+
+All four ASMA-8112 tests pass in that run, including
+`a_mixed_targetless_and_mistargeted_pair_refuses_a_never_bound_replacement`.
+The same totals and the same per-target breakdown were obtained independently
+in a separate isolated target directory
+(`CARGO_TARGET_DIR=/private/tmp/asma-8112-root-target`), agreeing exactly.
 
 Mutation A independently confirms the implementation note's claim that the
 positive test fails against the unrepaired gate with the exact production
@@ -215,8 +267,93 @@ refusal. That is the single most important thing to have verified here: the new
 test genuinely discriminates the fix rather than passing for an unrelated
 reason.
 
+## Remediation disposition
+
+Re-review of `21cd27e..92eab94` only. Verdict unchanged: **PASS**.
+
+Production is byte-identical to the reviewed commit —
+`git diff 9854faa 92eab94 -- 'crates/*/src'` is empty. The delta is one added
+test and the corrected validation section.
+
+**Finding 1 — closed.** `a_mixed_targetless_and_mistargeted_pair_refuses_a_never_bound_replacement`
+builds `[names another run, names nothing]` and asserts both counts before the
+call, so the narrower reading would see its single targetless row and authorize.
+Re-running the narrowing mutation at `92eab94`: **only this test fails**, the
+other seven pass. It is the discriminator, and it is the only one.
+
+**Finding 2 — closed, with a further correction.** The note now names
+`a_configured_jira_boundary_distinguishes_historical_from_native_completion` and
+its pre-existing `#[ignore]`, and separates enumerated from run counts. But the
+total it adopted, 390, came from this review's first round and was itself short
+by 2: `cargo test -p kontor-daemon` also runs a `unittests src/main.rs` target
+that both the original table and that first round omitted. The measured totals
+are 392 at `9854faa` and 393 at `92eab94`, and this commit corrects both
+documents to the figures under "Final verification". The error was mine, not the
+builder's; they adopted a number this review supplied.
+
+**The nonreproduced first-run 400 — evaluated, not a material risk.** The
+mutation run explains it exactly. Under a wrongly-authorizing gate this test
+does not fail on a created seat; it passes the gate and dies one step later at
+`account_for_explicit_provider_alias`, because the negatives seed no
+`codex-personal` recovery account. The observed failure is
+`400 invalid_request`, subject `ModelRoute` — the precise status the builder
+saw once. So a 400 here is the signature of *the gate having authorized*, and
+must never be read as noise.
+
+Three things close the risk. Production is unchanged from the commit already
+mutation-tested and reviewed in full. The committed test ran 20/20 green under
+concurrent load, with no intermittent 400. And the precondition assertions now
+pin the candidate set immediately before the call, so the most plausible cause —
+a degenerate set holding one targetless row, which the shipped gate would
+correctly authorize — would now fail loudly at a named count assertion instead
+of surfacing as an unexplained status. The new `omega_k3_seats == 1` assertion
+is sound and worth keeping for the reason given, though it guards the separate
+`already_replaced` authority rather than this.
+
+One correction for the record: the comment "a gate that wrongly authorizes must
+fail here on a created successor" is not what happens. Account resolution
+refuses first, so no successor is created and the seat-count assertion stays
+green — the status assertion is the whole discriminator. This is true of all
+three negatives. It does not weaken them; the recorded rationale simply claims
+more than the test proves.
+
+### A false failure this review produced, and how it was cleared
+
+Recorded because the ledger should show why an intermediate "failure" was
+reported and then withdrawn.
+
+Both mutation experiments were built with `CARGO_TARGET_DIR` pointed at the main
+worktree's target directory, to reuse its warm dependency cache. Cargo derived
+the *same* output filenames for the mutated crate as for the pristine one — the
+test binary was `loopback_api-b5159e50cf44b3f2` in both trees — so the mutated
+`kontor-daemon` artifacts overwrote the pristine ones and were not fully
+replaced by the subsequent ordinary rebuild.
+
+Everything built in that directory afterwards inherited the narrowing mutation.
+Two full-suite runs and a 72-run concurrency stress therefore reported
+`a_mixed_targetless_and_mistargeted_pair_refuses_a_never_bound_replacement`
+failing with `400 invalid_request` / subject `ModelRoute` — 72 out of 72, which
+is precisely the mutation's signature and not a flake. The tell was that
+determinism: the same test had passed 20/20 minutes earlier on a binary
+preserved from before the first mutation build.
+
+`cargo clean -p kontor-daemon` followed by a rebuild from the pristine worktree
+cleared it immediately — 8/8 in the focused family, then the full green run
+under "Final verification", confirmed again in a wholly separate target
+directory. Production source was never modified: `git status` stayed clean
+apart from this document throughout.
+
+Two conclusions. The failure was a reviewer methodology error and says nothing
+about the code. And the builder's nonreproduced first-run 400 remains
+*unexplained by any evidence in the record* — it was never reproduced on a clean
+build here, across the full suite, the focused family and 20 isolated repeats.
+It is not a standing risk, and the test's precondition assertions would now
+catch the degenerate candidate set that is its most plausible cause, but this
+review cannot claim to have found its cause.
+
 ## Recommendation
 
-Merge. Finding 2 is worth a one-line correction to `IMPLEMENTATION.md`.
-Finding 1 is worth one added test, at the builder's discretion. Q1 and Q2 belong
-in the ledger and should not hold this change.
+Merge. Both findings are closed in `92eab94` and no new blocking finding was
+raised. Q1 and Q2 remain open in the ledger and should not hold this change.
+Optional, non-blocking: correct the "fails on a created successor" comment on
+the three negatives to name the status assertion as the discriminator.
