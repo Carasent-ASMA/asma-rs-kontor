@@ -1503,7 +1503,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume exact queued, unbound admissions without the original scheduler key. */
+        /** Resume exact incomplete admissions without the original scheduler key. */
         post: operations["resume_admissions"];
         delete?: never;
         options?: never;
@@ -3224,10 +3224,6 @@ export interface components {
         AdmissionResumeRefDto: {
             /** @description The preserved first AgentRun committed with that admission. */
             agent_run_id: string;
-            /**
-             * @description Exact already-created downstream native to adopt. Absent for an
-             *     ordinary queued-root recovery; required for a partially seated team.
-             */
             downstream?: null | components["schemas"]["PartialAdmissionSeatDto"];
             /** @description The preserved TeamRun envelope. */
             team_run_id: string;
@@ -7738,8 +7734,10 @@ export interface components {
         /** @description What `scheduler:resume` is asked for. */
         ResumeAdmissionsRequest: {
             /**
-             * @description Exact queued admissions to resume. This is a set: duplicate ids refuse
-             *     the whole request before a runtime is contacted.
+             * @description Exact admissions to resume. A fresh key accepts either a queued unbound
+             *     root or a bound root naming one exact already-created downstream native.
+             *     This is a set: duplicate ids refuse the whole request before a runtime
+             *     is contacted.
              */
             admissions: components["schemas"]["AdmissionResumeRefDto"][];
             /**
