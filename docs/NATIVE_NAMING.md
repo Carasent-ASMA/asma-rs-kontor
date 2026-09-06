@@ -57,9 +57,13 @@ is never parsed to reconstruct a full Jira key.
 
 ## Branch and worktree naming (ASMA-8101)
 
-A Kontor-managed task checkout lives at `<project root>/.worktrees/<branch>`,
-and the path *is* the branch. Until ASMA-8101 whatever a caller declared there
-became a Git branch and was later published as such — `cat-11`, `kon-op-22`,
+A direct Kontor-managed task checkout lives at
+`<project root>/.worktrees/<branch>`, where the suffix encodes the branch. An
+ASMA catalog module checkout created by `asma worktree add` instead lives at
+`<project root>/.worktrees/<jira-slug>/<module>`; Kontor reads the nested Git
+checkout and verifies its actual branch rather than treating those two path
+segments as a branch name. Until ASMA-8101 whatever a caller declared became a
+Git branch and was later published as such — `cat-11`, `kon-op-22`,
 `consultation-<uuid>` — with no tracker identity. Kontor now shares one grammar
 with the ASMA CLI (`asma git checkout -b --from <KEY>`), implemented in
 `kontor-core` `branch.rs` and mirrored byte-for-byte by
@@ -78,10 +82,13 @@ when the title has no letters or digits).
 
 Rules, in the order they apply:
 
-1. **Declaration.** `epics:apply` refuses a task `worktree` under
+1. **Declaration.** `epics:apply` refuses a direct task `worktree` under
    `.worktrees/` that does not encode a canonical branch, and — when the epic
-   key or the task's Jira link is already known — one whose key is neither.
-   Paths outside `.worktrees/` imply no branch and stay runtime-owned.
+   key or the task's Jira link is already known — one whose key is neither. For
+   an ASMA catalog module shape, the task slug must equal the confirmed Jira key
+   in lowercase, the module checkout must exist, and its actual Git branch must
+   be canonical and carry that key. Paths outside `.worktrees/` imply no branch
+   and stay runtime-owned.
 2. **Derivation.** A task that declares no worktree is placed on
    `.worktrees/feat/<TASK-KEY>-<slug(task title)>` when it links a Jira key,
    else on the epic key with the epic title. The task key is preferred because
@@ -119,8 +126,8 @@ confirmed Jira key it is, or to a task whose confirmed link it is, and judges:
   (`branch_binding_mismatch`, `binding_unconfirmed`, or a grammar code such as
   `branch_shape_invalid`);
 - the base branch is the default branch (`base_branch_not_default`);
-- a title, when given, leads with one canonical key from the epic graph — the
-  epic key or any confirmed child task key — and one space
+- a title, when given, leads with the same canonical key as the branch and one
+  space. Epic work uses the epic branch; child work uses that task's own branch
   (`pr_title_key_missing`, `pr_title_key_mismatch`).
 
 Accepted and refused decisions are both recorded, idempotently per caller key,
@@ -176,6 +183,27 @@ ASW and CSW scopes follow the advised/debated subject, not the caller. A
 task-specific subject uses the task item code; an epic-wide subject uses the
 epic item code. An epic-global CSW remains a Committee workspace and is not an
 Advisor workspace.
+
+Consultation callers provide only a semantic topic such as `Release readiness`.
+They never include `ASMA-8111`, `KTHSR-8111`, `CSW`, `ASW`, or the configured
+separator anywhere in that topic. Kontor validates the input against the
+confirmed Jira binding and pinned Team Definition, derives a semantic identity
+from the scope, family,
+pinned profile/template revision, topic and explicit re-review provenance, and
+renders the complete container title itself. The invocation response returns
+that title as `container_name`. A second invocation with the same semantic
+identity is refused even under a new idempotency key, and a unique database
+index closes concurrent races.
+
+A pre-enforcement Committee topic that begins with redundant server-owned
+scope material may be repaired once through
+`kontor_committee_topic_correction_preview` and
+`kontor_committee_topic_correction_apply`. The correction may only remove that
+leading material. It records immutable before/after evidence, adopts the
+server-derived semantic identity, retitles the exact bound CSW, and requires
+the same native id and exact rendered title on readback. It cannot rewrite the
+remaining topic text or replace the run, topology node, seats, findings, or
+receipts.
 
 One ESW may contain zero or more ASWs. Each ASW represents one advised
 subject/topic and contains one or more independently reporting advisor seats.

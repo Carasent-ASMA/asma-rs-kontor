@@ -4,20 +4,23 @@
 
 use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
 use kontor_core::id::{
-    AdvisorRunId, AggregateRevision, ContentHash, ExternalId, ExternalName, IdempotencyKey,
-    MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, SpecVersion,
-    TeamDefinitionMigrationId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    AdvisorRunId, AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId,
+    ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
+    SeatBindingId, SpecVersion, TeamDefinitionMigrationId, Timestamp, TopologyKindKey,
+    TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::naming::NativeNameValues;
+use kontor_core::realm::ReceiptEnvelope;
+use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
-    NativePlacement, NewMiniProject, NewNativeContainerBinding, NewProject, NewSeatBinding,
-    NewSessionTopologyNode, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget,
-    ProjectRepository, ProjectTeamDefinitionDefault, RepositoryError,
-    StoredConsultationProfileRevision, StoredConsultationRun, StoredHostedTopologySeat,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
-    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TopologyRepository,
+    LegacyConsultationTopicCorrection, MigrationObjectKind, MiniProjectTeamDefinitionSnapshot,
+    MiniProjectTopologySnapshot, NativePlacement, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProject, NewSeatBinding, NewSessionTopologyNode,
+    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
+    ProjectTeamDefinitionDefault, RepositoryError, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredHostedTopologySeat, TeamDefinitionMigrationObservation,
+    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
@@ -876,7 +879,11 @@ fn a_recorded_migration_and_its_pin_survive_a_restart() {
 // ---------------------------------------------------------------------------
 
 /// Create one Advisor consultation, with or without an authoritative topic.
-fn consultation_with_topic(f: &Fixture, topic: Option<ExternalName>) -> StoredConsultationRun {
+fn consultation_with_topic(
+    f: &Fixture,
+    topic: Option<ExternalName>,
+    semantic_identity_hash: Option<ContentHash>,
+) -> StoredConsultationRun {
     let domain = bundled_operational_domain().expect("the bundled domain validates");
     let catalog = domain
         .role_catalogs
@@ -955,6 +962,7 @@ fn consultation_with_topic(f: &Fixture, topic: Option<ExternalName>) -> StoredCo
         profile_id: ADVISOR_PROFILE.to_owned(),
         profile_version: SpecVersion::FIRST,
         definition_hash: profile.hash().clone(),
+        semantic_identity_hash,
         question_hash: ContentHash::of(question.as_str().as_bytes()),
         question,
         context,
@@ -994,7 +1002,7 @@ fn consultation_with_topic(f: &Fixture, topic: Option<ExternalName>) -> StoredCo
 #[test]
 fn a_consultation_topic_round_trips_and_is_reachable_from_its_topology_node() {
     let f = fixture();
-    let run = consultation_with_topic(&f, Some(name("Jira recovery")));
+    let run = consultation_with_topic(&f, Some(name("Jira recovery")), None);
 
     let by_node = f
         .store
@@ -1010,9 +1018,185 @@ fn a_consultation_topic_round_trips_and_is_reachable_from_its_topology_node() {
 }
 
 #[test]
+fn a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice() {
+    let f = fixture();
+    let identity = ContentHash::of(b"one server-derived consultation identity");
+    let first = consultation_with_topic(
+        &f,
+        Some(name("Operational completion")),
+        Some(identity.clone()),
+    );
+
+    let mut duplicate = first.clone();
+    duplicate.id = ConsultationRunId::Advisor(AdvisorRunId::generate());
+    duplicate.topology_node_id = TopologyNodeId::generate();
+    duplicate.invoke_key = IdempotencyKey::parse("a-different-caller-retry-key").expect("a key");
+    duplicate.invoke_intent_hash = ContentHash::of(b"a second invocation intent");
+
+    let error = f
+        .store
+        .create_consultation_run(
+            &duplicate,
+            &NewSessionTopologyNode {
+                id: duplicate.topology_node_id,
+                project_id: f.project_id,
+                mini_project_id: Some(f.mini_project_id),
+                topology: f.topology.clone(),
+                kind: TopologyKindKey::parse("ASW").expect("the advisor kind"),
+                parent_id: Some(f.esw),
+                task_id: None,
+                created_at: f.created_at,
+            },
+            &[],
+        )
+        .expect_err("the semantic identity is the uniqueness boundary");
+    assert!(
+        error.to_string().contains("consultation semantic identity"),
+        "the conflict names the duplicate identity: {error}"
+    );
+    assert_eq!(
+        f.store
+            .get_consultation_run_by_semantic_identity(f.project_id, &identity)
+            .expect("the identity lookup succeeds")
+            .expect("the first run remains")
+            .id,
+        first.id
+    );
+}
+
+#[test]
+fn a_legacy_topic_correction_preserves_the_run_and_replays_one_authority() {
+    let f = fixture();
+    let run = consultation_with_topic(&f, Some(name("ASMA-8111 operational completion")), None);
+    let result = serde_json::json!({
+        "schema_version": 1,
+        "verdict": "compliant",
+    });
+    let result_hash = CanonicalDocument::from_serializable(&result)
+        .expect("the settled result canonicalizes")
+        .hash()
+        .clone();
+    let settled = f
+        .store
+        .advance_consultation_run(
+            f.project_id,
+            run.id,
+            AggregateRevision::INITIAL,
+            ConsultationRunState::Settled,
+            Some((&result, &result_hash)),
+            at("2026-09-01T12:01:00Z"),
+        )
+        .expect("the legacy consultation settles before its title is corrected");
+    assert_eq!(settled.revision.get(), 2);
+    let identity = ContentHash::of(b"corrected semantic consultation identity");
+    let key = IdempotencyKey::parse("correct-legacy-consultation-topic").expect("a key");
+    let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "correct_consultation_topic",
+        "project_id": f.project_id.to_string(),
+        "epic_id": f.mini_project_id.to_string(),
+        "committee_run_id": run.id.as_text(),
+        "expected_run_revision": settled.revision.get(),
+        "expected_prior_topic": "ASMA-8111 operational completion",
+        "corrected_topic": "operational completion",
+        "reason": "Remove the redundant confirmed Jira key",
+        "preview_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }))
+    .expect("a canonical intent");
+    let envelope = ReceiptEnvelope::new(
+        f.store.realm_id(),
+        NewLocalCommand {
+            project_id: f.project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key,
+            kind: CommandKind::ReconcileNativeNames,
+            target: AggregateRef::MiniProject {
+                mini_project_id: f.mini_project_id,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent,
+            created_at: f.created_at,
+        },
+    );
+    let correction = LegacyConsultationTopicCorrection {
+        project_id: f.project_id,
+        run_id: run.id,
+        mini_project_id: f.mini_project_id,
+        expected_run_revision: settled.revision,
+        expected_prior_topic: name("ASMA-8111 operational completion"),
+        corrected_topic: name("operational completion"),
+        semantic_identity_hash: identity.clone(),
+        reason: name("Remove the redundant confirmed Jira key"),
+        corrected_at: f.created_at,
+    };
+    let (corrected, receipt, applied) = f
+        .store
+        .correct_legacy_consultation_topic_with_intent(
+            &correction,
+            AggregateRevision::INITIAL,
+            &envelope,
+        )
+        .expect("the correction commits");
+    assert_eq!(applied, kontor_store::Applied::Created);
+    assert_eq!(corrected.id, run.id);
+    assert_eq!(
+        corrected.topic.as_ref().map(ExternalName::as_str),
+        Some("operational completion")
+    );
+    assert_eq!(corrected.semantic_identity_hash, Some(identity));
+    assert_eq!(corrected.revision.get(), 3);
+    assert_eq!(corrected.state, ConsultationRunState::Settled);
+    assert_eq!(corrected.result, settled.result);
+    assert_eq!(corrected.result_hash, settled.result_hash);
+    assert_eq!(corrected.settled_at, settled.settled_at);
+
+    let rewritten_result = serde_json::json!({
+        "schema_version": 1,
+        "verdict": "non_compliant",
+    });
+    let rewritten_hash = CanonicalDocument::from_serializable(&rewritten_result)
+        .expect("the attempted replacement result canonicalizes")
+        .hash()
+        .clone();
+    let rewrite_error = f
+        .store
+        .advance_consultation_run(
+            f.project_id,
+            run.id,
+            corrected.revision,
+            ConsultationRunState::Settled,
+            Some((&rewritten_result, &rewritten_hash)),
+            at("2026-09-01T12:02:00Z"),
+        )
+        .expect_err("the correction exception cannot rewrite settled evidence");
+    assert!(
+        matches!(
+            rewrite_error,
+            RepositoryError::Conflict {
+                subject: "storage",
+                rule: "a uniqueness, check or immutability constraint refused the write",
+            }
+        ),
+        "the settled-evidence guard returned an unexpected refusal: {rewrite_error}"
+    );
+
+    let (replayed, replayed_receipt, replayed_applied) = f
+        .store
+        .correct_legacy_consultation_topic_with_intent(
+            &correction,
+            AggregateRevision::INITIAL,
+            &envelope,
+        )
+        .expect("the exact command replays");
+    assert_eq!(replayed.id, run.id);
+    assert_eq!(replayed_receipt.id, receipt.id);
+    assert_eq!(replayed_applied, kontor_store::Applied::Unchanged);
+}
+
+#[test]
 fn a_legacy_consultation_without_a_topic_stays_readable_and_renders_nothing() {
     let f = fixture();
-    let run = consultation_with_topic(&f, None);
+    let run = consultation_with_topic(&f, None, None);
 
     let read = f
         .store
@@ -1420,7 +1604,7 @@ fn a_placement_must_describe_the_subject_it_is_recorded_against() {
 /// A fixture with one topicless consultation and one in-flight migration.
 fn legacy_topic_fixture() -> (Migration, TopologyNodeId, TeamDefinitionMigrationId) {
     let m = migration_fixture();
-    let run = consultation_with_topic(&m.fixture, None);
+    let run = consultation_with_topic(&m.fixture, None, None);
     let recorded = m
         .fixture
         .store

@@ -174,6 +174,7 @@ fn world() -> World {
         profile_id: PROFILE.to_owned(),
         profile_version: SpecVersion::FIRST,
         definition_hash: profile.hash().clone(),
+        semantic_identity_hash: None,
         question_hash: ContentHash::of(question.as_str().as_bytes()),
         question,
         context,

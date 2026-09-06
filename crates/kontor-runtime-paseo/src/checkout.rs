@@ -65,6 +65,15 @@ impl ManagedBranchBinding {
             rule: refusal.rule(),
         })
     }
+
+    /// Whether `slug` is the exact lowercase worktree slug of one confirmed
+    /// tracker key. The ASMA CLI uses this slug as the parent directory for a
+    /// catalog module checkout; it is placement identity, not a branch name.
+    fn contains_asma_worktree_slug(&self, slug: &str) -> bool {
+        self.confirmed
+            .iter()
+            .any(|key| key.as_str().to_ascii_lowercase() == slug)
+    }
 }
 
 /// Ensure a managed canonical task checkout exists before Paseo registers it.
@@ -109,11 +118,22 @@ fn prepare_managed_worktree_blocking(
         // a branch name.
         return Ok(());
     };
-    let branch = branch_from(relative)?;
+    let catalog_module = catalog_module_relative(relative, binding);
 
     if task.exists() {
-        return verify_checkout(project, task, relative, &branch);
+        return if catalog_module {
+            verify_catalog_module_checkout(project, task, relative, binding)
+        } else {
+            let branch = branch_from(relative)?;
+            verify_checkout(project, task, &branch)
+        };
     }
+    if catalog_module {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the ASMA CLI catalog worktree must exist before Kontor can attach it",
+        });
+    }
+    let branch = branch_from(relative)?;
 
     let parent = task
         .parent()
@@ -152,7 +172,7 @@ fn prepare_managed_worktree_blocking(
     if !output.status.success() {
         // Git serializes worktree administration. A concurrent exact attempt
         // may have won while this one waited, so read back before refusing.
-        if verify_checkout(project, task, relative, &branch).is_ok() {
+        if verify_checkout(project, task, &branch).is_ok() {
             return Ok(());
         }
         return Err(RuntimeError::WorkspacePreparationFailed {
@@ -160,7 +180,18 @@ fn prepare_managed_worktree_blocking(
         });
     }
 
-    verify_checkout(project, task, relative, &branch)
+    verify_checkout(project, task, &branch)
+}
+
+fn catalog_module_relative(relative: &Path, binding: &ManagedBranchBinding) -> bool {
+    let components = relative.iter().collect::<Vec<_>>();
+    let [slug, module] = components.as_slice() else {
+        return false;
+    };
+    let Some(slug) = slug.to_str() else {
+        return false;
+    };
+    !module.is_empty() && binding.contains_asma_worktree_slug(slug)
 }
 
 fn branch_from(relative: &Path) -> RuntimeResult<String> {
@@ -185,12 +216,7 @@ fn branch_from(relative: &Path) -> RuntimeResult<String> {
     Ok(branch)
 }
 
-fn verify_checkout(
-    project: &Path,
-    task: &Path,
-    relative: &Path,
-    branch: &str,
-) -> RuntimeResult<()> {
+fn verify_checkout(project: &Path, task: &Path, branch: &str) -> RuntimeResult<()> {
     let project_common = git_text(
         project,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -202,7 +228,9 @@ fn verify_checkout(
     let project_common = canonical(&project_common)?;
     let task_common = canonical(&task_common)?;
     if project_common != task_common {
-        return verify_catalog_module_checkout(&project_common, &task_common, task, relative);
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "the branch-encoded worktree belongs to another Git repository",
+        });
     }
     let observed = git_text(task, &["branch", "--show-current"])?;
     if observed != branch {
@@ -218,13 +246,22 @@ fn verify_checkout(
 /// Its Git common directory is deliberately not the catalog root's: it belongs
 /// to one registered submodule under `<catalog .git>/modules`. The checkout is
 /// nevertheless safe only when every identity agrees — managed two-segment
-/// path, submodule name, Git top-level and ASMA worktree slug in the branch.
+/// path, confirmed task-key slug, submodule name, Git top-level and the actual
+/// canonical branch's confirmed tracker key.
 fn verify_catalog_module_checkout(
-    project_common: &Path,
-    task_common: &Path,
+    project: &Path,
     task: &Path,
     relative: &Path,
+    binding: &ManagedBranchBinding,
 ) -> RuntimeResult<()> {
+    let project_common = canonical(&git_text(
+        project,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?)?;
+    let task_common = canonical(&git_text(
+        task,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?)?;
     let modules = project_common.join("modules");
     if !task_common.starts_with(&modules) {
         return Err(RuntimeError::WorkspacePreparationFailed {
@@ -263,17 +300,22 @@ fn verify_catalog_module_checkout(
             rule: "the managed catalog worktree slug is not valid UTF-8",
         },
     )?;
-    let observed_branch = git_text(task, &["branch", "--show-current"])?;
-    if observed_branch.is_empty()
-        || !observed_branch
-            .to_ascii_lowercase()
-            .contains(&slug.to_ascii_lowercase())
-    {
+    if !binding.contains_asma_worktree_slug(slug) {
         return Err(RuntimeError::WorkspacePreparationFailed {
-            rule: "the managed catalog worktree branch does not match its ASMA slug",
+            rule: "the managed catalog worktree slug is not the confirmed task key",
         });
     }
-    Ok(())
+    let observed_branch = git_text(task, &["branch", "--show-current"])?;
+    let parsed = BranchName::parse(&observed_branch).map_err(|refusal| {
+        RuntimeError::WorkspacePreparationFailed {
+            rule: refusal.rule(),
+        }
+    })?;
+    parsed
+        .ensure_bound_to(&binding.confirmed)
+        .map_err(|refusal| RuntimeError::WorkspacePreparationFailed {
+            rule: refusal.rule(),
+        })
 }
 
 fn default_branch_ref(project: &Path) -> RuntimeResult<String> {
@@ -342,4 +384,51 @@ fn git(cwd: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(key: &str) -> ManagedBranchBinding {
+        ManagedBranchBinding {
+            confirmed: vec![TrackerKey::parse(key).expect("a canonical key")],
+        }
+    }
+
+    #[test]
+    fn asma_catalog_path_is_recognized_by_its_exact_confirmed_key_slug() {
+        let binding = binding("ASMA-8114");
+        assert!(catalog_module_relative(
+            Path::new("asma-8114/asma-rs-kontor"),
+            &binding
+        ));
+        assert!(!catalog_module_relative(
+            Path::new("asma-811/asma-rs-kontor"),
+            &binding
+        ));
+        assert!(!catalog_module_relative(
+            Path::new("asma-8114/asma-rs-kontor/extra"),
+            &binding
+        ));
+    }
+
+    #[test]
+    fn actual_catalog_branch_must_be_canonical_and_bound() {
+        let binding = binding("ASMA-8114");
+        assert_eq!(
+            binding.ensure_creatable("feat/ASMA-8114-consultation-identity"),
+            Ok(())
+        );
+        assert!(
+            binding
+                .ensure_creatable("feat/ASMA-8115-consultation-identity")
+                .is_err()
+        );
+        assert!(
+            binding
+                .ensure_creatable("asma-8114/asma-rs-kontor")
+                .is_err()
+        );
+    }
 }

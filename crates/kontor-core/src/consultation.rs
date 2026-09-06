@@ -22,7 +22,8 @@
 
 use crate::id::{
     AdvisorProfileId, AdvisorRunId, ArtifactKey, BoundedText, CanonicalDocument, CommitteeRunId,
-    CommitteeTemplateId, ExternalName, RoleKey, RoleSlotId, SchemaVersion, SpecVersion,
+    CommitteeTemplateId, ContentHash, ExternalName, MiniProjectId, ProjectId, RoleKey, RoleSlotId,
+    SchemaVersion, SpecVersion, TaskId,
 };
 use crate::spec::{BudgetBounds, ModelChainPolicy, ProviderRef, SkillRef};
 use crate::{DomainError, DomainResult};
@@ -40,6 +41,212 @@ pub const MAX_COMMITTEE_SLOTS: usize = 16;
 /// A third round is `remediation_budget_exhausted`, so no template may declare
 /// a ceiling that would promise one.
 pub const MAX_COMMITTEE_ROUNDS: u32 = 2;
+
+/// Validate that a consultation topic is only its semantic subject.
+///
+/// The Team Definition owns the container prefix, separator and scope item
+/// code. Accepting any of those again inside `topic` lets a caller smuggle a
+/// pre-rendered or partially rendered name into an otherwise deterministic
+/// template. Comparisons are ASCII-case-insensitive because tracker and role
+/// codes have canonical ASCII spellings, while the stored topic remains exact.
+///
+/// # Errors
+/// Refuses a topic containing the configured separator, reserved scope code,
+/// or container prefix as a complete token. Server-owned name material has no
+/// semantic meaning wherever a caller places it, not only at the beginning.
+pub fn validate_semantic_topic(
+    topic: &ExternalName,
+    scope_codes: &[&str],
+    container_prefix: &str,
+    separator: &str,
+) -> DomainResult<()> {
+    let text = topic.as_str();
+    if !separator.is_empty() && text.contains(separator) {
+        return Err(DomainError::invalid(
+            "ConsultationTopic",
+            "consultation_topic_contains_separator: a topic cannot contain the Team Definition separator",
+        ));
+    }
+    if scope_codes
+        .iter()
+        .copied()
+        .any(|code| contains_reserved_token(text, code))
+    {
+        return Err(DomainError::invalid(
+            "ConsultationTopic",
+            "consultation_topic_repeats_scope_code: a topic cannot contain its Jira key or derived Kontor item code",
+        ));
+    }
+    if contains_reserved_token(text, container_prefix) {
+        return Err(DomainError::invalid(
+            "ConsultationTopic",
+            "consultation_topic_repeats_container_prefix: a topic cannot contain its Team Definition container prefix",
+        ));
+    }
+    Ok(())
+}
+
+/// Prove that a legacy topic correction removes only redundant rendering
+/// material and leaves the semantic topic bytes unchanged.
+///
+/// One historical caller may have supplied a Jira key, derived item code,
+/// container prefix, or a combination of those before the server inserted the
+/// same material. A correction may peel those leading tokens and their normal
+/// separators; it may not rewrite, summarize, recase, or otherwise reinterpret
+/// the remaining topic.
+///
+/// # Errors
+/// Refuses a corrected topic that is itself pre-rendered, or a before/after
+/// pair whose difference is more than removing configured leading material.
+pub fn validate_semantic_topic_correction(
+    prior: &ExternalName,
+    corrected: &ExternalName,
+    scope_codes: &[&str],
+    container_prefix: &str,
+    separator: &str,
+) -> DomainResult<()> {
+    validate_semantic_topic(corrected, scope_codes, container_prefix, separator)?;
+    if prior == corrected {
+        return Err(DomainError::invalid(
+            "ConsultationTopicCorrection",
+            "the corrected topic must differ from the historical topic",
+        ));
+    }
+    let mut remainder = prior.as_str();
+    for _ in 0..=scope_codes.len() {
+        let Some(next) =
+            strip_one_rendered_prefix(remainder, scope_codes, container_prefix, separator)
+        else {
+            break;
+        };
+        remainder = next;
+        if remainder == corrected.as_str() {
+            return Ok(());
+        }
+    }
+    Err(DomainError::invalid(
+        "ConsultationTopicCorrection",
+        "a correction may only remove redundant configured prefixes and scope codes",
+    ))
+}
+
+fn strip_one_rendered_prefix<'a>(
+    text: &'a str,
+    scope_codes: &[&str],
+    container_prefix: &str,
+    separator: &str,
+) -> Option<&'a str> {
+    scope_codes
+        .iter()
+        .copied()
+        .chain(std::iter::once(container_prefix))
+        .find_map(|reserved| {
+            let prefix = text.get(..reserved.len())?;
+            if !prefix.eq_ignore_ascii_case(reserved) {
+                return None;
+            }
+            let mut tail = text.get(reserved.len()..)?;
+            if !separator.is_empty() && tail.starts_with(separator) {
+                tail = &tail[separator.len()..];
+            } else {
+                tail = tail.trim_start_matches(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, ':' | '-' | '–' | '—' | '/' | '•')
+                });
+            }
+            (!tail.is_empty()).then_some(tail)
+        })
+}
+
+fn begins_with_reserved_token(text: &str, reserved: &str) -> bool {
+    let Some(prefix) = text.get(..reserved.len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case(reserved) {
+        return false;
+    }
+    text.get(reserved.len()..).is_some_and(|tail| {
+        tail.chars().next().is_none_or(|next| {
+            next.is_whitespace()
+                || matches!(
+                    next,
+                    ':' | '-' | '–' | '—' | '/' | '•' | ')' | ']' | ',' | '.' | ';'
+                )
+        })
+    })
+}
+
+fn contains_reserved_token(text: &str, reserved: &str) -> bool {
+    text.char_indices().any(|(start, _)| {
+        let candidate = &text[start..];
+        let before_is_boundary = start == 0
+            || text[..start].chars().next_back().is_some_and(|previous| {
+                previous.is_whitespace()
+                    || matches!(
+                        previous,
+                        ':' | '-' | '–' | '—' | '/' | '•' | '(' | '[' | ',' | ';'
+                    )
+            });
+        before_is_boundary && begins_with_reserved_token(candidate, reserved)
+    })
+}
+
+/// Derive the one durable identity of a logical consultation.
+///
+/// Questions, callers, provider routes and idempotency keys are deliberately
+/// absent. They describe how one logical consultation was requested or run;
+/// letting any of them distinguish identity would make a retry able to create
+/// a second ASW/CSW. An authorized re-review carries the hash of its immutable
+/// provenance so it remains a distinct governed consultation.
+///
+/// # Errors
+/// Returns the canonical-document error if an input cannot be represented by
+/// the closed identity document.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsultationIdentity<'a> {
+    /// Owning control-plane project.
+    pub project_id: ProjectId,
+    /// Owning epic.
+    pub epic_id: MiniProjectId,
+    /// Optional ticket scope; absence means the epic as a whole.
+    pub task_id: Option<TaskId>,
+    /// Advisor or Committee.
+    pub family: ConsultationFamily,
+    /// Immutable profile/template identity.
+    pub profile_id: &'a str,
+    /// Immutable profile/template revision.
+    pub profile_version: SpecVersion,
+    /// Hash of that immutable revision.
+    pub definition_hash: &'a ContentHash,
+    /// Validated semantic topic.
+    pub topic: &'a ExternalName,
+    /// Immutable re-review lineage, when this is an authorized re-review.
+    pub re_review_provenance_hash: Option<&'a ContentHash>,
+}
+
+impl ConsultationIdentity<'_> {
+    /// Canonical digest used by transactional duplicate enforcement.
+    ///
+    /// # Errors
+    /// Returns the canonical-document error if an input cannot be represented
+    /// by the closed identity document.
+    pub fn hash(&self) -> DomainResult<ContentHash> {
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "project_id": self.project_id.to_string(),
+            "epic_id": self.epic_id.to_string(),
+            "task_id": self.task_id.map(|id| id.to_string()),
+            "family": self.family.as_str(),
+            "profile_id": self.profile_id,
+            "profile_version": self.profile_version.get(),
+            "definition_hash": self.definition_hash.as_str(),
+            "topic": self.topic.as_str(),
+            "re_review_provenance_hash": self.re_review_provenance_hash.map(ContentHash::as_str),
+        });
+        let document = CanonicalDocument::from_value(&value)?;
+        Ok(document.hash().clone())
+    }
+}
 
 /// The stable identity of either consultation family.
 ///

@@ -8,13 +8,14 @@
 
 use kontor_core::consultation::{
     AdviceDisposition, AdvisorProfileSpec, AggregationProtocol, CommitteeRole, CommitteeSlotSpec,
-    CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationScope,
-    DiversityRule, MAX_COMMITTEE_ROUNDS, MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding,
-    conjunctive_outcome,
+    CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationFamily,
+    ConsultationIdentity, ConsultationScope, DiversityRule, MAX_COMMITTEE_ROUNDS,
+    MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding, conjunctive_outcome,
+    validate_semantic_topic, validate_semantic_topic_correction,
 };
 use kontor_core::id::{
-    AdvisorProfileId, BoundedText, CommitteeTemplateId, CurrencyCode, ExternalName, Money, RoleKey,
-    RoleSlotId, SCHEMA_VERSION, SpecVersion,
+    AdvisorProfileId, BoundedText, CommitteeTemplateId, ContentHash, CurrencyCode, ExternalName,
+    MiniProjectId, Money, ProjectId, RoleKey, RoleSlotId, SCHEMA_VERSION, SpecVersion, TaskId,
 };
 use kontor_core::spec::{BudgetBounds, ModelChainPolicy, ModelRef, ModelRung, ProviderRef};
 
@@ -138,6 +139,159 @@ fn independent_review_is_publishable() {
     independent_review()
         .validate()
         .expect("the preset validates");
+}
+
+#[test]
+fn a_consultation_topic_cannot_repeat_server_owned_name_components() {
+    for bad in [
+        "ASMA-8111 operational completion",
+        "asma-8111: operational completion",
+        "KTHSR-8111 — operational completion",
+        "CSW operational completion",
+        "csw/operational completion",
+        "operational • completion",
+        "operational completion for ASMA-8111",
+        "operational completion (KTHSR-8111)",
+        "operational CSW review",
+    ] {
+        assert!(
+            validate_semantic_topic(&name(bad), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
+                .is_err(),
+            "{bad}"
+        );
+    }
+    for good in [
+        "operational completion",
+        "ASMA compatibility review",
+        "CSWorkspace migration",
+        "KTHSR-81110 collision analysis",
+    ] {
+        validate_semantic_topic(&name(good), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
+            .expect(good);
+    }
+}
+
+#[test]
+fn a_legacy_topic_correction_only_peels_server_owned_leading_material() {
+    for prior in [
+        "ASMA-8111 operational completion",
+        "KTHSR-8111 — operational completion",
+        "CSW • KTHSR-8111 • operational completion",
+    ] {
+        validate_semantic_topic_correction(
+            &name(prior),
+            &name("operational completion"),
+            &["ASMA-8111", "KTHSR-8111"],
+            "CSW",
+            " • ",
+        )
+        .expect(prior);
+    }
+    for (prior, corrected) in [
+        ("ASMA-8111 operational completion", "completion"),
+        ("ASMA-8111 operational completion", "Operational completion"),
+        ("operational completion", "operational completion"),
+        ("legacy wording", "new wording"),
+    ] {
+        assert!(
+            validate_semantic_topic_correction(
+                &name(prior),
+                &name(corrected),
+                &["ASMA-8111", "KTHSR-8111"],
+                "CSW",
+                " • ",
+            )
+            .is_err(),
+            "{prior} -> {corrected}"
+        );
+    }
+}
+
+#[test]
+fn logical_consultation_identity_ignores_retry_mechanics_and_changes_with_semantics() {
+    let project = ProjectId::generate();
+    let epic = MiniProjectId::generate();
+    let task = TaskId::generate();
+    let definition = ContentHash::of(b"immutable profile");
+    let topic = name("operational completion");
+    let identity = ConsultationIdentity {
+        project_id: project,
+        epic_id: epic,
+        task_id: Some(task),
+        family: ConsultationFamily::Committee,
+        profile_id: "independent-review",
+        profile_version: SpecVersion::FIRST,
+        definition_hash: &definition,
+        topic: &topic,
+        re_review_provenance_hash: None,
+    }
+    .hash()
+    .expect("identity");
+    assert_eq!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: Some(task),
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &topic,
+            re_review_provenance_hash: None,
+        }
+        .hash()
+        .expect("same logical consultation"),
+        identity,
+        "an idempotency key, caller, question or route cannot enter this function"
+    );
+    assert_ne!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: None,
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &topic,
+            re_review_provenance_hash: None,
+        }
+        .hash()
+        .expect("epic scope"),
+        identity
+    );
+    assert_ne!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: Some(task),
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &name("release readiness"),
+            re_review_provenance_hash: None,
+        }
+        .hash()
+        .expect("different topic"),
+        identity
+    );
+    assert_ne!(
+        ConsultationIdentity {
+            project_id: project,
+            epic_id: epic,
+            task_id: Some(task),
+            family: ConsultationFamily::Committee,
+            profile_id: "independent-review",
+            profile_version: SpecVersion::FIRST,
+            definition_hash: &definition,
+            topic: &topic,
+            re_review_provenance_hash: Some(&ContentHash::of(b"authorized re-review")),
+        }
+        .hash()
+        .expect("re-review"),
+        identity
+    );
 }
 
 #[test]

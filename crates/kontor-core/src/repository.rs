@@ -282,6 +282,14 @@ pub struct StoredConsultationRun {
     pub profile_version: SpecVersion,
     /// Digest of the pinned definition.
     pub definition_hash: ContentHash,
+    /// Server-derived identity of the logical consultation.
+    ///
+    /// Legacy rows remain `None` until an explicit correction adopts one.
+    /// Every new invocation carries `Some`, and the store enforces uniqueness
+    /// per project so a fresh caller idempotency key cannot create a duplicate
+    /// ASW or CSW.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity_hash: Option<ContentHash>,
     /// The bounded topic this consultation is about, when one is authoritative.
     ///
     /// This is what the ASW/CSW name templates render, and it is deliberately
@@ -939,6 +947,30 @@ pub struct LegacyEpicBacklogCodeCorrection {
     pub expected_prior_code: EpicBacklogCode,
     /// Correct, project-unique value to render after this command.
     pub corrected_code: EpicBacklogCode,
+    /// Operator rationale retained as immutable evidence.
+    pub reason: ExternalName,
+    /// When the correction was authorized.
+    pub corrected_at: Timestamp,
+}
+
+/// One narrowly authorized repair of malformed pre-enforcement consultation
+/// topic material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyConsultationTopicCorrection {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Existing run whose identity, seats and findings remain in place.
+    pub run_id: ConsultationRunId,
+    /// Epic whose native naming authority owns the run.
+    pub mini_project_id: MiniProjectId,
+    /// Run revision observed by the preview.
+    pub expected_run_revision: AggregateRevision,
+    /// Exact historical topic expected in the run.
+    pub expected_prior_topic: ExternalName,
+    /// Semantic topic after removing redundant rendered material.
+    pub corrected_topic: ExternalName,
+    /// Server-derived identity adopted by the corrected legacy run.
+    pub semantic_identity_hash: ContentHash,
     /// Operator rationale retained as immutable evidence.
     pub reason: ExternalName,
     /// When the correction was authorized.
