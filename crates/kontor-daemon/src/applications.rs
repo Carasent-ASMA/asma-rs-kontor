@@ -9708,6 +9708,34 @@ impl Services {
         Ok(())
     }
 
+    /// Render the complete native consultation-container name from the exact
+    /// pinned definition. Legacy rows without a topic or definition remain
+    /// readable and honestly expose no current canonical name.
+    fn consultation_container_name(
+        &self,
+        run: &StoredConsultationRun,
+    ) -> Result<Option<ExternalName>, ApiError> {
+        if run.topic.is_none() {
+            return Ok(None);
+        }
+        let Some(definition) = self.pinned_team_definition(run.project_id, run.mini_project_id)?
+        else {
+            return Ok(None);
+        };
+        let node = self
+            .state()?
+            .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the consultation run has no durable topology node",
+                )
+            })?;
+        self.container_name_from_definition(&definition, &node, None, None)
+            .map(Some)
+    }
+
     /// Stable wire projection of one Advisor run.
     fn advisor_run_dto(
         &self,
@@ -9717,6 +9745,7 @@ impl Services {
     ) -> Result<AdvisorRunDto, ApiError> {
         let state = self.state()?;
         let (revision, _) = self.advisor_profile(run)?;
+        let container_name = self.consultation_container_name(run)?;
         let seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -9752,6 +9781,7 @@ impl Services {
             epic_id: run.mini_project_id,
             profile: consultation_revision_dto(&revision),
             topic: run.topic.clone(),
+            container_name,
             topology_node_id: run.topology_node_id,
             seats: seats
                 .into_iter()
@@ -10504,6 +10534,7 @@ impl Services {
     ) -> Result<CommitteeRunDto, ApiError> {
         let state = self.state()?;
         let (revision, _) = self.committee_template(run)?;
+        let container_name = self.consultation_container_name(run)?;
         let seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -10557,6 +10588,7 @@ impl Services {
             epic_id: run.mini_project_id,
             template: consultation_revision_dto(&revision),
             topic: run.topic.clone(),
+            container_name,
             topology_node_id: run.topology_node_id,
             seats: seats
                 .into_iter()

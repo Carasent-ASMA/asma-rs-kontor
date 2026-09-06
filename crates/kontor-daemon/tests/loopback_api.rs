@@ -36711,6 +36711,10 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     assert_eq!(advisor_invoked.status, 200, "{}", advisor_invoked.body);
     assert_eq!(advisor_invoked.json()["state"], "running");
+    assert_eq!(
+        advisor_invoked.json()["container_name"],
+        "ASW • PROMO-9001 • Bounded operational decision"
+    );
     let advisor_run = advisor_invoked.json()["advisor_run_id"]
         .as_str()
         .expect("Advisor run")
@@ -36983,6 +36987,10 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     assert_eq!(invoked.status, 200, "{}", invoked.body);
     assert_eq!(invoked.json()["state"], "running");
+    assert_eq!(
+        invoked.json()["container_name"],
+        "CSW • PROMO-9001 • Operational gate evidence"
+    );
     let calls_after_first_invoke = world.fake.calls().len();
     let duplicate = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),

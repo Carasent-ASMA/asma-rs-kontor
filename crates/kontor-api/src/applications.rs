@@ -1489,6 +1489,11 @@ pub struct AdvisorRunDto {
     #[schema(value_type = Option<String>)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<ExternalName>,
+    /// Complete ASW title rendered by the server from the pinned Team
+    /// Definition and confirmed scope identity.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<ExternalName>,
     /// Dedicated ASW node.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
@@ -1548,6 +1553,11 @@ pub struct CommitteeRunDto {
     #[schema(value_type = Option<String>)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<ExternalName>,
+    /// Complete CSW title rendered by the server from the pinned Team
+    /// Definition and confirmed scope identity.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<ExternalName>,
     /// Dedicated CSW node.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
