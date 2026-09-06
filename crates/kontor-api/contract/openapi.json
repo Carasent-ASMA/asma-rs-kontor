@@ -10490,7 +10490,8 @@
           "profile",
           "topology_node_id",
           "seats",
-          "state"
+          "state",
+          "revision"
         ],
         "properties": {
           "advice": {
@@ -10534,6 +10535,12 @@
           },
           "result": {
             "description": "Immutable output and caller disposition once settled."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current aggregate revision required when this seat submits advice.",
+            "minimum": 0
           },
           "seats": {
             "type": "array",

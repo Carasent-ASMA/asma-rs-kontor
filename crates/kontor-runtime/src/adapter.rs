@@ -454,6 +454,20 @@ pub struct ConsultationSeatRetireOutcome {
     pub archived_at: Timestamp,
 }
 
+/// Release a native session whose consultation is already durably settled.
+/// The caller must persist this exact release intent before dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationSessionReleaseRequest {
+    /// Settled consultation, checked against the native correlation label.
+    pub run_id: ConsultationRunId,
+    /// Exact logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact native occupant.
+    pub identity: NativeRuntimeIdentity,
+    /// Persisted intent instant.
+    pub requested_at: Timestamp,
+}
+
 /// Launch one persistent leadership seat in its already-prepared ECP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedSeatLaunchRequest {
@@ -961,6 +975,17 @@ pub trait RuntimeAdapter: Send + Sync {
     async fn retire_consultation_seat(
         &self,
         _request: &ConsultationSeatRetireRequest,
+    ) -> RuntimeResult<ConsultationSeatRetireOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Retire,
+        })
+    }
+
+    /// Release resources after durable settlement, preserving the session's
+    /// native history. A timeout is not a confirmation; replay inspects first.
+    async fn release_consultation_session(
+        &self,
+        _request: &ConsultationSessionReleaseRequest,
     ) -> RuntimeResult<ConsultationSeatRetireOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Retire,

@@ -99,6 +99,63 @@ pub struct SeatMcp {
 }
 
 impl SeatMcp {
+    /// Refuse a mixed-version installation before composing or launching a
+    /// session whose containment depends on the companion MCP binary.
+    pub fn verify_consultation_guard(&self) -> io::Result<()> {
+        let output = std::process::Command::new(&self.command)
+            .arg("--consultation-tool-guard")
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        let reply = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+        if !output.status.success()
+            || reply.as_ref().is_none_or(|reply| {
+                reply["hookSpecificOutput"]["hookEventName"] != "PreToolUse"
+                    || reply["hookSpecificOutput"]["permissionDecision"] != "deny"
+            })
+        {
+            return Err(io::Error::other(
+                "the MCP binary does not implement the consultation guard",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Compose the consultation-only tool guard before starting Claude.
+    pub fn compose_consultation(&self, cwd: &Path) -> io::Result<()> {
+        self.compose(cwd, "consultation")?;
+        let command = format!(
+            "'{}' --consultation-tool-guard || exit 2",
+            self.command.replace('\'', "'\\''")
+        );
+        merge_json(&cwd.join(".claude/settings.local.json"), |document| {
+            // This worktree is a CSW/ASW. Its consultation hook is owned by
+            // Kontor; preserve unrelated hook events and settings.
+            let hooks = document
+                .entry("hooks")
+                .or_insert_with(|| serde_json::json!({}));
+            let hooks = hooks.as_object_mut().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Claude hooks must be an object")
+            })?;
+            let entries = hooks
+                .entry("PreToolUse")
+                .or_insert_with(|| serde_json::json!([]));
+            let entries = entries.as_array_mut().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Claude PreToolUse hooks must be an array",
+                )
+            })?;
+            let guard = serde_json::json!({
+                "matcher": ".*",
+                "hooks": [{"type": "command", "command": command, "timeout": 10}]
+            });
+            if !entries.contains(&guard) {
+                entries.push(guard);
+            }
+            Ok(())
+        })
+    }
+
     /// Compose the three worktree-local files for one seat cwd.
     ///
     /// Idempotent: repeating it rewrites the same content and appends nothing
@@ -679,5 +736,31 @@ mod tests {
                 && !directory.path().join(".claude").exists(),
             "a refused composition is atomic and leaves no partial seat files"
         );
+    }
+
+    #[test]
+    fn consultation_guard_is_local_and_does_not_replace_other_hook_events() {
+        let repo = repo();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        std::fs::write(
+            repo.path().join(".claude/settings.local.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[]}]},"permissions":{"allow":["Bash"]}}"#,
+        )
+        .unwrap();
+        let seat = seat("/realm/state");
+        seat.compose_consultation(repo.path()).unwrap();
+        seat.compose_consultation(repo.path()).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(repo.path().join(".claude/settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], ".*");
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "'kontor-mcp' --consultation-tool-guard || exit 2"
+        );
+        assert!(settings["hooks"]["Stop"].is_array());
+        assert!(porcelain(repo.path()).is_empty());
     }
 }

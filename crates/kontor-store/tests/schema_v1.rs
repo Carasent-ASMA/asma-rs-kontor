@@ -56,6 +56,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // Schema v75 (ASMA-8050): immutable, exact-seat Committee permission
     // responses with durable dispatch and confirmation state.
     "consultation_permission_responses",
+    "consultation_session_releases",
     "committee_findings",
     "committee_remediations",
     "committee_re_review_claims",
@@ -533,8 +534,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // phase is held behind until that same run authors it again. v91 adds the
     // server-derived consultation identity and immutable legacy topic
     // correction evidence. v92 admits that exact correction for an already
-    // settled consultation without making its verdict mutable.
-    assert_eq!(SCHEMA_VERSION, 92);
+    // settled consultation without making its verdict mutable. v93 freezes
+    // native release intents separately from settled consultation evidence.
+    assert_eq!(SCHEMA_VERSION, 93);
 }
 
 #[test]

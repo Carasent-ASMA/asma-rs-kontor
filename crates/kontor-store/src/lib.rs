@@ -31,6 +31,7 @@ pub mod authority;
 pub mod backup;
 mod commands;
 mod consultation_permissions;
+mod consultation_releases;
 mod events;
 mod graph;
 mod intake;
@@ -62,6 +63,7 @@ pub use consultation_permissions::{
     ConsultationPermissionDecision, ConsultationPermissionResponseStatus,
     StoredConsultationPermissionResponse,
 };
+pub use consultation_releases::ConsultationSessionRelease;
 pub use events::types::{
     ConsumerPage, ContentDiscontinuity, ContentGapOutcome, ControlGap, ControlObservation,
     ControlObservationOutcome,

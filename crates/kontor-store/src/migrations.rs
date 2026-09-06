@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 92;
+pub const SCHEMA_VERSION: i64 = 93;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -352,6 +352,7 @@ const MIGRATIONS: &[&str] = &[
     // caller idempotency as the uniqueness boundary for new ASWs and CSWs.
     include_str!("../migrations/0091_consultation_semantic_identity.sql"),
     include_str!("../migrations/0092_settled_consultation_topic_corrections.sql"),
+    include_str!("../migrations/0093_consultation_session_releases.sql"),
 ];
 
 const _: () = assert!(

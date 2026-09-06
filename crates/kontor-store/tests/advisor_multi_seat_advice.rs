@@ -428,3 +428,72 @@ fn advice_is_idempotent_per_exact_seat_and_immutable_per_seat() {
         "advice that was given cannot be edited"
     );
 }
+
+#[test]
+fn settled_sessions_are_released_durably_without_changing_advice_or_bindings() {
+    let mut w = world();
+    let now = at("2026-09-01T14:00:00Z");
+    assert!(
+        w.store
+            .plan_consultation_releases(16, now)
+            .unwrap()
+            .is_empty(),
+        "idle or running consultations are never release candidates"
+    );
+    let (result, hash) = advice("settled-result");
+    let settled = w
+        .store
+        .advance_consultation_run(
+            w.project_id,
+            w.run.id,
+            w.run.revision,
+            ConsultationRunState::Settled,
+            Some((&result, &hash)),
+            now,
+        )
+        .unwrap();
+    let before = w
+        .store
+        .list_consultation_seats(w.project_id, w.run.id)
+        .unwrap();
+    let first = w.store.plan_consultation_releases(1, now).unwrap();
+    assert_eq!(first.len(), 1, "planning obeys its batch bound");
+    let released_native = first[0].identity.native_id.clone();
+    // Lose the process between native dispatch and local confirmation.
+    drop(w.store);
+    w.store = SqliteStore::open(&w._home.path().join("kontor.db")).unwrap();
+    let pending = w
+        .store
+        .plan_consultation_releases(16, at("2026-09-01T14:01:00Z"))
+        .unwrap();
+    assert_eq!(pending.len(), 2);
+    assert!(
+        pending
+            .iter()
+            .any(|release| release.identity.native_id == released_native
+                && release.requested_at == now),
+        "restart preserves the original intent"
+    );
+    for release in &pending {
+        w.store.confirm_consultation_release(release, now).unwrap();
+    }
+    assert!(
+        w.store
+            .plan_consultation_releases(16, now)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        w.store
+            .get_consultation_run(w.project_id, w.run.id)
+            .unwrap()
+            .unwrap(),
+        settled
+    );
+    assert_eq!(
+        w.store
+            .list_consultation_seats(w.project_id, w.run.id)
+            .unwrap(),
+        before
+    );
+}

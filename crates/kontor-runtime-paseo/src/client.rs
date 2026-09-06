@@ -166,7 +166,9 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
 /// and attests an enforced non-mutating execution boundary.
 pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Option<&'static str>> {
     match built_in_provider(provider) {
-        "claude" => Ok(Some("plan")),
+        // Plan mode requires an ExitPlanMode approval instead of a finding.
+        // The composed PreToolUse guard owns consultation containment.
+        "claude" => Ok(Some("default")),
         "codex" => Ok(Some("auto-review")),
         // Providers without a proven contained mode remain fail-closed here.
         other => Err(RuntimeError::PermissionModeUnsupported {
@@ -1161,17 +1163,44 @@ impl PaseoRpc {
         credential: &str,
     ) -> RuntimeResult<Self> {
         let mode = consultation_route_permission_mode(model_rung, route_provenance)?;
-        Self::scoped_seat_agent_create(
+        let prompt = format!(
+            "{prompt}\nThis is a consultation, not an implementation planning session. Use file-reading tools to inspect evidence. Discover the injected Kontor tools with ToolSearch when necessary, read your consultation aggregate, and submit your own finding through its scoped MCP tool. The MCP process receives your credential automatically; do not read or print it. Do not request plan approval or delegate the review."
+        );
+        let mut request = Self::scoped_seat_agent_create(
             request_id,
             workspace_id,
             canonical_cwd,
             model_rung,
             title,
             labels,
-            prompt,
+            &prompt,
             credential,
             mode,
-        )
+        )?;
+        let provider = built_in_provider(&model_rung.provider.0);
+        if provider == "claude" {
+            request.message["config"]["providerOptions"] = serde_json::json!({
+                "allowedTools": ["Read", "Glob", "Grep", "ToolSearch"],
+                "disallowedTools": ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "Task", "Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
+            });
+        } else if provider == "codex" {
+            request.message["config"]["providerOptions"] = serde_json::json!({
+                "sandbox_mode": "read-only", "approval_policy": "never"
+            });
+        }
+        Ok(request)
+    }
+
+    /// Inject the credential-scoped consultation MCP and approve only its four
+    /// registry operations through Paseo's exact tool-policy contract.
+    pub fn with_consultation_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
+        self.message["config"]["mcpServers"] = seat.server_config("consultation");
+        self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_advisor_run_get"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_advisor_run_settle"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_run_get"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_findings_record"}
+        ]});
     }
 
     /// `create_agent_request` for one persistent hosted leadership seat. The
@@ -2277,7 +2306,7 @@ mod tests {
     #[test]
     fn consultation_routes_are_read_only_and_the_scoped_secret_crosses_only_the_session_frame() {
         for (provider, model, expected_mode) in [
-            ("claude", "claude-opus-5", "plan"),
+            ("claude", "claude-opus-5", "default"),
             ("codex", "gpt-5.6-sol", "auto-review"),
         ] {
             let request = PaseoRpc::consultation_agent_create(
@@ -2293,6 +2322,33 @@ mod tests {
             )
             .expect("a consultation-safe provider");
             assert_eq!(request.message["config"]["modeId"], expected_mode);
+            if provider == "claude" {
+                let denied = request.message["config"]["providerOptions"]["disallowedTools"]
+                    .as_array()
+                    .unwrap();
+                for tool in [
+                    "Bash",
+                    "Write",
+                    "Edit",
+                    "Agent",
+                    "ExitPlanMode",
+                    "EnterPlanMode",
+                ] {
+                    assert!(
+                        denied.contains(&serde_json::json!(tool)),
+                        "{tool} must remain denied"
+                    );
+                }
+            } else {
+                assert_eq!(
+                    request.message["config"]["providerOptions"]["sandbox_mode"],
+                    "read-only"
+                );
+                assert_eq!(
+                    request.message["config"]["providerOptions"]["approval_policy"],
+                    "never"
+                );
+            }
             assert!(request.message.get("env").is_none());
             assert!(!format!("{request:?}").contains("seat-secret-value"));
             assert_eq!(

@@ -6105,6 +6105,111 @@ async fn committee_permission_is_bound_to_the_exact_run_seat_and_native() {
 }
 
 #[tokio::test]
+async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() {
+    use kontor_runtime::adapter::ConsultationSeatRetireRequest;
+    let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
+    let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
+    for mode in ["plan", "acceptEdits"] {
+        let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
+        before["agent"]["currentModeId"] = serde_json::json!(mode);
+        before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+            .then_answering_rpc("fetch_agent_request", before.clone())
+            .answering_rpc(
+                "fetch_agent_request",
+                consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id),
+            );
+        let plane = Plane::fresh(recorded);
+        let request = ConsultationSeatRetireRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::template(
+                ContentHash::of(b"template"),
+            ),
+            requested_at: kontor_core::id::Timestamp::now(),
+        };
+        plane
+            .adapter
+            .retire_consultation_seat(&request)
+            .await
+            .unwrap();
+        assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+        before["agent"]["model"] = serde_json::json!("foreign-model");
+        plane.daemon.set_answer_rpc("fetch_agent_request", before);
+        assert!(matches!(
+            plane.adapter.retire_consultation_seat(&request).await,
+            Err(RuntimeError::CorrelationFailed)
+        ));
+        assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+    }
+}
+
+#[tokio::test]
+async fn completed_consultation_release_checks_identity_and_replays_after_lost_confirmation() {
+    use kontor_runtime::adapter::ConsultationSessionReleaseRequest;
+    let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
+    let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
+    let archived = consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+        .then_answering_rpc(
+            "fetch_agent_request",
+            consultation_agent(AGENT_PERMISSION_OPEN, run_id, seat_binding_id),
+        )
+        .answering_rpc("fetch_agent_request", archived);
+    let plane = Plane::fresh(recorded);
+    let request = ConsultationSessionReleaseRequest {
+        run_id,
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        requested_at: kontor_core::id::Timestamp::now(),
+    };
+    plane
+        .adapter
+        .release_consultation_session(&request)
+        .await
+        .unwrap();
+    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+    plane
+        .adapter
+        .release_consultation_session(&request)
+        .await
+        .unwrap();
+    assert_eq!(
+        plane.daemon.count(&format!("agent archive {AGENT_ID}")),
+        1,
+        "archive already happened; retry must only read back"
+    );
+    let mut wrong = request.clone();
+    wrong.seat_binding_id = SeatBindingId::parse(TEAM_RUN).unwrap();
+    assert!(matches!(
+        plane.adapter.release_consultation_session(&wrong).await,
+        Err(RuntimeError::CorrelationFailed)
+    ));
+    let mut wrong_run = request;
+    wrong_run.run_id = ConsultationRunId::Committee(CommitteeRunId::parse(TEAM_RUN).unwrap());
+    assert!(matches!(
+        plane.adapter.release_consultation_session(&wrong_run).await,
+        Err(RuntimeError::CorrelationFailed)
+    ));
+    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+}
+
+#[tokio::test]
 async fn permission_an_unknown_request_is_refused_before_dispatch() {
     let (plane, binding) = launched().await;
     plane.daemon.take_calls();

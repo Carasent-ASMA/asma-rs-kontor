@@ -794,10 +794,8 @@ fn the_gate_rejection_route_schema_migrates_and_survives_a_snapshot() {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("the schema version reads");
         assert_eq!(version, SCHEMA_VERSION, "{context}: schema version");
-        assert_eq!(
-            SCHEMA_VERSION, 92,
-            "the settled consultation correction schema is generation 92"
-        );
+        // schema_v1 pins the current generation. This regression verifies
+        // that snapshots preserve it and retain the gate-route constraints.
 
         // Both database integrity checks the deployment runs, in the same order.
         let integrity: String = connection

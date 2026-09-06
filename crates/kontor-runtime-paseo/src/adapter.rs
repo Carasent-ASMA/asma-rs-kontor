@@ -60,8 +60,8 @@ use kontor_runtime::adapter::{
     ConsultationPermissionAck, ConsultationPermissionInspectRequest,
     ConsultationPermissionInspection, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
-    HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
-    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
+    ConsultationSessionReleaseRequest, HostedSeatClaimOutcome, HostedSeatClaimPredecessor,
+    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
     HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
     HostedSeatNativeState, HostedSeatRetireOutcome, HostedSeatRetireRequest,
     HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, PersistentSeatInspection,
@@ -4445,22 +4445,27 @@ impl PaseoAdapter {
                 // its `kontor-mcp` child inherits this consultation seat's
                 // already-scoped KONTOR_AUTH instead of the operator console's
                 // ambient MCP authority. The config contains no credential.
-                crate::seat_mcp::compose_for_seat(
-                    self.config.seat_mcp.as_ref(),
-                    request.model_rung.provider.0.as_str(),
-                    // A consultation seat gets no permission block at all: its
-                    // mode is already non-mutating and a consultation that could
-                    // edit the tree is not a consultation.
-                    &crate::posture::SeatPosture::read_only(),
-                    std::path::Path::new(request.cwd.as_str()),
-                )
+                if crate::client::built_in_provider(&request.model_rung.provider.0) == "claude" {
+                    let seat_mcp =
+                        self.config
+                            .seat_mcp
+                            .as_ref()
+                            .ok_or(RuntimeError::LaunchNotAdmitted {
+                                rule: "Claude consultation requires the scoped MCP and tool guard",
+                            })?;
+                    seat_mcp.verify_consultation_guard().and_then(|()| {
+                        seat_mcp.compose_consultation(std::path::Path::new(request.cwd.as_str()))
+                    })
+                } else {
+                    Ok(())
+                }
                 .map_err(|error| {
                     tracing::warn!(%error, "consultation seat MCP composition failed");
                     RuntimeError::LaunchNotAdmitted {
                         rule: "seat MCP composition failed in the consultation worktree",
                     }
                 })?;
-                let creation = PaseoRpc::consultation_agent_create(
+                let mut creation = PaseoRpc::consultation_agent_create(
                     self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
@@ -4471,6 +4476,9 @@ impl PaseoAdapter {
                     request.prompt.as_str(),
                     request.credential.expose_secret(),
                 )?;
+                if let Some(seat_mcp) = self.config.seat_mcp.as_ref() {
+                    creation.with_consultation_mcp(seat_mcp);
+                }
                 // A lost acknowledgement is confirmation-unknown. This call
                 // never launches a second process in response; a later replay
                 // begins with the exact-label census above and can adopt the
@@ -5309,12 +5317,17 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         }
-        Self::verify_agent_route_with_mode(
-            &before,
-            &request.model_rung,
-            Some(&request.route_provenance),
-            SeatAutonomy::Advisory,
-        )?;
+        // Recovery retires an exact idle predecessor; its obsolete permission
+        // mode must not prevent replacing it with the current guarded posture.
+        // Route identity still has to match the frozen predecessor.
+        if before.provider != request.model_rung.provider.0
+            || before.model != request.model_rung.model.0
+            || request.model_rung.effort.is_some_and(|effort| {
+                before.effective_thinking_option_id.as_deref() != Some(effort.as_str())
+            })
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
         if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
             return Err(RuntimeError::ReplacementNotEvidenced {
                 rule: "consultation recovery requires an idle predecessor with no pending permission",
@@ -5338,6 +5351,58 @@ impl RuntimeAdapter for PaseoAdapter {
         Ok(ConsultationSeatRetireOutcome {
             identity: request.identity.clone(),
             archived_at: request.requested_at,
+        })
+    }
+
+    async fn release_consultation_session(
+        &self,
+        request: &ConsultationSessionReleaseRequest,
+    ) -> RuntimeResult<ConsultationSeatRetireOutcome> {
+        let declared = self.declared().await?;
+        preflight(&declared, &OperationContext::new(RuntimeCapability::Retire))?;
+        if request.identity.runtime_kind != self.config.runtime_kind
+            || request.identity.host != self.config.host_key
+            || request.identity.generation > self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "consultation release belongs to another runtime",
+            });
+        }
+        let native_id = request.identity.native_id.as_str();
+        let seat = request.seat_binding_id.to_string();
+        let run = format!(
+            "{}/{}",
+            request.run_id.family().as_str(),
+            request.run_id.as_text()
+        );
+        let before = self.fetch_agent(native_id).await?;
+        let matches = |agent: &PaseoAgent| {
+            agent.id == native_id
+                && agent.label(label::SEAT_BINDING) == Some(seat.as_str())
+                && agent.label(label::CONSULTATION_RUN) == Some(run.as_str())
+        };
+        if !matches(&before) {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if !before.is_archived() {
+            // Settlement, not idle age, authorizes release. An old plan-mode
+            // seat may still have an obsolete prompt pending after settlement.
+            let output = self
+                .transport
+                .run(&PaseoCommand::agent_archive(native_id))
+                .await?;
+            let archived: PaseoCliArchived = output.parse("PaseoCliArchived")?;
+            if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            let after = self.fetch_agent(native_id).await?;
+            if !matches(&after) || !after.is_archived() {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        Ok(ConsultationSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: Timestamp::now(),
         })
     }
 
