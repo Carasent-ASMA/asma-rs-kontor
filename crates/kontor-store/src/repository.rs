@@ -75,9 +75,9 @@ use kontor_core::repository::{
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
-    LegacyEpicBacklogCodeCorrection, LiveNativeSubject, MigrationObjectKind,
-    MiniProjectTeamDefinitionSnapshot, NativePlacement, NewTeamDefinitionMigration,
-    ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
+    LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
+    MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, NativePlacement,
+    NewTeamDefinitionMigration, ProjectTeamDefinitionDefault, StoredTeamDefinitionMigration,
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
@@ -11021,6 +11021,172 @@ fn topology_container_recovery_by_receipt(
 }
 
 impl SqliteStore {
+    /// Adopt one semantic identity for a malformed pre-enforcement
+    /// consultation topic under an exact native-name reconciliation command.
+    pub fn correct_legacy_consultation_topic_with_intent(
+        &self,
+        correction: &LegacyConsultationTopicCorrection,
+        target_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(StoredConsultationRun, CommandReceipt, crate::graph::Applied)> {
+        let intent = envelope.peek(self.realm_id())?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: correction.mini_project_id,
+        };
+        if intent.project_id != correction.project_id
+            || intent.kind != CommandKind::ReconcileNativeNames
+            || intent.target != target
+            || intent.target_revision != target_revision
+        {
+            return Err(DomainError::invalid(
+                "CommandReceipt",
+                "the local command authority does not match the consultation topic correction",
+            )
+            .into());
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
+        {
+            let corrected: Option<String> = transaction
+                .query_row(
+                    "SELECT corrected_topic FROM consultation_topic_corrections
+                     WHERE project_id = ?1 AND run_id = ?2 AND receipt_id = ?3",
+                    params![
+                        correction.project_id.to_string(),
+                        correction.run_id.as_text(),
+                        existing.id.to_string(),
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            if corrected.as_deref() != Some(correction.corrected_topic.as_str()) {
+                return Err(conflict(
+                    "consultation topic correction",
+                    "the replayed command has no matching durable correction",
+                ));
+            }
+            transaction.commit().map_err(backend)?;
+            let run = self
+                .get_consultation_run(correction.project_id, correction.run_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "consultation run",
+                })?;
+            return Ok((run, existing, crate::graph::Applied::Unchanged));
+        }
+
+        let current: Option<(String, Option<String>, i64, String)> = transaction
+            .query_row(
+                "SELECT topic, semantic_identity_hash, revision, mini_project_id
+                 FROM consultation_runs
+                 WHERE project_id = ?1 AND run_id = ?2 AND family = ?3",
+                params![
+                    correction.project_id.to_string(),
+                    correction.run_id.as_text(),
+                    correction.run_id.family().as_str(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((topic, semantic_identity_hash, revision, epic_id)) = current else {
+            return Err(RepositoryError::NotFound {
+                subject: "consultation run",
+            });
+        };
+        if MiniProjectId::parse(&epic_id)? != correction.mini_project_id {
+            return Err(conflict(
+                "consultation topic correction",
+                "the run belongs to a different epic",
+            ));
+        }
+        if revision_of(revision)? != correction.expected_run_revision {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation topic correction",
+                rule: "the run moved since preview",
+            });
+        }
+        if topic != correction.expected_prior_topic.as_str() {
+            return Err(conflict(
+                "consultation topic correction",
+                "the topic moved since preview",
+            ));
+        }
+        if semantic_identity_hash.is_some() {
+            return Err(conflict(
+                "consultation topic correction",
+                "only a pre-enforcement run without a semantic identity may be corrected",
+            ));
+        }
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                 SET topic = ?1, semantic_identity_hash = ?2,
+                     revision = revision + 1, updated_at = ?3
+                 WHERE project_id = ?4 AND run_id = ?5 AND family = ?6
+                   AND revision = ?7 AND topic = ?8
+                   AND semantic_identity_hash IS NULL",
+                params![
+                    correction.corrected_topic.as_str(),
+                    correction.semantic_identity_hash.as_str(),
+                    text(correction.corrected_at),
+                    correction.project_id.to_string(),
+                    correction.run_id.as_text(),
+                    correction.run_id.family().as_str(),
+                    i64::try_from(correction.expected_run_revision.get()).unwrap_or(i64::MAX),
+                    correction.expected_prior_topic.as_str(),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    conflict(
+                        "consultation semantic identity",
+                        "another run already owns the corrected family, scope, template and topic",
+                    )
+                }
+                other => backend(other),
+            })?;
+        if changed != 1 {
+            return Err(conflict(
+                "consultation topic correction",
+                "the run moved while the correction was being applied",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO consultation_topic_corrections
+                     (receipt_id, project_id, run_id, family, prior_topic,
+                      corrected_topic, semantic_identity_hash, reason, corrected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    receipt.id.to_string(),
+                    correction.project_id.to_string(),
+                    correction.run_id.as_text(),
+                    correction.run_id.family().as_str(),
+                    correction.expected_prior_topic.as_str(),
+                    correction.corrected_topic.as_str(),
+                    correction.semantic_identity_hash.as_str(),
+                    correction.reason.as_str(),
+                    text(correction.corrected_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        let run = self
+            .get_consultation_run(correction.project_id, correction.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })?;
+        Ok((run, receipt, crate::graph::Applied::Created))
+    }
+
     /// Correct one legacy-imported epic code and record the authority atomically.
     pub fn correct_legacy_epic_backlog_code_with_intent(
         &self,

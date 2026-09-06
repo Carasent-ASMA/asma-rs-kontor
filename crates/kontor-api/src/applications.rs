@@ -2967,6 +2967,98 @@ pub struct AppliedContainerRetitleDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Read-only request for one malformed pre-enforcement Committee topic.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommitteeTopicCorrectionPreviewRequest {
+    /// Project revision observed before native-name preflight.
+    #[schema(value_type = u64)]
+    pub expected_project_revision: AggregateRevision,
+    /// Committee run revision observed by the caller.
+    #[schema(value_type = u64)]
+    pub expected_run_revision: AggregateRevision,
+    /// Exact malformed historical topic expected in the run.
+    #[schema(value_type = String)]
+    pub expected_prior_topic: ExternalName,
+    /// Semantic topic after removing only server-owned leading material.
+    #[schema(value_type = String)]
+    pub corrected_topic: ExternalName,
+    /// Operator rationale retained with the immutable correction.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+/// Apply request bound to one exact Committee-topic correction preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommitteeTopicCorrectionApplyRequest {
+    /// The exact correction request that was previewed.
+    #[serde(flatten)]
+    pub correction: CommitteeTopicCorrectionPreviewRequest,
+    /// Hash returned by the preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Exact no-write plan for repairing one legacy Committee topic and CSW title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CommitteeTopicCorrectionPreviewDto {
+    /// Realm that computed the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Owning epic.
+    #[schema(value_type = String)]
+    pub epic_id: MiniProjectId,
+    /// Existing Committee run; never replaced by this correction.
+    #[schema(value_type = String)]
+    pub committee_run_id: CommitteeRunId,
+    /// Existing CSW node; never replaced by this correction.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Historical malformed topic.
+    #[schema(value_type = String)]
+    pub prior_topic: ExternalName,
+    /// Correct semantic topic.
+    #[schema(value_type = String)]
+    pub corrected_topic: ExternalName,
+    /// Server-derived identity the run will adopt.
+    #[schema(value_type = String)]
+    pub semantic_identity_hash: ContentHash,
+    /// Exact native container being preserved.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// Native title read during preview.
+    pub observed_title: String,
+    /// Complete title the server derived from the corrected topic.
+    #[schema(value_type = String)]
+    pub desired_title: ExternalName,
+    /// Hash binding the run, revisions, topics, native identity and titles.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Projection cursor read with the plan.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// Result of one identity-preserving Committee-topic and CSW correction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AppliedCommitteeTopicCorrectionDto {
+    /// Fresh run projection carrying the corrected server-rendered name.
+    pub committee: CommitteeRunDto,
+    /// Exact native container id preserved through retitle.
+    #[schema(value_type = String)]
+    pub bound_native_id: ExternalId,
+    /// Runtime title read after apply.
+    pub observed_title: String,
+    /// Whether this invocation performed the correction or replayed it.
+    pub changed: bool,
+    /// Durable command receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// Read-only request for a one-time legacy epic-code correction.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -6426,6 +6518,23 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ContainerRetitleRequest,
     ) -> Result<AppliedContainerRetitleDto, ApiError>;
 
+    /// Preview one narrowly bounded malformed Committee-topic correction.
+    async fn preview_committee_topic_correction(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &CommitteeTopicCorrectionPreviewRequest,
+    ) -> Result<CommitteeTopicCorrectionPreviewDto, ApiError>;
+
+    /// Apply the exact correction while preserving run, topology and native ids.
+    async fn apply_committee_topic_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &CommitteeTopicCorrectionApplyRequest,
+    ) -> Result<AppliedCommitteeTopicCorrectionDto, ApiError>;
+
     /// Preview the one-time correction of a legacy-imported epic code.
     fn preview_epic_backlog_code_correction(
         &self,
@@ -8421,6 +8530,67 @@ pub async fn apply_container_retitle(
         state
             .applications()
             .apply_container_retitle(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview one malformed pre-enforcement Committee topic and its CSW retitle.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The preserved Committee run")
+    ),
+    request_body = CommitteeTopicCorrectionPreviewRequest,
+    responses((status = 200, body = CommitteeTopicCorrectionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 503))
+)]
+pub async fn preview_committee_topic_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+    Json(request): Json<CommitteeTopicCorrectionPreviewRequest>,
+) -> Result<Json<CommitteeTopicCorrectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_committee_topic_correction(project_id, committee_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply one malformed Committee-topic correction and retitle the same CSW.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("committee_run_id" = String, Path, description = "The preserved Committee run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CommitteeTopicCorrectionApplyRequest,
+    responses((status = 200, body = AppliedCommitteeTopicCorrectionDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 503))
+)]
+pub async fn apply_committee_topic_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, committee_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<CommitteeTopicCorrectionApplyRequest>,
+) -> Result<Json<AppliedCommitteeTopicCorrectionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_committee_topic_correction(&key, project_id, committee_run_id, &request)
             .await?,
     ))
 }

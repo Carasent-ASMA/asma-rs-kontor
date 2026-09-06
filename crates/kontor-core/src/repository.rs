@@ -953,6 +953,30 @@ pub struct LegacyEpicBacklogCodeCorrection {
     pub corrected_at: Timestamp,
 }
 
+/// One narrowly authorized repair of malformed pre-enforcement consultation
+/// topic material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyConsultationTopicCorrection {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Existing run whose identity, seats and findings remain in place.
+    pub run_id: ConsultationRunId,
+    /// Epic whose native naming authority owns the run.
+    pub mini_project_id: MiniProjectId,
+    /// Run revision observed by the preview.
+    pub expected_run_revision: AggregateRevision,
+    /// Exact historical topic expected in the run.
+    pub expected_prior_topic: ExternalName,
+    /// Semantic topic after removing redundant rendered material.
+    pub corrected_topic: ExternalName,
+    /// Server-derived identity adopted by the corrected legacy run.
+    pub semantic_identity_hash: ContentHash,
+    /// Operator rationale retained as immutable evidence.
+    pub reason: ExternalName,
+    /// When the correction was authorized.
+    pub corrected_at: Timestamp,
+}
+
 /// Compare-and-swap replacement of one stale native container identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopologyContainerRecovery {

@@ -810,6 +810,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one malformed Committee-topic correction and retitle the same CSW. */
+        post: operations["apply_committee_topic_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview one malformed pre-enforcement Committee topic and its CSW retitle. */
+        post: operations["preview_committee_topic_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/committee-templates": {
         parameters: {
             query?: never;
@@ -3213,6 +3247,11 @@ export interface components {
             advice?: unknown[];
             /** @description The consultation. */
             advisor_run_id: string;
+            /**
+             * @description Complete ASW title rendered by the server from the pinned Team
+             *     Definition and confirmed scope identity.
+             */
+            container_name?: string | null;
             /** @description The epic it advises. */
             epic_id: string;
             /** @description The pinned profile it runs under. */
@@ -3305,6 +3344,19 @@ export interface components {
              *     name or an operation name — so it can never be a stored value.
              */
             subject?: string | null;
+        };
+        /** @description Result of one identity-preserving Committee-topic and CSW correction. */
+        AppliedCommitteeTopicCorrectionDto: {
+            /** @description Exact native container id preserved through retitle. */
+            bound_native_id: string;
+            /** @description Whether this invocation performed the correction or replayed it. */
+            changed: boolean;
+            /** @description Fresh run projection carrying the corrected server-rendered name. */
+            committee: components["schemas"]["CommitteeRunDto"];
+            /** @description Runtime title read after apply. */
+            observed_title: string;
+            /** @description Durable command receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
         };
         /** @description Result of one atomic stale-container identity recovery. */
         AppliedContainerRecoveryDto: {
@@ -4091,6 +4143,11 @@ export interface components {
         CommitteeRunDto: {
             /** @description The consultation. */
             committee_run_id: string;
+            /**
+             * @description Complete CSW title rendered by the server from the pinned Team
+             *     Definition and confirmed scope identity.
+             */
+            container_name?: string | null;
             /** @description The epic it advises. */
             epic_id: string;
             /** @description Durable findings for the current round, including dissent. */
@@ -4137,6 +4194,62 @@ export interface components {
             topic?: string | null;
             /** @description Dedicated CSW node. */
             topology_node_id: string;
+        };
+        /** @description Apply request bound to one exact Committee-topic correction preview. */
+        CommitteeTopicCorrectionApplyRequest: components["schemas"]["CommitteeTopicCorrectionPreviewRequest"] & {
+            /** @description Hash returned by the preview. */
+            preview_hash: string;
+        };
+        /** @description Exact no-write plan for repairing one legacy Committee topic and CSW title. */
+        CommitteeTopicCorrectionPreviewDto: {
+            /** @description Exact native container being preserved. */
+            bound_native_id: string;
+            /** @description Existing Committee run; never replaced by this correction. */
+            committee_run_id: string;
+            /** @description Correct semantic topic. */
+            corrected_topic: string;
+            /** @description Complete title the server derived from the corrected topic. */
+            desired_title: string;
+            /** @description Owning epic. */
+            epic_id: string;
+            /** @description Native title read during preview. */
+            observed_title: string;
+            /** @description Hash binding the run, revisions, topics, native identity and titles. */
+            preview_hash: string;
+            /** @description Historical malformed topic. */
+            prior_topic: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm that computed the plan. */
+            realm_id: string;
+            /** @description Server-derived identity the run will adopt. */
+            semantic_identity_hash: string;
+            /**
+             * Format: int64
+             * @description Projection cursor read with the plan.
+             */
+            snapshot_cursor: number;
+            /** @description Existing CSW node; never replaced by this correction. */
+            topology_node_id: string;
+        };
+        /** @description Read-only request for one malformed pre-enforcement Committee topic. */
+        CommitteeTopicCorrectionPreviewRequest: {
+            /** @description Semantic topic after removing only server-owned leading material. */
+            corrected_topic: string;
+            /** @description Exact malformed historical topic expected in the run. */
+            expected_prior_topic: string;
+            /**
+             * Format: int64
+             * @description Project revision observed before native-name preflight.
+             */
+            expected_project_revision: number;
+            /**
+             * Format: int64
+             * @description Committee run revision observed by the caller.
+             */
+            expected_run_revision: number;
+            /** @description Operator rationale retained with the immutable correction. */
+            reason: string;
         };
         /**
          * @description One Committee aggregate verdict.
@@ -5761,8 +5874,10 @@ export interface components {
              */
             task_id?: string | null;
             /**
-             * @description Short, explicit subject label used by the pinned Team Definition to
-             *     render the ASW name. It is never derived from the question.
+             * @description Short semantic subject used by the pinned Team Definition to render the
+             *     ASW name. Supply only the topic: Jira keys, Kontor item codes, container
+             *     prefixes and the configured separator are rejected because the server
+             *     inserts them deterministically.
              */
             topic?: string | null;
         };
@@ -5799,8 +5914,10 @@ export interface components {
              */
             task_id?: string | null;
             /**
-             * @description Short, explicit debated subject used by the pinned Team Definition to
-             *     render the CSW name. It is never derived from the question.
+             * @description Short semantic subject used by the pinned Team Definition to render the
+             *     CSW name. Supply only the topic: Jira keys, Kontor item codes, container
+             *     prefixes and the configured separator are rejected because the server
+             *     inserts them deterministically.
              */
             topic?: string | null;
         };
@@ -11346,6 +11463,137 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_committee_topic_correction: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The preserved Committee run */
+                committee_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitteeTopicCorrectionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedCommitteeTopicCorrectionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_committee_topic_correction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The preserved Committee run */
+                committee_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitteeTopicCorrectionPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeTopicCorrectionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             503: {
                 headers: {
                     [name: string]: unknown;

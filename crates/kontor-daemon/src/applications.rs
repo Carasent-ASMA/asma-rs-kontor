@@ -82,23 +82,25 @@ use kontor_api::applications::{
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
-    AppliedContainerRecoveryDto, AppliedContainerRetitleDto, AppliedEpicBacklogCodeCorrectionDto,
-    AppliedNativeNamesDto, AppliedProjectTeamDefinitionSelectionDto,
-    AppliedProjectTopologySelectionDto, AppliedTeamDefinitionUpgradeDto, AppliedTopologyUpgradeDto,
-    CodeHelpEntryDto, ContainerRecoveryApplyRequest, ContainerRecoveryPreviewDto,
-    ContainerRecoveryPreviewRequest, ContainerRetitlePreviewDto, ContainerRetitleRequest,
-    DesiredBindingDto, EpicBacklogCodeCorrectionApplyRequest, EpicBacklogCodeCorrectionPreviewDto,
-    EpicBacklogCodeCorrectionPreviewRequest, JiraMaterializationAppliedDto,
-    JiraMaterializationApplyRequest, JiraMaterializationIntentDto, JiraMaterializationItemDto,
-    JiraMaterializationModeDto, JiraMaterializationPreviewDto, JiraMaterializationPreviewRequest,
-    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
-    NativeNamesPreviewRequest, PinnedSpecDto, PinnedTeamDefinitionDto,
-    ProjectTeamDefinitionSelectionApplyRequest, ProjectTeamDefinitionSelectionPreviewDto,
-    ProjectTeamDefinitionSelectionPreviewRequest, ProjectTopologySelectionApplyRequest,
-    ProjectTopologySelectionPreviewDto, ProjectTopologySelectionPreviewRequest,
-    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
-    SessionLabelsReconciledDto, ShareabilityDto, TeamDefinitionRefDto,
-    TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
+    AppliedCommitteeTopicCorrectionDto, AppliedContainerRecoveryDto, AppliedContainerRetitleDto,
+    AppliedEpicBacklogCodeCorrectionDto, AppliedNativeNamesDto,
+    AppliedProjectTeamDefinitionSelectionDto, AppliedProjectTopologySelectionDto,
+    AppliedTeamDefinitionUpgradeDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
+    CommitteeTopicCorrectionApplyRequest, CommitteeTopicCorrectionPreviewDto,
+    CommitteeTopicCorrectionPreviewRequest, ContainerRecoveryApplyRequest,
+    ContainerRecoveryPreviewDto, ContainerRecoveryPreviewRequest, ContainerRetitlePreviewDto,
+    ContainerRetitleRequest, DesiredBindingDto, EpicBacklogCodeCorrectionApplyRequest,
+    EpicBacklogCodeCorrectionPreviewDto, EpicBacklogCodeCorrectionPreviewRequest,
+    JiraMaterializationAppliedDto, JiraMaterializationApplyRequest, JiraMaterializationIntentDto,
+    JiraMaterializationItemDto, JiraMaterializationModeDto, JiraMaterializationPreviewDto,
+    JiraMaterializationPreviewRequest, NativeNameSubjectKindDto, NativeNameTargetDto,
+    NativeNamesApplyRequest, NativeNamesPreviewDto, NativeNamesPreviewRequest, PinnedSpecDto,
+    PinnedTeamDefinitionDto, ProjectTeamDefinitionSelectionApplyRequest,
+    ProjectTeamDefinitionSelectionPreviewDto, ProjectTeamDefinitionSelectionPreviewRequest,
+    ProjectTopologySelectionApplyRequest, ProjectTopologySelectionPreviewDto,
+    ProjectTopologySelectionPreviewRequest, SemanticTopologyRequest, SemanticTopologyTargetDto,
+    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
+    TeamDefinitionRefDto, TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
     TeamDefinitionUpgradePreviewRequest, TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest,
     TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto,
     TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
@@ -141,7 +143,7 @@ use kontor_core::consultation::{
     AdvisorProfileSpec, CommitteeRole, CommitteeTemplateSpec,
     CommitteeVerdict as ConsultationVerdict, ConsultationFamily, ConsultationIdentity,
     ConsultationRunId, ConsultationRunState, ConsultationScope, RecordedFinding,
-    conjunctive_outcome, validate_semantic_topic,
+    conjunctive_outcome, validate_semantic_topic, validate_semantic_topic_correction,
 };
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
@@ -164,8 +166,9 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
-    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
+    LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
+    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
     NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
@@ -523,6 +526,13 @@ struct PreparedContainerRecovery {
     preview: ContainerRecoveryPreviewDto,
     expected: NativeContainerBinding,
     replacement: NewNativeContainerBinding,
+}
+
+struct PreparedCommitteeTopicCorrection {
+    run: StoredConsultationRun,
+    preview: CommitteeTopicCorrectionPreviewDto,
+    retitle: RetitleContainerRequest,
+    adapter: Arc<dyn RuntimeAdapter>,
 }
 
 struct CoreTeamRoutePlan {
@@ -14558,6 +14568,213 @@ impl Services {
             runtime_observation_cursor,
         })
     }
+    async fn prepare_committee_topic_correction(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &CommitteeTopicCorrectionPreviewRequest,
+    ) -> Result<PreparedCommitteeTopicCorrection, ApiError> {
+        let state = self.state()?;
+        self.project_at(project_id, request.expected_project_revision)?;
+        let run =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        if run.revision != request.expected_run_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Committee run moved since the topic correction was prepared",
+                )
+                .with_revision(Some(run.revision)));
+        }
+        if run.semantic_identity_hash.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "only a pre-enforcement Committee run without a semantic identity may be corrected",
+            ));
+        }
+        let prior_topic = run.topic.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a topic correction cannot stand in for a missing legacy-topic migration",
+            )
+        })?;
+        if prior_topic != &request.expected_prior_topic {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the Committee topic differs from the caller's preview basis",
+            ));
+        }
+        let definition = self
+            .pinned_team_definition(project_id, run.mini_project_id)?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Committee epic has no pinned Team Definition",
+                )
+            })?;
+        let container = definition
+            .container(&self.domain.delivery.committee_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned Team Definition has no Committee container",
+                )
+            })?;
+        let item_code = self.item_code_for_subject(
+            project_id,
+            run.mini_project_id,
+            state
+                .with_store(|store| store.get_topology_node(project_id, run.topology_node_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Committee run has no durable topology node",
+                    )
+                })?
+                .task_id,
+        )?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, run.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee run has no durable topology node",
+                )
+            })?;
+        let jira_key = state
+            .with_store(|store| {
+                if let Some(task_id) = node.task_id {
+                    store.confirmed_jira_task_key(project_id, task_id)
+                } else {
+                    store.confirmed_jira_epic_key(project_id, run.mini_project_id)
+                }
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Committee scope has no confirmed Jira binding",
+                )
+            })?;
+        if let Err(error) = validate_semantic_topic_correction(
+            prior_topic,
+            &request.corrected_topic,
+            &[jira_key.as_str(), item_code.as_str()],
+            container.prefix.as_str(),
+            definition.separator.as_str(),
+        ) {
+            let rule = match error {
+                kontor_core::DomainError::Invalid { rule, .. }
+                | kontor_core::DomainError::InvalidAt { rule, .. } => rule,
+                other => return Err(self.refuse_domain(&other)),
+            };
+            return Err(self
+                .deny(ApiErrorCode::InvalidRequest, rule)
+                .about("ConsultationTopicCorrection")
+                .located_at("corrected_topic"));
+        }
+        let (revision, _) = self.committee_template(&run)?;
+        let re_review = run
+            .context
+            .get("re_review")
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value::<CommitteeReReviewProvenance>(value.clone()))
+            .transpose()
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Committee run's re-review provenance is unreadable",
+                )
+            })?;
+        let semantic_identity_hash = self.consultation_semantic_identity(
+            project_id,
+            run.mini_project_id,
+            node.task_id,
+            ConsultationFamily::Committee,
+            &revision,
+            &definition,
+            &request.corrected_topic,
+            re_review.as_ref(),
+        )?;
+        if let Some(existing) = state
+            .with_store(|store| {
+                store.get_consultation_run_by_semantic_identity(project_id, &semantic_identity_hash)
+            })
+            .map_err(|error| self.refuse(&error))?
+            && existing.id != run.id
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the corrected Committee scope and topic already belongs to another run",
+                )
+                .about("consultation semantic identity")
+                .located_at(format!("consultation-runs/{}", existing.id.as_text())));
+        }
+        let desired_title = self.container_name_from_definition(
+            &definition,
+            &node,
+            None,
+            Some(&request.corrected_topic),
+        )?;
+        let (retitle, adapter) = self.retitle_request_with_desired(
+            project_id,
+            run.topology_node_id,
+            &ContainerRetitleRequest {
+                expected_revision: request.expected_project_revision,
+            },
+            Some(desired_title.clone()),
+        )?;
+        let outcome = adapter
+            .preview_retitle_container(&retitle)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.identity.native_id != retitle.bound_native_id {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee topic correction preview read a different native container",
+            ));
+        }
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "project_revision": request.expected_project_revision.get(),
+            "epic_id": run.mini_project_id.to_string(),
+            "committee_run_id": committee_run_id.to_string(),
+            "run_revision": run.revision.get(),
+            "topology_node_id": run.topology_node_id.to_string(),
+            "prior_topic": prior_topic.as_str(),
+            "corrected_topic": request.corrected_topic.as_str(),
+            "semantic_identity_hash": semantic_identity_hash.as_str(),
+            "native_id": retitle.bound_native_id.as_str(),
+            "observed_title": outcome.observed_title,
+            "desired_title": desired_title.as_str(),
+            "reason": request.reason.as_str(),
+        }))?;
+        Ok(PreparedCommitteeTopicCorrection {
+            preview: CommitteeTopicCorrectionPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                epic_id: run.mini_project_id,
+                committee_run_id,
+                topology_node_id: run.topology_node_id,
+                prior_topic: prior_topic.clone(),
+                corrected_topic: request.corrected_topic.clone(),
+                semantic_identity_hash,
+                bound_native_id: ExternalId::parse(retitle.bound_native_id.as_str())
+                    .map_err(|error| self.refuse_domain(&error))?,
+                observed_title: outcome.observed_title,
+                desired_title,
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            run,
+            retitle,
+            adapter,
+        })
+    }
 }
 
 #[async_trait]
@@ -17529,6 +17746,164 @@ impl ApplicationOperations for Services {
                     AppliedDto::Created
                 },
                 revision: project.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn preview_committee_topic_correction(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &CommitteeTopicCorrectionPreviewRequest,
+    ) -> Result<CommitteeTopicCorrectionPreviewDto, ApiError> {
+        Ok(self
+            .prepare_committee_topic_correction(project_id, committee_run_id, request)
+            .await?
+            .preview)
+    }
+
+    async fn apply_committee_topic_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        request: &CommitteeTopicCorrectionApplyRequest,
+    ) -> Result<AppliedCommitteeTopicCorrectionDto, ApiError> {
+        let _native_activity = self.native_activity()?;
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.correction.expected_project_revision)?;
+        let initial =
+            self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: initial.mini_project_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_consultation_topic",
+            "project_id": project_id.to_string(),
+            "epic_id": initial.mini_project_id.to_string(),
+            "committee_run_id": committee_run_id.to_string(),
+            "expected_run_revision": request.correction.expected_run_revision.get(),
+            "expected_prior_topic": request.correction.expected_prior_topic.as_str(),
+            "corrected_topic": request.correction.corrected_topic.as_str(),
+            "reason": request.correction.reason.as_str(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let replayed = self.replayed(key, &intent, Some(&target))?;
+
+        let (run, receipt_id, applied, retitle, adapter) = if let Some(receipt) = replayed {
+            let run =
+                self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
+            if run.topic.as_ref() != Some(&request.correction.corrected_topic)
+                || run.semantic_identity_hash.is_none()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the replayed topic-correction receipt has no matching corrected run",
+                ));
+            }
+            let (retitle, adapter) = self.retitle_request(
+                project_id,
+                run.topology_node_id,
+                &ContainerRetitleRequest {
+                    expected_revision: request.correction.expected_project_revision,
+                },
+            )?;
+            (run, receipt.id, Applied::Unchanged, retitle, adapter)
+        } else {
+            let prepared = self
+                .prepare_committee_topic_correction(
+                    project_id,
+                    committee_run_id,
+                    &request.correction,
+                )
+                .await?;
+            if prepared.preview.preview_hash != request.preview_hash {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the Committee topic correction changed since preview",
+                ));
+            }
+            let now = kontor_api::now();
+            let envelope = ReceiptEnvelope::new(
+                state.realm_id(),
+                NewLocalCommand {
+                    project_id,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: key.clone(),
+                    kind: CommandKind::ReconcileNativeNames,
+                    target: target.clone(),
+                    target_revision: project.revision,
+                    intent: intent.clone(),
+                    created_at: now,
+                },
+            );
+            let (run, receipt, applied) = state
+                .with_store(|store| {
+                    store.correct_legacy_consultation_topic_with_intent(
+                        &LegacyConsultationTopicCorrection {
+                            project_id,
+                            run_id: prepared.run.id,
+                            mini_project_id: prepared.run.mini_project_id,
+                            expected_run_revision: request.correction.expected_run_revision,
+                            expected_prior_topic: request.correction.expected_prior_topic.clone(),
+                            corrected_topic: request.correction.corrected_topic.clone(),
+                            semantic_identity_hash: prepared.preview.semantic_identity_hash.clone(),
+                            reason: request.correction.reason.clone(),
+                            corrected_at: now,
+                        },
+                        project.revision,
+                        &envelope,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            (run, receipt.id, applied, prepared.retitle, prepared.adapter)
+        };
+
+        let preview = adapter
+            .preview_retitle_container(&retitle)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let outcome = if preview.changed {
+            adapter.retitle_container(&retitle).await
+        } else {
+            Ok(preview)
+        }
+        .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.identity.native_id != retitle.bound_native_id
+            || outcome.observed_title != retitle.desired_title.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Committee topic correction did not preserve identity and read back the server-rendered title",
+            ));
+        }
+        let confirmed_receipt = self.record(
+            key,
+            project_id,
+            CommandKind::ReconcileNativeNames,
+            target,
+            project.revision,
+            &intent,
+        )?;
+        if confirmed_receipt != receipt_id {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the Committee topic correction receipt identity changed during confirmation",
+            ));
+        }
+        Ok(AppliedCommitteeTopicCorrectionDto {
+            committee: self.committee_run_dto(&run, None, AppliedDto::Unchanged)?,
+            bound_native_id: ExternalId::parse(retitle.bound_native_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            observed_title: outcome.observed_title,
+            changed: applied == Applied::Created,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: applied_dto(applied),
+                revision: run.revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -33172,7 +33547,7 @@ impl Services {
                         "the consultation container has no durable run",
                     )
                 })?;
-            let topic = run.topic.as_ref().or(legacy_topic).ok_or_else(|| {
+            let topic = legacy_topic.or(run.topic.as_ref()).ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "the legacy consultation requires an explicit migration topic",

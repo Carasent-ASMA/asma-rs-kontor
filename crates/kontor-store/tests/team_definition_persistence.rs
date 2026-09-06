@@ -4,20 +4,23 @@
 
 use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
 use kontor_core::id::{
-    AdvisorRunId, AggregateRevision, ContentHash, ExternalId, ExternalName, IdempotencyKey,
-    MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, SpecVersion,
-    TeamDefinitionMigrationId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    AdvisorRunId, AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId,
+    ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
+    SeatBindingId, SpecVersion, TeamDefinitionMigrationId, Timestamp, TopologyKindKey,
+    TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::naming::NativeNameValues;
+use kontor_core::realm::ReceiptEnvelope;
+use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
-    MigrationObjectKind, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot,
-    NativePlacement, NewMiniProject, NewNativeContainerBinding, NewProject, NewSeatBinding,
-    NewSessionTopologyNode, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget,
-    ProjectRepository, ProjectTeamDefinitionDefault, RepositoryError,
-    StoredConsultationProfileRevision, StoredConsultationRun, StoredHostedTopologySeat,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
-    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TopologyRepository,
+    LegacyConsultationTopicCorrection, MigrationObjectKind, MiniProjectTeamDefinitionSnapshot,
+    MiniProjectTopologySnapshot, NativePlacement, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProject, NewSeatBinding, NewSessionTopologyNode,
+    NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, ProjectRepository,
+    ProjectTeamDefinitionDefault, RepositoryError, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredHostedTopologySeat, TeamDefinitionMigrationObservation,
+    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
@@ -1059,6 +1062,74 @@ fn a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice() {
             .id,
         first.id
     );
+}
+
+#[test]
+fn a_legacy_topic_correction_preserves_the_run_and_replays_one_authority() {
+    let f = fixture();
+    let run = consultation_with_topic(&f, Some(name("ASMA-8111 operational completion")), None);
+    let identity = ContentHash::of(b"corrected semantic consultation identity");
+    let key = IdempotencyKey::parse("correct-legacy-consultation-topic").expect("a key");
+    let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "correct_consultation_topic",
+        "run_id": run.id.as_text(),
+    }))
+    .expect("a canonical intent");
+    let envelope = ReceiptEnvelope::new(
+        f.store.realm_id(),
+        NewLocalCommand {
+            project_id: f.project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key,
+            kind: CommandKind::ReconcileNativeNames,
+            target: AggregateRef::MiniProject {
+                mini_project_id: f.mini_project_id,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent,
+            created_at: f.created_at,
+        },
+    );
+    let correction = LegacyConsultationTopicCorrection {
+        project_id: f.project_id,
+        run_id: run.id,
+        mini_project_id: f.mini_project_id,
+        expected_run_revision: AggregateRevision::INITIAL,
+        expected_prior_topic: name("ASMA-8111 operational completion"),
+        corrected_topic: name("operational completion"),
+        semantic_identity_hash: identity.clone(),
+        reason: name("Remove the redundant confirmed Jira key"),
+        corrected_at: f.created_at,
+    };
+    let (corrected, receipt, applied) = f
+        .store
+        .correct_legacy_consultation_topic_with_intent(
+            &correction,
+            AggregateRevision::INITIAL,
+            &envelope,
+        )
+        .expect("the correction commits");
+    assert_eq!(applied, kontor_store::Applied::Created);
+    assert_eq!(corrected.id, run.id);
+    assert_eq!(
+        corrected.topic.as_ref().map(ExternalName::as_str),
+        Some("operational completion")
+    );
+    assert_eq!(corrected.semantic_identity_hash, Some(identity));
+    assert_eq!(corrected.revision.get(), 2);
+
+    let (replayed, replayed_receipt, replayed_applied) = f
+        .store
+        .correct_legacy_consultation_topic_with_intent(
+            &correction,
+            AggregateRevision::INITIAL,
+            &envelope,
+        )
+        .expect("the exact command replays");
+    assert_eq!(replayed.id, run.id);
+    assert_eq!(replayed_receipt.id, receipt.id);
+    assert_eq!(replayed_applied, kontor_store::Applied::Unchanged);
 }
 
 #[test]
