@@ -540,8 +540,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v94 makes an observed Jira body part of the immutable observation and
     // keeps every description Kontor published, so a divergence can be
     // attributed to Kontor's own stale projection rather than to a human edit
-    // (ASMA-8123).
-    assert_eq!(SCHEMA_VERSION, 94);
+    // (ASMA-8123). v95 retains Jira's immutable REST issue id beside the
+    // mutable key in both confirmation ledgers, so a key change on one issue
+    // is distinguishable from a rebind onto another; pre-v95 rows keep a NULL
+    // id rather than a synthesized one (ASMA-8116).
+    assert_eq!(SCHEMA_VERSION, 95);
 }
 
 #[test]
