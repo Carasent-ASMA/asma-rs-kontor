@@ -27196,6 +27196,86 @@ async fn a_task_with_no_jira_link_refuses_naming_instead_of_substituting_a_uuid(
     assert_eq!(world.fake.calls().len(), calls_before_refusal);
 }
 
+#[tokio::test]
+async fn a_typed_task_without_a_legacy_short_code_materializes_without_inventing_one() {
+    let world = World::open_empty_with_a_plane().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "jira-key-policy-project",
+        "Jira-key policy",
+        "/tmp/kontor-jira-key-policy",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("the project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("the project revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        project_revision,
+        "Jira-key-only task",
+        &category,
+        serde_json::json!([{
+            "title": "Implement confirmed Jira-key resolution",
+            "short_code": null,
+            "ticket_links": [{
+                "connector": "connector.jira",
+                "external_issue_key": "ASMA-8116"
+            }],
+            "worktree": "/tmp/kontor-jira-key-policy/asma-8116"
+        }]),
+    );
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("jira-key-policy-epic")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert!(applied.json()["tasks"][0]["short_code"].is_null());
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("the epic id")
+        .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("the task id")
+        .to_owned();
+    let epic_jira_key = body["execution_scope"]["external_epic_key"]
+        .as_str()
+        .expect("the epic Jira key");
+    confirm_test_epic_identity_as(&world, &project, &epic, None, epic_jira_key);
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("jira-key-policy-ticket")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+
+    let readback = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(readback.status, 200, "{}", readback.body);
+    assert_eq!(readback.json()["tasks"][0]["task_id"], task);
+    assert!(
+        readback.json()["tasks"][0]["short_code"].is_null(),
+        "materialization must not invent a legacy code: {}",
+        readback.body
+    );
+}
+
 /// A legacy import has no typed execution-scope row, so admission must recover
 /// names from the durable Jira-linked epic/task metadata. This is the live QNR
 /// shape that previously produced a raw epic UUID, an unresolved ECP template,

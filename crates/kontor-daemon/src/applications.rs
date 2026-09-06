@@ -791,6 +791,7 @@ impl Services {
         let stored = state
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
+        let has_declared_execution_scope = stored.is_some();
         if stored.is_none()
             && let Some(configured) = adapter.configured_execution_scope(epic_id, task_id)
         {
@@ -871,13 +872,13 @@ impl Services {
         }
         let short_code = state
             .with_store(|store| store.task_short_code(project_id, task.id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the task has no durable short code; preview and apply an explicit epic task mapping before materialization or retitle",
-                )
-            })?;
+            .map_err(|error| self.refuse(&error))?;
+        if short_code.is_none() && !has_declared_execution_scope {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task has no durable short code; preview and apply an explicit epic task mapping before materialization or retitle",
+            ));
+        }
         Ok(ExecutionScope::for_task(
             epic,
             TaskScope {
@@ -33415,7 +33416,6 @@ impl Services {
                 "the pinned Team Definition has no container for this consultation family",
             )
         })?;
-        let item_code = self.item_code_for_subject(project_id, epic_id, task_id)?;
         let jira_key = self
             .state()?
             .with_store(|store| {
@@ -33432,9 +33432,22 @@ impl Services {
                     "the consultation scope has no confirmed Jira binding",
                 )
             })?;
+        let item_code =
+            if template_uses_token(&container.name_template, NativeNameToken::EpicItemCode)
+                || template_uses_token(&container.name_template, NativeNameToken::TaskItemCode)
+                || template_uses_token(&container.name_template, NativeNameToken::ScopeItemCode)
+            {
+                Some(self.item_code_for_subject(project_id, epic_id, task_id)?)
+            } else {
+                None
+            };
+        let mut forbidden_scope_fragments = vec![jira_key.as_str()];
+        if let Some(item_code) = item_code.as_ref() {
+            forbidden_scope_fragments.push(item_code.as_str());
+        }
         if let Err(error) = validate_semantic_topic(
             topic,
-            &[jira_key.as_str(), item_code.as_str()],
+            &forbidden_scope_fragments,
             container.prefix.as_str(),
             definition.separator.as_str(),
         ) {
@@ -33507,9 +33520,10 @@ impl Services {
         let mut values = NativeNameValues::new().with_area_code(node.kind.as_str());
         if let Some(scope) = scope {
             if let Some(task) = scope.task.as_ref() {
-                values = values
-                    .with_jira_code(task.external_issue_key.as_str())
-                    .with_kontor_backlog_code(task.short_code.as_str());
+                values = values.with_jira_code(task.external_issue_key.as_str());
+                if let Some(short_code) = task.short_code.as_ref() {
+                    values = values.with_kontor_backlog_code(short_code.as_str());
+                }
                 let ai_short_name = self
                     .state()?
                     .with_store(|store| store.task_ai_short_name(node.project_id, task.task_id))
@@ -33573,20 +33587,30 @@ impl Services {
                 "the Team Definition does not configure this container kind",
             )
         })?;
+        let template = &container.name_template;
         let mut values = NativeNameValues::new().with_prefix(container.prefix.as_str());
-        let epic_item_code = self.item_code_for_subject(node.project_id, epic_id, None)?;
-        values = values
-            .with_epic_item_code(epic_item_code.as_str())
-            .with_scope_item_code(epic_item_code.as_str());
         let task_id = node
             .task_id
             .or_else(|| scope.and_then(|scope| scope.task.as_ref().map(|task| task.task_id)));
-        if let Some(task_id) = task_id {
+        if template_uses_token(template, NativeNameToken::EpicItemCode)
+            || (task_id.is_none() && template_uses_token(template, NativeNameToken::ScopeItemCode))
+        {
+            let epic_item_code = self.item_code_for_subject(node.project_id, epic_id, None)?;
+            values = values.with_epic_item_code(epic_item_code.as_str());
+            if task_id.is_none() {
+                values = values.with_scope_item_code(epic_item_code.as_str());
+            }
+        }
+        if let Some(task_id) = task_id
+            && (template_uses_token(template, NativeNameToken::TaskItemCode)
+                || template_uses_token(template, NativeNameToken::ScopeItemCode))
+        {
             let task_item_code =
                 self.item_code_for_subject(node.project_id, epic_id, Some(task_id))?;
-            values = values
-                .with_task_item_code(task_item_code.as_str())
-                .with_scope_item_code(task_item_code.as_str());
+            values = values.with_task_item_code(task_item_code.as_str());
+            if template_uses_token(template, NativeNameToken::ScopeItemCode) {
+                values = values.with_scope_item_code(task_item_code.as_str());
+            }
         }
         if template_uses_token(&container.name_template, NativeNameToken::Topic) {
             let run = self
@@ -33703,9 +33727,10 @@ impl Services {
             })?;
         let mut values = NativeNameValues::new().with_area_code(area_code);
         if let Some(task) = scope.task.as_ref() {
-            values = values
-                .with_jira_code(task.external_issue_key.as_str())
-                .with_kontor_backlog_code(task.short_code.as_str());
+            values = values.with_jira_code(task.external_issue_key.as_str());
+            if let Some(short_code) = task.short_code.as_ref() {
+                values = values.with_kontor_backlog_code(short_code.as_str());
+            }
             let ai_short_name = state
                 .with_store(|store| store.task_ai_short_name(project_id, task.task_id))
                 .map_err(|error| self.refuse(&error))?;
@@ -34561,9 +34586,10 @@ fn render_legacy_container_name(
         .replace("<Jira epic>", scope.epic.external_epic_key.as_str())
         .replace("<short title>", scope.epic.short_title.as_str());
     if let Some(task) = scope.task.as_ref() {
-        rendered = rendered
-            .replace("<Jira issue>", task.external_issue_key.as_str())
-            .replace("<short ticket code>", task.short_code.as_str());
+        rendered = rendered.replace("<Jira issue>", task.external_issue_key.as_str());
+        if let Some(short_code) = task.short_code.as_ref() {
+            rendered = rendered.replace("<short ticket code>", short_code.as_str());
+        }
     }
     if rendered == template.as_str() || rendered.contains(['<', '>']) {
         return Err(kontor_core::DomainError::invalid(

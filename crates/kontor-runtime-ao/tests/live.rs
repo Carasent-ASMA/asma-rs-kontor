@@ -147,7 +147,7 @@ async fn live_admitted_launch(ao: &AoAdapter, config: &LiveEnv) -> LaunchRequest
             TaskScope {
                 task_id,
                 external_issue_key: ExternalId::parse("ASMA-AO-LIVE-1").expect("issue key"),
-                short_code: ExternalId::parse("AO-LIVE-1").expect("short code"),
+                short_code: Some(ExternalId::parse("AO-LIVE-1").expect("short code")),
                 worktree: config.project_path.clone(),
             },
         ),

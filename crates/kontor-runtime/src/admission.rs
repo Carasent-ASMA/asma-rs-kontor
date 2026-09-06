@@ -921,7 +921,7 @@ mod tests {
                 TaskScope {
                     task_id,
                     external_issue_key: ExternalId::parse("ASMA-ADMISSION-1").expect("issue key"),
-                    short_code: ExternalId::parse("ADMISSION-1").expect("short code"),
+                    short_code: Some(ExternalId::parse("ADMISSION-1").expect("short code")),
                     worktree: cwd.clone(),
                 },
             ),

@@ -81,7 +81,7 @@ fn execution_scope(task_id: TaskId, worktree: WorkspaceRoot) -> ExecutionScope {
         TaskScope {
             task_id,
             external_issue_key: ExternalId::parse("ASMA-HARNESS-1").expect("issue key"),
-            short_code: ExternalId::parse("HARNESS-1").expect("short code"),
+            short_code: Some(ExternalId::parse("HARNESS-1").expect("short code")),
             worktree,
         },
     )
