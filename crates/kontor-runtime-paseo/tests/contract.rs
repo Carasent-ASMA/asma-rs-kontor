@@ -2671,6 +2671,279 @@ async fn preparation_creates_an_absent_declared_git_worktree_before_registering_
     assert_eq!(recorded.count("workspace create"), 1);
 }
 
+/// The preparation request the absent-checkout tests share: a ticket scope
+/// whose durable worktree is the managed path `worktree` encodes.
+fn absent_checkout_request(
+    epic: EpicScope,
+    issue: &str,
+    worktree_root: WorkspaceRoot,
+    worktree: &std::path::Path,
+) -> WorkspacePrepareRequest {
+    WorkspacePrepareRequest {
+        scope: ExecutionScope::for_task(
+            epic,
+            TaskScope {
+                task_id: task(),
+                external_issue_key: external(issue),
+                short_code: external(issue),
+                worktree: worktree_root,
+            },
+        ),
+        team_run_id: team_run(),
+        task_id: task(),
+        workspace_binding_id: WorkspaceBindingId::generate(),
+        display_name: name("TSW • ASMA-9000 • DYNAMIC"),
+        root: WorkspaceRoot::parse(worktree.to_str().expect("the temporary path remains UTF-8"))
+            .expect("the declared worktree remains valid"),
+        requested_at: at("2026-08-10T09:00:00Z"),
+    }
+}
+
+/// An adapter over a fresh recorded daemon whose epic project is prepared and
+/// whose workspace list is empty, so the next preparation would have to create.
+async fn adapter_with_prepared_project(
+    runtime_config: PaseoConfig,
+    command: &str,
+) -> (PaseoAdapter, Arc<RecordedPaseo>) {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded =
+        Arc::new(recorded.answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY)));
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project(command, &project_name())
+        .await
+        .expect("the epic project is prepared");
+    (adapter, recorded)
+}
+
+/// An adapter whose recorded daemon first reports no workspace and then the
+/// one Kontor created at `worktree_root` on `branch`.
+async fn adapter_expecting_a_created_workspace(
+    runtime_config: PaseoConfig,
+    worktree_root: &WorkspaceRoot,
+    branch: &str,
+    command: &str,
+) -> PaseoAdapter {
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, worktree_root, branch);
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project(command, &project_name())
+        .await
+        .expect("the epic project is prepared");
+    adapter
+}
+
+fn local_branch_exists(repository: &tempfile::TempDir, branch: &str) -> bool {
+    std::process::Command::new("git")
+        .args([
+            "-C",
+            repository.path().to_str().expect("UTF-8 path"),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .status()
+        .expect("git inspects the repository")
+        .success()
+}
+
+fn current_branch_of(worktree: &std::path::Path) -> String {
+    let current = std::process::Command::new("git")
+        .args([
+            "-C",
+            worktree.to_str().expect("UTF-8 path"),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .expect("the prepared checkout is readable");
+    String::from_utf8_lossy(&current.stdout).trim().to_owned()
+}
+
+#[tokio::test]
+async fn preparation_refuses_to_mint_a_branch_outside_the_publication_grammar() {
+    // The exact shape the ASMA-8101 audit found: a declared path `.worktrees/<slug>`
+    // used to become a keyless branch `<slug>` and was published as such.
+    let repository = temporary_repository();
+    let branch = "absent-checkout";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let (adapter, recorded) = adapter_with_prepared_project(runtime_config, "cmd-keyless").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-9000",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a keyless branch is never minted");
+    assert!(
+        matches!(
+            &refused,
+            RuntimeError::WorkspacePreparationFailed { rule }
+                if rule.starts_with("branch_shape_invalid")
+        ),
+        "the refusal names the grammar rule, got {refused:?}"
+    );
+    assert!(!worktree.exists(), "no checkout was created");
+    assert!(
+        !local_branch_exists(&repository, branch),
+        "no branch was created"
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_to_mint_a_branch_bound_to_another_key() {
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-1-somebody-elses-ticket";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let (adapter, _) = adapter_with_prepared_project(runtime_config, "cmd-foreign-key").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-9000",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a canonical branch with a foreign key is not this task's branch");
+    assert!(
+        matches!(
+            &refused,
+            RuntimeError::WorkspacePreparationFailed { rule }
+                if rule.starts_with("branch_binding_mismatch")
+        ),
+        "{refused:?}"
+    );
+    assert!(!local_branch_exists(&repository, branch));
+}
+
+#[tokio::test]
+async fn preparation_accepts_the_epic_key_as_the_default_branch_identity() {
+    // One epic, one branch: a task worktree on the epic's branch is the default
+    // the commit workflow prescribes, so the epic key binds as well as the task's.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7744-kontor-mvp";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let adapter = adapter_expecting_a_created_workspace(
+        runtime_config,
+        &worktree_root,
+        branch,
+        "cmd-epic-branch",
+    )
+    .await;
+
+    adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-9000",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect("the epic-keyed branch is minted");
+    assert!(local_branch_exists(&repository, branch));
+    assert_eq!(current_branch_of(&worktree), branch);
+}
+
+#[tokio::test]
+async fn preparation_cannot_mint_a_branch_for_a_scope_without_a_confirmed_key() {
+    // A legacy epic whose "key" is an internal id has nothing a branch could be
+    // bound to. Refusing beats naming a published branch after a UUID.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-9000-unconfirmed";
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let (adapter, _) = adapter_with_prepared_project(runtime_config, "cmd-unconfirmed").await;
+    let legacy = EpicScope {
+        mini_project_id: MiniProjectId::generate(),
+        external_epic_key: external("legacy-epic"),
+        short_title: name("Legacy title"),
+    };
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            legacy,
+            "01a0721b-ea31-7482-952f-f6f004019537",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("no confirmed key, no branch");
+    assert!(
+        matches!(
+            &refused,
+            RuntimeError::WorkspacePreparationFailed { rule }
+                if rule.starts_with("binding_unconfirmed")
+        ),
+        "{refused:?}"
+    );
+    assert!(!local_branch_exists(&repository, branch));
+}
+
+#[tokio::test]
+async fn preparation_adopts_an_existing_branch_whatever_it_was_named() {
+    // The grammar governs what Kontor creates. A branch that already exists is
+    // history — refusing it would strand every checkout made before ASMA-8101.
+    let repository = temporary_repository();
+    let branch = "cat-11";
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            repository.path().to_str().expect("UTF-8 path"),
+            "branch",
+            branch,
+            "master",
+        ])
+        .status()
+        .expect("git creates the historical branch");
+    assert!(status.success());
+    let (runtime_config, worktree_root, worktree) = managed_worktree(&repository, branch);
+    let adapter = adapter_expecting_a_created_workspace(
+        runtime_config,
+        &worktree_root,
+        branch,
+        "cmd-historical-branch",
+    )
+    .await;
+
+    adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-9000",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect("an existing branch is checked out, not judged");
+    assert!(
+        worktree.join(".git").is_file(),
+        "git created a linked worktree"
+    );
+    assert_eq!(current_branch_of(&worktree), branch);
+}
+
 #[tokio::test]
 async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
     let repository = temporary_repository();

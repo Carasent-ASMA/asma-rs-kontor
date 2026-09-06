@@ -3813,6 +3813,11 @@ async fn two_epics_in_one_project_keep_distinct_execution_scopes_across_replay_a
 /// Durable placement resolution is an admission preflight. A malformed imported
 /// task must not leave the queued, unbound TeamRun that originally made the QNR
 /// replay impossible to recover honestly.
+///
+/// Since ASMA-8101 a task that declares no worktree but carries a confirmed
+/// tracker key is placed on the checkout derived from that key, so the
+/// genuinely unplaceable task is the one with neither a worktree nor any key:
+/// no epic execution scope and no ticket link.
 #[tokio::test]
 async fn an_unplaceable_dynamic_task_is_refused_before_a_team_run_is_committed() {
     let world = World::open_empty_with_a_plane().await;
@@ -3857,19 +3862,23 @@ async fn an_unplaceable_dynamic_task_is_refused_before_a_team_run_is_committed()
         serde_json::json!([{
             "title": "Task with no worktree",
             "worktree": null,
-            "ticket_links": [{"connector": "jira", "external_issue_key": "ASMA-9991"}]
+            "ticket_links": []
         }]),
     );
-    body["execution_scope"] = serde_json::json!({
-        "external_epic_key": "ASMA-9990",
-        "short_title": "Dynamic epic"
-    });
+    body.as_object_mut()
+        .expect("an epic body")
+        .remove("execution_scope");
     let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
         .signed_as(&world, "admin")
         .with_key("dynamic-preflight-epic")
         .send(&world)
         .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
+    assert!(
+        applied.json()["tasks"][0]["worktree"].is_null(),
+        "with no confirmed key there is nothing to derive a placement from: {}",
+        applied.body
+    );
     let epic = applied.json()["epic_id"]
         .as_str()
         .expect("an epic id")
@@ -13605,19 +13614,25 @@ async fn distinct_task_worktrees_isolate_one_module_through_admission() {
     .send(&world)
     .await;
     assert_eq!(plan.status, 200, "{}", plan.body);
+    // Since ASMA-8101 a task that declares no worktree is placed on the
+    // deterministic checkout derived from its confirmed tracker key, so all
+    // three trees are distinct and all three admit.
+    let derived_tree = format!(
+        "/tmp/kontor-isolated/.worktrees/feat/{}-no-tree",
+        test_jira_key("Isolated module epic-task-2")
+    );
     assert_eq!(
         plan.json()["ready"].as_array().expect("ready").len(),
-        2,
-        "both distinct trees admit: {}",
+        3,
+        "both declared trees and the derived one admit: {}",
         plan.body
     );
     assert!(
         plan.json()["blocked"]
             .as_array()
             .expect("blocked")
-            .iter()
-            .any(|task| task["code"] == "module_in_flight"),
-        "the task with no verified tree remains serialized: {}",
+            .is_empty(),
+        "no task is left serialized on a missing tree: {}",
         plan.body
     );
 
@@ -13635,7 +13650,7 @@ async fn distinct_task_worktrees_isolate_one_module_through_admission() {
     .await;
     assert_eq!(started.status, 200, "{}", started.body);
 
-    let unverified_task = TaskId::parse(
+    let derived_task = TaskId::parse(
         applied.json()["tasks"][2]["task_id"]
             .as_str()
             .expect("task id"),
@@ -13653,12 +13668,15 @@ async fn distinct_task_worktrees_isolate_one_module_through_admission() {
         .collect();
     assert_eq!(
         trees,
-        BTreeSet::from(["/w/isolated-a", "/w/isolated-b"]),
+        BTreeSet::from(["/w/isolated-a", "/w/isolated-b", derived_tree.as_str()]),
         "the module leases retain each admitted task's worktree"
     );
     assert!(
-        claims.iter().all(|claim| claim.task_id != unverified_task),
-        "the task without a verified tree was not admitted"
+        claims.iter().any(|claim| {
+            claim.task_id == derived_task
+                && claim.worktree.as_ref().map(ExternalName::as_str) == Some(derived_tree.as_str())
+        }),
+        "the undeclared task was admitted on its derived tree"
     );
 }
 
@@ -33809,9 +33827,13 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
             .canonical_cwd
             .expect("the recovered container has a canonical directory")
     });
+    // The stable consultation directory is keyed by the node and, since
+    // ASMA-8101, carries the epic's confirmed Jira key as a canonical branch.
     assert_eq!(
         recovered_cwd.as_str(),
-        format!("/tmp/kontor-committee-initial-recovery/.worktrees/consultation-{stuck_node}"),
+        format!(
+            "/tmp/kontor-committee-initial-recovery/.worktrees/chore/ASMA-9001-consultation-{stuck_node}"
+        ),
         "generic topology recovery placed the Committee outside its stable consultation directory"
     );
     let recovered_slots = world.daemon.state().with_store(|store| {
@@ -38741,4 +38763,166 @@ async fn duplicate_rendered_slots_in_one_team_are_refused_before_runtime_or_admi
             "no AgentRun is admitted"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8101 — deterministic task branches at epic apply
+// ---------------------------------------------------------------------------
+
+/// Apply one single-task epic whose task states `worktree` verbatim (`null`
+/// keeps the field absent) under an epic keyed `ASMA-8101`, at a project rooted
+/// at `root`.
+async fn apply_one_task_epic(
+    world: &World,
+    key: &str,
+    root: &str,
+    worktree: serde_json::Value,
+) -> (String, Answer) {
+    let created = ensure_project(world, key, "Kontor", root).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(world).await;
+    let mut body = epic_body(
+        revision,
+        &format!("{key} epic"),
+        &category,
+        serde_json::json!([{"title": "Placed task", "worktree": worktree}]),
+    );
+    body["execution_scope"]["external_epic_key"] = serde_json::json!("ASMA-8101");
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key(format!("{key}-epic"))
+        .send(world)
+        .await;
+    (project, applied)
+}
+
+#[tokio::test]
+async fn an_undeclared_task_worktree_is_derived_from_its_confirmed_tracker_key() {
+    let world = World::open_empty().await;
+    let (project, applied) = apply_one_task_epic(
+        &world,
+        "derived",
+        "/tmp/kontor-derived",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    // The task's own linked key wins over the epic key: a task worktree is the
+    // unit of parallel isolation, and the scheduler admits one claimant per tree.
+    let task_key = test_jira_key("derived epic-task-0");
+    let expected = format!("/tmp/kontor-derived/.worktrees/feat/{task_key}-placed-task");
+    assert_eq!(
+        applied.json()["tasks"][0]["worktree"],
+        serde_json::json!(expected),
+        "the apply reports the derived placement: {}",
+        applied.body
+    );
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        projection.json()["tasks"][0]["worktree"],
+        serde_json::json!(expected),
+        "{}",
+        projection.body
+    );
+}
+
+#[tokio::test]
+async fn a_derived_worktree_never_overrides_a_declared_one() {
+    let world = World::open_empty().await;
+    let (project, first) = apply_one_task_epic(
+        &world,
+        "declared",
+        "/tmp/kontor-declared",
+        serde_json::json!("/w/declared-elsewhere"),
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = read.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let mut body = epic_body(
+        revision,
+        "declared epic",
+        &category,
+        serde_json::json!([{"title": "Placed task", "worktree": null}]),
+    );
+    body["execution_scope"]["external_epic_key"] = serde_json::json!("ASMA-8101");
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("declared-epic-again")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["tasks"][0]["worktree"],
+        serde_json::json!("/w/declared-elsewhere"),
+        "an omitted worktree leaves the operator's placement alone: {}",
+        again.body
+    );
+}
+
+#[tokio::test]
+async fn a_managed_task_worktree_outside_the_branch_grammar_is_refused() {
+    // The shape behind every deviation in the ASMA-8101 audit.
+    let world = World::open_empty().await;
+    let (_, refused) = apply_one_task_epic(
+        &world,
+        "keyless",
+        "/tmp/kontor-keyless",
+        serde_json::json!("/tmp/kontor-keyless/.worktrees/cat-11"),
+    )
+    .await;
+    assert_eq!(refused.code(), "invalid_request", "{}", refused.body);
+    assert!(
+        refused.body.contains("branch_shape_invalid"),
+        "the refusal carries the stable reason code: {}",
+        refused.body
+    );
+}
+
+#[tokio::test]
+async fn a_managed_task_worktree_bound_to_a_foreign_key_is_refused() {
+    let world = World::open_empty().await;
+    let (_, refused) = apply_one_task_epic(
+        &world,
+        "foreign",
+        "/tmp/kontor-foreign",
+        serde_json::json!("/tmp/kontor-foreign/.worktrees/feat/ASMA-1-somebody-elses"),
+    )
+    .await;
+    assert_eq!(refused.code(), "invalid_request", "{}", refused.body);
+    assert!(
+        refused.body.contains("branch_binding_mismatch"),
+        "{}",
+        refused.body
+    );
+}
+
+#[tokio::test]
+async fn a_managed_task_worktree_on_the_epic_branch_is_accepted() {
+    let world = World::open_empty().await;
+    let (_, applied) = apply_one_task_epic(
+        &world,
+        "epic-branch",
+        "/tmp/kontor-epic-branch",
+        serde_json::json!("/tmp/kontor-epic-branch/.worktrees/feat/ASMA-8101-one-epic-one-branch"),
+    )
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["tasks"][0]["worktree"],
+        serde_json::json!("/tmp/kontor-epic-branch/.worktrees/feat/ASMA-8101-one-epic-one-branch")
+    );
 }

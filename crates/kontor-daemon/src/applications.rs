@@ -128,6 +128,10 @@ use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::authority::AuthoritySubject;
 use kontor_core::backlog_identity::{EpicBacklogCode, JiraItemCode};
+use kontor_core::branch::{
+    BranchName, BranchRefusal, BranchType, MANAGED_WORKTREES_DIR, TrackerKey, managed_branch_text,
+    managed_worktree_path,
+};
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
@@ -748,7 +752,19 @@ impl Services {
                             "the runtime execution scope names no durable epic",
                         )
                     })?;
-                self.legacy_epic_scope(epic)?
+                let mut legacy = self.legacy_epic_scope(epic)?;
+                // A legacy spelling that fell back to the internal id is not a
+                // tracker identity. The Jira binding the connector confirmed is,
+                // so an epic imported without an execution scope still branches
+                // under its real key (ASMA-8101) rather than under a UUID.
+                if TrackerKey::from_external(&legacy.external_epic_key).is_err()
+                    && let Some(confirmed) = state
+                        .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
+                        .map_err(|error| self.refuse(&error))?
+                {
+                    legacy.external_epic_key = confirmed;
+                }
+                legacy
             }
         };
         let Some(task_id) = task_id else {
@@ -1398,6 +1414,9 @@ impl Services {
             }
         }
 
+        // The tracker identity every managed worktree in this epic must carry
+        // and, for a task that declares no placement, may be derived from.
+        let (epic_key, epic_title) = self.epic_branch_identity(project_id, request)?;
         let mut tasks = Vec::with_capacity(request.tasks.len());
         for task in &request.tasks {
             let module = task
@@ -1442,6 +1461,14 @@ impl Services {
                 .transpose()?
                 .transpose()
                 .map_err(|error| self.refuse_domain(&error))?;
+            let (worktree, derived_worktree) = self.place_task_branch(
+                project.root_path.as_str(),
+                epic_key.as_ref(),
+                &epic_title,
+                &task.title,
+                &links,
+                worktree,
+            )?;
             let imported_state = match task.import_state {
                 EpicImportStateDto::Ready => ImportedTaskState::Ready,
                 EpicImportStateDto::Completed => ImportedTaskState::Completed,
@@ -1460,6 +1487,7 @@ impl Services {
                 depends_on: task.depends_on.clone(),
                 ticket_links: links,
                 worktree,
+                derived_worktree,
             });
         }
 
@@ -9387,7 +9415,8 @@ impl Services {
                 "the runtime selected for Advisor placement is not configured",
             )
         })?;
-        let cwd = self.consultation_root(project.root_path.as_str(), node.id)?;
+        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
+        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -9888,7 +9917,8 @@ impl Services {
                 "the runtime selected for Committee placement is not configured",
             )
         })?;
-        let cwd = self.consultation_root(project.root_path.as_str(), node.id)?;
+        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
+        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -10104,7 +10134,8 @@ impl Services {
                 "the runtime selected for Committee recovery is not configured",
             )
         })?;
-        let cwd = self.consultation_root(project.root_path.as_str(), node.id)?;
+        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
+        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -16171,7 +16202,11 @@ impl ApplicationOperations for Services {
                     kind if kind == self.domain.delivery.advisor_kind.as_str()
                         || kind == self.domain.delivery.committee_kind.as_str()
                 ) {
-                    self.consultation_root(project.root_path.as_str(), leaf.id)?
+                    self.consultation_root(
+                        project.root_path.as_str(),
+                        self.epic_tracker_key(project_id, epic_id)?.as_ref(),
+                        leaf.id,
+                    )?
                 } else {
                     match leaf.task_id {
                         Some(task_id) => self.task_root(project_id, task_id)?,
@@ -32137,21 +32172,148 @@ impl Services {
     /// assumes an externally provisioned root and leaves a plain directory the
     /// check then rejects. The ECP may sit in `runtime-roots/` because it is a
     /// session host rather than a ticket role.
+    ///
+    /// The branch that checkout carries is the deterministic one the ASMA CLI
+    /// would derive — `chore/<EPIC-KEY>-consultation-<node id>` — so a
+    /// consultation is never published as a keyless `consultation-<uuid>`
+    /// (ASMA-8101). A consultation that already has its pre-ASMA-8101 checkout
+    /// keeps it: the node is the durable identity, and moving a live
+    /// consultation's tree would strand the one it made.
     fn consultation_root(
         &self,
         project_root: &str,
+        epic_key: Option<&TrackerKey>,
         node_id: TopologyNodeId,
     ) -> Result<WorkspaceRoot, ApiError> {
-        let mut root = PathBuf::from(project_root);
-        root.push(".worktrees");
-        root.push(format!("consultation-{node_id}"));
-        let root = root.to_str().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the consultation worktree path is not valid UTF-8",
-            )
-        })?;
-        WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
+        let mut legacy = PathBuf::from(project_root);
+        legacy.push(MANAGED_WORKTREES_DIR);
+        legacy.push(format!("consultation-{node_id}"));
+        let root = if legacy.exists() {
+            legacy
+                .to_str()
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the consultation worktree path is not valid UTF-8",
+                    )
+                })?
+                .to_owned()
+        } else {
+            let key = epic_key.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    BranchRefusal::BindingUnconfirmed.rule(),
+                )
+            })?;
+            let branch =
+                BranchName::derive(BranchType::Chore, key, &format!("consultation {node_id}"));
+            managed_worktree_path(project_root, &branch)
+        };
+        WorkspaceRoot::parse(&root).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// The confirmed tracker key an epic's branches carry: the declared
+    /// execution scope's key when it is canonical, else the Jira epic binding
+    /// the connector confirmed, else nothing. Never an internal id or a display
+    /// code.
+    fn epic_tracker_key(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<Option<TrackerKey>, ApiError> {
+        let state = self.state()?;
+        let declared = state
+            .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|scope| TrackerKey::from_external(&scope.external_epic_key).ok());
+        if declared.is_some() {
+            return Ok(declared);
+        }
+        Ok(state
+            .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|key| TrackerKey::from_external(&key).ok()))
+    }
+
+    /// The tracker key and branch title of the epic an apply names: the declared
+    /// scope's, else what an earlier apply or the connector confirmed for an
+    /// epic of this name, else none.
+    fn epic_branch_identity(
+        &self,
+        project_id: ProjectId,
+        request: &ApplyEpicRequest,
+    ) -> Result<(Option<TrackerKey>, ExternalName), ApiError> {
+        if let Some(scope) = &request.execution_scope
+            && let Ok(key) = TrackerKey::from_external(&scope.external_epic_key)
+        {
+            return Ok((Some(key), scope.short_title.clone()));
+        }
+        let state = self.state()?;
+        let existing = state
+            .with_store(|store| store.list_mini_projects(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|epic| epic.name == request.name);
+        let Some(existing) = existing else {
+            return Ok((None, request.name.clone()));
+        };
+        let title = state
+            .with_store(|store| store.get_epic_execution_scope(project_id, existing.id))
+            .map_err(|error| self.refuse(&error))?
+            .map_or(existing.name, |scope| scope.short_title);
+        Ok((self.epic_tracker_key(project_id, existing.id)?, title))
+    }
+
+    /// Validate a declared managed worktree against the shared branch grammar
+    /// and the keys this task may carry, or derive the deterministic placement
+    /// for a task that declares none (ASMA-8101).
+    ///
+    /// A declared path outside `<project root>/.worktrees/` implies no branch
+    /// and is left to its runtime. A declared managed path must encode a
+    /// canonical branch; when a key is known here it must also be bound to the
+    /// task's link or the epic, and when none is known yet the binding is
+    /// proven at preparation, where the confirmed scope exists.
+    ///
+    /// Derivation prefers the task's own linked key — a task worktree is the
+    /// unit of parallel isolation, and the scheduler admits one claimant per
+    /// tree — and falls back to the epic key. Publication to the default branch
+    /// still happens from the epic branch through the ASMA CLI.
+    fn place_task_branch(
+        &self,
+        project_root: &str,
+        epic_key: Option<&TrackerKey>,
+        epic_title: &ExternalName,
+        task_title: &ExternalName,
+        links: &[EpicTicketLink],
+        declared: Option<ExternalName>,
+    ) -> Result<(Option<ExternalName>, Option<ExternalName>), ApiError> {
+        let task_key = links
+            .iter()
+            .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
+        if let Some(worktree) = declared {
+            if let Some(encoded) = managed_branch_text(project_root, worktree.as_str()) {
+                let branch = BranchName::parse(encoded)
+                    .map_err(|refusal| self.deny(ApiErrorCode::InvalidRequest, refusal.rule()))?;
+                let confirmed: Vec<TrackerKey> =
+                    epic_key.cloned().into_iter().chain(task_key).collect();
+                if !confirmed.is_empty() {
+                    branch.ensure_bound_to(&confirmed).map_err(|refusal| {
+                        self.deny(ApiErrorCode::InvalidRequest, refusal.rule())
+                    })?;
+                }
+            }
+            return Ok((Some(worktree), None));
+        }
+        let (key, title) = match (task_key, epic_key) {
+            (Some(key), _) => (key, task_title),
+            (None, Some(key)) => (key.clone(), epic_title),
+            (None, None) => return Ok((None, None)),
+        };
+        let branch = BranchName::derive(BranchType::Feat, &key, title.as_str());
+        let derived = WorkspaceRoot::parse(&managed_worktree_path(project_root, &branch))
+            .and_then(|root| ExternalName::parse(root.as_str()))
+            .map_err(|error| self.refuse_domain(&error))?;
+        Ok((None, Some(derived)))
     }
 
     /// The display name one node's container carries, from its kind's template.

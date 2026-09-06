@@ -9,6 +9,10 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added the shared publication-branch grammar (`kontor_core::branch`) ported
+  from the ASMA CLI — `<type>/<PROJECT>-<number>-<slug>` with stable refusal
+  codes — and used it to derive a task's canonical `.worktrees/` placement from
+  its confirmed Jira key when an epic apply declares none (ASMA-8101).
 - Added immutable project-scoped epic backlog codes, deterministic
   collision-safe allocation, manual overrides and schema-v72 legacy evidence
   migration.
@@ -22,6 +26,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Epic apply refuses a managed `.worktrees/` path whose branch is outside the
+  publication grammar or bound to a foreign key; the Paseo adapter refuses to
+  mint any branch that is not canonical and bound to the epic or task key;
+  consultation checkouts are named `chore/<EPIC-KEY>-consultation-<node id>`
+  (existing `consultation-<node id>` checkouts are kept); an imported epic with
+  no execution scope now runs under its confirmed Jira epic key (ASMA-8101).
 - Extended epic preview/apply/readback and the generated OpenAPI/TypeScript
   contracts with the Kontor-owned epic backlog namespace while preserving full
   Jira issue keys as the binding authority.
