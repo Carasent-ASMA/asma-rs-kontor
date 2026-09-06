@@ -530,7 +530,7 @@ fn execution_scope() -> ExecutionScope {
         TaskScope {
             task_id: task(),
             external_issue_key: external("ASMA-7755"),
-            short_code: external("KON-11"),
+            short_code: Some(external("KON-11")),
             worktree: root(),
         },
     )
@@ -1321,7 +1321,7 @@ async fn an_opencode_delivery_launch_is_refused_with_no_native_effect() {
     let task_scope = TaskScope {
         task_id: task(),
         external_issue_key: external("ASMA-9001"),
-        short_code: external("OP-20"),
+        short_code: Some(external("OP-20")),
         worktree: WorkspaceRoot::parse(worktree.to_str().expect("UTF-8"))
             .expect("the declared worktree"),
     };
@@ -2502,7 +2502,7 @@ async fn a_claude_launch_in_the_same_worktree_still_reaches_the_native_effect() 
     let task_scope = TaskScope {
         task_id: task(),
         external_issue_key: external("ASMA-9002"),
-        short_code: external("OP-20"),
+        short_code: Some(external("OP-20")),
         worktree: WorkspaceRoot::parse(worktree.to_str().expect("UTF-8"))
             .expect("the declared worktree"),
     };
@@ -2593,7 +2593,7 @@ async fn preparation_creates_an_absent_declared_git_worktree_before_registering_
                 TaskScope {
                     task_id: task(),
                     external_issue_key: external("ASMA-9000"),
-                    short_code: external("ASMA-9000"),
+                    short_code: Some(external("ASMA-9000")),
                     worktree: worktree_root,
                 },
             ),
@@ -2685,7 +2685,7 @@ fn absent_checkout_request(
             TaskScope {
                 task_id: task(),
                 external_issue_key: external(issue),
-                short_code: external(issue),
+                short_code: Some(external(issue)),
                 worktree: worktree_root,
             },
         ),
@@ -2977,7 +2977,7 @@ async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
                 TaskScope {
                     task_id: task(),
                     external_issue_key: external("ASMA-8062"),
-                    short_code: external("KBI-8062"),
+                    short_code: Some(external("KBI-8062")),
                     worktree: worktree_root.clone(),
                 },
             ),
@@ -3020,7 +3020,7 @@ async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() 
                 TaskScope {
                     task_id: task(),
                     external_issue_key: external("ASMA-8062"),
-                    short_code: external("KBI-8062"),
+                    short_code: Some(external("KBI-8062")),
                     worktree: worktree_root.clone(),
                 },
             ),
@@ -3112,7 +3112,7 @@ async fn preparation_refuses_a_foreign_repository_inside_the_catalog_worktree_di
                 TaskScope {
                     task_id: task(),
                     external_issue_key: external("ASMA-8062"),
-                    short_code: external("KBI-8062"),
+                    short_code: Some(external("KBI-8062")),
                     worktree: worktree_root.clone(),
                 },
             ),
@@ -3176,7 +3176,7 @@ async fn preparation_refuses_branch_drift_before_registering_a_workspace() {
                 TaskScope {
                     task_id: task(),
                     external_issue_key: external("ASMA-9000"),
-                    short_code: external("ASMA-9000"),
+                    short_code: Some(external("ASMA-9000")),
                     worktree: worktree_root.clone(),
                 },
             ),
@@ -9104,7 +9104,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
         TaskScope {
             task_id: second_task,
             external_issue_key: external("ASMA-9001"),
-            short_code: external("QNR-01"),
+            short_code: Some(external("QNR-01")),
             worktree: second_root.clone(),
         },
     );
@@ -9363,7 +9363,7 @@ async fn ticket_materialization_creates_the_absent_checkout_before_workspace_reg
             TaskScope {
                 task_id: task(),
                 external_issue_key: external("ASMA-9001"),
-                short_code: external("ASMA-9001"),
+                short_code: Some(external("ASMA-9001")),
                 worktree: worktree_root.clone(),
             },
         ),

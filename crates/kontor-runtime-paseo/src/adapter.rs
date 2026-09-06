@@ -1672,7 +1672,7 @@ impl PaseoAdapter {
             && let Some(configured) = self.config.scope.configured_task_scope(task.task_id)
         {
             task.external_issue_key = configured.jira_issue_key;
-            task.short_code = configured.ticket_short_code;
+            task.short_code = Some(configured.ticket_short_code);
         }
         Ok(effective)
     }
@@ -5054,7 +5054,7 @@ impl RuntimeAdapter for PaseoAdapter {
             TaskScope {
                 task_id,
                 external_issue_key: task.jira_issue_key,
-                short_code: task.ticket_short_code,
+                short_code: Some(task.ticket_short_code),
                 worktree: task.canonical_worktree_cwd,
             },
         ))
@@ -8362,7 +8362,7 @@ mod task_scope_tests {
             TaskScope {
                 task_id: qnr_task,
                 external_issue_key: ExternalId::parse("ASMA-7676").expect("the Jira task"),
-                short_code: ExternalId::parse("grid-column-ops").expect("the ticket code"),
+                short_code: Some(ExternalId::parse("grid-column-ops").expect("the ticket code")),
                 worktree: WorkspaceRoot::parse("/repo/qnr/asma-7676").expect("the worktree"),
             },
         );
@@ -8510,7 +8510,7 @@ mod task_scope_tests {
             TaskScope {
                 task_id: second,
                 external_issue_key: ExternalId::parse("ASMA-9001").expect("foreign ticket"),
-                short_code: ExternalId::parse("QNR-01").expect("foreign code"),
+                short_code: Some(ExternalId::parse("QNR-01").expect("foreign code")),
                 worktree: WorkspaceRoot::parse("/repo/qnr-01").expect("foreign worktree"),
             },
         );
@@ -8530,7 +8530,7 @@ mod task_scope_tests {
             TaskScope {
                 task_id: first,
                 external_issue_key: ExternalId::parse("legacy-ticket").expect("legacy ticket"),
-                short_code: ExternalId::parse("legacy-code").expect("legacy code"),
+                short_code: Some(ExternalId::parse("legacy-code").expect("legacy code")),
                 worktree: durable_root.clone(),
             },
         );
@@ -8543,7 +8543,13 @@ mod task_scope_tests {
             "compatibility rendering never overrides durable placement"
         );
         assert_eq!(
-            effective.require_task().expect("task").short_code.as_str(),
+            effective
+                .require_task()
+                .expect("task")
+                .short_code
+                .as_ref()
+                .expect("the configured compatibility code")
+                .as_str(),
             "OP-01",
             "the existing visible seat spelling remains compatible"
         );
@@ -8561,7 +8567,7 @@ mod task_scope_tests {
             TaskScope {
                 task_id: dynamic_task,
                 external_issue_key: ExternalId::parse("ASMA-7952").expect("OP-18 issue"),
-                short_code: ExternalId::parse("ASMA-7952").expect("OP-18 code"),
+                short_code: Some(ExternalId::parse("ASMA-7952").expect("OP-18 code")),
                 worktree: dynamic_root.clone(),
             },
         );
