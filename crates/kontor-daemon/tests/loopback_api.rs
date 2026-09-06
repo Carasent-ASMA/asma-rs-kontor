@@ -2949,20 +2949,59 @@ async fn a_snapshot_carries_the_position_it_is_consistent_with() {
 
 #[tokio::test]
 async fn a_task_snapshot_reports_the_pinned_specification_revisions() {
-    let world = World::open().await;
-    let answer = Call::get(format!(
-        "/v1/projects/{}/tasks/{}",
-        world.project, world.task
-    ))
-    .signed_as(&world, "observer")
-    .send(&world)
-    .await;
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "jira-binding-projection").await;
+    let answer = Call::get(format!("/v1/projects/{}/tasks/{}", seed.project, seed.task))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
     assert_eq!(answer.status, 200, "{}", answer.body);
     let body = answer.json();
     assert_eq!(body["value"]["revision"], serde_json::json!(1));
+    assert_eq!(
+        body["value"]["jira_binding"]["state"],
+        "awaiting_jira_binding"
+    );
     assert!(
         body["value"]["applied"].is_object(),
         "a task snapshot reports which pinned revisions it is running under"
+    );
+    let draft_epic = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(draft_epic.status, 200, "{}", draft_epic.body);
+    assert!(draft_epic.json()["epic_backlog_code"].is_null());
+    assert_eq!(
+        draft_epic.json()["jira_binding"]["state"],
+        "awaiting_jira_binding"
+    );
+
+    confirm_test_epic_identity(&world, &seed.project, &seed.epic);
+    let task = Call::get(format!("/v1/projects/{}/tasks/{}", seed.project, seed.task))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(task.status, 200, "{}", task.body);
+    assert_eq!(task.json()["value"]["jira_binding"]["state"], "confirmed");
+    assert!(task.json()["value"]["jira_binding"]["jira_key"].is_string());
+    assert!(task.json()["value"]["jira_binding"]["readback_hash"].is_string());
+    assert_eq!(task.json()["value"]["jira_binding"]["revision"], 1);
+
+    let epic = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(epic.status, 200, "{}", epic.body);
+    assert_eq!(epic.json()["jira_binding"]["state"], "confirmed");
+    assert_eq!(
+        epic.json()["jira_binding"]["jira_key"],
+        test_jira_key(&seed.epic)
+    );
+    assert_eq!(
+        epic.json()["tasks"][0]["jira_binding"]["state"],
+        "confirmed"
     );
 }
 
@@ -3824,7 +3863,7 @@ async fn epic_backlog_code_previews_applies_and_reads_back_independently_of_exec
         .send(&world)
         .await;
     assert_eq!(automatic.status, 200, "{}", automatic.body);
-    assert_eq!(automatic.json()["epic_backlog_code"], "KBI");
+    assert!(automatic.json()["epic_backlog_code"].is_null());
     assert!(automatic.json()["execution_scope"].is_null());
 
     body["epic_backlog_code"] = serde_json::json!("KOP");
@@ -14959,7 +14998,7 @@ async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope()
                 "short_code": "OP-08",
                 "ticket_links": [{
                     "connector": "jira",
-                    "external_issue_key": "ASMA-7877"
+                    "external_issue_key": "ASMA-7878"
                 }],
                 "worktree": "/w/op-08"
             }]
@@ -15015,7 +15054,7 @@ async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope()
     .expect("a topology node id");
     assert_eq!(
         world.fake.container_title(task_node_id).as_deref(),
-        Some("TSW • OP08-7877"),
+        Some("TSW • OP08-7878"),
         "the runtime rendered the workspace from durable task scope"
     );
     assert!(

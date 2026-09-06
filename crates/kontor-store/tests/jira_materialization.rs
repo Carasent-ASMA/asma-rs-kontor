@@ -7,12 +7,13 @@ use kontor_core::id::{
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     CommandRepository, NewLocalCommand, NewMiniProject, NewProject, NewTask, NewTicketLink,
-    ProjectRepository, TicketRepository,
+    ProjectRepository, RepositoryError, TicketRepository,
 };
 use kontor_core::state::TaskState;
 use kontor_store::{
-    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
-    NewJiraMaterializationItem, SqliteStore,
+    JiraBindingState, JiraBindingSubject, JiraIntentKind, JiraItemKind,
+    JiraMaterializationRecoveryItem, NewJiraMaterializationBatch, NewJiraMaterializationItem,
+    SqliteStore,
 };
 
 fn external(value: impl AsRef<str>) -> ExternalId {
@@ -57,7 +58,8 @@ fn seed_graph(store: &SqliteStore) -> (ProjectId, MiniProjectId, TaskId, Timesta
 #[test]
 fn activation_requires_every_confirmed_binding_and_survives_readback() {
     let root = tempfile::tempdir().expect("state root");
-    let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
 
     let batch_id = external(uuid::Uuid::now_v7().to_string());
@@ -115,6 +117,34 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
     );
     assert_eq!(
         store
+            .jira_epic_binding_state(project_id, epic_id)
+            .expect("draft epic binding state"),
+        JiraBindingState::AwaitingJiraBinding
+    );
+    assert_eq!(
+        store
+            .jira_task_binding_state(project_id, task_id)
+            .expect("draft task binding state"),
+        JiraBindingState::AwaitingJiraBinding
+    );
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(project_id, "ASMA-1"),
+        Err(RepositoryError::Conflict { .. })
+    ));
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(project_id, "asma-1"),
+        Err(RepositoryError::Domain(_))
+    ));
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(project_id, ""),
+        Err(RepositoryError::Domain(_))
+    ));
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(project_id, "ASMA-999"),
+        Err(RepositoryError::NotFound { .. })
+    ));
+    assert_eq!(
+        store
             .confirmed_jira_task_key(project_id, task_id)
             .expect("task binding query"),
         None
@@ -134,6 +164,36 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
             )
             .expect("readback is confirmed");
     }
+    let epic_binding = store
+        .resolve_confirmed_jira_key(project_id, "ASMA-1")
+        .expect("exact epic key resolves");
+    assert_eq!(epic_binding.subject, JiraBindingSubject::Epic(epic_id));
+    assert_eq!(epic_binding.jira_key.as_str(), "ASMA-1");
+    assert_eq!(epic_binding.readback_hash, ContentHash::of(b"ASMA-1"));
+    assert_eq!(epic_binding.confirmed_at, now);
+    assert_eq!(epic_binding.revision, AggregateRevision::INITIAL);
+    let task_binding = store
+        .resolve_confirmed_jira_key(project_id, "ASMA-2")
+        .expect("exact task key resolves");
+    assert_eq!(task_binding.subject, JiraBindingSubject::Task(task_id));
+    assert_eq!(task_binding.jira_key.as_str(), "ASMA-2");
+    assert_eq!(task_binding.readback_hash, ContentHash::of(b"ASMA-2"));
+    assert_eq!(task_binding.confirmed_at, now);
+    assert_eq!(task_binding.revision, AggregateRevision::INITIAL);
+    assert!(matches!(
+        store.jira_epic_binding_state(project_id, epic_id),
+        Ok(JiraBindingState::Confirmed(binding))
+            if binding.subject == JiraBindingSubject::Epic(epic_id)
+    ));
+    assert!(matches!(
+        store.jira_task_binding_state(project_id, task_id),
+        Ok(JiraBindingState::Confirmed(binding))
+            if binding.subject == JiraBindingSubject::Task(task_id)
+    ));
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(ProjectId::generate(), "ASMA-1"),
+        Err(RepositoryError::NotFound { .. })
+    ));
     assert!(
         store
             .confirm_jira_materialization_item(
@@ -204,6 +264,72 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
         .expect("task link");
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].external_issue_key.as_str(), "ASMA-2");
+
+    let duplicate_epic_id = MiniProjectId::generate();
+    store
+        .create_mini_project(&NewMiniProject {
+            id: duplicate_epic_id,
+            project_id,
+            name: kontor_core::id::ExternalName::parse("Duplicate epic").expect("name"),
+            created_at: now,
+        })
+        .expect("duplicate epic fixture");
+    let duplicate_batch_id = external(uuid::Uuid::now_v7().to_string());
+    store
+        .plan_jira_materialization(
+            &NewJiraMaterializationBatch {
+                id: duplicate_batch_id.clone(),
+                project_id,
+                epic_id: duplicate_epic_id,
+                idempotency_key: "duplicate-cross-subject-key".to_owned(),
+                preview_hash: ContentHash::of(b"duplicate-cross-subject-key"),
+                expected_revision: AggregateRevision::INITIAL,
+                created_at: now,
+            },
+            &[NewJiraMaterializationItem {
+                id: external(uuid::Uuid::now_v7().to_string()),
+                batch_id: duplicate_batch_id.clone(),
+                project_id,
+                epic_id: duplicate_epic_id,
+                task_id: None,
+                link_id: None,
+                ordinal: 0,
+                item_kind: JiraItemKind::Epic,
+                intent_kind: JiraIntentKind::Link,
+                requested_key: Some(external("ASMA-2")),
+                marker: external("kontor-duplicate-cross-subject-key"),
+            }],
+        )
+        .expect("duplicate confirmation plan");
+    let duplicate = store
+        .jira_materialization_items(project_id, &duplicate_batch_id)
+        .expect("duplicate item")
+        .remove(0);
+    assert!(matches!(
+        store.confirm_jira_materialization_item(
+            &duplicate,
+            &external("ASMA-2"),
+            &ContentHash::of(b"duplicate-ASMA-2"),
+            now,
+        ),
+        Err(RepositoryError::Conflict { .. })
+    ));
+
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).expect("corrupt fixture opens");
+    connection
+        .execute(
+            "UPDATE jira_epic_bindings SET external_issue_key = 'ASMA-2'
+             WHERE project_id = ?1 AND epic_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+        )
+        .expect("a pre-validation cross-subject duplicate is seeded");
+    drop(connection);
+    let store = SqliteStore::open(&path).expect("corrupt fixture reopens");
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(project_id, "ASMA-2"),
+        Err(RepositoryError::Conflict { .. })
+    ));
 }
 
 #[test]

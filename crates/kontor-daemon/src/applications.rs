@@ -131,6 +131,7 @@ use kontor_api::applications::{
     SelectionRequest, SessionVerdictCitationDto, TicketContentConflictDto, TicketFieldDiffDto,
     TicketReconcileAppliedDto, TicketReconcileApplyRequest, TicketReconcilePlanDto,
 };
+use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
 use kontor_core::authority::AuthoritySubject;
@@ -24830,7 +24831,7 @@ impl ApplicationOperations for Services {
             realm_id: state.realm_id(),
             project_id,
             epic_id: applied.mini_project_id,
-            epic_backlog_code: Some(applied.epic_backlog_code),
+            epic_backlog_code: applied.epic_backlog_code,
             applied: applied_dto(applied.applied),
             revision: applied.revision,
             execution_scope: applied.execution_scope.map(|scope| EpicExecutionScopeDto {
@@ -24979,6 +24980,10 @@ impl ApplicationOperations for Services {
         let epic_backlog_code = state
             .with_store(|store| store.epic_backlog_code(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
+        let jira_binding: JiraBindingDto = state
+            .with_store(|store| store.jira_epic_binding_state(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .into();
         let tasks = state
             .with_store(|store| store.list_epic_tasks(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
@@ -25124,6 +25129,10 @@ impl ApplicationOperations for Services {
                 short_code: state
                     .with_store(|store| store.task_short_code(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?,
+                jira_binding: state
+                    .with_store(|store| store.jira_task_binding_state(project_id, task.id))
+                    .map_err(|error| self.refuse(&error))?
+                    .into(),
                 ai_short_name: state
                     .with_store(|store| store.task_ai_short_name(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?,
@@ -25171,6 +25180,7 @@ impl ApplicationOperations for Services {
             project_id,
             epic_id,
             epic_backlog_code,
+            jira_binding,
             name: epic.name,
             revision: epic.revision,
             execution_scope: execution_scope.map(|scope| EpicExecutionScopeDto {
