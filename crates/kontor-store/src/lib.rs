@@ -38,6 +38,7 @@ mod jira;
 pub mod memory;
 mod migrations;
 mod policy;
+pub mod publication;
 pub mod query;
 mod reconciliation;
 mod repository;

@@ -39456,3 +39456,284 @@ async fn a_managed_task_worktree_on_the_epic_branch_is_accepted() {
         serde_json::json!("/tmp/kontor-epic-branch/.worktrees/feat/ASMA-8101-one-epic-one-branch")
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASMA-8101 — publication attestation
+// ---------------------------------------------------------------------------
+
+/// One applied single-task epic whose tracker keys the tests can name.
+struct KeyedEpic {
+    project: String,
+    epic: String,
+    epic_key: String,
+    task_key: String,
+}
+
+async fn keyed_epic(world: &World, key: &str) -> KeyedEpic {
+    let created = ensure_project(world, key, "Kontor", &format!("/tmp/kontor-{key}")).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(world).await;
+    let name = format!("{key} epic");
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            &name,
+            &category,
+            serde_json::json!([{"title": "Publish it", "worktree": "/w/publish-it"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key}-epic"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    KeyedEpic {
+        project,
+        epic: applied.json()["epic_id"].as_str().expect("id").to_owned(),
+        epic_key: test_jira_key(&format!("{name}-epic")),
+        task_key: test_jira_key(&format!("{name}-task-0")),
+    }
+}
+
+const PUBLICATION_SHA: &str = "82c56f5043b436ba666962cf82a89e93e330a271";
+
+fn publication(head_branch: &str, base: &str, title: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "repository": "Carasent-ASMA/asma-modules",
+        "base_branch": base,
+        "head_branch": head_branch,
+        "head_sha": PUBLICATION_SHA,
+        "pull_request": 2985,
+    });
+    if let Some(title) = title {
+        body["title"] = serde_json::json!(title);
+    }
+    body
+}
+
+#[tokio::test]
+async fn an_epic_branch_publication_is_attested_recorded_and_replayed() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic(&world, "attest").await;
+    let head = format!("feat/{}-publication-identity", epic.epic_key);
+    let title = format!("{} Enforce the grammar", epic.task_key);
+    let body = publication(&head, "master", Some(&title));
+
+    let attested = Call::post(
+        format!("/v1/projects/{}/publication:attest", epic.project),
+        &body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("attest-1")
+    .send(&world)
+    .await;
+    assert_eq!(attested.status, 200, "{}", attested.body);
+    let decision = attested.json();
+    assert_eq!(
+        decision["accepted"],
+        serde_json::json!(true),
+        "{}",
+        attested.body
+    );
+    assert_eq!(decision["reasons"], serde_json::json!([]));
+    assert_eq!(decision["epic_id"], serde_json::json!(epic.epic));
+    assert!(
+        decision["task_id"].is_null(),
+        "an epic branch names no task"
+    );
+    assert_eq!(decision["replayed"], serde_json::json!(false));
+    let attestation_id = decision["attestation_id"]
+        .as_str()
+        .expect("a recorded decision")
+        .to_owned();
+
+    // Read back by id: the durable record is what a forge check would cite.
+    let read = Call::get(format!(
+        "/v1/projects/{}/publication/{attestation_id}",
+        epic.project
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(read.json()["head_sha"], serde_json::json!(PUBLICATION_SHA));
+    assert_eq!(read.json()["accepted"], serde_json::json!(true));
+    assert_eq!(read.json()["title"], serde_json::json!(title));
+
+    // The same key replays the same decision rather than recording a second.
+    let again = Call::post(
+        format!("/v1/projects/{}/publication:attest", epic.project),
+        &body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("attest-1")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["replayed"], serde_json::json!(true));
+    assert_eq!(
+        again.json()["attestation_id"],
+        serde_json::json!(attestation_id)
+    );
+
+    // The same key naming another commit is a conflict, never a rewrite.
+    let mut other = body.clone();
+    other["head_sha"] = serde_json::json!("0000000000000000000000000000000000000000");
+    let conflict = Call::post(
+        format!("/v1/projects/{}/publication:attest", epic.project),
+        &other,
+    )
+    .signed_as(&world, "operator")
+    .with_key("attest-1")
+    .send(&world)
+    .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.body);
+}
+
+#[tokio::test]
+async fn a_task_branch_binds_through_the_task_key() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic(&world, "task-branch").await;
+    let head = format!("fix/{}-one-slice", epic.task_key);
+    let previewed = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication(&head, "master", None),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    assert_eq!(
+        previewed.json()["accepted"],
+        serde_json::json!(true),
+        "{}",
+        previewed.body
+    );
+    assert_eq!(previewed.json()["epic_id"], serde_json::json!(epic.epic));
+    assert!(!previewed.json()["task_id"].is_null(), "{}", previewed.body);
+    assert!(
+        previewed.json()["attestation_id"].is_null(),
+        "a preview records nothing"
+    );
+}
+
+#[tokio::test]
+async fn refused_publications_carry_stable_codes_and_are_recorded() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic(&world, "refusals").await;
+
+    // The audit's shape: no type, no key.
+    let keyless = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication("cat-11", "master", None),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(keyless.status, 200, "{}", keyless.body);
+    assert_eq!(keyless.json()["accepted"], serde_json::json!(false));
+    assert_eq!(
+        keyless.json()["reasons"],
+        serde_json::json!(["branch_shape_invalid"])
+    );
+
+    // A canonical branch whose key Kontor never confirmed: refused, and the
+    // refusal is durable evidence.
+    let foreign = Call::post(
+        format!("/v1/projects/{}/publication:attest", epic.project),
+        &publication("feat/ASMA-1-somebody-elses", "master", None),
+    )
+    .signed_as(&world, "operator")
+    .with_key("refusals-foreign")
+    .send(&world)
+    .await;
+    assert_eq!(foreign.status, 200, "{}", foreign.body);
+    assert_eq!(foreign.json()["accepted"], serde_json::json!(false));
+    assert_eq!(
+        foreign.json()["reasons"],
+        serde_json::json!(["binding_unconfirmed"])
+    );
+    assert!(
+        foreign.json()["attestation_id"].is_string(),
+        "{}",
+        foreign.body
+    );
+    assert!(foreign.json()["epic_id"].is_null());
+
+    // Every failing rule at once: wrong base and a keyless title.
+    let head = format!("feat/{}-publication-identity", epic.epic_key);
+    let wrong = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication(&head, "develop", Some("cat 11")),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(wrong.status, 200, "{}", wrong.body);
+    assert_eq!(
+        wrong.json()["reasons"],
+        serde_json::json!(["base_branch_not_default", "pr_title_key_missing"])
+    );
+
+    // A title naming a key outside the epic graph.
+    let mismatch = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication(&head, "master", Some("ASMA-1 Something else")),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        mismatch.json()["reasons"],
+        serde_json::json!(["pr_title_key_mismatch"]),
+        "{}",
+        mismatch.body
+    );
+
+    // A malformed commit is a malformed request, not a policy decision.
+    let mut malformed = publication(&head, "master", None);
+    malformed["head_sha"] = serde_json::json!("82c56f50");
+    let refused = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &malformed,
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(refused.code(), "invalid_request", "{}", refused.body);
+
+    // Reading a decision is observer work; judging one is operator work.
+    let observer = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication(&head, "master", None),
+    )
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(observer.status, 403, "{}", observer.body);
+}
+
+#[tokio::test]
+async fn a_publication_merge_without_a_github_app_is_refused_as_unsupported() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic(&world, "merge-gateway").await;
+    let refused = Call::post(
+        format!("/v1/projects/{}/publication:merge", epic.project),
+        &serde_json::json!({
+            "repository": "Carasent-ASMA/asma-modules",
+            "pull_request": 2985,
+            "expected_head_sha": PUBLICATION_SHA,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("merge-gateway-1")
+    .send(&world)
+    .await;
+    assert_eq!(refused.code(), "unsupported_capability", "{}", refused.body);
+    assert!(refused.body.contains("github-app.json"), "{}", refused.body);
+}

@@ -757,6 +757,22 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_epic),
             )
             .route(
+                "/v1/projects/{project_id}/publication:preview",
+                post(applications::preview_publication),
+            )
+            .route(
+                "/v1/projects/{project_id}/publication:attest",
+                post(applications::attest_publication),
+            )
+            .route(
+                "/v1/projects/{project_id}/publication/{attestation_id}",
+                get(applications::publication_attestation),
+            )
+            .route(
+                "/v1/projects/{project_id}/publication:merge",
+                post(applications::merge_publication),
+            )
+            .route(
                 "/v1/projects/{project_id}/backlog/import:preview",
                 post(applications::preview_backlog_import),
             )

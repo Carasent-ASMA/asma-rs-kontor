@@ -561,6 +561,59 @@ only by project, predecessor run and `Idempotency-Key`; the server fresh-reads
 and freezes every binding, revision and quota-provenance fact rather than
 accepting an eligibility claim from the caller.
 
+## GitHub App for publication identity (ASMA-8101)
+
+Kontor judges every publication against the confirmed Kontor/Jira binding
+(`publication:preview` / `publication:attest`). The forge learns the verdict
+only through a GitHub App whose identity cannot bypass the rules it reports on.
+The App is optional: without it the attestation endpoints still serve the ASMA
+CLI, and nothing is posted to GitHub.
+
+Create the App once per organisation (Settings → Developer settings → GitHub
+Apps → New GitHub App) with:
+
+- name `asma-publication-policy`; webhooks disabled (Kontor polls);
+- repository permissions: **Checks: read and write**, **Pull requests: read**,
+  **Contents: read and write** (the squash merge), **Metadata: read**;
+- install it on exactly the governed repositories;
+- generate one private key and store the PEM outside every repository, mode
+  `0600`, for example `~/.local/state/kontor/asma/config/github-app.pem`.
+
+Then write `<state root>/config/github-app.json`:
+
+```json
+{
+  "schema_version": 1,
+  "app_id": 123456,
+  "installation_id": 7890123,
+  "private_key_path": "/Users/me/.local/state/kontor/asma/config/github-app.pem",
+  "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+  "repositories": ["Carasent-ASMA/asma-modules", "Carasent-ASMA/asma-rs-kontor"],
+  "check_name": "asma/publication-identity",
+  "poll_seconds": 60
+}
+```
+
+Absence of the document is valid. A present document that will not parse, or
+that names a key that will not load, refuses the start: an operator who wrote
+it believes the forge check is armed.
+
+With the document in place the daemon:
+
+- polls every open pull request of each listed repository every
+  `poll_seconds`, judges its head branch, head commit and title through the same
+  attestation the CLI uses, and posts one completed check run named
+  `check_name` per judged head/title (`success` or `failure`, with the stable
+  reason codes in the summary);
+- serves `publication:merge`, which re-reads the pull request, refuses a head
+  that moved since it was judged (`head_sha_stale`), re-judges, and squash-merges
+  through the App identity bound to that exact head.
+
+Make the check required on the default branch through a repository ruleset
+(`required_status_checks` with `integration_id` set to the App id) so a status of
+the same name posted by anyone else does not satisfy it. On GitHub Team plans a
+branch-name ruleset is not evaluated; this check is the forge-side identity gate.
+
 ## Other deployment data
 
 - Profile packs define phases, gates, artifacts, budgets and runtime routing.

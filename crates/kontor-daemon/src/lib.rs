@@ -44,6 +44,7 @@
 pub mod applications;
 pub mod credentials;
 pub mod endpoint;
+pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
@@ -164,6 +165,18 @@ pub enum StartupError {
         /// The accounts crate's own refusal.
         #[source]
         source: kontor_accounts::QuotaSignalsError,
+    },
+    /// The GitHub App document exists but cannot be used.
+    ///
+    /// Absence is valid and leaves publication checks and App merges inert. A
+    /// document that exists but will not parse, or names a key that will not
+    /// load, is refused: an operator who wrote it believes the forge check is
+    /// armed.
+    #[error("the realm's GitHub App configuration could not be used: {source}")]
+    GithubApp {
+        /// The gateway's own refusal.
+        #[source]
+        source: github_publication::ConfigError,
     },
     /// The state root does not exist and could not be created.
     #[error("the state root could not be prepared: {source}")]
@@ -311,6 +324,7 @@ pub struct Daemon {
     config: DaemonConfig,
     supervision: Option<SupervisionPolicy>,
     usage_poller: usage::UsagePoller,
+    github_publication: Option<Arc<github_publication::GithubPublicationGateway>>,
     /// Held for its `Drop`. The claim on the state root lasts exactly as long as
     /// this value does.
     lock: StateRootLock,
@@ -397,6 +411,16 @@ impl Daemon {
             .map_err(|source| StartupError::QuotaSignals { source })?
             .map(|document| document.signals)
             .unwrap_or_default();
+        // The GitHub App is optional configuration; a present document that
+        // cannot be honoured refuses the start for the same reason a broken
+        // quota-signal document does.
+        let github_publication =
+            github_publication::GithubPublicationConfig::read(&config.state_root)
+                .map_err(|source| StartupError::GithubApp { source })?
+                .map(github_publication::GithubPublicationGateway::from_config)
+                .transpose()
+                .map_err(|source| StartupError::GithubApp { source })?
+                .map(Arc::new);
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
@@ -404,6 +428,7 @@ impl Daemon {
             config.state_root.join("runtime-roots"),
             usage_poller.clone(),
             quota_signals,
+            github_publication.clone(),
         )
         .map_err(|source| StartupError::Applications { source })?;
 
@@ -436,6 +461,7 @@ impl Daemon {
             config,
             supervision,
             usage_poller,
+            github_publication,
             lock,
         })
     }
@@ -493,6 +519,12 @@ impl Daemon {
     #[must_use]
     pub fn jira_reconciler(&self) -> Arc<applications::Services> {
         Arc::clone(&self.applications)
+    }
+
+    /// The GitHub App gateway, when the operator configured one.
+    #[must_use]
+    pub fn github_publication(&self) -> Option<Arc<github_publication::GithubPublicationGateway>> {
+        self.github_publication.clone()
     }
 
     /// The configuration this daemon started with.

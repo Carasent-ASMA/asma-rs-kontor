@@ -6250,6 +6250,236 @@
         }
       }
     },
+    "/v1/projects/{project_id}/publication/{attestation_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One recorded publication decision.",
+        "operationId": "publication_attestation",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attestation_id",
+            "in": "path",
+            "description": "The recorded decision",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationDecisionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/publication:attest": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one publication and durably record the decision.",
+        "operationId": "attest_publication",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationIdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The decision, recorded or replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationDecisionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "A reused key naming another publication"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/publication:merge": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Squash-merge one attested pull request through the GitHub App identity.",
+        "operationId": "merge_publication",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Merged, or refused by the publication policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationMergeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No GitHub App is configured, or the repository is not governed"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The head moved, the pull request is not open, or GitHub declined"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/publication:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one publication against the confirmed tracker binding and record nothing.",
+        "operationId": "preview_publication",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationIdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The decision, unrecorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationDecisionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/quick-roles": {
       "get": {
         "tags": [
@@ -17456,6 +17686,249 @@
             "description": "Concurrent windows derived from the successful response."
           }
         }
+      },
+      "PublicationDecisionDto": {
+        "type": "object",
+        "description": "One publication decision: what was observed, what it was bound to, and the\ntyped answer with its stable reason codes.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "replayed",
+          "repository",
+          "base_branch",
+          "head_branch",
+          "head_sha",
+          "accepted",
+          "reasons",
+          "policy_revision",
+          "evaluated_at"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "description": "Whether every rule held."
+          },
+          "attestation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The recorded decision, absent for a preview."
+          },
+          "base_branch": {
+            "type": "string",
+            "description": "The target branch, as observed."
+          },
+          "epic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The epic the branch key resolved to, when it resolved."
+          },
+          "evaluated_at": {
+            "type": "string",
+            "description": "When it was judged."
+          },
+          "head_branch": {
+            "type": "string",
+            "description": "The published branch, as observed."
+          },
+          "head_sha": {
+            "type": "string",
+            "description": "The commit at its head."
+          },
+          "policy_revision": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The rules revision the decision was computed under.",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The owning project."
+          },
+          "pull_request": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The pull-request number, when one exists.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that judged it."
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every failed rule as a stable code, in evaluation order."
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "Whether an attest call returned an earlier decision under the same key."
+          },
+          "repository": {
+            "type": "string",
+            "description": "The forge repository, as observed."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The task the branch key resolved to, when the branch names a task."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pull-request title, when one exists."
+          }
+        }
+      },
+      "PublicationIdentityRequest": {
+        "type": "object",
+        "description": "What a producer observed about the publication it is about to make.\n\nThe head branch is passed exactly as named. A name outside the publication\ngrammar is not a malformed request: it is a publication Kontor refuses, and\nthe refusal is the recorded decision.",
+        "required": [
+          "repository",
+          "base_branch",
+          "head_branch",
+          "head_sha"
+        ],
+        "properties": {
+          "base_branch": {
+            "type": "string",
+            "description": "The branch the publication targets; only the default branch is accepted."
+          },
+          "head_branch": {
+            "type": "string",
+            "description": "The branch being published, exactly as named."
+          },
+          "head_sha": {
+            "type": "string",
+            "description": "The forty-hex commit at the head of that branch."
+          },
+          "pull_request": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The pull-request number, when one exists.",
+            "minimum": 0
+          },
+          "repository": {
+            "type": "string",
+            "description": "The forge repository, as `owner/name`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pull-request title, when one exists or is about to be created."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PublicationMergeDto": {
+        "type": "object",
+        "description": "What the merge gateway did.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "repository",
+          "pull_request",
+          "head_sha",
+          "merged",
+          "accepted",
+          "reasons"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "description": "Whether the publication was accepted."
+          },
+          "attestation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The recorded decision the merge was bound to."
+          },
+          "head_sha": {
+            "type": "string",
+            "description": "The head commit GitHub reported at merge time."
+          },
+          "merge_sha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The merge commit GitHub created, when it merged."
+          },
+          "merged": {
+            "type": "boolean",
+            "description": "Whether the squash merge happened."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The owning project."
+          },
+          "pull_request": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The pull request.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that acted."
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every failed rule as a stable code when it was not."
+          },
+          "repository": {
+            "type": "string",
+            "description": "The repository."
+          }
+        }
+      },
+      "PublicationMergeRequest": {
+        "type": "object",
+        "description": "One merge the caller wants performed through the GitHub App identity.",
+        "required": [
+          "repository",
+          "pull_request",
+          "expected_head_sha"
+        ],
+        "properties": {
+          "expected_head_sha": {
+            "type": "string",
+            "description": "The head commit the caller judged; a different current head is refused."
+          },
+          "pull_request": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The pull request to merge.",
+            "minimum": 0
+          },
+          "repository": {
+            "type": "string",
+            "description": "The forge repository, as `owner/name`."
+          }
+        },
+        "additionalProperties": false
       },
       "PublishTeamDefinitionRequest": {
         "type": "object",

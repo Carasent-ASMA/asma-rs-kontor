@@ -144,6 +144,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "provider_quota_observation_provenance",
     "provider_quota_observation_source_ranges",
     "provider_usage_observations",
+    "publication_attestations",
     "profile_selection_outcomes",
     "quick_session_promotions",
     "quick_sessions",
@@ -522,8 +523,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // durable forward-only seat-succession attempt and receipt ledgers. v87
     // permits a due deferred attempt to refresh its exact authority atomically;
     // v88 binds every new role-turn settlement to its current runtime message
-    // and terminal canonical timeline position.
-    assert_eq!(SCHEMA_VERSION, 88);
+    // and terminal canonical timeline position. v89 records publication
+    // attestations: the branch, commit and pull request a producer observed,
+    // the binding Kontor resolved and the typed decision (ASMA-8101).
+    assert_eq!(SCHEMA_VERSION, 89);
 }
 
 #[test]

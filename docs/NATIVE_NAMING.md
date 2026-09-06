@@ -107,6 +107,26 @@ Every refusal carries a stable code shared with the CLI:
 `binding_unconfirmed`. A Kontor display or backlog code (`KON-OP-22`, `KOP-8001`)
 is never a key and never becomes one.
 
+### Publication attestation
+
+A branch in the right shape is a necessary condition, not a receipt. Before the
+ASMA CLI pushes or opens a pull request it calls `publication:attest` with the
+repository, base branch, head branch, head commit and, where one exists, the
+pull-request number and title. Kontor resolves the branch key to the epic whose
+confirmed Jira key it is, or to a task whose confirmed link it is, and judges:
+
+- the head branch parses and carries the epic key or that task's key
+  (`branch_binding_mismatch`, `binding_unconfirmed`, or a grammar code such as
+  `branch_shape_invalid`);
+- the base branch is the default branch (`base_branch_not_default`);
+- a title, when given, leads with one canonical key from the epic graph — the
+  epic key or any confirmed child task key — and one space
+  (`pr_title_key_missing`, `pr_title_key_mismatch`).
+
+Accepted and refused decisions are both recorded, idempotently per caller key,
+and are readable by observers. A refused decision is evidence that the rail
+held. A malformed commit identity is a malformed request, not a decision.
+
 ## Legacy-import code correction
 
 Normal assignments cannot be renamed. Eligible legacy-imported epics may receive

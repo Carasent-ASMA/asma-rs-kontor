@@ -1893,6 +1893,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/publication/{attestation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One recorded publication decision. */
+        get: operations["publication_attestation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/publication:attest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one publication and durably record the decision. */
+        post: operations["attest_publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/publication:merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Squash-merge one attested pull request through the GitHub App identity. */
+        post: operations["merge_publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/publication:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one publication against the confirmed tracker binding and record nothing. */
+        post: operations["preview_publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/quick-roles": {
         parameters: {
             query?: never;
@@ -6572,6 +6640,112 @@ export interface components {
             state: string;
             /** @description Concurrent windows derived from the successful response. */
             windows: components["schemas"]["QuotaWindowDto"][];
+        };
+        /**
+         * @description One publication decision: what was observed, what it was bound to, and the
+         *     typed answer with its stable reason codes.
+         */
+        PublicationDecisionDto: {
+            /** @description Whether every rule held. */
+            accepted: boolean;
+            /** @description The recorded decision, absent for a preview. */
+            attestation_id?: string | null;
+            /** @description The target branch, as observed. */
+            base_branch: string;
+            /** @description The epic the branch key resolved to, when it resolved. */
+            epic_id?: string | null;
+            /** @description When it was judged. */
+            evaluated_at: string;
+            /** @description The published branch, as observed. */
+            head_branch: string;
+            /** @description The commit at its head. */
+            head_sha: string;
+            /**
+             * Format: int32
+             * @description The rules revision the decision was computed under.
+             */
+            policy_revision: number;
+            /** @description The owning project. */
+            project_id: string;
+            /**
+             * Format: int64
+             * @description The pull-request number, when one exists.
+             */
+            pull_request?: number | null;
+            /** @description The Realm that judged it. */
+            realm_id: string;
+            /** @description Every failed rule as a stable code, in evaluation order. */
+            reasons: string[];
+            /** @description Whether an attest call returned an earlier decision under the same key. */
+            replayed: boolean;
+            /** @description The forge repository, as observed. */
+            repository: string;
+            /** @description The task the branch key resolved to, when the branch names a task. */
+            task_id?: string | null;
+            /** @description The pull-request title, when one exists. */
+            title?: string | null;
+        };
+        /**
+         * @description What a producer observed about the publication it is about to make.
+         *
+         *     The head branch is passed exactly as named. A name outside the publication
+         *     grammar is not a malformed request: it is a publication Kontor refuses, and
+         *     the refusal is the recorded decision.
+         */
+        PublicationIdentityRequest: {
+            /** @description The branch the publication targets; only the default branch is accepted. */
+            base_branch: string;
+            /** @description The branch being published, exactly as named. */
+            head_branch: string;
+            /** @description The forty-hex commit at the head of that branch. */
+            head_sha: string;
+            /**
+             * Format: int64
+             * @description The pull-request number, when one exists.
+             */
+            pull_request?: number | null;
+            /** @description The forge repository, as `owner/name`. */
+            repository: string;
+            /** @description The pull-request title, when one exists or is about to be created. */
+            title?: string | null;
+        };
+        /** @description What the merge gateway did. */
+        PublicationMergeDto: {
+            /** @description Whether the publication was accepted. */
+            accepted: boolean;
+            /** @description The recorded decision the merge was bound to. */
+            attestation_id?: string | null;
+            /** @description The head commit GitHub reported at merge time. */
+            head_sha: string;
+            /** @description The merge commit GitHub created, when it merged. */
+            merge_sha?: string | null;
+            /** @description Whether the squash merge happened. */
+            merged: boolean;
+            /** @description The owning project. */
+            project_id: string;
+            /**
+             * Format: int64
+             * @description The pull request.
+             */
+            pull_request: number;
+            /** @description The Realm that acted. */
+            realm_id: string;
+            /** @description Every failed rule as a stable code when it was not. */
+            reasons: string[];
+            /** @description The repository. */
+            repository: string;
+        };
+        /** @description One merge the caller wants performed through the GitHub App identity. */
+        PublicationMergeRequest: {
+            /** @description The head commit the caller judged; a different current head is refused. */
+            expected_head_sha: string;
+            /**
+             * Format: int64
+             * @description The pull request to merge.
+             */
+            pull_request: number;
+            /** @description The forge repository, as `owner/name`. */
+            repository: string;
         };
         /** @description Publish one exact revalidated Team Definition revision. */
         PublishTeamDefinitionRequest: {
@@ -14323,6 +14497,210 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publication_attestation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The recorded decision */
+                attestation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationDecisionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attest_publication: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationIdentityRequest"];
+            };
+        };
+        responses: {
+            /** @description The decision, recorded or replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationDecisionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A reused key naming another publication */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    merge_publication: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationMergeRequest"];
+            };
+        };
+        responses: {
+            /** @description Merged, or refused by the publication policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationMergeDto"];
+                };
+            };
+            /** @description No GitHub App is configured, or the repository is not governed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The head moved, the pull request is not open, or GitHub declined */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_publication: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationIdentityRequest"];
+            };
+        };
+        responses: {
+            /** @description The decision, unrecorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationDecisionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
