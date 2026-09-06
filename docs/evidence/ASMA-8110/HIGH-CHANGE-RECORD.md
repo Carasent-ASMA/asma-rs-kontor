@@ -441,3 +441,35 @@ tests but before it could commit the already-authored change record or push.
 Root performed only that bounded integration remainder and recorded it as
 `operational_gap`; all task, TeamRun, AgentRun, seat, native-session,
 workspace, and `cwd` identities were preserved.
+
+## Third-remediation verification-environment correction
+
+Gate rejection sequence 2 was recorded after independent verification of
+`438f976` found one load-sensitive concurrent-first-open failure and the frozen
+handoff did not yet include the schema-92 documentation correction. The same
+first-open test then passed eight consecutive exact reruns against `d49b151`;
+the production migration path and its bounded timeout are unchanged.
+
+A fresh authoritative archive run against `d49b151` passed lockfile
+regeneration, formatting and clippy. The workspace test gate then exposed a
+separate deterministic harness error in
+`crates/kontor-cli/tests/memory_parity.rs`: a verification process launched by
+an identity-bound Kontor seat legitimately carries `KONTOR_AUTH`, and the child
+CLI deliberately prefers that seat-scoped operator credential. The fixture
+intends to exercise the explicit disk credential belonging to its temporary
+Realm, so inheriting the parent seat identity makes that Realm correctly answer
+`unauthenticated`.
+
+The fixture now removes `KONTOR_AUTH` from only the child CLI process. Production
+credential precedence is not changed, the credential is neither read nor
+logged, and the focused parity test passes while the parent verification seat
+remains identity-bound.
+
+During the rejected verification turn, the registered native workspace and
+worktree disappeared while the exact branch, Kontor task, TeamRun, AgentRuns,
+SeatBindings and native sessions remained. Supported topology materialization
+continued to refuse the stale binding after runtime settlement. Root therefore
+restored the exact registered path from the existing branch with a bounded
+`git worktree add`; no logical or runtime identity was replaced. Both the lost
+workspace and the unsupported restorative remainder are `operational_gap`
+evidence for closeout.
