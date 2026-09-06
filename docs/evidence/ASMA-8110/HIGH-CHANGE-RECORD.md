@@ -481,3 +481,65 @@ restored the exact registered path from the existing branch with a bounded
 `git worktree add`; no logical or runtime identity was replaced. Both the lost
 workspace and the unsupported restorative remainder are `operational_gap`
 evidence for closeout.
+
+## Fourth-remediation delivery: bounded direct fallback (`operational_gap`)
+
+Gate rejection sequence 2 (receipt `01a07741-cf6c-7330-9c89-0f8bb5979766`) put
+ASMA-8110 at `high-implementation` revision 7. The correction lineage for that
+rejection begins at local verification commit `66b34fe`, which is carried onto
+this branch as `25265c8`.
+
+Delivering that handoff to the preserved implementation seat through the
+supported Kontor path failed closed. The exact fact pattern, recorded so the
+closeout can judge the gap rather than infer it:
+
+- after the provider quota reset, `kontor_session_timeline_get`,
+  `kontor_runtime_settle`, `kontor_topology_materialize(ticket)`, and one fresh
+  `kontor_session_message_send` **each returned `409 stale_binding` without
+  delivery**;
+- `kontor_seat_attention` succeeded and preserved the exact seat;
+- a daemon restart attempted startup reconciliation, but the runtime refused the
+  persisted session generation;
+- root then used a bounded direct Paseo fallback to the **same** native agent.
+
+Nothing was replaced or re-created. The preserved identities are native agent
+`b600c003-b029-47fc-b5cc-ed120be11a1e`, AgentRun
+`01a07398-d34a-7b31-a3a6-1547a37e71a6`, SeatBinding
+`01a07398-b936-75b1-ae2c-121c255a7f75`, TeamRun
+`01a07398-b8d2-7363-8dcc-e92c061deffa`, task
+`01a07391-328e-74a3-a808-e7b5775c8438`, branch
+`fix/ASMA-8110-gate-recovery-binding-integrity`, and the exact registered
+worktree.
+
+No Kontor receipt exists for the four refused deliveries, so none may be
+recorded or inferred for them. No credential or authorization value was read,
+logged, or disclosed in establishing any of the above.
+
+Root additionally corrected two **test-boundary** credential assumptions so an
+inherited identity-bound seat credential is not mistaken for a Realm or on-disk
+fixture credential. Production credential precedence is unchanged; both
+corrections are confined to test setup and a private read helper.
+
+### Independent re-validation of the exact head
+
+Performed by this seat on `069d321` after the fallback delivery, to confirm the
+candidate rather than accept it on report:
+
+| Check | Result |
+|---|---|
+| `cargo generate-lockfile` byte-compare | **identical** |
+| `loopback_api rejection` (7 tests) | passed |
+| `loopback_api team_run` (6 tests) | passed |
+| `repository_roundtrip rejection` (2 tests) | passed |
+| `repository_roundtrip concurrent_recovery` (1 test) | passed |
+| `kontor-cli memory_parity` | passed |
+| `a_credential_file_yields_exactly_the_tier_that_was_asked_for` | passed |
+
+Every F-8110-R1…R5 correction and both new regressions are present in this tree
+and were re-confirmed by inspection: the strict absent-member binding check, the
+route-uniqueness-gated decoration, the deterministic pre-check barrier, the
+post-route invalid-source regression, and the released-rejection regression. The
+scope's protected readback now names schema 92 with migrations 0090, 0091 and
+0092, matching the integrated tree.
+
+This seat did not approve or advance the gate.
