@@ -45,12 +45,13 @@ fn every_identifier() -> Vec<(&'static str, String)> {
 }
 
 /// Refuse every identifier that contains one of `forbidden`, except the exact
-/// spellings in `allowed`.
+/// spellings or exact `tool.argument` pairs in `allowed`.
 fn audit(family: &str, forbidden: &[&str], allowed: &[&str]) {
     let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
     let mut found = Vec::new();
     for (tool, name) in every_identifier() {
-        if allowed.contains(name.as_str()) {
+        let qualified = format!("{tool}.{name}");
+        if allowed.contains(name.as_str()) || allowed.contains(qualified.as_str()) {
             continue;
         }
         let lowered = name.to_lowercase();
@@ -81,7 +82,14 @@ fn no_tool_names_a_store_a_database_or_a_migration() {
             "rusqlite",
             "vacuum",
         ],
-        &[],
+        &[
+            // These are forge repository slugs judged by the publication
+            // boundary. The exact-pair exceptions cannot authorize a storage
+            // repository argument on any other tool.
+            "kontor_publication_preview.repository",
+            "kontor_publication_attest.repository",
+            "kontor_publication_merge.repository",
+        ],
     );
     // `sql` and `store` are checked separately because they are substrings of
     // ordinary words; the rule is a whole-segment match rather than a blind
