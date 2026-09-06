@@ -33,6 +33,14 @@ JavaScript dependencies. Keep both lockfiles committed and reproducible.
 
 ## Work in one focused branch
 
+- Name the branch `<type>/ASMA-<number>-<slug>` from the confirmed Jira key
+  (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`,
+  `releases`); the only keyless form is a hotpatch line
+  `releases/v<major>.<minor>.<patch>`. The repository ruleset refuses any other
+  name, and `docs/NATIVE_NAMING.md` describes the same grammar Kontor derives
+  for task worktrees (ASMA-8101). Enable the local preflight once per clone
+  with `git config core.hooksPath .githooks`; it refuses an agent push of a
+  keyless branch or of `master` before the network round trip.
 - Keep one issue/ticket to one reviewable diff.
 - Do not mix generated lockfile drift, formatting unrelated files or another
   contributor's work into the change.

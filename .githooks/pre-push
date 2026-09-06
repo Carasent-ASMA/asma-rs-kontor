@@ -1,0 +1,76 @@
+#!/usr/bin/env sh
+# Protect master/main from AGENT pushes only, and refuse an agent branch that
+# carries no canonical Jira key. Humans push normally.
+#
+# Why an env sniff and not GitHub branch protection: agents push with the
+# developer's own git identity and credentials, so the forge cannot tell an
+# agent apart from the human. The agent runtimes are only distinguishable
+# locally, by the variables they export into the shell they spawn.
+#
+# Applies to this repository once `git config core.hooksPath .githooks` is set
+# (see CONTRIBUTING.md). Escape hatch for a deliberate agent push: ASMA_ALLOW_AGENT_PUSH=1.
+
+if [ -z "$CLAUDECODE" ] && [ -z "$OPENCODE" ] && [ -z "$CODEX_HOME" ] \
+  && [ -z "$AGENTSROOM_AGENT_ID" ] && [ -z "$PASEO_AGENT_ID" ]; then
+  exit 0  # human shell — not our business
+fi
+
+[ "$ASMA_ALLOW_AGENT_PUSH" = "1" ] && exit 0
+
+# Second rule (ASMA-8101): an agent may only publish a branch the ASMA CLI or
+# Kontor would have derived — `<type>/ASMA-<number>-<slug>` — or a hotpatch
+# line `releases/v<major>.<minor>.<patch>`. Same grammar as
+# asma-modules `_tools/asma-cli/src/asma_cli/publication_policy.py` and kontor-core
+# `branch.rs`; keep the three in step.
+branch_is_canonical() {
+  printf '%s\n' "$1" | grep -Eq \
+    '^(feat|fix|docs|chore|refactor|test|perf|build|ci|releases)/ASMA-[1-9][0-9]*-[a-z0-9]+(-[a-z0-9]+)*$' \
+  || printf '%s\n' "$1" | grep -Eq '^releases/v[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+zero_sha='0000000000000000000000000000000000000000'
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/*)
+      branch="${remote_ref#refs/heads/}"
+      # A deletion publishes nothing; the default branches are judged below.
+      if [ "$local_sha" != "$zero_sha" ] && [ "$branch" != master ] && [ "$branch" != main ] \
+        && ! branch_is_canonical "$branch"; then
+        echo "" >&2
+        echo "BLOCKED: agent push of branch '$branch' (branch_key_missing or not canonical)" >&2
+        echo "" >&2
+        echo "  Every published branch carries its Jira key, derived, not typed:" >&2
+        echo "    <type>/ASMA-<number>-<slug>   e.g. feat/ASMA-8101-publication-identity" >&2
+        echo "" >&2
+        echo "  Create it deterministically and move your commits over:" >&2
+        echo "    asma git --repo <context> checkout -b --from ASMA-<number>" >&2
+        echo "" >&2
+        echo "  Deliberate exception, with the user's explicit go-ahead:" >&2
+        echo "    ASMA_ALLOW_AGENT_PUSH=1 git push ..." >&2
+        echo "" >&2
+        exit 1
+      fi
+      ;;
+  esac
+  case "$remote_ref" in
+    refs/heads/master | refs/heads/main)
+      echo "" >&2
+      echo "BLOCKED: agent push to $remote_ref" >&2
+      echo "" >&2
+      echo "  An agent commit reaching master IS the delivery — there is no" >&2
+      echo "  review step behind it. Push a branch and open a PR instead:" >&2
+      echo "" >&2
+      echo "    asma git checkout -b <branch> --from master" >&2
+      echo "    asma git commit --auto --push --create-pr" >&2
+      echo "" >&2
+      echo "  Deliberate exception, with the user's explicit go-ahead:" >&2
+      echo "    ASMA_ALLOW_AGENT_PUSH=1 git push ..." >&2
+      echo "" >&2
+      exit 1
+      ;;
+  esac
+done
+
+exit 0
