@@ -2,28 +2,62 @@
 //!
 //! Codebase memory is an optional accelerator. Its connection pool or startup
 //! failure must never prevent an otherwise healthy Codex seat from starting.
+//! A Codex consultation's scoped bearer reaches the app-server process as
+//! `KONTOR_AUTH`; Codex forwards ambient variables to stdio MCP children only
+//! when the server explicitly names them in `env_vars`. Reconcile that name
+//! without ever placing the bearer value in configuration.
 
 use std::io::{self, Write};
 use std::path::Path;
 
-fn optional_memory(source: &str) -> io::Result<Option<String>> {
+const CONSULTATION_AUTH_ENV: &str = "KONTOR_AUTH";
+
+fn reconciled_provider_config(source: &str) -> io::Result<Option<String>> {
     let mut document = source
         .parse::<toml_edit::DocumentMut>()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid provider TOML"))?;
-    let Some(server) = document
-        .get_mut("mcp_servers")
-        .and_then(|servers| servers.get_mut("codebase-memory-mcp"))
-    else {
+    let mut changed = false;
+    let Some(servers) = document.get_mut("mcp_servers") else {
         return Ok(None);
     };
-    let server = server
+    let servers = servers
         .as_table_like_mut()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid memory server table"))?;
-    if server.get("required").and_then(toml_edit::Item::as_bool) != Some(true) {
-        return Ok(None);
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid MCP servers table"))?;
+    if let Some(server) = servers.get_mut("codebase-memory-mcp") {
+        let server = server.as_table_like_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid memory server table")
+        })?;
+        if server.get("required").and_then(toml_edit::Item::as_bool) == Some(true) {
+            server.insert("required", toml_edit::value(false));
+            changed = true;
+        }
     }
-    server.insert("required", toml_edit::value(false));
-    Ok(Some(document.to_string()))
+    if let Some(server) = servers.get_mut("kontor") {
+        let server = server.as_table_like_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid Kontor server table")
+        })?;
+        match server.get_mut("env_vars") {
+            None => {
+                let mut names = toml_edit::Array::new();
+                names.push(CONSULTATION_AUTH_ENV);
+                server.insert("env_vars", toml_edit::value(names));
+                changed = true;
+            }
+            Some(item) => {
+                let names = item.as_array_mut().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid Kontor server env_vars")
+                })?;
+                if !names
+                    .iter()
+                    .any(|name| name.as_str() == Some(CONSULTATION_AUTH_ENV))
+                {
+                    names.push(CONSULTATION_AUTH_ENV);
+                    changed = true;
+                }
+            }
+        }
+    }
+    Ok(changed.then(|| document.to_string()))
 }
 
 /// Reconcile registered Codex homes, preserving comments and all other servers.
@@ -58,7 +92,7 @@ pub fn reconcile(state_root: &Path) -> io::Result<usize> {
             Err(error) => return Err(error),
         };
         let original = std::fs::read_to_string(&path)?;
-        let Some(updated) = optional_memory(&original)? else {
+        let Some(updated) = reconciled_provider_config(&original)? else {
             continue;
         };
         let temporary = path.with_extension(format!("kontor-{}.tmp", uuid::Uuid::now_v7()));
@@ -91,9 +125,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_optional_memory_changes_and_replay_is_a_noop() {
+    fn owned_provider_policy_changes_once_and_preserves_other_values() {
         let input = "# operator comment\nmodel = 'example'\n[mcp_servers.codebase-memory-mcp]\ncommand = '/bin/memory'\nrequired = true\n[mcp_servers.kontor]\nrequired = true\n";
-        let updated = optional_memory(input).unwrap().unwrap();
+        let updated = reconciled_provider_config(input).unwrap().unwrap();
         assert!(updated.starts_with("# operator comment\nmodel = 'example'"));
         let parsed = updated.parse::<toml_edit::DocumentMut>().unwrap();
         assert_eq!(
@@ -104,9 +138,40 @@ mod tests {
             parsed["mcp_servers"]["kontor"]["required"].as_bool(),
             Some(true)
         );
-        assert!(optional_memory(&updated).unwrap().is_none());
-        assert!(optional_memory("model = 'example'\n").unwrap().is_none());
-        assert!(optional_memory("not valid = [").is_err());
+        assert_eq!(
+            parsed["mcp_servers"]["kontor"]["env_vars"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(toml_edit::Value::as_str)
+                .collect::<Vec<_>>(),
+            vec![CONSULTATION_AUTH_ENV]
+        );
+        assert!(reconciled_provider_config(&updated).unwrap().is_none());
+        assert!(
+            reconciled_provider_config("model = 'example'\n")
+                .unwrap()
+                .is_none()
+        );
+        assert!(reconciled_provider_config("not valid = [").is_err());
+    }
+
+    #[test]
+    fn an_existing_kontor_environment_allowlist_is_extended_without_replacement() {
+        let input = "[mcp_servers.kontor]\nenv_vars = ['EXISTING']\n";
+        let updated = reconciled_provider_config(input).unwrap().unwrap();
+        let parsed = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(
+            parsed["mcp_servers"]["kontor"]["env_vars"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(toml_edit::Value::as_str)
+                .collect::<Vec<_>>(),
+            vec!["EXISTING", CONSULTATION_AUTH_ENV]
+        );
+        assert!(reconciled_provider_config(&updated).unwrap().is_none());
+        assert!(reconciled_provider_config("[mcp_servers.kontor]\nenv_vars = false\n").is_err());
     }
 
     #[test]

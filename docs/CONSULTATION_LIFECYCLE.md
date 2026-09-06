@@ -29,12 +29,17 @@ not arbitrary shell commands. Existing sessions retain their original launch
 configuration until they are recovered through the supported seat lifecycle.
 
 On startup, Kontor reconciles **owned** `provider-homes/codex*/config.toml` files
-so `codebase-memory-mcp.required` is false. The TOML edit preserves comments and
-all other MCP requirements. Symlinked homes and configs are not modified. Memory
-is an optional accelerator; its handshake can still time out under resource
-pressure, but that failure no longer makes the Codex session itself fatal.
-`toml_edit` is pinned to the already locked version to preserve operator config
-without rewriting unrelated settings or adding a second TOML parser.
+so `codebase-memory-mcp.required` is false and an existing `mcp_servers.kontor`
+entry whitelists the name `KONTOR_AUTH` for its stdio child. The credential value
+is never written to configuration: Paseo carries it only in the native session
+environment, while Codex's `env_vars` setting forwards that inherited value to
+the scoped MCP process. The TOML edit preserves comments, existing environment
+names and all other MCP requirements. Symlinked homes and configs are not
+modified. Memory is an optional accelerator; its handshake can still time out
+under resource pressure, but that failure no longer makes the Codex session
+itself fatal. `toml_edit` is pinned to the already locked version to preserve
+operator config without rewriting unrelated settings or adding a second TOML
+parser.
 
 Schema 93 adds `consultation_session_releases`. Once startup reconciliation
 opens the barrier, a resident scanner checks every 30 seconds, planning at most

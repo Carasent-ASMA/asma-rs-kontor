@@ -10157,10 +10157,26 @@ impl Services {
                 .map_err(|error| self.refuse_domain(&error));
         }
 
-        let reroute = self
+        let materialization_reroute = self
             .state()?
             .with_store(|store| {
                 store.get_consultation_materialization_route_provenance(
+                    run.project_id,
+                    run.id,
+                    &seat.role_slot_id,
+                    seat.occupancy_generation,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .filter(|(rung, _)| rung == &seat.model_rung);
+        if let Some((_, profile_hash)) = materialization_reroute {
+            return consultation_route_provenance("materialization_recovery_profile", profile_hash)
+                .map_err(|error| self.refuse_domain(&error));
+        }
+        let recovery = self
+            .state()?
+            .with_store(|store| {
+                store.get_consultation_recovery_route_provenance(
                     run.project_id,
                     run.id,
                     &seat.role_slot_id,
@@ -10175,7 +10191,7 @@ impl Services {
                     "the active Committee route has no immutable admission or reroute provenance",
                 )
             })?;
-        consultation_route_provenance("materialization_recovery_profile", reroute.1)
+        consultation_route_provenance("seat_recovery_profile", recovery.1)
             .map_err(|error| self.refuse_domain(&error))
     }
 

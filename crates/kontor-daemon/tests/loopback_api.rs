@@ -37523,6 +37523,9 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "expected_revision": corrected_revision,
         "expected_native_id": predecessor_native.clone(),
         "reason": "credential_propagation",
+        "recovery_profile": [{
+            "provider": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh"
+        }],
     });
     let recovered = Call::post(
         format!(
@@ -37614,7 +37617,36 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     assert_eq!(zombie.status, 409, "{}", zombie.body);
     assert_eq!(zombie.json()["code"], "stale_binding");
 
-    let mut revision = recovered.json()["receipt"]["revision"]
+    // Recovery provenance belongs to the installed native generation. The
+    // first successor used a non-template route, so replacing it again proves
+    // that Kontor reads the immutable SeatRecoveryProfile instead of requiring
+    // the original admission route.
+    let repeated_recovery = Call::post(
+        format!(
+            "/v1/projects/{project}/committee-runs/{run}/seats/{}/recover",
+            reviewer_ids[0]
+        ),
+        &serde_json::json!({
+            "expected_revision": recovered.json()["receipt"]["revision"],
+            "expected_native_id": recovered.json()["successor_native_id"],
+            "reason": "credential_propagation",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-reviewer-repeated-recovery")
+    .send(world)
+    .await;
+    assert_eq!(repeated_recovery.status, 200, "{}", repeated_recovery.body);
+    let repeated_generation = repeated_recovery.json()["committee"]["seats"]
+        .as_array()
+        .expect("recovered Committee seats")
+        .iter()
+        .find(|seat| seat["seat_binding_id"] == reviewer_ids[0])
+        .and_then(|seat| seat["occupancy_generation"].as_u64())
+        .expect("the repeated successor occupancy generation");
+    assert_eq!(repeated_generation, 3);
+
+    let mut revision = repeated_recovery.json()["receipt"]["revision"]
         .as_u64()
         .expect("run revision");
 
@@ -37723,7 +37755,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .credentials()
             .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
-                recovered_generation,
+                repeated_generation,
             ),
     )
     .with_key("committee-incomplete-evidence")
@@ -37737,7 +37769,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .credentials()
             .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
-                if index == 0 { recovered_generation } else { 1 },
+                if index == 0 { repeated_generation } else { 1 },
             );
         let recorded = Call::post(
             format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
@@ -37780,7 +37812,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
                 .credentials()
                 .consultation_seat_credential_for_generation(
                     SeatBindingId::parse(&reviewer_ids[0]).unwrap(),
-                    recovered_generation,
+                    repeated_generation,
                 ),
         )
         .send(world)
@@ -38052,7 +38084,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .credentials()
             .consultation_seat_credential_for_generation(
                 SeatBindingId::parse(&reviewer_ids[0]).expect("a reviewer SeatBinding"),
-                recovered_generation,
+                repeated_generation,
             ),
     )
     .with_key("committee-poisoned-old-run")
