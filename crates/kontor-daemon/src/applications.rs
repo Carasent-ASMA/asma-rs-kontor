@@ -14101,6 +14101,28 @@ impl Services {
         epic_id: MiniProjectId,
         role_code: &str,
     ) -> Result<SeatBindingId, ApiError> {
+        self.live_control_seats(project_id, epic_id, role_code)?
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RoleSlotUnbound,
+                    "this epic's control plane holds no live seat for the required role",
+                )
+            })
+    }
+
+    /// Every live seat this epic's control plane holds for `role_code`, in
+    /// binding order.
+    ///
+    /// # Errors
+    /// Refuses when the epic has no control plane to read seats from.
+    fn live_control_seats(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        role_code: &str,
+    ) -> Result<Vec<SeatBindingId>, ApiError> {
         let scope = self.resolve_scope(
             project_id,
             &SemanticTopologyTargetDto::EpicControl { epic_id },
@@ -14121,23 +14143,63 @@ impl Services {
                     "this epic has no control plane; promote or materialize it first",
                 )
             })?;
-        let seats = self
+        Ok(self
             .state()?
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
-            .map_err(|error| self.refuse(&error))?;
-        seats
+            .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .find(|seat| {
+            .filter(|seat| {
                 seat.role.role_code.as_str() == role_code
                     && seat.lifecycle != TopologyLifecycle::Retired
             })
             .map(|seat| seat.id)
-            .ok_or_else(|| {
-                self.deny(
+            .collect())
+    }
+
+    /// The single live seat this epic's control plane holds for `role_code`.
+    ///
+    /// Distinct from [`Self::epic_control_seat`], which answers with the first
+    /// live match because its callers only need *a* current holder. Adoption
+    /// rewrites a frozen pin, so "the first of several" is not good enough: if
+    /// the topology holds two live seats for one control role, which one a
+    /// completion should now answer to is an operator's decision, and guessing
+    /// would silently move an epic's leadership.
+    ///
+    /// # Errors
+    /// Refuses when the epic has no control plane, no live seat for the role,
+    /// or more than one — each with the operation that resolves it.
+    fn sole_live_control_seat(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        role_code: &str,
+    ) -> Result<SeatBindingId, ApiError> {
+        match self
+            .live_control_seats(project_id, epic_id, role_code)?
+            .as_slice()
+        {
+            [only] => Ok(*only),
+            [] => Err(self
+                .deny(
                     ApiErrorCode::RoleSlotUnbound,
-                    "this epic's control plane holds no live seat for the required role",
+                    "this epic's control plane holds no live seat to adopt for its completion",
                 )
-            })
+                .about("completion wake")
+                .advising(
+                    "bind or replace the control seat for this role, then advance the completion \
+                     again; nothing was changed",
+                )),
+            _ => Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this epic's control plane holds more than one live seat for the role",
+                )
+                .about("completion wake")
+                .advising(
+                    "retire the seats this completion should not answer to, so exactly one \
+                     remains, then advance it again; nothing was changed",
+                )),
+        }
     }
 
     /// Prove that a scoped bearer is the current native occupancy of the
@@ -15046,49 +15108,58 @@ impl Services {
         transition: &CompletionTransition,
         commit: CompletionCommit<'_>,
     ) -> Result<(StoredEpicCompletion, CommandReceiptId), ApiError> {
+        // The wake's seat is re-resolved rather than trusted from the state.
+        // A frozen pin is a fact about when the run started, not about who
+        // leads the epic now, and a seat replaced since then is the ordinary
+        // case rather than an error: refusing left the completion stuck behind
+        // a seat that no longer exists, with no operation that could move it.
+        //
+        // So the current holder is adopted — into the state that is about to be
+        // written, so the forward pin and the wake name the same seat — and the
+        // whole thing commits as one transaction. Historical rounds, evidence
+        // and their era attribution are untouched: only the forward pin moves.
+        let mut forward = transition.state.clone();
+        let mut wake_seats = Vec::new();
+        for effect in &transition.commands {
+            if let CompletionCommand::WakeTpm { seat_binding_id } = effect {
+                let live = self.sole_live_control_seat(
+                    stored.project_id,
+                    stored.mini_project_id,
+                    MANDATORY_PROGRAM_ROLE,
+                )?;
+                if live != *seat_binding_id {
+                    forward.tpm_seat_id = live;
+                }
+                wake_seats.push(live);
+            }
+        }
         let next = StoredEpicCompletion {
-            profile_id: transition.state.profile.id.clone(),
-            profile_version: transition.state.profile.version,
-            definition_hash: transition.state.profile.definition_hash.clone(),
-            state: serde_json::to_value(&transition.state).map_err(|_| {
+            profile_id: forward.profile.id.clone(),
+            profile_version: forward.profile.version,
+            definition_hash: forward.profile.definition_hash.clone(),
+            state: serde_json::to_value(&forward).map_err(|_| {
                 self.deny(
                     ApiErrorCode::Unavailable,
                     "the completion state does not serialize",
                 )
             })?,
-            revision: transition.state.revision,
+            revision: forward.revision,
             updated_at: commit.now,
             ..stored.clone()
         };
         let mut wakes = Vec::new();
-        for effect in &transition.commands {
-            if let CompletionCommand::WakeTpm { seat_binding_id } = effect {
-                // The seat is re-resolved rather than trusted from the state: a
-                // seat that was replaced or retired since the run started must
-                // refuse here, which is the reconciliation the wake owes.
-                let live = self.epic_control_seat(
-                    next.project_id,
-                    next.mini_project_id,
-                    MANDATORY_PROGRAM_ROLE,
-                )?;
-                if live != *seat_binding_id {
-                    return Err(self.deny(
-                        ApiErrorCode::StaleBinding,
-                        "this epic's TPM seat was replaced since completion started",
-                    ));
-                }
-                wakes.push(StoredCompletionWake {
-                    project_id: next.project_id,
-                    mini_project_id: next.mini_project_id,
-                    completion_revision: next.revision,
-                    reason: ExternalName::parse(commit.reason)
-                        .map_err(|error| self.refuse_domain(&error))?,
-                    seat_binding_id: *seat_binding_id,
-                    receipt: next.definition_hash.clone(),
-                    appended_at: commit.now,
-                    acknowledged_at: None,
-                });
-            }
+        for seat_binding_id in wake_seats {
+            wakes.push(StoredCompletionWake {
+                project_id: next.project_id,
+                mini_project_id: next.mini_project_id,
+                completion_revision: next.revision,
+                reason: ExternalName::parse(commit.reason)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                seat_binding_id,
+                receipt: next.definition_hash.clone(),
+                appended_at: commit.now,
+                acknowledged_at: None,
+            });
         }
         let receipt_id = self
             .state()?
