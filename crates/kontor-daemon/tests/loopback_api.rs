@@ -22825,6 +22825,112 @@ async fn a_handoff_naming_another_run_refuses_a_never_bound_replacement() {
     );
 }
 
+/// The mixed candidate set, which pins which set the "exactly one" is counted
+/// over. One undelivered handoff names another run and one names nothing, for
+/// the same TeamRun and slot. Counting only the targetless rows would find its
+/// single row and authorize; counting the whole undelivered candidate set finds
+/// two decisions and refuses. Kontor refuses: a row that already answered the
+/// question does not stop being an answer because a later one abstained, and an
+/// Admin replacement creates a seat and launches it, while a refusal costs a new
+/// idempotency key.
+#[tokio::test]
+async fn a_mixed_targetless_and_mistargeted_pair_refuses_a_never_bound_replacement() {
+    let (seeded, predecessor_id, abandoned_revision) =
+        abandoned_before_its_handoff("reroute-mixed").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-mixed-handoff-1").await;
+    hand_off_to_the_unbound_slot(&seeded, "reroute-mixed-handoff-2").await;
+    let derived = undelivered_to_omega_k3(&seeded);
+    assert_eq!(
+        derived.len(),
+        2,
+        "two turns each decided their own handoff: {derived:?}"
+    );
+
+    // Re-point exactly one of them at a live sibling, named by its own settling
+    // turn so the other is untouched. Both rows stay undelivered, for this
+    // TeamRun and this slot: the set now holds one target naming another run and
+    // one naming nothing at all.
+    let sibling = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k4")
+        .expect("the sibling seat exists")["agent_run_id"]
+        .as_str()
+        .expect("an agent run id")
+        .to_owned();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    let repointed = connection
+        .execute(
+            "UPDATE turn_dispatches SET target_agent_run = ?2
+             WHERE project_id = ?1 AND settled_turn_id = ?3 AND dispatched = 0",
+            rusqlite::params![project, sibling, derived[0].settled_turn_id.to_string()],
+        )
+        .expect("the fixture re-points one pending handoff");
+    drop(connection);
+    assert_eq!(repointed, 1, "exactly one of the two handoffs moved");
+    let mixed = undelivered_to_omega_k3(&seeded);
+    assert_eq!(
+        mixed
+            .iter()
+            .filter(|dispatch| dispatch.target_agent_run.is_none())
+            .count(),
+        1,
+        "exactly one targetless row remains, which is what a narrower count \
+         would have authorized on: {mixed:?}"
+    );
+    assert_eq!(
+        mixed
+            .iter()
+            .filter(|dispatch| dispatch.target_agent_run.is_some())
+            .count(),
+        1,
+        "alongside one that already names another run: {mixed:?}"
+    );
+
+    // Allowed on purpose: a gate that wrongly authorizes must fail here on a
+    // created successor, not be rescued by a runtime that refuses the launch.
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    // A recorded successor is a *separate* authority in the same gate. Pinning
+    // its absence here keeps this test about the candidate set: if a seat ever
+    // exists by this point, the refusal below would be passing for a reason this
+    // test is not making, and it fails here instead with the reason named.
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        1,
+        "the slot holds only the abandoned predecessor when the gate is reached"
+    );
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-mixed-seat")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "revision_conflict");
+    assert_eq!(
+        omega_k3_seats(&seeded),
+        1,
+        "a mixed candidate set is a side-effect-free refusal"
+    );
+    assert_eq!(
+        undelivered_to_omega_k3(&seeded),
+        mixed,
+        "and it delivers, re-targets and derives nothing"
+    );
+}
+
 /// An unbound launch may be abandoned before its already-seated siblings end.
 /// Replaying that same operator decision after the siblings settle is the only
 /// immutable-row-safe opportunity to abandon the now-fully-terminal TeamRun.

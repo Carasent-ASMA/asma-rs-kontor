@@ -87,7 +87,7 @@ already nullable (`0018_role_turns.sql`).
 
 ## Tests
 
-`crates/kontor-daemon/tests/loopback_api.rs`. All three seed
+`crates/kontor-daemon/tests/loopback_api.rs`. All four seed
 `omega_with_one_unbound_slot(_, "omega-u-cat")` and abandon the refused
 `omega-k3` launch **before** settling the upstream `omega-k1` turn, which is what
 derives the targetless handoff. Each negative allows the `omega-k3` launch on
@@ -108,6 +108,17 @@ than being rescued by a refusing runtime.
 - `a_handoff_naming_another_run_refuses_a_never_bound_replacement` — the one
   pending handoff is re-pointed at a live sibling, leaving it undelivered for the
   same `TeamRun` and slot; the replacement is refused and no seat is created.
+- `a_mixed_targetless_and_mistargeted_pair_refuses_a_never_bound_replacement` —
+  the case that pins which set the "exactly one" is counted over. Two upstream
+  turns each decide a handoff; one is then re-pointed at a live sibling by its
+  own settling turn, leaving `[names another run, names nothing]` undelivered for
+  the same `TeamRun` and slot. Counting only the targetless rows would find its
+  single row and authorize; counting the whole candidate set finds two decisions
+  and refuses. Asserts `409 revision_conflict`, no seat created, and that the two
+  rows are unchanged — nothing delivered, re-targeted or derived. It also pins
+  the absence of a recorded successor immediately before the call, so the
+  separate `already_replaced` authority in the same gate cannot be what the
+  refusal is passing on.
 
 The positive test was confirmed to fail against the unrepaired gate with exactly
 the production refusal (`revision_conflict`, "no pending handoff dispatch or
@@ -116,13 +127,19 @@ restored.
 
 ## Validation
 
-`cargo test -p kontor-daemon` — 391 passed, 0 failed, 0 ignored; 0 doc-tests.
+`cargo test -p kontor-daemon` at the production commit — **390 passed, 0 failed,
+1 ignored**; 0 doc-tests.
 
-| Target | Tests |
+The one ignored test is pre-existing and unrelated to this change:
+`a_configured_jira_boundary_distinguishes_historical_from_native_completion` in
+`tests/loopback_api.rs`, carrying
+`#[ignore = "superseded by kontor-jira native connector contract tests"]`.
+
+| Target | Tests enumerated |
 | --- | --- |
 | `lib` (unit) | 71 |
 | `tests/account_pinning.rs` | 5 |
-| `tests/loopback_api.rs` | 283 |
+| `tests/loopback_api.rs` | 283 (282 run, 1 ignored) |
 | `tests/mcp_journey.rs` | 2 |
 | `tests/quota_observation.rs` | 21 |
 | `tests/recovery_security.rs` | 6 |
@@ -130,5 +147,9 @@ restored.
 
 `cargo fmt -p kontor-daemon -- --check` — clean.
 `cargo clippy -p kontor-daemon --all-targets` — clean, no warnings.
+
+The mixed-candidate-set test was added afterwards, in review remediation, and
+takes `tests/loopback_api.rs` to 284 enumerated. Production code is unchanged by
+that commit; the four ASMA-8112 tests were rerun individually and pass.
 
 Only `kontor-daemon` is touched, so no other crate's suite was rerun.
