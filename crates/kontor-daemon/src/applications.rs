@@ -22131,7 +22131,13 @@ impl ApplicationOperations for Services {
                     project_id,
                     &predecessor,
                     &successor,
-                    attempt.prepared_run_revision,
+                    // The attempt freezes seat/route identity, not unrelated
+                    // run progress. A peer finding or topic correction may
+                    // have advanced the run while successor launch was down.
+                    // Preparation itself increments the revision on the
+                    // first call. Keep that CAS or the newer retry read; any
+                    // progress during native effects still refuses the write.
+                    run.revision.max(attempt.prepared_run_revision),
                     retired.archived_at,
                     request.reason.as_str(),
                 )

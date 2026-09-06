@@ -53,6 +53,11 @@ retired agent, while retaining exact native, run and seat identity checks. Attem
 attempt time so an unavailable runtime does not starve later releases. Findings,
 run outcomes, logical seat bindings and native history are retained.
 
+An interrupted seat recovery retains its original route and occupant fence. A
+retry compares against the revision it read, accounting for the initial prepare
+increment, so a peer finding or topic correction does not strand the attempt.
+Progress during native effects still fails the compare-and-swap and is retried.
+
 Install `kontor-daemon`, `kontor` and `kontor-mcp` from the same candidate. Save
 the old binaries and a verified SQLite backup before restart. Rolling back this
 migration requires the matching pre-upgrade database snapshot; an older binary
