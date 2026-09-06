@@ -2,7 +2,9 @@
 //! resumable identity-preserving migration intent, and legacy-compatible
 //! consultation topic storage.
 
-use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
+use kontor_core::consultation::{
+    ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
+};
 use kontor_core::id::{
     AdvisorRunId, AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId,
     ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
@@ -963,6 +965,7 @@ fn consultation_with_topic(
         profile_version: SpecVersion::FIRST,
         definition_hash: profile.hash().clone(),
         semantic_identity_hash,
+        subject: Some(ConsultationSubject::Epic),
         question_hash: ContentHash::of(question.as_str().as_bytes()),
         question,
         context,
@@ -1191,6 +1194,62 @@ fn a_legacy_topic_correction_preserves_the_run_and_replays_one_authority() {
     assert_eq!(replayed.id, run.id);
     assert_eq!(replayed_receipt.id, receipt.id);
     assert_eq!(replayed_applied, kontor_store::Applied::Unchanged);
+
+    // Schema v94 added the durable consultation subject and had to recreate
+    // this trigger to freeze it. Recreating it from any body older than v92
+    // would silently withdraw the settled-correction exception above, so the
+    // correction is asserted to leave the subject exactly as it was rather
+    // than merely to succeed.
+    assert_eq!(corrected.subject, run.subject);
+    assert_eq!(replayed.subject, run.subject);
+}
+
+/// The v94 subject is frozen by the same trigger that admits the v92 settled
+/// topic correction, and neither rule weakens the other.
+#[test]
+fn the_settled_topic_correction_may_not_also_move_the_subject() {
+    let f = fixture();
+    let run = consultation_with_topic(&f, Some(name("ASMA-8111 operational completion")), None);
+
+    // The correction path is the one write allowed to touch a settled run.
+    // It may move the topic and the server-derived identity beside it; it may
+    // not smuggle a new subject through on the same statement, and neither may
+    // any other write.
+    let connection =
+        rusqlite::Connection::open(f.home.path().join("kontor.db")).expect("the database reopens");
+
+    // The topic alone still moves, so the added predicates do not over-block
+    // the correction the v92 rule exists to allow.
+    connection
+        .execute(
+            "UPDATE consultation_runs SET topic = 'operational completion' WHERE run_id = ?1",
+            rusqlite::params![run.id.as_text()],
+        )
+        .expect("a topic-only correction is still admitted");
+
+    // Carrying a changed subject on the same statement is refused. Writing the
+    // subject it already holds is not a change and is deliberately not tested
+    // as one.
+    let moved = connection.execute(
+        "UPDATE consultation_runs
+            SET topic = 'operational completion', subject_kind = NULL, subject_task_id = NULL
+          WHERE run_id = ?1",
+        rusqlite::params![run.id.as_text()],
+    );
+    assert!(
+        moved.is_err(),
+        "a correction must not withdraw the run's recorded subject",
+    );
+
+    // And the run still holds the subject it was invoked with.
+    assert_eq!(
+        f.store
+            .get_consultation_run(f.project_id, run.id)
+            .expect("the run reads")
+            .expect("the run exists")
+            .subject,
+        run.subject,
+    );
 }
 
 #[test]

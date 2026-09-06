@@ -1,0 +1,183 @@
+{
+  "authority": "docs/evidence/ASMA-8117/HIGH-SCOPE-RECORD.md",
+  "note": "Naming-only successors. Each candidate differs from its exact source only in its immutable version and the listed container-template token substitutions. These documents are deliberately outside the bundled operational profile: ASMA-8117 does not validate, publish, select, deploy or migrate them. ASMA-8120 owns those receipts once the compatible fleet is deployed.",
+  "open_question": "OQ-8117-01 resolved as option (a): next unused version in the existing lineage.",
+  "prepared_at": "2026-09-06",
+  "schema_version": 1,
+  "status": "prepared-not-published",
+  "successors": [
+    {
+      "candidate": {
+        "canonical_hash": "d3775bd5fbebadeec06cc235793be23248de2fed23c4ef01e3a523fecc282284",
+        "definition_id": "01936f5a-2000-7000-8000-000000000001",
+        "document": "asma-operational-v4.json",
+        "name": "ASMA Operational Team Definition",
+        "version": 4
+      },
+      "source": {
+        "canonical_hash": "217747248d527556fa452a0b6380215a3699def6ba73cedbaabdc00da3b4da56",
+        "definition_id": "01936f5a-2000-7000-8000-000000000001",
+        "document": "sources/asma-operational-v1.json",
+        "name": "ASMA Operational Team Definition",
+        "version": 1
+      },
+      "substitutions": [
+        {
+          "container": "ESW",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "ECP",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "TSW",
+          "from": "TASK_ITEM_CODE",
+          "to": "TASK_JIRA_KEY"
+        },
+        {
+          "container": "ASW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        },
+        {
+          "container": "CSW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        }
+      ]
+    },
+    {
+      "candidate": {
+        "canonical_hash": "10a0682b16786a3f94400d1d9562dfd9a8dd34379fef9c319a18a92a95989fc1",
+        "definition_id": "01936f5a-2000-7000-8000-000000000001",
+        "document": "asma-operational-v5.json",
+        "name": "ASMA Operational Team Definition — KOP legacy-slot migration",
+        "version": 5
+      },
+      "source": {
+        "canonical_hash": "31cdff80e27cbe1e4043e150d2cdbc43ff79a8fa7fd8d892d2b5049a600f2e13",
+        "definition_id": "01936f5a-2000-7000-8000-000000000001",
+        "document": "sources/asma-operational-v2.json",
+        "name": "ASMA Operational Team Definition — KOP legacy-slot migration",
+        "version": 2
+      },
+      "substitutions": [
+        {
+          "container": "ESW",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "ECP",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "TSW",
+          "from": "TASK_ITEM_CODE",
+          "to": "TASK_JIRA_KEY"
+        },
+        {
+          "container": "ASW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        },
+        {
+          "container": "CSW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        }
+      ]
+    },
+    {
+      "candidate": {
+        "canonical_hash": "24e2c5810060ef521e6af087e3430754bab86eaf138868fe125aa4fdd2904794",
+        "definition_id": "01936f5a-2000-7000-8000-000000000001",
+        "document": "asma-operational-v6.json",
+        "name": "ASMA Operational Team Definition — compatible delivery slots",
+        "version": 6
+      },
+      "source": {
+        "canonical_hash": "3818bade075891fe26fbc3d199b3f29204bc003082a1342983a208d3a868e35c",
+        "definition_id": "01936f5a-2000-7000-8000-000000000001",
+        "document": "sources/asma-operational-v3.json",
+        "name": "ASMA Operational Team Definition — compatible delivery slots",
+        "version": 3
+      },
+      "substitutions": [
+        {
+          "container": "ESW",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "ECP",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "TSW",
+          "from": "TASK_ITEM_CODE",
+          "to": "TASK_JIRA_KEY"
+        },
+        {
+          "container": "ASW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        },
+        {
+          "container": "CSW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        }
+      ]
+    },
+    {
+      "candidate": {
+        "canonical_hash": "c4c2f19a52258872dd0fb68ec8c648ad9d6ae2674ad0e014cce42a270644ae73",
+        "definition_id": "01a07400-1000-7000-8000-000000008098",
+        "document": "kcadr-recovery-v3.json",
+        "name": "KCADR compatibility recovery team definition",
+        "version": 3
+      },
+      "source": {
+        "canonical_hash": "d2f1131e1b9548873c7a02a0c15761c982e70779c8d7e6ded872439659d79a43",
+        "definition_id": "01a07400-1000-7000-8000-000000008098",
+        "document": "sources/kcadr-recovery-v2.json",
+        "name": "KCADR compatibility recovery team definition",
+        "version": 2
+      },
+      "substitutions": [
+        {
+          "container": "ESW",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "ECP",
+          "from": "EPIC_ITEM_CODE",
+          "to": "EPIC_JIRA_KEY"
+        },
+        {
+          "container": "TSW",
+          "from": "TASK_ITEM_CODE",
+          "to": "TASK_JIRA_KEY"
+        },
+        {
+          "container": "ASW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        },
+        {
+          "container": "CSW",
+          "from": "SCOPE_ITEM_CODE",
+          "to": "SCOPE_JIRA_KEY"
+        }
+      ]
+    }
+  ],
+  "task": "ASMA-8117"
+}

@@ -2,6 +2,8 @@
 //! every recommended container and seat row, byte-exact separator behavior,
 //! and the fail-closed ambiguity refusals the naming contract requires.
 
+use kontor_core::backlog_identity::ConfirmedJiraKey;
+use kontor_core::id::ExternalId;
 use kontor_core::id::{
     ExternalName, RoleCode, RoleSlotId, SCHEMA_VERSION, SpecVersion, TeamDefinitionId,
     TopologyKindKey, TopologySpecId,
@@ -314,6 +316,7 @@ fn every_local_seat_row_renders_exactly_from_the_pinned_definition() {
         .with_slot_display_name("SEAT A")
         .with_prefix("CSW")
         .with_scope_item_code("KBI-8062")
+        .with_scope_jira_key(&key("ASMA-8117"))
         .with_topic("Naming contract");
     assert_eq!(
         render_seat(&definition, "CSW", &leaked).as_str(),
@@ -401,4 +404,218 @@ fn role_coded_and_display_named_seat_policies_are_mutually_exclusive() {
         display_named_asw.validate().is_err(),
         "SLOT_DISPLAY_NAME requires display-named local slots"
     );
+}
+
+fn key(value: &str) -> ConfirmedJiraKey {
+    ConfirmedJiraKey::parse(&ExternalId::parse(value).expect("an external id"))
+        .expect("a canonical confirmed Jira key")
+}
+
+/// The same recommended definition with each container template moved to its
+/// typed Jira-key successor token. Nothing else about the definition changes,
+/// which is exactly the shape of the four prepared successor documents.
+fn jira_key_recommended() -> TeamDefinitionSpec {
+    let mut definition = recommended();
+    for container in &mut definition.containers {
+        let code = container.kind.as_str().to_owned();
+        let (from, to) = match code.as_str() {
+            "ESW" | "ECP" => (NativeNameToken::EpicItemCode, NativeNameToken::EpicJiraKey),
+            "TSW" => (NativeNameToken::TaskItemCode, NativeNameToken::TaskJiraKey),
+            "ASW" | "CSW" => (
+                NativeNameToken::ScopeItemCode,
+                NativeNameToken::ScopeJiraKey,
+            ),
+            other => panic!("the recommended definition has no {other} container"),
+        };
+        let segments = container
+            .name_template
+            .segments()
+            .expect("a typed template")
+            .iter()
+            .map(|segment| match segment {
+                NativeNameSegment::Token(found) if *found == from => NativeNameSegment::Token(to),
+                other => other.clone(),
+            })
+            .collect();
+        container.name_template =
+            NativeNameTemplate::from_segments(segments).expect("the successor template is valid");
+    }
+    definition
+}
+
+#[test]
+fn every_jira_key_container_row_renders_the_exact_contract_bytes() {
+    let definition = jira_key_recommended();
+    definition
+        .validate()
+        .expect("a Jira-key definition is publishable");
+
+    let epic = |prefix: &str| {
+        NativeNameValues::new()
+            .with_prefix(prefix)
+            .with_epic_jira_key(&key("ASMA-8049"))
+    };
+    let task = |prefix: &str| {
+        NativeNameValues::new()
+            .with_prefix(prefix)
+            .with_task_jira_key(&key("ASMA-8117"))
+    };
+    let scope = |prefix: &str, subject: &str, topic: &str| {
+        NativeNameValues::new()
+            .with_prefix(prefix)
+            .with_scope_jira_key(&key(subject))
+            .with_topic(topic)
+    };
+
+    assert_eq!(
+        render_container(&definition, "ESW", &epic("ESW")).as_str(),
+        "ESW • ASMA-8049"
+    );
+    assert_eq!(
+        render_container(&definition, "ECP", &epic("ECP")).as_str(),
+        "ECP • ASMA-8049"
+    );
+    assert_eq!(
+        render_container(&definition, "TSW", &task("TSW")).as_str(),
+        "TSW • ASMA-8117"
+    );
+    assert_eq!(
+        render_container(
+            &definition,
+            "ASW",
+            &scope("ASW", "ASMA-8117", "Naming review")
+        )
+        .as_str(),
+        "ASW • ASMA-8117 • Naming review",
+        "a task-scoped subject carries the confirmed task key"
+    );
+    assert_eq!(
+        render_container(
+            &definition,
+            "CSW",
+            &scope("CSW", "ASMA-8049", "Release readiness")
+        )
+        .as_str(),
+        "CSW • ASMA-8049 • Release readiness",
+        "an epic-scoped subject carries the confirmed epic key"
+    );
+
+    // The separator is still exactly SPACE, U+2022 BULLET, SPACE.
+    assert_eq!(
+        render_container(&definition, "ESW", &epic("ESW"))
+            .as_str()
+            .as_bytes(),
+        b"ESW \xe2\x80\xa2 ASMA-8049"
+    );
+}
+
+#[test]
+fn a_required_jira_key_with_no_confirmed_binding_refuses_instead_of_rendering() {
+    let definition = jira_key_recommended();
+
+    // Each container asks for exactly one subject key. Supplying the prefix and
+    // topic but no confirmed binding must fail closed and name the token, not
+    // fall back to an item code, a title or a partially rendered name.
+    for (code, token) in [
+        ("ESW", "EPIC_JIRA_KEY"),
+        ("ECP", "EPIC_JIRA_KEY"),
+        ("TSW", "TASK_JIRA_KEY"),
+        ("ASW", "SCOPE_JIRA_KEY"),
+        ("CSW", "SCOPE_JIRA_KEY"),
+    ] {
+        let values = NativeNameValues::new()
+            .with_prefix(code)
+            .with_topic("Naming review")
+            // Every legacy value is present and must not stand in for a key.
+            .with_epic_item_code("KBI-8049")
+            .with_task_item_code("KBI-8117")
+            .with_scope_item_code("KBI-8117")
+            .with_item_code("KBI-8117")
+            .with_jira_code("ASMA-8049");
+        let error = definition
+            .container(&kind(code))
+            .expect("the container is configured")
+            .name_template
+            .render(&definition.separator, &values)
+            .expect_err("a missing confirmed binding must never be inferred");
+        assert!(
+            error.to_string().contains(token),
+            "the {code} refusal identifies {token}: {error}"
+        );
+    }
+}
+
+#[test]
+fn the_old_token_definition_still_validates_and_renders_unchanged() {
+    // The successor vocabulary is additive. The exact recommended definition
+    // that pinned revisions already render from keeps validating and keeps
+    // producing its historical bytes.
+    let historical = recommended();
+    historical
+        .validate()
+        .expect("the item-code definition remains publishable");
+    assert_eq!(
+        render_container(
+            &historical,
+            "TSW",
+            &NativeNameValues::new()
+                .with_prefix("TSW")
+                .with_task_item_code("KBI-8062")
+        )
+        .as_str(),
+        "TSW • KBI-8062"
+    );
+
+    // And the two vocabularies are not interchangeable: an item-code template
+    // is not satisfied by a confirmed key, nor a key template by an item code.
+    assert!(
+        historical
+            .container(&kind("TSW"))
+            .expect("TSW")
+            .name_template
+            .render(
+                &historical.separator,
+                &NativeNameValues::new()
+                    .with_prefix("TSW")
+                    .with_task_jira_key(&key("ASMA-8117"))
+            )
+            .is_err()
+    );
+    let successor = jira_key_recommended();
+    assert!(
+        successor
+            .container(&kind("TSW"))
+            .expect("TSW")
+            .name_template
+            .render(
+                &successor.separator,
+                &NativeNameValues::new()
+                    .with_prefix("TSW")
+                    .with_task_item_code("KBI-8062")
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn a_seat_template_carrying_a_jira_key_is_refused() {
+    // Seat rendering stays on ROLE_CODE / SLOT_DISPLAY_NAME. A seat must never
+    // repeat its container's Jira key any more than its item code.
+    for token in [
+        NativeNameToken::EpicJiraKey,
+        NativeNameToken::TaskJiraKey,
+        NativeNameToken::ScopeJiraKey,
+    ] {
+        let mut definition = jira_key_recommended();
+        let tsw = definition
+            .containers
+            .iter_mut()
+            .find(|container| container.kind == kind("TSW"))
+            .expect("the TSW container");
+        tsw.seat_name_template = Some(template(vec![token]));
+        assert!(
+            definition.validate().is_err(),
+            "a seat name must never carry {token}"
+        );
+    }
 }

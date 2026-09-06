@@ -218,23 +218,22 @@ impl<'de> Deserialize<'de> for LegacyEpicBacklogCode {
     }
 }
 
-/// Display-only projection of an epic namespace and a confirmed Jira number.
+/// One exact confirmed Jira issue key, in its canonical published spelling.
+///
+/// A confirmed binding is the public identity of an epic or task. This type
+/// admits only the canonical `<PROJECT>-<positive decimal>` spelling, so a
+/// title, a bare number, a legacy item code or a UUID can never reach a
+/// rendered native name by being mistaken for a key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct JiraItemCode(String);
+pub struct ConfirmedJiraKey(String);
 
-impl JiraItemCode {
-    /// Derive `<epic backlog code>-<canonical Jira decimal suffix>`.
-    ///
-    /// The complete Jira key remains the binding authority; this value carries
-    /// no project key and cannot be used to reconstruct that binding.
+impl ConfirmedJiraKey {
+    /// Admit one externally read-back Jira key by its exact spelling.
     ///
     /// # Errors
     /// Refuses anything except a canonical `<PROJECT>-<positive decimal>` key,
     /// including zero and decimal suffixes with leading zeroes.
-    pub fn derive(
-        backlog_code: &EpicBacklogCode,
-        confirmed_jira_key: &ExternalId,
-    ) -> DomainResult<Self> {
+    pub fn parse(confirmed_jira_key: &ExternalId) -> DomainResult<Self> {
         let (project_key, number) =
             confirmed_jira_key
                 .as_str()
@@ -266,7 +265,70 @@ impl JiraItemCode {
                 "must end with a canonical positive decimal suffix",
             ));
         }
-        Ok(Self(format!("{}-{number}", backlog_code.as_str())))
+        Ok(Self(confirmed_jira_key.as_str().to_owned()))
+    }
+
+    /// Borrow the exact confirmed key.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The canonical decimal suffix, without its project key.
+    #[must_use]
+    pub fn number(&self) -> &str {
+        self.0
+            .rsplit_once('-')
+            .expect("a parsed key always carries its canonical suffix")
+            .1
+    }
+}
+
+impl std::fmt::Display for ConfirmedJiraKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for ConfirmedJiraKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// Display-only projection of an epic namespace and a confirmed Jira number.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct JiraItemCode(String);
+
+impl JiraItemCode {
+    /// Derive `<epic backlog code>-<canonical Jira decimal suffix>`.
+    ///
+    /// The complete Jira key remains the binding authority; this value carries
+    /// no project key and cannot be used to reconstruct that binding.
+    ///
+    /// # Errors
+    /// As [`ConfirmedJiraKey::parse`]: refuses anything except a canonical
+    /// `<PROJECT>-<positive decimal>` key.
+    pub fn derive(
+        backlog_code: &EpicBacklogCode,
+        confirmed_jira_key: &ExternalId,
+    ) -> DomainResult<Self> {
+        Ok(Self::from_confirmed(
+            backlog_code,
+            &ConfirmedJiraKey::parse(confirmed_jira_key)?,
+        ))
+    }
+
+    /// Project an already-admitted confirmed key into its display item code.
+    ///
+    /// The key was canonical when it was parsed, so this cannot fail: one
+    /// confirmed-binding admission serves both projections.
+    #[must_use]
+    pub fn from_confirmed(backlog_code: &EpicBacklogCode, confirmed: &ConfirmedJiraKey) -> Self {
+        Self(format!("{}-{}", backlog_code.as_str(), confirmed.number()))
     }
 
     /// Borrow the derived display spelling.

@@ -1,0 +1,55 @@
+{
+  "drain_lead_minutes": 30,
+  "holiday_merge": "treat_as_closed",
+  "override": {
+    "effective_end": "2026-08-12T21:00:00Z",
+    "hard_ceiling": "2026-08-12T22:00:00Z",
+    "scope": "project"
+  },
+  "phases": [
+    {
+      "admits_new_work": true,
+      "admitted": 1,
+      "phase": "open",
+      "rejection": null,
+      "state": "open"
+    },
+    {
+      "admits_new_work": false,
+      "admitted": 0,
+      "phase": "draining",
+      "rejection": "calendar_draining",
+      "state": "draining"
+    },
+    {
+      "admits_new_work": false,
+      "admitted": 0,
+      "phase": "closed",
+      "rejection": "calendar_closed",
+      "state": "closed"
+    },
+    {
+      "admits_new_work": false,
+      "admitted": 0,
+      "phase": "holiday",
+      "rejection": "calendar_closed",
+      "state": "closed"
+    },
+    {
+      "admits_new_work": true,
+      "admitted": 1,
+      "phase": "override_open",
+      "rejection": null,
+      "state": "override_open"
+    },
+    {
+      "admits_new_work": false,
+      "admitted": 0,
+      "phase": "override_expired",
+      "rejection": "calendar_closed",
+      "state": "closed"
+    }
+  ],
+  "pinned_profile_revision": 1,
+  "timezone": "Europe/Oslo"
+}
