@@ -327,6 +327,28 @@ pub fn managed_branch_text<'a>(project_root: &str, worktree: &'a str) -> Option<
     (!encoded.is_empty()).then_some(encoded)
 }
 
+/// The ASMA CLI catalog-worktree slug and module directory encoded by a
+/// managed two-segment path, or `None` when the path has another shape.
+///
+/// `asma worktree add ASMA-8114 --mod _tools/asma-rs-kontor` deliberately
+/// creates `<project>/.worktrees/asma-8114/asma-rs-kontor`. Unlike a
+/// Kontor-created checkout, that path does not encode its Git branch. Callers
+/// must first try [`BranchName::parse`] over [`managed_branch_text`], then use
+/// this shape only when the slug is bound to the task's confirmed tracker key
+/// and the runtime proves the checkout's actual branch.
+#[must_use]
+pub fn managed_catalog_worktree_parts<'a>(
+    project_root: &str,
+    worktree: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    let encoded = managed_branch_text(project_root, worktree)?;
+    let (slug, module) = encoded.split_once('/')?;
+    if slug.is_empty() || module.is_empty() || module.contains('/') {
+        return None;
+    }
+    Some((slug, module))
+}
+
 /// The length of the canonical key `text` starts with.
 ///
 /// `KeyMissing` when the text does not even begin like a key; `KeyNotCanonical`

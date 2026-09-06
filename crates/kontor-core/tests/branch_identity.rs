@@ -5,7 +5,7 @@
 use kontor_core::DomainError;
 use kontor_core::branch::{
     BranchName, BranchRefusal, BranchType, MANAGED_WORKTREES_DIR, SLUG_MAX_LEN, TrackerKey,
-    managed_branch_text, managed_worktree_path, slugify,
+    managed_branch_text, managed_catalog_worktree_parts, managed_worktree_path, slugify,
 };
 use kontor_core::id::ExternalId;
 
@@ -238,6 +238,34 @@ fn a_managed_worktree_encodes_exactly_its_branch() {
         managed_branch_text("/repo", "/repository/.worktrees/x"),
         None
     );
+}
+
+#[test]
+fn an_asma_cli_catalog_worktree_has_a_separate_task_slug_and_module() {
+    assert_eq!(
+        managed_catalog_worktree_parts("/repo", "/repo/.worktrees/asma-8114/asma-rs-kontor"),
+        Some(("asma-8114", "asma-rs-kontor"))
+    );
+    assert_eq!(
+        managed_catalog_worktree_parts(
+            "/repo",
+            "/repo/.worktrees/feat/ASMA-8114-consultation-identity"
+        ),
+        Some(("feat", "ASMA-8114-consultation-identity")),
+        "the application must try the branch grammar before this shape"
+    );
+    for path in [
+        "/repo/.worktrees/asma-8114",
+        "/repo/.worktrees/asma-8114/",
+        "/repo/.worktrees/asma-8114/asma-rs-kontor/extra",
+        "/elsewhere/.worktrees/asma-8114/asma-rs-kontor",
+    ] {
+        assert_eq!(
+            managed_catalog_worktree_parts("/repo", path),
+            None,
+            "{path}"
+        );
+    }
 }
 
 #[test]
