@@ -411,6 +411,7 @@ impl Modify for RealmBearer {
         crate::applications::SchedulerResumeDto,
         crate::applications::SeatProjectionDto,
         crate::applications::AdmissionResumeRefDto,
+        crate::applications::PartialAdmissionSeatDto,
         crate::applications::ResumeAdmissionsRequest,
         crate::applications::StartRequest,
         crate::applications::StartedSeatDto,

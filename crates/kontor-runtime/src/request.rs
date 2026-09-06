@@ -302,6 +302,7 @@ pub struct LaunchParts {
 pub struct LaunchRequest {
     authority: LaunchAuthority,
     parts: LaunchParts,
+    expected_existing_native_id: Option<ExternalId>,
 }
 
 impl LaunchRequest {
@@ -314,7 +315,24 @@ impl LaunchRequest {
     /// comparison belongs where the reservation table is, so an adapter that
     /// skipped the table cannot look correct.
     pub(crate) const fn admitted(authority: LaunchAuthority, parts: LaunchParts) -> Self {
-        Self { authority, parts }
+        Self {
+            authority,
+            parts,
+            expected_existing_native_id: None,
+        }
+    }
+
+    /// Pair authority with an adoption-only recovery of one exact native.
+    pub(crate) const fn recovering(
+        authority: LaunchAuthority,
+        parts: LaunchParts,
+        expected_existing_native_id: ExternalId,
+    ) -> Self {
+        Self {
+            authority,
+            parts,
+            expected_existing_native_id: Some(expected_existing_native_id),
+        }
     }
 
     /// The authority this launch is spending.
@@ -361,6 +379,12 @@ impl LaunchRequest {
     #[must_use]
     pub const fn binding_id(&self) -> RuntimeBindingId {
         self.parts.binding_id
+    }
+
+    /// Exact existing native required by an adoption-only recovery.
+    #[must_use]
+    pub const fn expected_existing_native_id(&self) -> Option<&ExternalId> {
+        self.expected_existing_native_id.as_ref()
     }
 
     /// The verified place this launch presents, if any.

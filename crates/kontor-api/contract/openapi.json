@@ -4938,7 +4938,7 @@
         "tags": [
           "applications"
         ],
-        "summary": "Resume exact queued, unbound admissions without the original scheduler key.",
+        "summary": "Resume exact incomplete admissions without the original scheduler key.",
         "operationId": "resume_admissions",
         "parameters": [
           {
@@ -10437,11 +10437,23 @@
             "type": "string",
             "description": "The preserved first AgentRun committed with that admission."
           },
+          "downstream": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PartialAdmissionSeatDto",
+                "description": "Exact already-created downstream native to adopt. Absent for an\nordinary queued-root recovery; required for a partially seated team."
+              }
+            ]
+          },
           "team_run_id": {
             "type": "string",
             "description": "The preserved TeamRun envelope."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "AdvanceCompletionRequest": {
         "type": "object",
@@ -16951,6 +16963,32 @@
           }
         }
       },
+      "PartialAdmissionSeatDto": {
+        "type": "object",
+        "description": "Exact queued downstream run and already-created native a partial recovery adopts.",
+        "required": [
+          "agent_run_id",
+          "expected_revision",
+          "expected_native_id"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The unique current replacement-chain leaf for its frozen role slot."
+          },
+          "expected_native_id": {
+            "type": "string",
+            "description": "Exact native session the runtime census must rediscover."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The AgentRun revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "PermissionAckDto": {
         "type": "object",
         "description": "The runtime's answer to one permission response.",
@@ -19818,7 +19856,7 @@
             "items": {
               "$ref": "#/components/schemas/AdmissionResumeRefDto"
             },
-            "description": "Exact queued admissions to resume. This is a set: duplicate ids refuse\nthe whole request before a runtime is contacted."
+            "description": "Exact admissions to resume. A fresh key accepts either a queued unbound\nroot or a bound root naming one exact already-created downstream native.\nThis is a set: duplicate ids refuse the whole request before a runtime\nis contacted."
           },
           "expected_revision": {
             "type": "integer",

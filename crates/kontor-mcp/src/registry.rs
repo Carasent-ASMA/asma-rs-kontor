@@ -1761,10 +1761,10 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "admissions",
                 Place::Body,
                 ArgType::Json,
-                "A non-empty array of exact team_run_id/agent_run_id pairs.",
+                "A non-empty array of exact team_run_id/agent_run_id pairs. A partially seated team also names downstream.agent_run_id, expected_revision and expected_native_id; that shape is adoption-only.",
             ),
         ],
-        about: "Resume exact incomplete admissions without recreating their run identities.",
+        about: "Resume exact incomplete admissions without recreating run identities. Partial teams may only adopt one explicitly named existing native; they never create a replacement.",
     },
     ToolSpec {
         name: "kontor_lifecycle_transition",

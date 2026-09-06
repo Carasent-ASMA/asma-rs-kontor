@@ -4824,7 +4824,8 @@ pub struct SchedulerStartDto {
 ///
 /// Both identities are required. Kontor resolves the original launch receipt
 /// internally; callers neither know nor recreate its idempotency key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AdmissionResumeRefDto {
     /// The preserved TeamRun envelope.
     #[schema(value_type = String)]
@@ -4832,6 +4833,25 @@ pub struct AdmissionResumeRefDto {
     /// The preserved first AgentRun committed with that admission.
     #[schema(value_type = String)]
     pub agent_run_id: AgentRunId,
+    /// Exact already-created downstream native to adopt. Absent for an
+    /// ordinary queued-root recovery; required for a partially seated team.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downstream: Option<PartialAdmissionSeatDto>,
+}
+
+/// Exact queued downstream run and already-created native a partial recovery adopts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartialAdmissionSeatDto {
+    /// The unique current replacement-chain leaf for its frozen role slot.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// The AgentRun revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact native session the runtime census must rediscover.
+    #[schema(value_type = String)]
+    pub expected_native_id: ExternalId,
 }
 
 /// What `scheduler:resume` is asked for.
@@ -4841,7 +4861,7 @@ pub struct ResumeAdmissionsRequest {
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
     /// Exact admissions to resume. A fresh key accepts either a queued unbound
-    /// root or a bound root whose same TeamRun has a queued downstream hole.
+    /// root or a bound root naming one exact already-created downstream native.
     /// This is a set: duplicate ids refuse the whole request before a runtime
     /// is contacted.
     pub admissions: Vec<AdmissionResumeRefDto>,

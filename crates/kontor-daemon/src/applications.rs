@@ -72,13 +72,14 @@ use kontor_api::applications::{
     CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
     EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
     IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
-    ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
-    ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto,
-    QuickRolesDto, QuickSessionDto, RecordFindingsRequest, RecordedCloseoutDto,
-    RecoverConsultationSeatRequest, RemediateCompletionRequest, RemediationActionDto,
-    RemediationAuthorityDto, RemediationAuthorizationDto, RemediationRecordDto,
-    RepositoryOutcomeDto, RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
-    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
+    PartialAdmissionSeatDto, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
+    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
+    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
+    RecordedCloseoutDto, RecoverConsultationSeatRequest, RemediateCompletionRequest,
+    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
+    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
+    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
+    RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -1985,6 +1986,7 @@ impl Services {
         admitted: &AdmittedCandidate,
         team_run: &kontor_core::repository::TeamRun,
         root_run: &kontor_core::repository::AgentRun,
+        downstream_target: &PartialAdmissionSeatDto,
     ) -> Result<(), ApiError> {
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
             .map_err(|error| self.refuse_domain(&error))?;
@@ -2021,6 +2023,21 @@ impl Services {
             ));
         }
 
+        let root_leaf = self
+            .current_delivery_role_leaf(project_id, team_run.id, root_slot.as_role_key())?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the frozen team root has no current replacement-chain leaf",
+                )
+            })?;
+        if root_leaf.id != root_run.id {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the immutable admission AgentRun is not the current team-root leaf",
+            ));
+        }
+
         let declared: BTreeSet<RoleKey> = template
             .slots
             .iter()
@@ -2031,9 +2048,7 @@ impl Services {
             .iter()
             .map(|handoff| handoff.to_slot.as_role_key().clone())
             .collect();
-        let members = self.team_members(project_id, team_run.id)?;
-        let mut current = BTreeMap::new();
-        for member in &members {
+        for member in self.team_members(project_id, team_run.id)? {
             if member.team_run_id != team_run.id || !declared.contains(&member.role) {
                 return Err(self.deny(
                     ApiErrorCode::RevisionConflict,
@@ -2046,45 +2061,76 @@ impl Services {
                     "the partial TeamRun contains an inconsistent terminal seat",
                 ));
             }
-            if member.terminal.is_some() {
-                continue;
-            }
-            if current.insert(member.role.clone(), member).is_some() {
-                return Err(self.deny(
+        }
+        let target = self
+            .state()?
+            .with_store(|store| store.get_agent_run(project_id, downstream_target.agent_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the exact downstream recovery AgentRun does not exist",
+                )
+            })?;
+        if target.team_run_id != team_run.id
+            || !declared.contains(&target.role)
+            || !downstream.contains(&target.role)
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the exact downstream recovery AgentRun is not a declared role of this TeamRun",
+            ));
+        }
+        let target_leaf = self
+            .current_delivery_role_leaf(project_id, team_run.id, &target.role)?
+            .ok_or_else(|| {
+                self.deny(
                     ApiErrorCode::RevisionConflict,
-                    "the partial TeamRun has more than one non-terminal seat for a role slot",
-                ));
-            }
+                    "the exact downstream recovery role has no current leaf",
+                )
+            })?;
+        if target_leaf.id != target.id {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the exact downstream recovery AgentRun is not its role's current leaf",
+            ));
+        }
+        if target.revision != downstream_target.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the exact downstream recovery AgentRun moved since it was read",
+                )
+                .with_revision(Some(target.revision)));
+        }
+        if target.binding.is_some()
+            || target.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+            || target.projection.desired != kontor_core::state::DesiredRunState::RunRequested
+            || target.terminal.is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the exact downstream recovery AgentRun is not queued, unbound and non-terminal",
+            ));
         }
 
-        if current.get(root_slot.as_role_key()).map(|run| run.id) != Some(root_run.id) {
-            return Err(self.deny(
-                ApiErrorCode::RevisionConflict,
-                "the immutable admission AgentRun is not the live team root",
-            ));
-        }
-        let mut hole = false;
         for role in downstream {
-            let Some(run) = current.get(&role) else {
+            let Some(leaf) = self.current_delivery_role_leaf(project_id, team_run.id, &role)?
+            else {
                 continue;
             };
-            if run.binding.is_none() {
-                if run.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
-                    || run.projection.desired != kontor_core::state::DesiredRunState::RunRequested
-                {
-                    return Err(self.deny(
-                        ApiErrorCode::RevisionConflict,
-                        "an unbound downstream AgentRun is not queued for its original launch",
-                    ));
-                }
-                hole = true;
+            if leaf.projection.lifecycle.is_terminal() || leaf.terminal.is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the partial TeamRun contains a terminal current role leaf",
+                ));
             }
-        }
-        if !hole {
-            return Err(self.deny(
-                ApiErrorCode::RevisionConflict,
-                "the partially seated TeamRun has no queued and unbound downstream AgentRun",
-            ));
+            if leaf.binding.is_none() && leaf.id != target.id {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the partial TeamRun has another unbound current role leaf",
+                ));
+            }
         }
         Ok(())
     }
@@ -2119,7 +2165,9 @@ impl Services {
                     "a delivery role census row drifted from its team or role slot",
                 ));
             }
-            runs.push(run);
+            if !run.is_operator_abandoned_unbound() {
+                runs.push(run);
+            }
         }
 
         // A logical role slot is created before its first AgentRun. It has no
@@ -25101,12 +25149,24 @@ impl ApplicationOperations for Services {
                         == kontor_core::state::DesiredRunState::RunRequested
                     && agent.binding.is_none();
                 if !queued_root {
+                    let downstream = address.downstream.as_ref().ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::RevisionConflict,
+                            "a partially seated TeamRun recovery must name the exact downstream AgentRun, revision and native",
+                        )
+                    })?;
                     self.validate_partial_team_resume(
                         project_id,
                         &recovered.admitted,
                         &team,
                         &agent,
+                        downstream,
                     )?;
+                } else if address.downstream.is_some() {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "an ordinary queued-root recovery must not name a downstream native",
+                    ));
                 }
             }
             recoverable.push((address, recovered));
@@ -25130,6 +25190,7 @@ impl ApplicationOperations for Services {
                     &recovered.launch_key,
                     Some(address.team_run_id),
                     Some(address.agent_run_id),
+                    address.downstream.as_ref(),
                 )
                 .await
             {
@@ -30995,7 +31056,7 @@ impl Services {
     ) -> Result<Vec<StartedSeatDto>, ApiError> {
         let launch_key = IdempotencyKey::parse(&format!("{}-{}", key.as_str(), admitted.task_id))
             .map_err(|error| self.refuse_domain(&error))?;
-        self.seat_with_address(project_id, admitted, &launch_key, None, None)
+        self.seat_with_address(project_id, admitted, &launch_key, None, None, None)
             .await
     }
 
@@ -31011,6 +31072,7 @@ impl Services {
         launch_key: &IdempotencyKey,
         expected_team_run_id: Option<TeamRunId>,
         expected_agent_run_id: Option<AgentRunId>,
+        partial_recovery: Option<&PartialAdmissionSeatDto>,
     ) -> Result<Vec<StartedSeatDto>, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
@@ -31464,7 +31526,14 @@ impl Services {
             now,
         };
         for role in ordered.iter().skip(1) {
-            filled.push(self.fill_slot(&seating, role).await?);
+            if partial_recovery.is_some()
+                && self
+                    .current_delivery_role_leaf(project_id, team_run_id, role.as_role_key())?
+                    .is_none()
+            {
+                continue;
+            }
+            filled.push(self.fill_slot(&seating, role, partial_recovery).await?);
         }
         Ok(filled)
     }
@@ -34099,6 +34168,7 @@ impl Services {
         &self,
         seating: &Seating<'_>,
         slot: &RoleSlotId,
+        partial_recovery: Option<&PartialAdmissionSeatDto>,
     ) -> Result<StartedSeatDto, ApiError> {
         let _native_activity = self.native_activity()?;
         let Seating {
@@ -34114,32 +34184,41 @@ impl Services {
         } = *seating;
         let state = self.state()?;
         let realm_id = state.realm_id();
-        let existing = state
-            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
-            .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            // The repository returns lineage oldest first. Recovery keeps an
-            // abandoned predecessor as immutable audit evidence, so replay
-            // must address the newest successor that now holds the slot.
-            .rev()
-            .find(|seat| &seat.role == slot.as_role_key());
+        let existing =
+            self.current_delivery_role_leaf(project_id, team_run_id, slot.as_role_key())?;
         if let Some(seat) = existing.as_ref()
-            && let (Some(kind), Some(native)) = (seat.runtime_kind.clone(), seat.native_id.clone())
+            && let Some(binding) = seat.binding.as_ref()
         {
             return Ok(StartedSeatDto {
                 task_id: admitted.task_id,
                 team_run_id: team_run_id.to_string(),
-                agent_run_id: seat.agent_run_id.to_string(),
+                agent_run_id: seat.id.to_string(),
                 role_slot: seat.role.as_str().to_owned(),
-                runtime_kind: kind,
-                native_id: native.as_str().to_owned(),
+                runtime_kind: binding.identity.runtime_kind.clone(),
+                native_id: binding.identity.native_id.as_str().to_owned(),
                 applied: AppliedDto::Unchanged,
             });
         }
 
         let agent_run_id = existing
             .as_ref()
-            .map_or_else(AgentRunId::generate, |seat| seat.agent_run_id);
+            .map_or_else(AgentRunId::generate, |seat| seat.id);
+        if let Some(recovery) = partial_recovery
+            && (agent_run_id != recovery.agent_run_id
+                || existing.as_ref().is_none_or(|run| {
+                    run.revision != recovery.expected_revision
+                        || run.binding.is_some()
+                        || run.terminal.is_some()
+                        || run.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                        || run.projection.desired
+                            != kontor_core::state::DesiredRunState::RunRequested
+                }))
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "partial recovery may fill only the exact queued current AgentRun leaf",
+            ));
+        }
         let binding_id = kontor_core::id::RuntimeBindingId::generate();
         if existing.is_none() {
             state
@@ -34219,30 +34298,37 @@ impl Services {
                 .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
                 .map_err(|error| self.refuse(&error))?;
         }
+        let parts = LaunchParts {
+            scope: scope.clone(),
+            display_name: self.delivery_seat_name(
+                project_id,
+                admitted.task_id,
+                scope,
+                &team_snapshot,
+                slot,
+            )?,
+            agent_run_id,
+            team_run_id,
+            role_slot_id: slot.clone(),
+            task_id: admitted.task_id,
+            binding_id,
+            placement: Some(LaunchPlacement::Container(container.clone())),
+            cwd: cwd.clone(),
+            account_profile_id: admitted.account_profile_id.or(routed_account),
+            prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
+            model_rung,
+            context_policy: context_policy.clone(),
+            autonomy,
+            requested_at: now,
+        };
+        let request = match partial_recovery {
+            Some(recovery) => {
+                authority.into_recovery_request(parts, recovery.expected_native_id.clone())
+            }
+            None => authority.into_request(parts),
+        };
         let outcome = adapter
-            .launch(&authority.into_request(LaunchParts {
-                scope: scope.clone(),
-                display_name: self.delivery_seat_name(
-                    project_id,
-                    admitted.task_id,
-                    scope,
-                    &team_snapshot,
-                    slot,
-                )?,
-                agent_run_id,
-                team_run_id,
-                role_slot_id: slot.clone(),
-                task_id: admitted.task_id,
-                binding_id,
-                placement: Some(LaunchPlacement::Container(container.clone())),
-                cwd: cwd.clone(),
-                account_profile_id: admitted.account_profile_id.or(routed_account),
-                prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
-                model_rung,
-                context_policy: context_policy.clone(),
-                autonomy,
-                requested_at: now,
-            }))
+            .launch(&request)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let binding = RuntimeBinding {
