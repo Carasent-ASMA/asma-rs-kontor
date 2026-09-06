@@ -17,7 +17,7 @@ use crate::{DomainError, DomainResult};
 
 /// The revision of the rules below. Bumped whenever a rule changes so a recorded
 /// decision can be read against the exact policy that produced it.
-pub const POLICY_REVISION: u32 = 2;
+pub const POLICY_REVISION: u32 = 3;
 
 /// A Git commit identity: exactly forty lowercase hexadecimal digits.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -77,8 +77,8 @@ pub struct PublicationBinding {
     /// The confirmed tracker key of the task the branch names, when the branch
     /// names a task rather than the epic.
     pub task_key: Option<TrackerKey>,
-    /// Every confirmed task key in the epic. A pull-request title may name any
-    /// of them: the branch represents the epic and the title names a child.
+    /// Every confirmed task key in the epic. Retained in the frozen binding as
+    /// evidence of the resolved graph; it never widens the branch identity.
     pub child_keys: Vec<TrackerKey>,
     /// The repository's default branch, the only permitted base.
     pub default_branch: ExternalName,
@@ -87,13 +87,15 @@ pub struct PublicationBinding {
 impl PublicationBinding {
     /// Every key that may appear in a title under this branch binding.
     ///
-    /// An epic branch may publish one of its child tasks. A task branch is
-    /// narrower: its title must carry that same task key, so a sibling cannot
-    /// silently reuse the checkout and publication identity.
+    /// The one key a title may carry under this branch binding.
+    ///
+    /// Branch and title always name the same confirmed Jira object. Work for a
+    /// child task uses that child's branch rather than borrowing the epic
+    /// checkout, which makes the rule independently enforceable at the forge.
     fn title_keys(&self) -> Box<dyn Iterator<Item = &TrackerKey> + '_> {
         match self.task_key.as_ref() {
             Some(task_key) => Box::new(std::iter::once(task_key)),
-            None => Box::new(std::iter::once(&self.epic_key).chain(self.child_keys.iter())),
+            None => Box::new(std::iter::once(&self.epic_key)),
         }
     }
 }
@@ -126,7 +128,7 @@ impl PublicationRefusal {
                 "pr_title_key_missing: a pull-request title starts with the canonical tracker key and one space"
             }
             Self::TitleKeyMismatch => {
-                "pr_title_key_mismatch: the pull-request title names a key outside this epic's graph"
+                "pr_title_key_mismatch: the pull-request title must carry the same confirmed Jira key as its branch"
             }
             Self::BaseBranchNotDefault => {
                 "base_branch_not_default: a publication targets the repository's default branch"

@@ -614,6 +614,13 @@ Make the check required on the default branch through a repository ruleset
 the same name posted by anyone else does not satisfy it. On GitHub Team plans a
 branch-name ruleset is not evaluated; this check is the forge-side identity gate.
 
+The repository also ships the dependency-free
+`asma/publication-branch-title` Actions check. Require it on the default branch
+as the forge-local grammar boundary: it rejects a PR unless the base is
+`master`, the branch is canonical, and branch and title carry the same Jira
+key. The GitHub App check remains the stronger semantic boundary because it
+also proves that key against Kontor's confirmed Jira binding.
+
 ## Other deployment data
 
 - Profile packs define phases, gates, artifacts, budgets and runtime routing.

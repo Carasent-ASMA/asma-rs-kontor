@@ -41375,7 +41375,7 @@ async fn an_epic_branch_publication_is_attested_recorded_and_replayed() {
     let world = World::open_empty().await;
     let epic = keyed_epic(&world, "attest").await;
     let head = format!("feat/{}-publication-identity", epic.epic_key);
-    let title = format!("{} Enforce the grammar", epic.task_key);
+    let title = format!("{} Enforce the grammar", epic.epic_key);
     let body = publication(&head, "master", Some(&title));
 
     let attested = Call::post(

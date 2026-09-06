@@ -8,9 +8,8 @@
   one durable semantic Advisor/Committee identity across different retry keys.
 - Added an identity-preserving preview/apply correction for malformed legacy
   Committee topics and their bound CSW titles.
-- Publication policy revision 2 requires a task branch and pull-request title
-  to carry the same confirmed Jira key; an epic branch may still publish one
-  of its confirmed child tasks.
+- Publication policy revision 3 requires every branch and pull-request title
+  to carry the same confirmed Jira key. Child work uses the child's branch.
 - Accepted the ASMA CLI's nested catalog-module worktree layout after exact
   slug, Git common-directory and actual branch readback.
 

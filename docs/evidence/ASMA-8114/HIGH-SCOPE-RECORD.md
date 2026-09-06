@@ -46,15 +46,15 @@ when the head branch resolved to a different child task. The attestation was
 therefore internally consistent with that permissive rule while violating the
 one-Jira-task-per-branch convention.
 
-Policy revision 2 keeps child titles legal on an epic branch, but a task branch
-now accepts only a title beginning with that same confirmed task key. A sibling
-task requires its own Jira-keyed branch and checkout.
+Policy revision 3 accepts only a title beginning with the same confirmed Jira
+key as its branch. Epic work uses the epic branch; a child task requires its own
+Jira-keyed branch and checkout.
 
 ## Required contract
 
 1. The server accepts a semantic topic, never a pre-rendered container name.
-2. A topic must not begin with the exact Jira key, the derived Kontor item code,
-   a Team Definition prefix, or its configured separator.
+2. A topic must not contain the exact Jira key, derived Kontor item code, Team
+   Definition prefix, or configured separator as caller-supplied name material.
 3. Kontor derives one canonical identity from project, epic or task scope,
    family, pinned consultation revision, canonical topic and explicit re-review
    provenance.
@@ -74,9 +74,8 @@ task requires its own Jira-keyed branch and checkout.
     bound to the task key and the runtime proves that the actual branch is
     canonical and carries that confirmed key. An absent catalog checkout is
     refused rather than synthesized under a guessed branch.
-11. A task branch and pull-request title carry the same confirmed Jira key.
-    Only a branch bound to the epic itself may publish one of that epic's child
-    task titles.
+11. Every branch and pull-request title carry the same confirmed Jira key. Epic
+    work uses the epic branch; a child task uses its own branch.
 
 ## Live reconciliation targets
 

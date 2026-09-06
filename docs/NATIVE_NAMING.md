@@ -126,10 +126,9 @@ confirmed Jira key it is, or to a task whose confirmed link it is, and judges:
   (`branch_binding_mismatch`, `binding_unconfirmed`, or a grammar code such as
   `branch_shape_invalid`);
 - the base branch is the default branch (`base_branch_not_default`);
-- a title, when given, leads with one canonical key and one space. An epic
-  branch may publish the epic or any confirmed child task; a task branch may
-  publish only that same task key (`pr_title_key_missing`,
-  `pr_title_key_mismatch`).
+- a title, when given, leads with the same canonical key as the branch and one
+  space. Epic work uses the epic branch; child work uses that task's own branch
+  (`pr_title_key_missing`, `pr_title_key_mismatch`).
 
 Accepted and refused decisions are both recorded, idempotently per caller key,
 and are readable by observers. A refused decision is evidence that the rail

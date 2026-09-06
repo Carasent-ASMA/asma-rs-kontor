@@ -37,17 +37,27 @@ fn identity(head_branch: &str, base: &str, title: Option<&str>) -> PublicationId
 }
 
 #[test]
-fn an_epic_branch_with_a_child_title_is_accepted() {
-    let decision = evaluate(
+fn an_epic_branch_accepts_only_its_own_title_key() {
+    let accepted = evaluate(
         &identity(
             "feat/ASMA-8101-publication-identity-enforcement",
             "master",
-            Some("ASMA-8104 Enforce the publication branch grammar"),
+            Some("ASMA-8101 Enforce the publication branch grammar"),
         ),
         &binding(),
     );
-    assert_eq!(decision, PublicationDecision::accepted());
-    assert_eq!(decision.policy_revision, POLICY_REVISION);
+    assert_eq!(accepted, PublicationDecision::accepted());
+    assert_eq!(accepted.policy_revision, POLICY_REVISION);
+
+    let child = evaluate(
+        &identity(
+            "feat/ASMA-8101-publication-identity-enforcement",
+            "master",
+            Some("ASMA-8104 Borrow the epic branch"),
+        ),
+        &binding(),
+    );
+    assert_eq!(child.reasons, vec!["pr_title_key_mismatch".to_owned()]);
 }
 
 #[test]
