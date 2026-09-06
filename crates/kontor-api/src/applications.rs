@@ -222,9 +222,45 @@ pub struct ObservedBindingDto {
     /// The working directory it reported.
     #[schema(value_type = Option<String>)]
     pub cwd: Option<ExternalId>,
+    /// Complete container-only readback. `None` for sessions and legacy rows.
+    pub container_readback: Option<ContainerReadbackDto>,
     /// When the readback happened.
     #[schema(value_type = String, format = DateTime)]
     pub observed_at: Timestamp,
+}
+
+/// Complete exact-id readback of one native topology container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerReadbackDto {
+    /// Runtime host that owns the native generation.
+    pub host: String,
+    /// Runtime generation in which the native id is meaningful.
+    pub generation: u64,
+    /// Native projection read back for the container.
+    pub projection: String,
+    /// Runtime-reported kind.
+    pub native_kind: String,
+    /// Exact runtime-visible title.
+    pub visible_title: String,
+    /// Exact canonical working directory.
+    pub canonical_cwd: Option<String>,
+    /// Exact native parent for a child; absent for a root.
+    pub native_parent: Option<NativeContainerParentDto>,
+    /// Exact topology correlation reported for this native id.
+    pub topology_correlation: String,
+}
+
+/// Complete native parent identity reported for a child container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct NativeContainerParentDto {
+    /// Runtime family.
+    pub runtime_kind: String,
+    /// Runtime host.
+    pub host: String,
+    /// Runtime generation.
+    pub generation: u64,
+    /// Native parent id.
+    pub native_id: String,
 }
 
 /// One seat a topology node hosts, as a projection reports it.
@@ -2792,7 +2828,7 @@ pub struct AppliedProjectTeamDefinitionSelectionDto {
 pub enum JiraMaterializationModeDto {
     /// Find the stable connector marker or create exactly once.
     Create,
-    /// Verify and adopt the supplied key without writing it.
+    /// Verify and adopt the supplied key; only an explicit description may be updated.
     Link,
 }
 
@@ -2805,6 +2841,11 @@ pub struct JiraMaterializationIntentDto {
     /// Required only for link mode; create has no caller-authored key.
     #[schema(value_type = Option<String>)]
     pub issue_key: Option<ExternalId>,
+    /// Exact Jira description body. On create it replaces the generated body;
+    /// on link it explicitly authorizes an in-place description-only update.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<BoundedText>,
 }
 
 /// What the Jira materialization preview is asked for.
@@ -2848,6 +2889,10 @@ pub struct JiraMaterializationItemDto {
     /// The confirmed Jira key after apply.
     #[schema(value_type = Option<String>)]
     pub confirmed_key: Option<ExternalId>,
+    /// Description the preview will create or explicitly update.
+    pub description: Option<String>,
+    /// Exact description read back after apply.
+    pub confirmed_description: Option<String>,
 }
 
 /// A complete no-write Jira materialization preview.
@@ -4837,8 +4882,8 @@ pub struct BlockedTaskDto {
 
 /// What the planner decided, and what it decided against.
 ///
-/// A plan is a dry run in the strongest sense available: it reads rows, it calls
-/// no runtime, and it writes nothing. `plan_hash` is what `scheduler:start`
+/// A plan is a dry run in the strongest sense available: it reads rows, performs
+/// read-only exact runtime inspection, and writes nothing. `plan_hash` is what `scheduler:start`
 /// applies, so a caller starts the plan it was shown rather than whatever the
 /// world looks like by the time it decides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]

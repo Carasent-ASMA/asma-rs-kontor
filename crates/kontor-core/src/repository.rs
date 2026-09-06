@@ -1001,7 +1001,11 @@ pub struct NewNativeContainerBinding {
     pub observed_kind: ObservedContainerKind,
     /// The container's canonical working directory, where it has one.
     pub canonical_cwd: Option<ExternalName>,
-    /// When the binding was established or last confirmed.
+    /// Complete exact native readback; absent only for legacy/imported rows.
+    pub readback: Option<crate::state::NativeContainerReadback>,
+    /// When the runtime established this exact binding.
+    pub bound_at: Timestamp,
+    /// When the runtime last confirmed this exact binding.
     pub observed_at: Timestamp,
 }
 

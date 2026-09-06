@@ -178,6 +178,8 @@ fn world() -> World {
                 identity: identity(native),
                 observed_kind: kind,
                 canonical_cwd: Some(name("/tmp/kontor")),
+                readback: None,
+                bound_at: created_at,
                 observed_at: created_at,
             })
             .expect("the native container is bound");
@@ -216,6 +218,8 @@ fn world() -> World {
             identity: identity("wks_tsw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: created_at,
             observed_at: created_at,
         })
         .expect("the task workspace takes a native container");
@@ -1332,6 +1336,8 @@ fn confirmation_re_proves_parity_against_the_live_census() {
             identity: identity("wks_asw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: at("2026-09-02T10:31:00Z"),
             observed_at: at("2026-09-02T10:31:00Z"),
         })
         .expect("it takes a native container");

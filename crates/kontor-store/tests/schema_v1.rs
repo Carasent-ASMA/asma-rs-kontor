@@ -711,7 +711,78 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v105 adds the position each issued message was acknowledged at, so a
     // bounded observation can ask whether an occurrence is *the* delivery rather
     // than whether it is the *only* one — the second needs a scan (ASMA-8203).
-    assert_eq!(SCHEMA_VERSION, 105);
+    // v106 persists the complete exact-id native container readback and
+    // leaves every pre-v106 row's shape, title, ancestry and correlation
+    // unknown rather than reconstructed (ASMA-8115).
+    assert_eq!(SCHEMA_VERSION, 106);
+}
+
+#[test]
+fn v106_preserves_legacy_container_identity_and_leaves_new_readback_unknown() {
+    let connection = Connection::open_in_memory().expect("the v105 fixture opens");
+    connection
+        .execute_batch(
+            "CREATE TABLE topology_node_containers (
+                 topology_node_id TEXT PRIMARY KEY NOT NULL,
+                 project_id TEXT NOT NULL,
+                 container_binding_id TEXT NOT NULL,
+                 runtime_kind TEXT NOT NULL,
+                 host TEXT NOT NULL,
+                 generation INTEGER NOT NULL,
+                 native_id TEXT NOT NULL,
+                 observed_kind TEXT NOT NULL,
+                 canonical_cwd TEXT,
+                 bound_at TEXT NOT NULL,
+                 last_readback_at TEXT NOT NULL,
+                 revision INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO topology_node_containers VALUES (
+                 'node-1', 'project-1', 'binding-1', 'paseo.agent', 'host-1', 7,
+                 'prj_01890000-0000-7000-8000-0000000000ff', 'project', '/work',
+                 '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 4
+             );
+             PRAGMA user_version = 105;",
+        )
+        .expect("the legacy row is seeded");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0106_container_native_readback.sql"
+        ))
+        .expect("v106 migrates the row");
+
+    let preserved: (String, String, i64, String) = connection
+        .query_row(
+            "SELECT container_binding_id, host, generation, native_id
+               FROM topology_node_containers WHERE topology_node_id = 'node-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the legacy identity reads");
+    assert_eq!(
+        preserved,
+        (
+            "binding-1".to_owned(),
+            "host-1".to_owned(),
+            7,
+            "prj_01890000-0000-7000-8000-0000000000ff".to_owned(),
+        )
+    );
+    let unknown: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM topology_node_containers
+              WHERE observed_projection IS NULL AND visible_title IS NULL
+                AND parent_runtime_kind IS NULL AND parent_host IS NULL
+                AND parent_generation IS NULL AND parent_native_id IS NULL
+                AND topology_correlation IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the nullable readback columns are readable");
+    assert_eq!(unknown, 1, "legacy readback is unknown, never fabricated");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the schema version reads");
+    assert_eq!(version, 106);
 }
 
 #[test]

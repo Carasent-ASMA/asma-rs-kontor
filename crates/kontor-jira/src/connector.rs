@@ -172,6 +172,8 @@ pub struct JiraIssuePlan {
     /// exact Kontor-authored content. Ordinary operator links do not claim
     /// authority over summary or description; in-place recovery does.
     pub require_marker: bool,
+    /// An explicit linked-issue description update, preserving every other field.
+    pub update_description: bool,
     pub summary: String,
     pub description: String,
     pub parent_key: Option<ExternalId>,
@@ -189,6 +191,7 @@ pub struct JiraIssueReadback {
     /// cannot do because the key is itself part of the hashed document.
     pub issue_id: ExternalId,
     pub readback_hash: ContentHash,
+    pub description: String,
 }
 
 impl std::fmt::Debug for JiraConnector {
@@ -648,6 +651,12 @@ impl JiraConnector {
 
     /// Link or create one issue, then accept it only after exact readback.
     pub async fn materialize(&self, plan: &JiraIssuePlan) -> Result<JiraIssueReadback, JiraError> {
+        if plan.update_description && plan.requested_key.is_none() {
+            return Err(JiraError::refused(
+                "materialize",
+                "a description-only update requires one exact linked Jira key",
+            ));
+        }
         let key = if let Some(key) = plan.requested_key.clone() {
             key
         } else {
@@ -662,6 +671,21 @@ impl JiraConnector {
                 }
             }
         };
+        if plan.update_description {
+            let mut structural = plan.clone();
+            structural.update_description = false;
+            let before = self.readback_issue(&key, &structural).await?;
+            if before.description != plan.description {
+                let encoded = url::form_urlencoded::byte_serialize(key.as_str().as_bytes())
+                    .collect::<String>();
+                self.request(
+                    Method::PUT,
+                    &format!("rest/api/3/issue/{encoded}"),
+                    Some(&json!({"fields": {"description": adf(&plan.description)}})),
+                )
+                .await?;
+            }
+        }
         self.readback_issue(&key, plan).await
     }
 
@@ -796,11 +820,22 @@ impl JiraConnector {
         // A richer body is the one the reader wants and is preserved. An absent
         // or empty one is refused, because it is neither an authored repair nor
         // the marker Kontor wrote, and losing a body is not a recovery.
+        //
+        // An explicit *description update* is the one explicit-link case that is
+        // not a recovery. Kontor has just published that body itself, so the
+        // weaker "is there a body at all" question would accept a write that
+        // silently did not land — which is the whole thing the readback exists
+        // to catch. That mode is held to the exact text it published.
         let body_refused = if explicit_link {
-            // Recovering an issue that already existed: there must be a body,
-            // and whatever it now says is the reader's to own.
-            plan.require_marker
-                && !observed_body(Some(&observed_description))?.is_some_and(|body| !body.is_empty())
+            if plan.update_description {
+                observed_description != adf(&plan.description)
+            } else {
+                // Recovering an issue that already existed: there must be a
+                // body, and whatever it now says is the reader's to own.
+                plan.require_marker
+                    && !observed_body(Some(&observed_description))?
+                        .is_some_and(|body| !body.is_empty())
+            }
         } else {
             // Confirming an issue Kontor just created or just found by marker:
             // the body must be exactly the one it wrote.
@@ -876,6 +911,17 @@ impl JiraConnector {
                 "description": observed_description,
                 "marker": plan.marker.as_str(),
             })
+        } else if explicit_link && plan.update_description {
+            json!({
+                "schema_version": 1,
+                "mode": "update_description",
+                "key": key.as_str(),
+                "project": self.project_key.as_str(),
+                "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
+                "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
+                "summary": observed_summary,
+                "description": plan.description,
+            })
         } else if explicit_link {
             json!({
                 "schema_version": 1,
@@ -912,6 +958,7 @@ impl JiraConnector {
             issue_key: key.clone(),
             issue_id,
             readback_hash,
+            description: adf_text(&observed_description),
         })
     }
 }

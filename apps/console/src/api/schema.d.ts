@@ -4861,6 +4861,27 @@ export interface components {
          * @enum {string}
          */
         ConsultationVerdictDto: "compliant" | "non_compliant";
+        /** @description Complete exact-id readback of one native topology container. */
+        ContainerReadbackDto: {
+            /** @description Exact canonical working directory. */
+            canonical_cwd?: string | null;
+            /**
+             * Format: int64
+             * @description Runtime generation in which the native id is meaningful.
+             */
+            generation: number;
+            /** @description Runtime host that owns the native generation. */
+            host: string;
+            /** @description Runtime-reported kind. */
+            native_kind: string;
+            native_parent?: null | components["schemas"]["NativeContainerParentDto"];
+            /** @description Native projection read back for the container. */
+            projection: string;
+            /** @description Exact topology correlation reported for this native id. */
+            topology_correlation: string;
+            /** @description Exact runtime-visible title. */
+            visible_title: string;
+        };
         /** @description Apply request bound to an exact stale-container preview. */
         ContainerRecoveryApplyRequest: {
             /**
@@ -6342,6 +6363,11 @@ export interface components {
         };
         /** @description One server-derived Jira object's requested mode. */
         JiraMaterializationIntentDto: {
+            /**
+             * @description Exact Jira description body. On create it replaces the generated body;
+             *     on link it explicitly authorizes an in-place description-only update.
+             */
+            description?: string | null;
             /** @description Required only for link mode; create has no caller-authored key. */
             issue_key?: string | null;
             /** @description Create or link. */
@@ -6349,8 +6375,12 @@ export interface components {
         };
         /** @description One ordered Jira object in a materialization preview or receipt. */
         JiraMaterializationItemDto: {
+            /** @description Exact description read back after apply. */
+            confirmed_description?: string | null;
             /** @description The confirmed Jira key after apply. */
             confirmed_key?: string | null;
+            /** @description Description the preview will create or explicitly update. */
+            description?: string | null;
             /** @description Epic or task. */
             item_kind: string;
             /** @description Create or link. */
@@ -6534,6 +6564,20 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description Complete native parent identity reported for a child container. */
+        NativeContainerParentDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation.
+             */
+            generation: number;
+            /** @description Runtime host. */
+            host: string;
+            /** @description Native parent id. */
+            native_id: string;
+            /** @description Runtime family. */
+            runtime_kind: string;
+        };
         /**
          * @description One subject in an epic-wide native-name plan.
          * @enum {string}
@@ -6653,6 +6697,7 @@ export interface components {
          *     desired value presented as an observation is how drift stops being visible.
          */
         ObservedBindingDto: {
+            container_readback?: null | components["schemas"]["ContainerReadbackDto"];
             /** @description The working directory it reported. */
             cwd?: string | null;
             /** @description The exact native identity it reported. */
@@ -8392,8 +8437,8 @@ export interface components {
         /**
          * @description What the planner decided, and what it decided against.
          *
-         *     A plan is a dry run in the strongest sense available: it reads rows, it calls
-         *     no runtime, and it writes nothing. `plan_hash` is what `scheduler:start`
+         *     A plan is a dry run in the strongest sense available: it reads rows, performs
+         *     read-only exact runtime inspection, and writes nothing. `plan_hash` is what `scheduler:start`
          *     applies, so a caller starts the plan it was shown rather than whatever the
          *     world looks like by the time it decides.
          */

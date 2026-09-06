@@ -54,9 +54,9 @@ use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
-    CapacityRefreshRequest, MutationReceiptDto, ObservedBindingDto, ProjectCapacityDto,
-    PublishTriggerRequest, RecordProviderQuotaRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto,
-    SeatBindingRequest, TopologySeatDto,
+    CapacityRefreshRequest, ContainerReadbackDto, MutationReceiptDto, NativeContainerParentDto,
+    ObservedBindingDto, ProjectCapacityDto, PublishTriggerRequest, RecordProviderQuotaRequest,
+    ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
@@ -210,8 +210,9 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     DerivedRunState, Freshness, GateVerdict, ImportedTaskState, NativeContainerBinding,
-    ObservedContainerKind, RuntimeContact, SeatBinding, SessionTopologyNode, TaskState,
-    TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    NativeContainerReadback, ObservedContainerKind, ObservedContainerProjection, RuntimeContact,
+    SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource,
+    TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
@@ -253,8 +254,9 @@ use kontor_runtime::adapter::{
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
-    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerInspectRequest,
+    ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRequest,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
@@ -271,9 +273,9 @@ use kontor_scheduler::headroom::HeadroomConfig;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
-    CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope,
-    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
-    WorktreeClaim, WorktreeVerification, covering_authority,
+    CapacityUsage, ExternalWorkEvidence, PlacementAdmission, ReconciliationEvidence,
+    ReconciliationScope, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth,
+    SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, covering_authority,
 };
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
@@ -3153,8 +3155,13 @@ impl Services {
                 requested_key: request.epic.issue_key.clone(),
                 marker: epic_marker,
                 require_marker: false,
+                update_description: request.epic.mode == JiraMaterializationModeDto::Link
+                    && request.epic.description.is_some(),
                 summary: epic.name.as_str().to_owned(),
-                description: format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                description: request.epic.description.as_ref().map_or_else(
+                    || format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                    |description| description.as_str().to_owned(),
+                ),
                 parent_key: None,
             },
         )]);
@@ -3164,6 +3171,21 @@ impl Services {
             mode: request.epic.mode,
             requested_key: request.epic.issue_key.clone(),
             confirmed_key: None,
+            description: (request.epic.mode == JiraMaterializationModeDto::Create)
+                .then(|| {
+                    request.epic.description.as_ref().map_or_else(
+                        || format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                        |description| description.as_str().to_owned(),
+                    )
+                })
+                .or_else(|| {
+                    request
+                        .epic
+                        .description
+                        .as_ref()
+                        .map(|it| it.as_str().to_owned())
+                }),
+            confirmed_description: None,
         }];
 
         for task in &tasks {
@@ -3213,8 +3235,13 @@ impl Services {
                     requested_key: intent.issue_key.clone(),
                     marker,
                     require_marker: false,
+                    update_description: intent.mode == JiraMaterializationModeDto::Link
+                        && intent.description.is_some(),
                     summary: task.title.as_str().to_owned(),
-                    description: format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                    description: intent.description.as_ref().map_or_else(
+                        || format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                        |description| description.as_str().to_owned(),
+                    ),
                     parent_key: None,
                 },
             );
@@ -3224,6 +3251,15 @@ impl Services {
                 mode: intent.mode,
                 requested_key: intent.issue_key.clone(),
                 confirmed_key: None,
+                description: (intent.mode == JiraMaterializationModeDto::Create)
+                    .then(|| {
+                        intent.description.as_ref().map_or_else(
+                            || format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                            |description| description.as_str().to_owned(),
+                        )
+                    })
+                    .or_else(|| intent.description.as_ref().map(|it| it.as_str().to_owned())),
+                confirmed_description: None,
             });
         }
 
@@ -5132,7 +5168,19 @@ impl Services {
                     "this task declares no worktree, so there is nowhere to prepare its workspace",
                 )
             })?;
-        WorkspaceRoot::parse(declared.as_str()).map_err(|error| self.refuse_domain(&error))
+        let canonical = std::fs::canonicalize(declared.as_str()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this task's declared worktree is missing or cannot be canonicalized",
+            )
+        })?;
+        WorkspaceRoot::parse(canonical.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this task's canonical worktree is not valid UTF-8",
+            )
+        })?)
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     /// Read one task row, refusing an id that is not in this project.
@@ -5924,9 +5972,26 @@ impl Services {
                 .with_store(|store| store.task_worktree(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?
                 .map(|worktree| WorktreeClaim {
+                    verification: if PathBuf::from(worktree.as_str()).is_dir()
+                        && PathBuf::from(worktree.as_str()).join(".git").exists()
+                        && std::fs::canonicalize(worktree.as_str()).is_ok()
+                    {
+                        WorktreeVerification::Verified
+                    } else {
+                        WorktreeVerification::Unverified
+                    },
                     worktree,
-                    verification: WorktreeVerification::Verified,
                 });
+            let placement = self
+                .placement_admission(
+                    project_id,
+                    epic_id,
+                    task.id,
+                    registered.get(&task.id).copied().unwrap_or(true),
+                    worktree.as_ref(),
+                    &runtime,
+                )
+                .await?;
             let changed_modules = state
                 .with_store(|store| store.task_changed_modules(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?;
@@ -5934,6 +5999,7 @@ impl Services {
                 project_id,
                 task_id: task.id,
                 delivery_slots_registered: registered.get(&task.id).copied().unwrap_or(true),
+                placement,
                 mini_project_id: Some(epic_id),
                 workflow_id: workflow.id,
                 state: task.state,
@@ -5973,6 +6039,208 @@ impl Services {
             capacity: self.capacity,
             adaptive_window: self.admission_window(project_id, epic_id)?,
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+        })
+    }
+
+    /// Build the fail-closed placement proof consumed by the pure scheduler.
+    async fn placement_admission(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: TaskId,
+        delivery_slots_registered: bool,
+        worktree: Option<&WorktreeClaim>,
+        runtime: &RuntimeAdmissionEvidence,
+    ) -> Result<PlacementAdmission, ApiError> {
+        let state = self.state()?;
+        let jira = state.with_store(|store| {
+            Ok::<_, RepositoryError>((
+                store.confirmed_jira_epic_key(project_id, epic_id)?,
+                store.confirmed_jira_task_key(project_id, task_id)?,
+            ))
+        });
+        let (epic_jira, task_jira) = match jira {
+            Ok((Some(epic), Some(task)))
+                if TrackerKey::from_external(&epic).is_ok()
+                    && TrackerKey::from_external(&task).is_ok() =>
+            {
+                (epic, task)
+            }
+            Ok(_) | Err(RepositoryError::Conflict { .. }) => {
+                return Ok(PlacementAdmission::JiraBindingUnconfirmed);
+            }
+            Err(error) => return Err(self.refuse(&error)),
+        };
+
+        let Some(pin) = state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(PlacementAdmission::TeamDefinitionUnpinned);
+        };
+        let Some(definition) = state
+            .with_store(|store| {
+                store.get_team_definition(
+                    project_id,
+                    pin.definition.definition_id,
+                    pin.definition.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(PlacementAdmission::TeamDefinitionUnpinned);
+        };
+        if TeamDefinitionSnapshot::from_revision(&definition)
+            .map_err(|error| self.refuse_domain(&error))?
+            != pin.definition
+        {
+            return Ok(PlacementAdmission::TeamDefinitionUnpinned);
+        }
+        if !delivery_slots_registered {
+            return Ok(PlacementAdmission::DeliverySlotUnregistered);
+        }
+        let Some(worktree) = worktree else {
+            return Ok(PlacementAdmission::WorktreeMissing);
+        };
+        if worktree.verification != WorktreeVerification::Verified {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        }
+        let Ok(canonical_worktree) = std::fs::canonicalize(worktree.worktree.as_str()) else {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        };
+        let Some(canonical_worktree) = canonical_worktree.to_str() else {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        };
+        let Ok(canonical_worktree) = WorkspaceRoot::parse(canonical_worktree) else {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        };
+
+        let Some(adapter) = state.runtimes().get(&runtime.runtime_kind) else {
+            return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+        };
+        let epic_scope = match self.execution_scope(project_id, epic_id, None, adapter.as_ref()) {
+            Ok(scope) if scope.epic.external_epic_key == epic_jira => scope,
+            Ok(_) => return Ok(PlacementAdmission::JiraBindingUnconfirmed),
+            Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+        };
+        let task_scope =
+            match self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref()) {
+                Ok(scope)
+                    if scope.epic.external_epic_key == epic_jira
+                        && scope
+                            .task
+                            .as_ref()
+                            .is_some_and(|task| task.external_issue_key == task_jira) =>
+                {
+                    scope
+                }
+                Ok(_) => return Ok(PlacementAdmission::JiraBindingUnconfirmed),
+                Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+            };
+        let nodes = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?;
+        let exact = |kind: &TopologyKindKey, task: Option<TaskId>| {
+            let found = nodes
+                .iter()
+                .filter(|node| &node.kind == kind && node.task_id == task)
+                .collect::<Vec<_>>();
+            (found.len() == 1).then(|| (*found[0]).clone())
+        };
+        let (Some(esw), Some(ecp), Some(tsw)) = (
+            exact(&self.domain.delivery.epic_kind, None),
+            exact(&self.domain.delivery.control_kind, None),
+            exact(&self.domain.delivery.task_kind, Some(task_id)),
+        ) else {
+            return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+        };
+        if esw.lifecycle != TopologyLifecycle::Active
+            || ecp.lifecycle != TopologyLifecycle::Active
+            || tsw.lifecycle != TopologyLifecycle::Active
+            || ecp.parent_id != Some(esw.id)
+            || tsw.parent_id != Some(esw.id)
+            || definition.container(&esw.kind).is_none()
+            || definition.container(&ecp.kind).is_none()
+            || definition.container(&tsw.kind).is_none()
+        {
+            return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+        }
+
+        let mut readbacks = Vec::with_capacity(3);
+        for (role, node, scope) in [
+            ("esw", &esw, &epic_scope),
+            ("ecp", &ecp, &epic_scope),
+            ("tsw", &tsw, &task_scope),
+        ] {
+            let Some(binding) = state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+            else {
+                return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+            };
+            if binding.identity.runtime_kind != runtime.runtime_kind {
+                return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+            }
+            let inspection = match self
+                .inspect_bound_container(project_id, node, &binding, adapter.as_ref())
+                .await
+            {
+                Ok(inspection) => inspection,
+                Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+            };
+            let expected_title =
+                self.container_name_from_definition(&definition, node, Some(scope), None)?;
+            let expected_cwd = binding
+                .canonical_cwd
+                .as_ref()
+                .and_then(|cwd| WorkspaceRoot::parse(cwd.as_str()).ok());
+            if inspection.visible_title != expected_title.as_str()
+                || expected_cwd.is_none()
+                || inspection.canonical_cwd != expected_cwd
+                || (role == "tsw" && inspection.canonical_cwd.as_ref() != Some(&canonical_worktree))
+            {
+                return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+            }
+            let parent = inspection.native_parent.as_ref().map(|parent| {
+                serde_json::json!({
+                    "runtime_kind": parent.runtime_kind.as_str(),
+                    "runtime_host": parent.host.as_str(),
+                    "runtime_generation": parent.generation,
+                    "native_id": parent.native_id.as_str(),
+                })
+            });
+            readbacks.push(serde_json::json!({
+                "role": role,
+                "topology_node_id": node.id.to_string(),
+                "container_binding_id": inspection.binding.id.to_string(),
+                "runtime_kind": inspection.binding.identity.runtime_kind.as_str(),
+                "runtime_host": inspection.binding.identity.host.as_str(),
+                "runtime_generation": inspection.binding.identity.generation,
+                "native_id": inspection.binding.identity.native_id.as_str(),
+                "projection": inspection.binding.projection.to_string(),
+                "native_kind": inspection.observed_kind.as_str(),
+                "visible_title": inspection.visible_title,
+                "canonical_cwd": inspection.canonical_cwd.as_ref().map(WorkspaceRoot::as_str),
+                "native_parent": parent,
+                "topology_correlation": inspection.correlation.label.to_string(),
+            }));
+        }
+        let attestation = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "task_id": task_id.to_string(),
+            "epic_jira_key": epic_jira.as_str(),
+            "task_jira_key": task_jira.as_str(),
+            "team_definition_id": pin.definition.definition_id.to_string(),
+            "team_definition_version": pin.definition.version.get(),
+            "team_definition_hash": pin.definition.canonical_hash.as_str(),
+            "worktree": canonical_worktree.as_str(),
+            "containers": readbacks,
+        }))
+        .map_err(|error| self.refuse_domain(&error))?;
+        Ok(PlacementAdmission::Confirmed {
+            attestation_digest: attestation.hash().clone(),
         })
     }
 
@@ -8838,6 +9106,22 @@ impl Services {
             identity: outcome.snapshot.binding.identity.clone(),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(canonical_cwd.clone()),
+            readback: Some(NativeContainerReadback {
+                projection: ObservedContainerProjection::NativeChild,
+                visible_title: ExternalName::parse(&outcome.observed_title)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                native_parent: Some(kontor_core::state::NativeRuntimeIdentity {
+                    runtime_kind: outcome.snapshot.binding.identity.runtime_kind.clone(),
+                    host: outcome.snapshot.binding.identity.host.clone(),
+                    generation: outcome.snapshot.binding.identity.generation,
+                    native_id: parent_native_id.clone(),
+                }),
+                topology_correlation: ExternalName::parse(
+                    &outcome.snapshot.correlation.label.to_string(),
+                )
+                .map_err(|error| self.refuse_domain(&error))?,
+            }),
+            bound_at: outcome.snapshot.binding.bound_at,
             observed_at: recovery_request.requested_at,
         };
         let preview_hash = self.preview_hash(&serde_json::json!({
@@ -9644,6 +9928,7 @@ impl Services {
                         .canonical_cwd
                         .as_ref()
                         .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok()),
+                    container_readback: container_readback_dto(binding),
                     observed_at: binding.last_readback_at,
                 }),
                 seats: seats
@@ -10064,6 +10349,7 @@ impl Services {
                         .as_ref()
                         .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok())
                 }),
+                container_readback: None,
                 observed_at: inspection.observed_at,
             });
             (observed, live)
@@ -10076,6 +10362,7 @@ impl Services {
                     .canonical_cwd
                     .as_ref()
                     .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok()),
+                container_readback: container_readback_dto(binding),
                 observed_at: binding.last_readback_at,
             });
             (observed, container.is_some())
@@ -11474,6 +11761,7 @@ impl Services {
                         native_id: identity.native_id,
                         native_name: None,
                         cwd: None,
+                        container_readback: None,
                         observed_at: seat.observed_at.unwrap_or(run.updated_at),
                     }),
                 })
@@ -12310,6 +12598,7 @@ impl Services {
                         native_id: identity.native_id,
                         native_name: None,
                         cwd: None,
+                        container_readback: None,
                         observed_at: seat.observed_at.unwrap_or(run.updated_at),
                     }),
                 })
@@ -19233,7 +19522,6 @@ impl ApplicationOperations for Services {
         request: &SemanticTopologyRequest,
     ) -> Result<TopologyMutationDto, ApiError> {
         let state = self.state()?;
-        let now = kontor_api::now();
         let project = self.project_at(project_id, request.expected_revision)?;
         let scope = self.resolve_scope(project_id, &request.target)?;
 
@@ -19259,30 +19547,15 @@ impl ApplicationOperations for Services {
                 else {
                     continue;
                 };
-                // The exact identity, re-confirmed against the family that
-                // issued it. A family this Realm is no longer configured with
-                // cannot confirm anything, so the stored readback instant stays
-                // where it was — an old confirmation reads as old.
-                if state
-                    .runtimes()
-                    .get(&binding.identity.runtime_kind)
-                    .is_none()
-                {
+                let Some(adapter) = state.runtimes().get(&binding.identity.runtime_kind) else {
+                    // An unconfigured family cannot confirm anything. Preserve
+                    // the old observation instead of refreshing it locally.
                     continue;
-                }
-                state
-                    .with_store(|store| {
-                        store.bind_topology_node_container(&NewNativeContainerBinding {
-                            topology_node_id: node.id,
-                            project_id,
-                            container_binding_id: binding.container_binding_id.clone(),
-                            identity: binding.identity.clone(),
-                            observed_kind: binding.observed_kind,
-                            canonical_cwd: binding.canonical_cwd.clone(),
-                            observed_at: now,
-                        })
-                    })
-                    .map_err(|error| self.refuse(&error))?;
+                };
+                let inspection = self
+                    .inspect_bound_container(project_id, &node, &binding, adapter.as_ref())
+                    .await?;
+                self.bind_container(project_id, node.id, &inspection)?;
             }
         }
 
@@ -19920,6 +20193,12 @@ impl ApplicationOperations for Services {
         // A task can never be created under an inferred or merely planned
         // parent. Confirm the epic first, independently of stored item order or
         // restart position, and use only that readback for every task.
+        //
+        // The confirmed description is taken from *this* readback rather than a
+        // second pass. Re-materializing every item to echo its body back would
+        // add a Jira request per issue that this operation does not owe, which
+        // is exactly what the adoption path's request budget refuses.
+        let mut descriptions = BTreeMap::new();
         for (ordinal, base_plan) in &prepared.plans {
             let item = stored_by_ordinal
                 .get(ordinal)
@@ -19950,6 +20229,7 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
+            descriptions.insert(*ordinal, readback.description);
             epic_key = Some(readback.issue_key);
         }
         for (ordinal, base_plan) in &prepared.plans {
@@ -19990,6 +20270,7 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
+            descriptions.insert(*ordinal, readback.description);
         }
         for confirmed_batch_id in &batch_ids {
             state
@@ -20089,6 +20370,8 @@ impl ApplicationOperations for Services {
                     mode: requested.mode,
                     requested_key: requested.requested_key,
                     confirmed_key: item.confirmed_key.clone(),
+                    description: requested.description,
+                    confirmed_description: descriptions.get(&ordinal).cloned(),
                 })
             })
             .collect::<Result<Vec<_>, ApiError>>()?;
@@ -20843,6 +21126,8 @@ impl ApplicationOperations for Services {
                     identity: current.identity.clone(),
                     observed_kind: current.observed_kind,
                     canonical_cwd: current.canonical_cwd.clone(),
+                    readback: current.readback.clone(),
+                    bound_at: current.bound_at,
                     observed_at: now,
                 },
                 parent_native_id: current.identity.native_id.clone(),
@@ -30803,17 +31088,20 @@ impl ApplicationOperations for Services {
         }
         self.ensure_launch_intent(project_id, successor_agent_run_id)?;
 
-        adapter
-            .prepare_plane()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        // The replacement is placed in the *same* container as the seat it
-        // replaces. Preparing a fresh one keyed by anything else is how a
-        // successor ends up working somewhere its predecessor never was.
+        // The replacement reuses the exact persisted container; recovery is not
+        // authority to create or move topology.
         let task_root = self.task_root(project_id, task_id)?;
-        let node = self.ensure_task_node(project_id, task_id)?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the replacement task has no materialized ticket workspace",
+                )
+            })?;
         let workspace = self
-            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
             .await?;
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
         let quota_states = state
@@ -33702,14 +33990,18 @@ impl Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
-        adapter
-            .prepare_plane()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let task_root = self.task_root(project_id, attempt.request.task_id)?;
-        let node = self.ensure_task_node(project_id, attempt.request.task_id)?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, attempt.request.task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the succession task has no materialized ticket workspace",
+                )
+            })?;
         let workspace = self
-            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
             .await?;
         let scope = self.execution_scope(
             project_id,
@@ -34514,6 +34806,12 @@ impl Services {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let now = kontor_api::now();
+        if admitted.placement_attestation_digest.is_none() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the scheduler admission carries no successful placement attestation",
+            ));
+        }
         let workflow = state
             .with_store(|store| store.get_active_task_workflow(project_id, admitted.task_id))
             .map_err(|error| self.refuse(&error))?
@@ -34664,8 +34962,8 @@ impl Services {
                 "the admitted task is not scoped to an epic",
             )
         })?;
-        // Admission is fenced before placement writes, scheduler commits or
-        // runtime preparation. Otherwise a new native could appear outside the
+        // Admission is fenced before placement inspection or scheduler commits.
+        // Otherwise native state could move outside
         // migration's exact census while the old pin is still retained.
         self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let task_root = self.task_root(project_id, admitted.task_id)?;
@@ -34678,7 +34976,7 @@ impl Services {
         )?;
         // Before the runtime is contacted at all. `ensure_seat_binding` checks
         // the same thing when it opens each seat, but by then a TeamRun, an
-        // AgentRun and a prepared plane already exist — and a slot the
+        // AgentRun and verified native placement already exist — and a slot the
         // governing Team Definition does not register must leave none of them
         // behind.
         self.preflight_delivery_slots(&placement, &ordered)?;
@@ -34688,6 +34986,9 @@ impl Services {
             Some(admitted.task_id),
             adapter.as_ref(),
         )?;
+        let workspace = self
+            .bound_container_snapshot(project_id, &placement, adapter.as_ref())
+            .await?;
 
         let intent = CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
@@ -34775,21 +35076,6 @@ impl Services {
         });
         commit.map_err(|error| self.refuse(&error))?;
 
-        // Where this seat belongs is settled before the runtime is touched at
-        // all. A placement that cannot be resolved stops here, with nothing
-        // dispatched and nothing to undo.
-        // A container is prepared *inside* the runtime's plane, so the plane has
-        // to exist first. This is idempotent and re-attests a binding the
-        // adapter already holds, so the cost of asking on every admission is one
-        // readback — and the cost of not asking is a seat that can never be
-        // materialized on a runtime whose plane nothing else creates.
-        adapter
-            .prepare_plane()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let workspace = self
-            .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
-            .await?;
         // The seat that owns this task's seats, opened once per epic. Every
         // delivery binding names it, so closing it orphans them all at once
         // instead of leaving each to be judged on its own liveness.
@@ -34986,19 +35272,6 @@ impl Services {
     /// by this exact task and TeamRun is the idempotent recovery case, not a
     /// second placement.
     ///
-    /// **There is deliberately no escape for a project that has no topology
-    /// yet.** An earlier revision answered `Ok(None)` there and let admission
-    /// fall back to a TeamRun-keyed task workspace. That escape existed only
-    /// because nothing wrote topology nodes; now [`Self::ensure_task_node`]
-    /// does, seeding the project's revision and creating the chain on first
-    /// admission. Keeping the escape would mean keeping a second, TeamRun-keyed
-    /// way to place a production seat, which is the whole defect OP-02 removes.
-    ///
-    /// The worry the escape answered is still answered — a project that never
-    /// selected a topology is given one rather than refused, so no task becomes
-    /// unrunnable by not having been configured. What changed is *how*: by
-    /// seeding, not by placing the seat somewhere unmodelled.
-    ///
     /// Nothing here repairs a disagreement. Rewriting either side to match the
     /// other is what turns "these two disagree about where the work is" into
     /// "the work is now in two places".
@@ -35011,7 +35284,15 @@ impl Services {
         worktree: &kontor_runtime::workspace::WorkspaceRoot,
     ) -> Result<SessionTopologyNode, ApiError> {
         let state = self.state()?;
-        let node = self.ensure_task_node(project_id, task_id)?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no explicitly materialized ticket session workspace",
+                )
+            })?;
 
         // The kind's capabilities come from the pinned specification revision,
         // never from the kind's name: the vocabulary is data a revision owns,
@@ -35051,13 +35332,8 @@ impl Services {
         // A child node's container lives below its parent's, so a node with no
         // parent is a seat with nowhere to be.
         //
-        // Whether that parent *holds* a container is deliberately not asked
-        // here. Preparation walks the lineage from the root down and presents
-        // each level's exact binding to the next, so by the time a child is
-        // created its parent is bound or the whole preparation failed loudly.
-        // Asking before preparation would refuse the ordinary first admission of
-        // an epic; asking after it would be asking whether the call that just
-        // returned had returned.
+        // Placement admission separately reads back the exact parent chain; this
+        // local check only prevents a structurally rootless ticket node.
         if node.parent_id.is_none() {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -35068,13 +35344,31 @@ impl Services {
         // Where the node is bound, compared against where the seat is about to
         // work. A container bound elsewhere is not corrected to match the
         // request; the disagreement is reported.
-        if let Some(bound) = state
+        let canonical_worktree = std::fs::canonicalize(worktree.as_str()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task worktree is missing or cannot be canonicalized",
+            )
+        })?;
+        let canonical_worktree = canonical_worktree.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the canonical task worktree is not valid UTF-8",
+            )
+        })?;
+        let bound = state
             .with_store(|store| store.get_topology_node_container(project_id, node.id))
             .map_err(|error| self.refuse(&error))?
-            && bound
-                .canonical_cwd
-                .as_ref()
-                .is_none_or(|cwd| cwd.as_str() != worktree.as_str())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no persisted native container binding",
+                )
+            })?;
+        if bound
+            .canonical_cwd
+            .as_ref()
+            .is_none_or(|cwd| cwd.as_str() != canonical_worktree)
         {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -36674,6 +36968,171 @@ impl Services {
     /// node, when it holds one. That is the whole restart contract: a daemon
     /// restart destroys the adapter's ledger while the native container carries
     /// on existing, and the persisted id is the only way back to it.
+    async fn inspect_bound_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        binding: &NativeContainerBinding,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ContainerInspection, ApiError> {
+        let state = self.state()?;
+        let epic_id = node.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the bound container is not scoped to an epic",
+            )
+        })?;
+        let scope = self.execution_scope(project_id, epic_id, node.task_id, adapter)?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let team_definition = self.pinned_team_definition(project_id, epic_id)?;
+        let capabilities = if let Some(definition) = team_definition.as_ref() {
+            definition
+                .container(&node.kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the pinned Team Definition does not configure the bound container",
+                    )
+                })?
+                .projection_capabilities
+                .clone()
+        } else {
+            spec.node_kinds
+                .iter()
+                .find(|declared| declared.kind == node.kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's kind is not declared by its pinned topology revision",
+                    )
+                })?
+                .projection_capabilities
+                .clone()
+        };
+        let projection = ContainerProjection::resolve(&capabilities)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if !projection.is_native() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a logical-only node cannot hold a native container binding",
+            ));
+        }
+        let native_parent = if projection == ContainerProjection::NativeChild {
+            let mut parent_id = node.parent_id;
+            let mut found = None;
+            while let Some(candidate_id) = parent_id {
+                let candidate = state
+                    .with_store(|store| store.get_topology_node(project_id, candidate_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the container's parent is not in this project's topology",
+                        )
+                    })?;
+                if let Some(candidate_binding) = state
+                    .with_store(|store| store.get_topology_node_container(project_id, candidate_id))
+                    .map_err(|error| self.refuse(&error))?
+                    && candidate_binding.observed_kind == ObservedContainerKind::Project
+                {
+                    found = Some(candidate_binding.identity);
+                    break;
+                }
+                parent_id = candidate.parent_id;
+            }
+            Some(found.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the native child has no persisted native project ancestor",
+                )
+            })?)
+        } else {
+            None
+        };
+        let root = binding
+            .canonical_cwd
+            .as_ref()
+            .map(|cwd| WorkspaceRoot::parse(cwd.as_str()))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let durable = ContainerBinding {
+            id: ContainerBindingId::parse(binding.container_binding_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            topology_node_id: node.id,
+            projection,
+            identity: binding.identity.clone(),
+            root,
+            bound_at: binding.bound_at,
+        };
+        let inspection = adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: durable.clone(),
+                native_parent: native_parent.clone(),
+                scope,
+                epic_container: projection == ContainerProjection::NativeRoot,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let observed_kind = match projection {
+            ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+            ContainerProjection::LogicalOnly => unreachable!("rejected above"),
+        };
+        if inspection.binding != durable
+            || inspection.observed_kind != observed_kind
+            || inspection.native_parent != native_parent
+            || inspection.correlation.label.topology_node_id() != node.id
+            || inspection.correlation.native != durable.identity
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the exact native container readback does not match its durable binding",
+            ));
+        }
+        Ok(inspection)
+    }
+
+    async fn bound_container_snapshot(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ContainerBindingSnapshot, ApiError> {
+        let state = self.state()?;
+        let binding = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no persisted native container binding",
+                )
+            })?;
+        let inspection = self
+            .inspect_bound_container(project_id, node, &binding, adapter)
+            .await?;
+        let capabilities = adapter
+            .discover_capabilities()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        Ok(ContainerBindingSnapshot {
+            binding: inspection.binding,
+            capabilities,
+            correlation: inspection.correlation,
+        })
+    }
+
     async fn ensure_container(
         &self,
         project_id: ProjectId,
@@ -36786,6 +37245,15 @@ impl Services {
             let bound = state
                 .with_store(|store| store.get_topology_node_container(project_id, level.id))
                 .map_err(|error| self.refuse(&error))?;
+            let container_binding_id = bound
+                .as_ref()
+                .map(|binding| ContainerBindingId::parse(binding.container_binding_id.as_str()))
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?
+                .unwrap_or_else(ContainerBindingId::generate);
+            let bound_native_id = bound
+                .as_ref()
+                .map(|binding| binding.identity.native_id.clone());
             let leaf = level.id == node.id;
             // Only a `native_child` is created below anything. A `native_root`
             // is its own root even when it sits below another node logically —
@@ -36805,12 +37273,25 @@ impl Services {
                                 .map_err(|error| self.refuse_domain(&error))?,
                         )
                     } else if level.task_id.is_some() {
+                        let worktree = level_scope
+                            .require_task()
+                            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                            .worktree
+                            .as_str();
+                        let canonical = std::fs::canonicalize(worktree).map_err(|_| {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "the task worktree is missing or cannot be canonicalized",
+                            )
+                        })?;
                         Some(
-                            level_scope
-                                .require_task()
-                                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                                .worktree
-                                .clone(),
+                            WorkspaceRoot::parse(canonical.to_str().ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::PlacementBlocked,
+                                    "the canonical task worktree is not valid UTF-8",
+                                )
+                            })?)
+                            .map_err(|error| self.refuse_domain(&error))?,
                         )
                     } else if projection == ContainerProjection::NativeRoot {
                         Some(self.runtime_root(project_id, level.mini_project_id)?)
@@ -36822,7 +37303,7 @@ impl Services {
                 }
             };
             let request = ContainerRequest {
-                container_binding_id: ContainerBindingId::generate(),
+                container_binding_id,
                 topology_node_id: level.id,
                 topology: level.topology.clone(),
                 scope: level_scope.clone(),
@@ -36836,7 +37317,7 @@ impl Services {
                 // roots keep the directory stored with their binding; an
                 // unbound epic gets its own marker rather than the shared repo.
                 cwd: level_cwd,
-                bound_native_id: bound.map(|binding| binding.identity.native_id),
+                bound_native_id,
                 epic_container: projection == ContainerProjection::NativeRoot
                     && level.mini_project_id == Some(epic_scope.epic.mini_project_id),
                 task_id: level.task_id,
@@ -36855,7 +37336,21 @@ impl Services {
                 .snapshot
                 .ensure_correlated()
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            self.bind_container(project_id, level.id, &outcome.snapshot)?;
+            let inspection = adapter
+                .inspect_container(&ContainerInspectRequest {
+                    binding: outcome.snapshot.binding.clone(),
+                    native_parent: request
+                        .parent
+                        .as_ref()
+                        .map(|parent| parent.identity.clone()),
+                    scope: request.scope.clone(),
+                    epic_container: request.epic_container,
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.validate_container_inspection(&request, &outcome.snapshot, &inspection)?;
+            self.bind_container(project_id, level.id, &inspection)?;
             parent = Some(outcome.snapshot.binding.clone());
             prepared = Some(outcome.snapshot);
         }
@@ -37665,26 +38160,80 @@ impl Services {
             .map_err(|error| self.refuse_domain(&error))
     }
 
+    /// Refuse any readback that differs from the exact placement request.
+    fn validate_container_inspection(
+        &self,
+        request: &ContainerRequest,
+        snapshot: &ContainerBindingSnapshot,
+        inspection: &ContainerInspection,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let projection = request
+            .validate()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let observed_kind = match projection {
+            ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+            ContainerProjection::LogicalOnly => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a logical-only node produced a native container inspection",
+                ));
+            }
+        };
+        if inspection.binding != snapshot.binding
+            || inspection.binding.id != request.container_binding_id
+            || inspection.binding.topology_node_id != request.topology_node_id
+            || inspection.binding.projection != projection
+            || inspection.observed_kind != observed_kind
+            || inspection.visible_title != request.display_name.as_str()
+            || inspection.binding.root != request.cwd
+            || inspection.canonical_cwd != request.cwd
+            || inspection.native_parent
+                != request
+                    .parent
+                    .as_ref()
+                    .map(|parent| parent.identity.clone())
+            || inspection.correlation.label.topology_node_id() != request.topology_node_id
+            || inspection.correlation.native != inspection.binding.identity
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the native container readback does not exactly match the pinned placement",
+            ));
+        }
+        Ok(())
+    }
+
     /// Persist the native container a runtime read back for one node.
     fn bind_container(
         &self,
         project_id: ProjectId,
         topology_node_id: TopologyNodeId,
-        snapshot: &ContainerBindingSnapshot,
+        inspection: &ContainerInspection,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        let observed_kind = match snapshot.binding.projection {
-            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
-            _ => ObservedContainerKind::Project,
+        let projection = match inspection.binding.projection {
+            ContainerProjection::NativeRoot => ObservedContainerProjection::NativeRoot,
+            ContainerProjection::NativeChild => ObservedContainerProjection::NativeChild,
+            ContainerProjection::LogicalOnly => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a logical-only node has no native container readback to persist",
+                ));
+            }
         };
-        let canonical_cwd = snapshot
-            .binding
-            .root
+        let canonical_cwd = inspection
+            .canonical_cwd
             .as_ref()
             .map(|root| ExternalName::parse(root.as_str()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
-        let binding_id = ExternalId::parse(&snapshot.binding.id.to_string())
+        let binding_id = ExternalId::parse(&inspection.binding.id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let visible_title = ExternalName::parse(&inspection.visible_title)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let topology_correlation = ExternalName::parse(&inspection.correlation.label.to_string())
             .map_err(|error| self.refuse_domain(&error))?;
         state
             .with_store(|store| {
@@ -37692,10 +38241,17 @@ impl Services {
                     topology_node_id,
                     project_id,
                     container_binding_id: binding_id.clone(),
-                    identity: snapshot.binding.identity.clone(),
-                    observed_kind,
+                    identity: inspection.binding.identity.clone(),
+                    observed_kind: inspection.observed_kind,
                     canonical_cwd: canonical_cwd.clone(),
-                    observed_at: snapshot.binding.bound_at,
+                    readback: Some(NativeContainerReadback {
+                        projection,
+                        visible_title: visible_title.clone(),
+                        native_parent: inspection.native_parent.clone(),
+                        topology_correlation: topology_correlation.clone(),
+                    }),
+                    bound_at: inspection.binding.bound_at,
+                    observed_at: inspection.observed_at,
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -38417,6 +38973,33 @@ fn map_succession_api_error(error: ApiError) -> SuccessionCoordinationError {
     }
 }
 
+fn container_readback_dto(binding: &NativeContainerBinding) -> Option<ContainerReadbackDto> {
+    binding
+        .readback
+        .as_ref()
+        .map(|readback| ContainerReadbackDto {
+            host: binding.identity.host.as_str().to_owned(),
+            generation: binding.identity.generation,
+            projection: readback.projection.as_str().to_owned(),
+            native_kind: binding.observed_kind.as_str().to_owned(),
+            visible_title: readback.visible_title.as_str().to_owned(),
+            canonical_cwd: binding
+                .canonical_cwd
+                .as_ref()
+                .map(|cwd| cwd.as_str().to_owned()),
+            native_parent: readback
+                .native_parent
+                .as_ref()
+                .map(|parent| NativeContainerParentDto {
+                    runtime_kind: parent.runtime_kind.as_str().to_owned(),
+                    host: parent.host.as_str().to_owned(),
+                    generation: parent.generation,
+                    native_id: parent.native_id.as_str().to_owned(),
+                }),
+            topology_correlation: readback.topology_correlation.as_str().to_owned(),
+        })
+}
+
 /// Render a pre-v47 immutable template only when it names the old closed scope
 /// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
 /// guessed into a native identity after the typed naming contract exists.
@@ -38619,6 +39202,8 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 /// The only branch a publication may target. Both governed repositories use it
 /// and the plan records the assumption; a per-project default is a later field.
 const PUBLICATION_DEFAULT_BRANCH: &str = "master";
+const PUBLICATION_REPOSITORIES: [&str; 2] =
+    ["Carasent-ASMA/asma-modules", "Carasent-ASMA/asma-rs-kontor"];
 
 /// The binding a publication's branch key resolved to.
 struct ResolvedPublicationBinding {
@@ -38646,13 +39231,19 @@ impl Services {
         &self,
         project_id: ProjectId,
         key: &TrackerKey,
-    ) -> Result<Option<ResolvedPublicationBinding>, ApiError> {
+    ) -> Result<Vec<ResolvedPublicationBinding>, ApiError> {
         let state = self.state()?;
         let default_branch = ExternalName::parse(PUBLICATION_DEFAULT_BRANCH)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let repositories = PUBLICATION_REPOSITORIES
+            .iter()
+            .map(|repository| ExternalName::parse(repository))
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| self.refuse_domain(&error))?;
         let epics = state
             .with_store(|store| store.list_mini_projects(project_id))
             .map_err(|error| self.refuse(&error))?;
+        let mut resolved = Vec::new();
         for epic in epics {
             let Some(epic_key) = self.epic_tracker_key(project_id, epic.id)? else {
                 continue;
@@ -38661,48 +39252,50 @@ impl Services {
                 .with_store(|store| store.list_epic_tasks(project_id, epic.id))
                 .map_err(|error| self.refuse(&error))?;
             let mut child_keys = Vec::with_capacity(tasks.len());
-            let mut matched_task = None;
+            let mut matched_tasks = Vec::new();
             for task in tasks {
                 let links = state
                     .with_store(|store| store.list_task_ticket_links(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?;
-                let task_key = links
+                for task_key in links
                     .iter()
                     .filter(|link| link.connector.as_str() == "connector.jira")
-                    .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
-                if let Some(task_key) = task_key {
+                    .filter_map(|link| TrackerKey::from_external(&link.external_issue_key).ok())
+                {
                     if task_key == *key {
-                        matched_task = Some((task.id, task_key.clone()));
+                        matched_tasks.push((task.id, task_key.clone()));
                     }
                     child_keys.push(task_key);
                 }
             }
             if epic_key == *key {
-                return Ok(Some(ResolvedPublicationBinding {
+                resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: None,
                     binding: PublicationBinding {
-                        epic_key,
+                        repositories: repositories.clone(),
+                        epic_key: epic_key.clone(),
                         task_key: None,
-                        child_keys,
-                        default_branch,
+                        child_keys: child_keys.clone(),
+                        default_branch: default_branch.clone(),
                     },
-                }));
+                });
             }
-            if let Some((task_id, task_key)) = matched_task {
-                return Ok(Some(ResolvedPublicationBinding {
+            for (task_id, task_key) in matched_tasks {
+                resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: Some(task_id),
                     binding: PublicationBinding {
-                        epic_key,
+                        repositories: repositories.clone(),
+                        epic_key: epic_key.clone(),
                         task_key: Some(task_key),
-                        child_keys,
-                        default_branch,
+                        child_keys: child_keys.clone(),
+                        default_branch: default_branch.clone(),
                     },
-                }));
+                });
             }
         }
-        Ok(None)
+        Ok(resolved)
     }
 
     /// Judge one observed publication. A malformed commit is a malformed
@@ -38724,8 +39317,9 @@ impl Services {
             Ok(branch) => match branch.key().cloned() {
                 None => (PublicationDecision::unconfirmed(), None),
                 Some(key) => match self.resolve_publication_binding(project_id, &key)? {
-                    None => (PublicationDecision::unconfirmed(), None),
-                    Some(resolved) => {
+                    resolved if resolved.is_empty() => (PublicationDecision::unconfirmed(), None),
+                    mut resolved if resolved.len() == 1 => {
+                        let resolved = resolved.pop().expect("one resolved publication binding");
                         let identity = PublicationIdentity {
                             repository: request.repository.clone(),
                             base_branch: request.base_branch.clone(),
@@ -38736,6 +39330,7 @@ impl Services {
                         };
                         (evaluate(&identity, &resolved.binding), Some(resolved))
                     }
+                    _ => (PublicationDecision::ambiguous(), None),
                 },
             },
         };

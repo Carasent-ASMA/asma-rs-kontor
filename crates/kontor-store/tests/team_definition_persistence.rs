@@ -200,6 +200,8 @@ fn bind_container(
             identity: native.clone(),
             observed_kind,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: f.created_at,
             observed_at: f.created_at,
         })
         .expect("the native container is bound before migration preflight");

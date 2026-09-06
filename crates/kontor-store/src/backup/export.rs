@@ -1519,6 +1519,13 @@ exported_tables! {
         bound_at: String,
         last_readback_at: String,
         revision: i64,
+        observed_projection: Option<String>,
+        visible_title: Option<String>,
+        parent_runtime_kind: Option<String>,
+        parent_host: Option<String>,
+        parent_generation: Option<i64>,
+        parent_native_id: Option<String>,
+        topology_correlation: Option<String>,
     }
     topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
         receipt_id: String,

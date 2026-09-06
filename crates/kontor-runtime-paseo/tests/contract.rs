@@ -42,7 +42,9 @@ use kontor_core::id::{
 };
 use kontor_core::spec::SeatAutonomy;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
-use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
+use kontor_core::state::{
+    ObservedContainerKind, ObservedRunState, RuntimeContact, TerminalOutcome,
+};
 use kontor_runtime::adapter::{
     ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     CorrelationChallengeBoundary, HostedSeatClaimRequest, HostedSeatInspectRequest,
@@ -75,8 +77,8 @@ use kontor_core::id::{ContentHash, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRecoveryRequest,
-    ContainerRequest, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerInspectRequest, ContainerProjection,
+    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
@@ -8169,6 +8171,124 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
     }
 }
 
+#[tokio::test]
+async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identity() {
+    let raw_title = "01890000-0000-7000-8000-0000000000ff";
+    let mut projects = v(PROJECT_LIST);
+    projects["projects"][0]["projectDisplayName"] = serde_json::json!(raw_title);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", projects)
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let root_binding = bound_root(node(NODE_B));
+
+    let root_readback = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: root_binding.clone(),
+            native_parent: None,
+            scope: epic_execution_scope(),
+            epic_container: true,
+            requested_at: at("2026-09-06T12:00:00Z"),
+        })
+        .await
+        .expect("the exact persisted project is inspected");
+    assert_eq!(root_readback.observed_kind, ObservedContainerKind::Project);
+    assert_eq!(root_readback.visible_title, raw_title);
+    assert_eq!(root_readback.canonical_cwd.as_ref(), Some(&root()));
+    assert_eq!(root_readback.native_parent, None);
+    assert_eq!(root_readback.binding.identity, root_binding.identity);
+    assert_eq!(root_readback.observed_at, at("2026-09-06T12:00:00Z"));
+    assert_eq!(
+        root_readback.correlation.label.topology_node_id(),
+        node(NODE_B)
+    );
+    assert_eq!(
+        plane
+            .adapter
+            .project_binding()
+            .expect("only exact ESW inspection may rehydrate the project")
+            .project_id,
+        external(PROJECT_ID)
+    );
+
+    let child_binding = ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        root: Some(root()),
+        bound_at: at("2026-08-16T09:05:00Z"),
+    };
+    let child_readback = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: child_binding.clone(),
+            native_parent: Some(root_binding.identity.clone()),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-06T12:01:00Z"),
+        })
+        .await
+        .expect("the exact persisted workspace is inspected inside its exact parent");
+    assert_eq!(
+        child_readback.observed_kind,
+        ObservedContainerKind::Workspace
+    );
+    assert_eq!(child_readback.visible_title, CANONICAL_NODE_TITLE);
+    assert_eq!(child_readback.canonical_cwd.as_ref(), Some(&root()));
+    assert_eq!(child_readback.native_parent, Some(root_binding.identity));
+    assert_eq!(child_readback.binding.identity, child_binding.identity);
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "inspection never creates or renames"
+    );
+}
+
+#[tokio::test]
+async fn container_inspection_never_resolves_a_matching_title_or_cwd() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let parent = bound_root(node(NODE_B));
+    let missing = ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external("01890000-0000-7000-8000-0000000000ee"),
+        },
+        root: Some(root()),
+        bound_at: at("2026-08-16T09:05:00Z"),
+    };
+    let error = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: missing,
+            native_parent: Some(parent.identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-06T12:02:00Z"),
+        })
+        .await
+        .expect_err("a matching title and cwd cannot replace an absent exact id");
+    assert!(matches!(error, RuntimeError::CorrelationFailed));
+    assert!(plane.daemon.mutations().is_empty());
+}
+
 fn local_archive_workspace() -> serde_json::Value {
     let mut workspace = v(WORKSPACE_LIST_ONE);
     workspace["entries"][0]["workspaceKind"] = serde_json::json!("directory");
@@ -8937,6 +9057,92 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+    workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    let labels = serde_json::json!({
+        "jira.epic": "ASMA-7744",
+        "kontor.project_id": MINI_PROJECT,
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+        "kontor.role": "lsa",
+        "kontor.role_slot_id": "lsa",
+        "kontor.workspace_id": WORKSPACE_ID,
+        "kontor.worktree": CWD,
+    });
+    let mut failed = v(AGENT);
+    failed["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    failed["agent"]["labels"] = labels.clone();
+    failed["agent"]["status"] = serde_json::json!("error");
+    failed["agent"]["runtimeInfo"] = serde_json::Value::Null;
+    failed["agent"]["persistence"] = serde_json::Value::Null;
+    let census = serde_json::json!({
+        "requestId": "req-fixture",
+        "entries": [{"agent": failed["agent"].clone(), "project": failed["project"].clone()}],
+        "pageInfo": {"nextCursor": null, "prevCursor": null, "hasMore": false}
+    });
+    let mut recovered = v(AGENT);
+    recovered["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    recovered["agent"]["labels"] = labels;
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&PaseoCommand::agent_reload(AGENT_ID), CLI_AGENT_RELOADED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", workspace)
+        .answering_rpc("fetch_agents_request", census)
+        .then_answering_rpc("fetch_agent_request", failed)
+        .answering_rpc("fetch_agent_request", recovered);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-hosted-pre-thread-recovery", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+        .await
+        .expect("the exact ECP is bound")
+        .snapshot;
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id,
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA · ASMA-7744"),
+            container,
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("continue epic leadership through Kontor"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "kontor-seat-v2.test.recovery.redacted".to_owned(),
+            ),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: model_rung(),
+            // The recovery re-enters the same native under the same posture it
+            // was launched with; a reload that silently changed mode would be a
+            // replacement, not a recovery (ASMA-8193, ASMA-8115).
+            autonomy: SeatAutonomy::standard(),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        })
+        .await
+        .expect("the exact attached seat reloads and rehydrates its provider thread");
+    assert!(!outcome.created);
+    assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(
+        outcome.provider_session_id.as_ref().map(ExternalId::as_str),
+        Some("prov_sess_1")
+    );
+    assert_eq!(plane.daemon.count("agent reload agt_implement"), 1);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
 }
 
 #[tokio::test]

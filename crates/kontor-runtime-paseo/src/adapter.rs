@@ -54,7 +54,9 @@ use kontor_core::id::{
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
-use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RuntimeContact,
+};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
@@ -79,9 +81,10 @@ use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest,
-    RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -5288,12 +5291,39 @@ impl PaseoAdapter {
                 (native_id, true)
             }
         };
-        let agent = self.fetch_agent(&native_id).await?;
+        let mut agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
         // The readback asserts the autonomy the launch asked for, which is what
         // makes the pair evidence: a seat that came back in another mode fails
         // correlation instead of quietly running under it.
         Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        // A lost create acknowledgement can leave the exact SeatBinding agent
+        // attached while its provider thread never initialized. Re-enter that
+        // same native identity and reload only the failed pre-thread state;
+        // never resend the topology message and never create a replacement.
+        if agent.provider_session_id().is_none()
+            && matches!(
+                agent.status,
+                PaseoAgentStatus::Error | PaseoAgentStatus::Closed
+            )
+        {
+            let output = self
+                .transport
+                .run(&PaseoCommand::agent_reload(&native_id))
+                .await?;
+            let reloaded: PaseoCliAgentReloaded = output.parse("PaseoCliAgentReloaded")?;
+            if reloaded.agent_id != native_id {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            agent = self.fetch_agent(&native_id).await?;
+            self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        }
+        if agent.provider_session_id().is_none() {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the exact hosted seat is attached but its provider thread is not initialized; retry this SeatBinding or use the supported seat claim",
+            });
+        }
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent
@@ -6641,6 +6671,115 @@ impl RuntimeAdapter for PaseoAdapter {
             snapshot: plan.snapshot,
             desired_title: plan.desired,
             changed: plan.changed,
+        })
+    }
+
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        request.validate()?;
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::Inspect) {
+            return Err(self.refuse(RuntimeCapability::Inspect, &declared));
+        }
+        let generation = self.generation();
+        let expected = &request.binding.identity;
+        if expected.runtime_kind != self.config.runtime_kind
+            || expected.host != self.config.host_key
+            || expected.generation != generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the container binding belongs to another runtime host or generation",
+            });
+        }
+
+        let (identity, observed_kind, visible_title, canonical_cwd, native_parent) = match request
+            .binding
+            .projection
+        {
+            ContainerProjection::LogicalOnly => unreachable!("validated above"),
+            ContainerProjection::NativeRoot => {
+                let project = self.read_project_by_id(expected.native_id.as_str()).await?;
+                let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+                let cwd = WorkspaceRoot::parse(&project.root_path)?;
+                if request.epic_container {
+                    let epic_id = Self::external_epic_id(&request.scope)?;
+                    self.lock().projects.insert(
+                        epic_id.clone(),
+                        PaseoProjectBinding {
+                            mini_project_id: epic_id,
+                            host_key: self.config.host_key.clone(),
+                            project_id: identity.native_id.clone(),
+                            observed_name: project.display_name.clone(),
+                        },
+                    );
+                }
+                (
+                    identity,
+                    ObservedContainerKind::Project,
+                    project.display_name,
+                    Some(cwd),
+                    None,
+                )
+            }
+            ContainerProjection::NativeChild => {
+                let parent = request
+                    .native_parent
+                    .as_ref()
+                    .expect("validated native child parent");
+                if parent.runtime_kind != self.config.runtime_kind
+                    || parent.host != self.config.host_key
+                    || parent.generation != generation
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the container parent belongs to another runtime host or generation",
+                    });
+                }
+                let project = self.read_project_by_id(parent.native_id.as_str()).await?;
+                let project_binding = PaseoProjectBinding {
+                    mini_project_id: Self::external_epic_id(&request.scope)?,
+                    host_key: self.config.host_key.clone(),
+                    project_id: ExternalId::parse(&project.id)?,
+                    observed_name: project.display_name,
+                };
+                let workspace = self
+                    .fetch_workspace_in(&project_binding, expected.native_id.as_str())
+                    .await?;
+                if workspace.project_id != parent.native_id.as_str() {
+                    return Err(RuntimeError::WorkspaceMismatch {
+                        rule: "the inspected container is outside its exact persisted parent",
+                    });
+                }
+                let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+                let cwd = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+                (
+                    identity,
+                    ObservedContainerKind::Workspace,
+                    workspace.visible_title().to_owned(),
+                    Some(cwd),
+                    Some(parent.clone()),
+                )
+            }
+        };
+        if &identity != expected {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the exact container readback returned another native identity",
+            });
+        }
+        let correlation = ContainerCorrelationEvidence::by_exact_id(
+            request.binding.topology_node_id,
+            identity,
+            request.requested_at,
+        );
+        Ok(ContainerInspection {
+            binding: request.binding.clone(),
+            observed_kind,
+            visible_title,
+            canonical_cwd,
+            native_parent,
+            correlation,
+            observed_at: request.requested_at,
         })
     }
 

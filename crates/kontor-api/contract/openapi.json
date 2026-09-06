@@ -14321,6 +14321,64 @@
           "non_compliant"
         ]
       },
+      "ContainerReadbackDto": {
+        "type": "object",
+        "description": "Complete exact-id readback of one native topology container.",
+        "required": [
+          "host",
+          "generation",
+          "projection",
+          "native_kind",
+          "visible_title",
+          "topology_correlation"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact canonical working directory."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation in which the native id is meaningful.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Runtime host that owns the native generation."
+          },
+          "native_kind": {
+            "type": "string",
+            "description": "Runtime-reported kind."
+          },
+          "native_parent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NativeContainerParentDto",
+                "description": "Exact native parent for a child; absent for a root."
+              }
+            ]
+          },
+          "projection": {
+            "type": "string",
+            "description": "Native projection read back for the container."
+          },
+          "topology_correlation": {
+            "type": "string",
+            "description": "Exact topology correlation reported for this native id."
+          },
+          "visible_title": {
+            "type": "string",
+            "description": "Exact runtime-visible title."
+          }
+        }
+      },
       "ContainerRecoveryApplyRequest": {
         "type": "object",
         "description": "Apply request bound to an exact stale-container preview.",
@@ -17302,6 +17360,13 @@
           "mode"
         ],
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact Jira description body. On create it replaces the generated body;\non link it explicitly authorizes an in-place description-only update."
+          },
           "issue_key": {
             "type": [
               "string",
@@ -17324,12 +17389,26 @@
           "mode"
         ],
         "properties": {
+          "confirmed_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact description read back after apply."
+          },
           "confirmed_key": {
             "type": [
               "string",
               "null"
             ],
             "description": "The confirmed Jira key after apply."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description the preview will create or explicitly update."
           },
           "item_kind": {
             "type": "string",
@@ -17720,6 +17799,36 @@
           }
         }
       },
+      "NativeContainerParentDto": {
+        "type": "object",
+        "description": "Complete native parent identity reported for a child container.",
+        "required": [
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Runtime host."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Native parent id."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime family."
+          }
+        }
+      },
       "NativeNameSubjectKindDto": {
         "type": "string",
         "description": "One subject in an epic-wide native-name plan.",
@@ -17964,6 +18073,17 @@
           "observed_at"
         ],
         "properties": {
+          "container_readback": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContainerReadbackDto",
+                "description": "Complete container-only readback. `None` for sessions and legacy rows."
+              }
+            ]
+          },
           "cwd": {
             "type": [
               "string",
@@ -21456,7 +21576,7 @@
       },
       "SchedulerPlanDto": {
         "type": "object",
-        "description": "What the planner decided, and what it decided against.\n\nA plan is a dry run in the strongest sense available: it reads rows, it calls\nno runtime, and it writes nothing. `plan_hash` is what `scheduler:start`\napplies, so a caller starts the plan it was shown rather than whatever the\nworld looks like by the time it decides.",
+        "description": "What the planner decided, and what it decided against.\n\nA plan is a dry run in the strongest sense available: it reads rows, performs\nread-only exact runtime inspection, and writes nothing. `plan_hash` is what `scheduler:start`\napplies, so a caller starts the plan it was shown rather than whatever the\nworld looks like by the time it decides.",
         "required": [
           "realm_id",
           "plan_hash",

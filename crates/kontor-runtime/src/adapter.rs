@@ -30,7 +30,8 @@ use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
 use crate::container::{
-    ContainerBindingSnapshot, ContainerRecoveryOutcome, ContainerRecoveryRequest,
+    ContainerBindingSnapshot, ContainerInspectRequest, ContainerInspection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest,
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
@@ -1393,6 +1394,24 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PrepareProject,
+        })
+    }
+
+    /// Inspect one already-bound native container without changing it.
+    ///
+    /// Implementations address only the complete persisted identity in
+    /// `request.binding`. A child is looked up inside `request.native_parent`;
+    /// neither a visible title nor a working directory is an address. The
+    /// operation must never create, rename, move or adopt a container. The sole
+    /// permitted in-process effect is rehydrating the exact ESW project binding
+    /// after a successful exact-id readback.
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::Inspect,
         })
     }
 

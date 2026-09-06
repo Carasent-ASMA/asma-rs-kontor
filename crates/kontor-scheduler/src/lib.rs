@@ -74,9 +74,9 @@ pub use model::{
     AdaptiveWindowConfig, AdmissionEventId, AdmittedCandidate, AuthorizationEvidence,
     CalendarAdmission, CalendarPolicyEvidence, Candidate, CandidateDecision, CapacityConfig,
     CapacityLimitKind, CapacityObservation, CapacitySnapshot, CapacityUsage, ExternalOwnership,
-    ExternalWorkEvidence, FleetPreflight, IntakeLineage, MAX_PRIORITY, OrderingInputs, Plan,
-    PreflightOutcome, ReconciliationEvidence, ReconciliationScope, RejectionCode,
-    RejectionEvidence, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth,
+    ExternalWorkEvidence, FleetPreflight, IntakeLineage, MAX_PRIORITY, OrderingInputs,
+    PlacementAdmission, Plan, PreflightOutcome, ReconciliationEvidence, ReconciliationScope,
+    RejectionCode, RejectionEvidence, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth,
     SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, covering_authority,
 };
 pub use ready::{BLOCKER_ORDER, Blocker, Refused, explain, minimum_launch_capabilities, plan};

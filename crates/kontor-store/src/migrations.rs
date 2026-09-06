@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 105;
+pub const SCHEMA_VERSION: i64 = 106;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -391,6 +391,10 @@ const MIGRATIONS: &[&str] = &[
     // bounded observation can ask "is this the occurrence Kontor delivered?"
     // instead of "is this the only occurrence?", which needs a scan.
     include_str!("../migrations/0105_runtime_message_delivery_positions.sql"),
+    // Schema v106. The complete exact-id native container readback, nullable
+    // for legacy rows: a desired shape or a rendered title is not observation
+    // evidence and must not be promoted into it.
+    include_str!("../migrations/0106_container_native_readback.sql"),
 ];
 
 const _: () = assert!(

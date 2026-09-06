@@ -95,13 +95,13 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
-    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeRuntimeIdentity,
-    ObservedContainerKind, ObservedRunState, PlacementState, RunLifecycle, RunProjection,
-    SeatAttachment, SeatAttachmentObservation, SeatBinding, SessionTopologyNode,
-    TaskProgressEvidence, TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition,
-    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle, certify_task_progress,
-    evaluate_seat_attachment, plan_team_advance, plan_team_closure,
+    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeContainerReadback,
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedContainerProjection, ObservedRunState,
+    PlacementState, RunLifecycle, RunProjection, SeatAttachment, SeatAttachmentObservation,
+    SeatBinding, SessionTopologyNode, TaskProgressEvidence, TaskReopenAuthority, TaskState,
+    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    certify_task_progress, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
 };
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
@@ -1615,7 +1615,8 @@ const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_
     revision, created_at, updated_at";
 const NATIVE_CONTAINER_COLUMNS: &str = "topology_node_id, project_id, container_binding_id, \
     runtime_kind, host, generation, native_id, observed_kind, canonical_cwd, bound_at, \
-    last_readback_at, revision";
+    last_readback_at, revision, observed_projection, visible_title, parent_runtime_kind, \
+    parent_host, parent_generation, parent_native_id, topology_correlation";
 const ADAPTIVE_ADMISSION_COLUMNS: &str = "project_id, mini_project_id, current_window, \
     clean_observation_streak, last_observation_id, revision, updated_at";
 
@@ -1715,6 +1716,76 @@ fn read_optional_timestamp(row: &Row<'_>, index: usize) -> RepositoryResult<Opti
 fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContainerBinding> {
     let canonical_cwd: Option<String> = row.get(8).map_err(backend)?;
     let generation: i64 = row.get(5).map_err(backend)?;
+    let projection: Option<String> = row.get(12).map_err(backend)?;
+    let visible_title: Option<String> = row.get(13).map_err(backend)?;
+    let parent_runtime_kind: Option<String> = row.get(14).map_err(backend)?;
+    let parent_host: Option<String> = row.get(15).map_err(backend)?;
+    let parent_generation: Option<i64> = row.get(16).map_err(backend)?;
+    let parent_native_id: Option<String> = row.get(17).map_err(backend)?;
+    let topology_correlation: Option<String> = row.get(18).map_err(backend)?;
+    let readback = match (projection, visible_title, topology_correlation) {
+        (None, None, None)
+            if parent_runtime_kind.is_none()
+                && parent_host.is_none()
+                && parent_generation.is_none()
+                && parent_native_id.is_none() =>
+        {
+            None
+        }
+        (Some(projection), Some(visible_title), Some(topology_correlation)) => {
+            let projection = ObservedContainerProjection::parse(&projection)?;
+            let native_parent = match projection {
+                ObservedContainerProjection::NativeRoot
+                    if parent_runtime_kind.is_none()
+                        && parent_host.is_none()
+                        && parent_generation.is_none()
+                        && parent_native_id.is_none() =>
+                {
+                    None
+                }
+                ObservedContainerProjection::NativeChild => {
+                    let (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) = (
+                        parent_runtime_kind,
+                        parent_host,
+                        parent_generation,
+                        parent_native_id,
+                    ) else {
+                        return Err(RepositoryError::Backend {
+                            detail: "a native child readback has an incomplete parent identity"
+                                .to_owned(),
+                        });
+                    };
+                    Some(NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            DomainError::invalid(
+                                "native parent generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&native_id)?,
+                    })
+                }
+                ObservedContainerProjection::NativeRoot => {
+                    return Err(RepositoryError::Backend {
+                        detail: "a native root readback cannot carry a parent identity".to_owned(),
+                    });
+                }
+            };
+            Some(NativeContainerReadback {
+                projection,
+                visible_title: ExternalName::parse(&visible_title)?,
+                native_parent,
+                topology_correlation: ExternalName::parse(&topology_correlation)?,
+            })
+        }
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "a native container readback is only partially populated".to_owned(),
+            });
+        }
+    };
     Ok(NativeContainerBinding {
         topology_node_id: TopologyNodeId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
         project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
@@ -1732,6 +1803,7 @@ fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContai
             .as_deref()
             .map(ExternalName::parse)
             .transpose()?,
+        readback,
         bound_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
         last_readback_at: read_timestamp(&row.get::<_, String>(10).map_err(backend)?)?,
         revision: revision_of(row.get::<_, i64>(11).map_err(backend)?)?,
@@ -8334,6 +8406,8 @@ impl TopologyRepository for SqliteStore {
         request: &NewNativeContainerBinding,
     ) -> RepositoryResult<NativeContainerBinding> {
         let transaction = self.begin()?;
+        let readback = request.readback.as_ref();
+        let parent = readback.and_then(|readback| readback.native_parent.as_ref());
         let owning_project: Option<String> = transaction
             .query_row(
                 "SELECT project_id FROM topology_nodes WHERE id = ?1",
@@ -8381,12 +8455,35 @@ impl TopologyRepository for SqliteStore {
             transaction
                 .execute(
                     "UPDATE topology_node_containers
-                     SET last_readback_at = ?2, observed_kind = ?3, revision = revision + 1
+                     SET last_readback_at = ?2, observed_kind = ?3, canonical_cwd = ?4,
+                         observed_projection = CASE WHEN ?5 THEN ?6 ELSE observed_projection END,
+                         visible_title = CASE WHEN ?5 THEN ?7 ELSE visible_title END,
+                         parent_runtime_kind = CASE WHEN ?5 THEN ?8 ELSE parent_runtime_kind END,
+                         parent_host = CASE WHEN ?5 THEN ?9 ELSE parent_host END,
+                         parent_generation = CASE WHEN ?5 THEN ?10 ELSE parent_generation END,
+                         parent_native_id = CASE WHEN ?5 THEN ?11 ELSE parent_native_id END,
+                         topology_correlation = CASE WHEN ?5 THEN ?12 ELSE topology_correlation END,
+                         revision = revision + 1
                      WHERE topology_node_id = ?1",
                     params![
                         request.topology_node_id.to_string(),
                         text(request.observed_at),
                         request.observed_kind.as_str(),
+                        request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        readback.is_some(),
+                        readback.map(|readback| readback.projection.as_str()),
+                        readback.map(|readback| readback.visible_title.as_str()),
+                        parent.map(|parent| parent.runtime_kind.as_str()),
+                        parent.map(|parent| parent.host.as_str()),
+                        parent
+                            .map(|parent| i64::try_from(parent.generation))
+                            .transpose()
+                            .map_err(|_| DomainError::invalid(
+                                "native parent generation",
+                                "is outside the storable range",
+                            ))?,
+                        parent.map(|parent| parent.native_id.as_str()),
+                        readback.map(|readback| readback.topology_correlation.as_str()),
                     ],
                 )
                 .map_err(backend)?;
@@ -8399,8 +8496,11 @@ impl TopologyRepository for SqliteStore {
                     "INSERT INTO topology_node_containers
                          (topology_node_id, project_id, container_binding_id, runtime_kind,
                           host, generation, native_id, observed_kind, canonical_cwd,
-                          bound_at, last_readback_at, revision)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1)",
+                          bound_at, last_readback_at, revision, observed_projection,
+                          visible_title, parent_runtime_kind, parent_host, parent_generation,
+                          parent_native_id, topology_correlation)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1,
+                             ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
                         request.topology_node_id.to_string(),
                         request.project_id.to_string(),
@@ -8416,7 +8516,21 @@ impl TopologyRepository for SqliteStore {
                         request.identity.native_id.as_str(),
                         request.observed_kind.as_str(),
                         request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        text(request.bound_at),
                         text(request.observed_at),
+                        readback.map(|readback| readback.projection.as_str()),
+                        readback.map(|readback| readback.visible_title.as_str()),
+                        parent.map(|parent| parent.runtime_kind.as_str()),
+                        parent.map(|parent| parent.host.as_str()),
+                        parent
+                            .map(|parent| i64::try_from(parent.generation))
+                            .transpose()
+                            .map_err(|_| DomainError::invalid(
+                                "native parent generation",
+                                "is outside the storable range",
+                            ))?,
+                        parent.map(|parent| parent.native_id.as_str()),
+                        readback.map(|readback| readback.topology_correlation.as_str()),
                     ],
                 )
                 .map_err(|error| match &error {
@@ -11936,16 +12050,31 @@ impl SqliteStore {
                 subject: "command receipt",
             },
         )?;
+        let readback = recovery.replacement.readback.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container recovery",
+                "the replacement must carry complete native readback",
+            )
+        })?;
+        let parent = readback.native_parent.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container recovery",
+                "the replacement child must carry its complete native parent",
+            )
+        })?;
         let changed = transaction
             .execute(
                 "UPDATE topology_node_containers
                  SET runtime_kind = ?1, host = ?2, generation = ?3, native_id = ?4,
                      observed_kind = ?5, canonical_cwd = ?6, bound_at = ?7,
-                     last_readback_at = ?7, revision = revision + 1
-                 WHERE project_id = ?8 AND topology_node_id = ?9
-                   AND container_binding_id = ?10
-                   AND runtime_kind = ?11 AND host = ?12 AND generation = ?13
-                   AND native_id = ?14 AND revision = ?15",
+                     last_readback_at = ?8, observed_projection = ?9, visible_title = ?10,
+                     parent_runtime_kind = ?11, parent_host = ?12,
+                     parent_generation = ?13, parent_native_id = ?14,
+                     topology_correlation = ?15, revision = revision + 1
+                 WHERE project_id = ?16 AND topology_node_id = ?17
+                   AND container_binding_id = ?18
+                   AND runtime_kind = ?19 AND host = ?20 AND generation = ?21
+                   AND native_id = ?22 AND revision = ?23",
                 params![
                     recovery.replacement.identity.runtime_kind.as_str(),
                     recovery.replacement.identity.host.as_str(),
@@ -11962,7 +12091,18 @@ impl SqliteStore {
                         .canonical_cwd
                         .as_ref()
                         .map(ExternalName::as_str),
+                    text(recovery.replacement.bound_at),
                     text(recovery.replacement.observed_at),
+                    readback.projection.as_str(),
+                    readback.visible_title.as_str(),
+                    parent.runtime_kind.as_str(),
+                    parent.host.as_str(),
+                    i64::try_from(parent.generation).map_err(|_| DomainError::invalid(
+                        "native parent generation",
+                        "is outside the storable range",
+                    ))?,
+                    parent.native_id.as_str(),
+                    readback.topology_correlation.as_str(),
                     recovery.expected.project_id.to_string(),
                     recovery.expected.topology_node_id.to_string(),
                     recovery.expected.container_binding_id.as_str(),

@@ -307,11 +307,25 @@ fn governance(candidate: &Candidate) -> Refusal {
 
 /// Whether configuration can name every seat this candidate would open.
 fn static_placement(candidate: &Candidate) -> Refusal {
-    if candidate.delivery_slots_registered {
-        None
-    } else {
-        with(RejectionCode::DeliverySlotUnregistered, Vec::new())
+    if let Some(code) = candidate.placement.rejection_code() {
+        let evidence = if code == RejectionCode::WorktreeUnverified {
+            candidate
+                .worktree
+                .as_ref()
+                .map(|claim| RejectionEvidence::Worktree {
+                    worktree: claim.worktree.clone(),
+                })
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        return with(code, evidence);
     }
+    if !candidate.delivery_slots_registered {
+        return with(RejectionCode::DeliverySlotUnregistered, Vec::new());
+    }
+    None
 }
 
 /// Manual work needs no receipt; event-origin work needs its lineage.
@@ -752,6 +766,7 @@ impl Selection {
                 .map(|pin| pin.account_profile_id),
             runtime_kind: candidate.runtime.runtime_kind.clone(),
             runtime_generation: candidate.runtime.generation,
+            placement_attestation_digest: candidate.placement.attestation_digest().cloned(),
             intake_receipt_id: match &candidate.origin {
                 TaskOrigin::Event {
                     lineage: Some(lineage),

@@ -26,7 +26,9 @@ use kontor_core::id::{
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{ModelRung, SeatAutonomy};
-use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RuntimeContact,
+};
 use serde::Deserialize;
 
 use crate::adapter::{
@@ -49,8 +51,9 @@ use crate::capability::{
     RuntimeCapability, RuntimeLimits, preflight,
 };
 use crate::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
+    ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -313,6 +316,8 @@ pub enum AdapterCall {
     PrepareWorkspace(TeamRunId),
     /// A topology node's native container was prepared.
     PrepareContainer(TopologyNodeId),
+    /// A topology node's exact native container was inspected.
+    InspectContainer(TopologyNodeId),
     /// A retired native child was archived.
     ArchiveContainer(TopologyNodeId),
     /// A container's visible title was corrected.
@@ -1333,7 +1338,14 @@ impl ScriptedFakeRuntime {
     /// The default fake accepts anything, which is exactly why a control plane
     /// could synthesize a placeholder path and no in-process test noticed.
     pub fn verifying_placement_at(&self, root: WorkspaceRoot) {
-        self.lock().canonical_root = Some(root);
+        let canonical = std::fs::canonicalize(root.as_str())
+            .ok()
+            .and_then(|path| {
+                path.to_str()
+                    .and_then(|path| WorkspaceRoot::parse(path).ok())
+            })
+            .unwrap_or(root);
+        self.lock().canonical_root = Some(canonical);
     }
 
     /// Refuse to launch one declared role slot, as a real runtime with no
@@ -2882,6 +2894,58 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(ContainerOutcome {
             snapshot,
             created: true,
+        })
+    }
+
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        request.validate()?;
+        let mut state = self.lock();
+        state.require_plane()?;
+        let snapshot = state
+            .containers
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the exact native container is not present",
+            })?;
+        if snapshot.binding != request.binding {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted container binding no longer matches the runtime",
+            });
+        }
+        let native_parent = state
+            .container_parents
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .map(|native_id| state.identity(native_id));
+        if native_parent != request.native_parent {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the inspected container does not have its exact persisted parent",
+            });
+        }
+        let visible_title = state
+            .container_titles
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        state.calls.push(AdapterCall::InspectContainer(
+            request.binding.topology_node_id,
+        ));
+        Ok(ContainerInspection {
+            binding: request.binding.clone(),
+            observed_kind: match request.binding.projection {
+                ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+                ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+                ContainerProjection::LogicalOnly => unreachable!("validated above"),
+            },
+            visible_title,
+            canonical_cwd: snapshot.binding.root,
+            native_parent,
+            correlation: snapshot.correlation,
+            observed_at: request.requested_at,
         })
     }
 

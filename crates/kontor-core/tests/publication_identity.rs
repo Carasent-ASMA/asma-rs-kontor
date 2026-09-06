@@ -18,11 +18,25 @@ fn name(text: &str) -> ExternalName {
 
 fn binding() -> PublicationBinding {
     PublicationBinding {
+        repositories: vec![
+            name("Carasent-ASMA/asma-modules"),
+            name("Carasent-ASMA/asma-rs-kontor"),
+        ],
         epic_key: key("ASMA-8101"),
         task_key: None,
         child_keys: vec![key("ASMA-8102"), key("ASMA-8104")],
         default_branch: name("master"),
     }
+}
+
+#[test]
+fn a_publication_for_an_unbound_repository_is_refused() {
+    let mut wrong = identity("feat/ASMA-8101-x", "master", None);
+    wrong.repository = name("Carasent-ASMA/not-this-repository");
+    assert_eq!(
+        evaluate(&wrong, &binding()).reasons,
+        vec!["repository_mismatch".to_owned()]
+    );
 }
 
 fn identity(head_branch: &str, base: &str, title: Option<&str>) -> PublicationIdentity {
@@ -107,14 +121,14 @@ fn a_task_branch_binds_through_its_own_key() {
 
 #[test]
 fn every_failing_rule_is_reported_at_once() {
-    let decision = evaluate(
-        &identity("feat/ASMA-1-somebody-elses", "develop", Some("cat 11")),
-        &binding(),
-    );
+    let mut wrong = identity("feat/ASMA-1-somebody-elses", "develop", Some("cat 11"));
+    wrong.repository = name("Carasent-ASMA/not-this-repository");
+    let decision = evaluate(&wrong, &binding());
     assert!(!decision.accepted);
     assert_eq!(
         decision.reasons,
         vec![
+            "repository_mismatch".to_owned(),
             "branch_binding_mismatch".to_owned(),
             "base_branch_not_default".to_owned(),
             "pr_title_key_missing".to_owned(),
