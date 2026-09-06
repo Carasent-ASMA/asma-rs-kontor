@@ -5295,7 +5295,7 @@ impl RuntimeAdapter for PaseoAdapter {
             });
         }
         let native_id = request.identity.native_id.as_str();
-        let before = self.fetch_agent(native_id).await?;
+        let before = self.fetch_agent_including_archived(native_id).await?;
         let expected_seat = request.seat_binding_id.to_string();
         let fallback_hash = request.route_provenance.evidence_hash.as_str();
         let restriction_matches = if request.model_rung.provider.0 == "opencode" {
@@ -5341,7 +5341,7 @@ impl RuntimeAdapter for PaseoAdapter {
         if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
             return Err(RuntimeError::CorrelationFailed);
         }
-        let after = self.fetch_agent(native_id).await?;
+        let after = self.fetch_agent_including_archived(native_id).await?;
         if after.id != before.id
             || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
             || !after.is_archived()
@@ -5375,7 +5375,7 @@ impl RuntimeAdapter for PaseoAdapter {
             request.run_id.family().as_str(),
             request.run_id.as_text()
         );
-        let before = self.fetch_agent(native_id).await?;
+        let before = self.fetch_agent_including_archived(native_id).await?;
         let matches = |agent: &PaseoAgent| {
             agent.id == native_id
                 && agent.label(label::SEAT_BINDING) == Some(seat.as_str())
@@ -5395,7 +5395,7 @@ impl RuntimeAdapter for PaseoAdapter {
             if archived.agent_id.as_deref() != Some(native_id) || archived.archived_at.is_none() {
                 return Err(RuntimeError::CorrelationFailed);
             }
-            let after = self.fetch_agent(native_id).await?;
+            let after = self.fetch_agent_including_archived(native_id).await?;
             if !matches(&after) || !after.is_archived() {
                 return Err(RuntimeError::CorrelationFailed);
             }

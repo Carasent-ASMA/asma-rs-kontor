@@ -16,7 +16,8 @@ GETs verify the current native occupancy and return only that seat and its own
 findings; peers, stale generations and unbound seats are refused. Judges receive
 authorized reviewer evidence in their frozen launch prompt.
 Paseo receives the scoped MCP server and exact tool approvals in the create
-request. Codex consultations explicitly receive a read-only sandbox and `never`
+request. The launch payload uses Paseo's `stdio` MCP transport with a command
+string and separate argument array. Codex consultations explicitly receive a read-only sandbox and `never`
 approval policy. Delivery and persistent leadership modes remain unchanged.
 
 The Claude guard is composed in the consultation worktree and excluded from
@@ -46,7 +47,9 @@ Each release freezes the full native runtime identity before dispatch. The
 adapter verifies both the run and SeatBinding labels, archives through Paseo's
 supported interface, and reads back the archive stamp before confirmation. A
 lost response or restart leaves a pending effect; replay inspects first and
-does not re-archive an already archived session. Attempts rotate by their last
+does not re-archive an already archived session. Archive readback falls back to
+Paseo's paginated include-archived directory when exact active lookup hides the
+retired agent, while retaining exact native, run and seat identity checks. Attempts rotate by their last
 attempt time so an unavailable runtime does not starve later releases. Findings,
 run outcomes, logical seat bindings and native history are retained.
 

@@ -188,9 +188,9 @@ impl SeatMcp {
     pub fn server_config(&self, serve_profile: &str) -> serde_json::Value {
         serde_json::json!({
             "kontor": {
-                "type": "local",
-                "command": [
-                    self.command.clone(),
+                "type": "stdio",
+                "command": self.command,
+                "args": [
                     "--state-root".to_owned(),
                     self.state_root.display().to_string(),
                     "--credential-tier".to_owned(),
