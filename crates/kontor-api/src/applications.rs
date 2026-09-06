@@ -1278,8 +1278,10 @@ pub struct RosterUpgradePreviewDto {
 pub struct InvokeAdvisorRequest {
     /// The profile revision to run under.
     pub profile: RevisionRefDto,
-    /// Short, explicit subject label used by the pinned Team Definition to
-    /// render the ASW name. It is never derived from the question.
+    /// Short semantic subject used by the pinned Team Definition to render the
+    /// ASW name. Supply only the topic: Jira keys, Kontor item codes, container
+    /// prefixes and the configured separator are rejected because the server
+    /// inserts them deterministically.
     #[schema(value_type = Option<String>)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<ExternalName>,
@@ -1309,8 +1311,10 @@ pub struct InvokeAdvisorRequest {
 pub struct InvokeConsultationRequest {
     /// The profile or template revision to run under.
     pub profile: RevisionRefDto,
-    /// Short, explicit debated subject used by the pinned Team Definition to
-    /// render the CSW name. It is never derived from the question.
+    /// Short semantic subject used by the pinned Team Definition to render the
+    /// CSW name. Supply only the topic: Jira keys, Kontor item codes, container
+    /// prefixes and the configured separator are rejected because the server
+    /// inserts them deterministically.
     #[schema(value_type = Option<String>)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<ExternalName>,

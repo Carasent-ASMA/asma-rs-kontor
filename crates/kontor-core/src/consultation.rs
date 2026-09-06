@@ -85,6 +85,78 @@ pub fn validate_semantic_topic(
     Ok(())
 }
 
+/// Prove that a legacy topic correction removes only redundant rendering
+/// material and leaves the semantic topic bytes unchanged.
+///
+/// One historical caller may have supplied a Jira key, derived item code,
+/// container prefix, or a combination of those before the server inserted the
+/// same material. A correction may peel those leading tokens and their normal
+/// separators; it may not rewrite, summarize, recase, or otherwise reinterpret
+/// the remaining topic.
+///
+/// # Errors
+/// Refuses a corrected topic that is itself pre-rendered, or a before/after
+/// pair whose difference is more than removing configured leading material.
+pub fn validate_semantic_topic_correction(
+    prior: &ExternalName,
+    corrected: &ExternalName,
+    scope_codes: &[&str],
+    container_prefix: &str,
+    separator: &str,
+) -> DomainResult<()> {
+    validate_semantic_topic(corrected, scope_codes, container_prefix, separator)?;
+    if prior == corrected {
+        return Err(DomainError::invalid(
+            "ConsultationTopicCorrection",
+            "the corrected topic must differ from the historical topic",
+        ));
+    }
+    let mut remainder = prior.as_str();
+    for _ in 0..=scope_codes.len() {
+        let Some(next) =
+            strip_one_rendered_prefix(remainder, scope_codes, container_prefix, separator)
+        else {
+            break;
+        };
+        remainder = next;
+        if remainder == corrected.as_str() {
+            return Ok(());
+        }
+    }
+    Err(DomainError::invalid(
+        "ConsultationTopicCorrection",
+        "a correction may only remove redundant configured prefixes and scope codes",
+    ))
+}
+
+fn strip_one_rendered_prefix<'a>(
+    text: &'a str,
+    scope_codes: &[&str],
+    container_prefix: &str,
+    separator: &str,
+) -> Option<&'a str> {
+    scope_codes
+        .iter()
+        .copied()
+        .chain(std::iter::once(container_prefix))
+        .find_map(|reserved| {
+            let prefix = text.get(..reserved.len())?;
+            if !prefix.eq_ignore_ascii_case(reserved) {
+                return None;
+            }
+            let mut tail = text.get(reserved.len()..)?;
+            if !separator.is_empty() && tail.starts_with(separator) {
+                tail = &tail[separator.len()..];
+            } else {
+                tail = tail.trim_start_matches(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, ':' | '-' | '–' | '—' | '/' | '•')
+                });
+            }
+            (!tail.is_empty()).then_some(tail)
+        })
+}
+
 fn begins_with_reserved_token(text: &str, reserved: &str) -> bool {
     let Some(prefix) = text.get(..reserved.len()) else {
         return false;

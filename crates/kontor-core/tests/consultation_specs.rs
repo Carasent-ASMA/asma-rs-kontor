@@ -11,7 +11,7 @@ use kontor_core::consultation::{
     CommitteeTemplateSpec, CommitteeVerdict, ConsultationContextPolicy, ConsultationFamily,
     ConsultationIdentity, ConsultationScope, DiversityRule, MAX_COMMITTEE_ROUNDS,
     MAX_COMMITTEE_SLOTS, MemoryAccess, RecordedFinding, conjunctive_outcome,
-    validate_semantic_topic,
+    validate_semantic_topic, validate_semantic_topic_correction,
 };
 use kontor_core::id::{
     AdvisorProfileId, BoundedText, CommitteeTemplateId, ContentHash, CurrencyCode, ExternalName,
@@ -165,6 +165,42 @@ fn a_consultation_topic_cannot_repeat_server_owned_name_components() {
     ] {
         validate_semantic_topic(&name(good), &["ASMA-8111", "KTHSR-8111"], "CSW", " • ")
             .expect(good);
+    }
+}
+
+#[test]
+fn a_legacy_topic_correction_only_peels_server_owned_leading_material() {
+    for prior in [
+        "ASMA-8111 operational completion",
+        "KTHSR-8111 — operational completion",
+        "CSW • KTHSR-8111 • operational completion",
+    ] {
+        validate_semantic_topic_correction(
+            &name(prior),
+            &name("operational completion"),
+            &["ASMA-8111", "KTHSR-8111"],
+            "CSW",
+            " • ",
+        )
+        .expect(prior);
+    }
+    for (prior, corrected) in [
+        ("ASMA-8111 operational completion", "completion"),
+        ("ASMA-8111 operational completion", "Operational completion"),
+        ("operational completion", "operational completion"),
+        ("legacy wording", "new wording"),
+    ] {
+        assert!(
+            validate_semantic_topic_correction(
+                &name(prior),
+                &name(corrected),
+                &["ASMA-8111", "KTHSR-8111"],
+                "CSW",
+                " • ",
+            )
+            .is_err(),
+            "{prior} -> {corrected}"
+        );
     }
 }
 
