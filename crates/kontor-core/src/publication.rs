@@ -17,7 +17,7 @@ use crate::{DomainError, DomainResult};
 
 /// The revision of the rules below. Bumped whenever a rule changes so a recorded
 /// decision can be read against the exact policy that produced it.
-pub const POLICY_REVISION: u32 = 1;
+pub const POLICY_REVISION: u32 = 2;
 
 /// A Git commit identity: exactly forty lowercase hexadecimal digits.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -85,11 +85,16 @@ pub struct PublicationBinding {
 }
 
 impl PublicationBinding {
-    /// Every key that may appear in a title under this binding.
-    fn title_keys(&self) -> impl Iterator<Item = &TrackerKey> {
-        std::iter::once(&self.epic_key)
-            .chain(self.task_key.iter())
-            .chain(self.child_keys.iter())
+    /// Every key that may appear in a title under this branch binding.
+    ///
+    /// An epic branch may publish one of its child tasks. A task branch is
+    /// narrower: its title must carry that same task key, so a sibling cannot
+    /// silently reuse the checkout and publication identity.
+    fn title_keys(&self) -> Box<dyn Iterator<Item = &TrackerKey> + '_> {
+        match self.task_key.as_ref() {
+            Some(task_key) => Box::new(std::iter::once(task_key)),
+            None => Box::new(std::iter::once(&self.epic_key).chain(self.child_keys.iter())),
+        }
     }
 }
 

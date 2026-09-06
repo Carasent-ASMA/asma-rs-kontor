@@ -37,6 +37,19 @@ bound to the confirmed Jira issue. The Paseo adapter already recognizes the
 catalog module's separate Git identity, but its final check only searched for
 the worktree slug as a substring of the branch.
 
+### Task branch and pull-request identity
+
+PRs #196 and #197 carried `ASMA-8102` titles on the reused branch
+`feat/ASMA-8101-publication-identity-enforcement`. Publication policy revision
+1 deliberately allowed a title to name any child of the resolved epic, even
+when the head branch resolved to a different child task. The attestation was
+therefore internally consistent with that permissive rule while violating the
+one-Jira-task-per-branch convention.
+
+Policy revision 2 keeps child titles legal on an epic branch, but a task branch
+now accepts only a title beginning with that same confirmed task key. A sibling
+task requires its own Jira-keyed branch and checkout.
+
 ## Required contract
 
 1. The server accepts a semantic topic, never a pre-rendered container name.
@@ -61,6 +74,9 @@ the worktree slug as a substring of the branch.
     bound to the task key and the runtime proves that the actual branch is
     canonical and carries that confirmed key. An absent catalog checkout is
     refused rather than synthesized under a guessed branch.
+11. A task branch and pull-request title carry the same confirmed Jira key.
+    Only a branch bound to the epic itself may publish one of that epic's child
+    task titles.
 
 ## Live reconciliation targets
 
@@ -92,4 +108,3 @@ Exactly one active CSW may remain for the second logical consultation.
   readback, preserved project/epic/task/run/seat identities, and native titles.
 - Mutation test that removes either topic-prefix rejection or semantic uniqueness
   and demonstrates a failing regression test.
-

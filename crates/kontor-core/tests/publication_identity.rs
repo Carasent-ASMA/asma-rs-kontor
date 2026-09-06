@@ -59,6 +59,31 @@ fn a_task_branch_binds_through_its_own_key() {
         &task_binding,
     );
     assert!(decision.accepted, "{decision:?}");
+
+    let same_task_title = evaluate(
+        &identity(
+            "feat/ASMA-8102-kontor-attestation",
+            "master",
+            Some("ASMA-8102 Attest the publication"),
+        ),
+        &task_binding,
+    );
+    assert!(same_task_title.accepted, "{same_task_title:?}");
+
+    let sibling_title = evaluate(
+        &identity(
+            "feat/ASMA-8102-kontor-attestation",
+            "master",
+            Some("ASMA-8104 Reuse the sibling branch"),
+        ),
+        &task_binding,
+    );
+    assert_eq!(
+        sibling_title.reasons,
+        vec!["pr_title_key_mismatch".to_owned()],
+        "a task branch must never publish a sibling task"
+    );
+
     // Without the task key in the binding, the same branch is somebody else's.
     let decision = evaluate(
         &identity("feat/ASMA-8102-kontor-attestation", "master", None),
