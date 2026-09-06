@@ -282,6 +282,14 @@ pub struct StoredConsultationRun {
     pub profile_version: SpecVersion,
     /// Digest of the pinned definition.
     pub definition_hash: ContentHash,
+    /// Server-derived identity of the logical consultation.
+    ///
+    /// Legacy rows remain `None` until an explicit correction adopts one.
+    /// Every new invocation carries `Some`, and the store enforces uniqueness
+    /// per project so a fresh caller idempotency key cannot create a duplicate
+    /// ASW or CSW.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity_hash: Option<ContentHash>,
     /// The bounded topic this consultation is about, when one is authoritative.
     ///
     /// This is what the ASW/CSW name templates render, and it is deliberately

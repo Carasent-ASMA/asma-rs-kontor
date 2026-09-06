@@ -876,7 +876,11 @@ fn a_recorded_migration_and_its_pin_survive_a_restart() {
 // ---------------------------------------------------------------------------
 
 /// Create one Advisor consultation, with or without an authoritative topic.
-fn consultation_with_topic(f: &Fixture, topic: Option<ExternalName>) -> StoredConsultationRun {
+fn consultation_with_topic(
+    f: &Fixture,
+    topic: Option<ExternalName>,
+    semantic_identity_hash: Option<ContentHash>,
+) -> StoredConsultationRun {
     let domain = bundled_operational_domain().expect("the bundled domain validates");
     let catalog = domain
         .role_catalogs
@@ -955,6 +959,7 @@ fn consultation_with_topic(f: &Fixture, topic: Option<ExternalName>) -> StoredCo
         profile_id: ADVISOR_PROFILE.to_owned(),
         profile_version: SpecVersion::FIRST,
         definition_hash: profile.hash().clone(),
+        semantic_identity_hash,
         question_hash: ContentHash::of(question.as_str().as_bytes()),
         question,
         context,
@@ -994,7 +999,7 @@ fn consultation_with_topic(f: &Fixture, topic: Option<ExternalName>) -> StoredCo
 #[test]
 fn a_consultation_topic_round_trips_and_is_reachable_from_its_topology_node() {
     let f = fixture();
-    let run = consultation_with_topic(&f, Some(name("Jira recovery")));
+    let run = consultation_with_topic(&f, Some(name("Jira recovery")), None);
 
     let by_node = f
         .store
@@ -1010,9 +1015,56 @@ fn a_consultation_topic_round_trips_and_is_reachable_from_its_topology_node() {
 }
 
 #[test]
+fn a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice() {
+    let f = fixture();
+    let identity = ContentHash::of(b"one server-derived consultation identity");
+    let first = consultation_with_topic(
+        &f,
+        Some(name("Operational completion")),
+        Some(identity.clone()),
+    );
+
+    let mut duplicate = first.clone();
+    duplicate.id = ConsultationRunId::Advisor(AdvisorRunId::generate());
+    duplicate.topology_node_id = TopologyNodeId::generate();
+    duplicate.invoke_key = IdempotencyKey::parse("a-different-caller-retry-key").expect("a key");
+    duplicate.invoke_intent_hash = ContentHash::of(b"a second invocation intent");
+
+    let error = f
+        .store
+        .create_consultation_run(
+            &duplicate,
+            &NewSessionTopologyNode {
+                id: duplicate.topology_node_id,
+                project_id: f.project_id,
+                mini_project_id: Some(f.mini_project_id),
+                topology: f.topology.clone(),
+                kind: TopologyKindKey::parse("ASW").expect("the advisor kind"),
+                parent_id: Some(f.esw),
+                task_id: None,
+                created_at: f.created_at,
+            },
+            &[],
+        )
+        .expect_err("the semantic identity is the uniqueness boundary");
+    assert!(
+        error.to_string().contains("consultation semantic identity"),
+        "the conflict names the duplicate identity: {error}"
+    );
+    assert_eq!(
+        f.store
+            .get_consultation_run_by_semantic_identity(f.project_id, &identity)
+            .expect("the identity lookup succeeds")
+            .expect("the first run remains")
+            .id,
+        first.id
+    );
+}
+
+#[test]
 fn a_legacy_consultation_without_a_topic_stays_readable_and_renders_nothing() {
     let f = fixture();
-    let run = consultation_with_topic(&f, None);
+    let run = consultation_with_topic(&f, None, None);
 
     let read = f
         .store
@@ -1420,7 +1472,7 @@ fn a_placement_must_describe_the_subject_it_is_recorded_against() {
 /// A fixture with one topicless consultation and one in-flight migration.
 fn legacy_topic_fixture() -> (Migration, TopologyNodeId, TeamDefinitionMigrationId) {
     let m = migration_fixture();
-    let run = consultation_with_topic(&m.fixture, None);
+    let run = consultation_with_topic(&m.fixture, None, None);
     let recorded = m
         .fixture
         .store

@@ -530,7 +530,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // a rejected gate verdict's workflow route one append-only, source-unique
     // fact carrying its route-time TeamRun, which is also the fence the routed
     // phase is held behind until that same run authors it again.
-    assert_eq!(SCHEMA_VERSION, 90);
+    assert_eq!(SCHEMA_VERSION, 91);
 }
 
 #[test]

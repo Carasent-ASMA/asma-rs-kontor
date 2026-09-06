@@ -36930,6 +36930,49 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         "caller_seat_binding_id": caller,
         "expected_revision": epic_read.json()["revision"],
     });
+    for (key, bad_topic, expected_rule) in [
+        (
+            "committee-topic-jira-prefix",
+            "ASMA-9001 operational gate evidence",
+            "consultation_topic_repeats_scope_code",
+        ),
+        (
+            "committee-topic-item-prefix",
+            "PROMO-9001 operational gate evidence",
+            "consultation_topic_repeats_scope_code",
+        ),
+        (
+            "committee-topic-container-prefix",
+            "CSW operational gate evidence",
+            "consultation_topic_repeats_container_prefix",
+        ),
+    ] {
+        let mut invalid = invoke_body.clone();
+        invalid["topic"] = serde_json::json!(bad_topic);
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+            &invalid,
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 400, "{}", refused.body);
+        assert_eq!(refused.json()["code"], "invalid_request");
+        assert!(
+            refused.json()["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.contains(expected_rule)),
+            "{}",
+            refused.body
+        );
+        assert_eq!(
+            world.fake.calls().len(),
+            calls_before,
+            "an invalid topic reached the native runtime"
+        );
+    }
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke_body,
@@ -36940,6 +36983,29 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     assert_eq!(invoked.status, 200, "{}", invoked.body);
     assert_eq!(invoked.json()["state"], "running");
+    let calls_after_first_invoke = world.fake.calls().len();
+    let duplicate = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("committee-invoke-with-a-fresh-key")
+    .send(world)
+    .await;
+    assert_eq!(duplicate.status, 409, "{}", duplicate.body);
+    assert_eq!(duplicate.json()["code"], "idempotency_conflict");
+    assert!(
+        duplicate.json()["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("consultation_semantic_duplicate")),
+        "{}",
+        duplicate.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_first_invoke,
+        "a duplicate semantic identity reached the native runtime"
+    );
     let run = invoked.json()["committee_run_id"]
         .as_str()
         .expect("a Committee run id")
@@ -38628,9 +38694,11 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     // round freezes its result and remediation on the source run and leaves the
     // run terminal at round one; only a separately invoked re-review may own
     // round two.
+    let mut terminal_invoke_body = invoke_body.clone();
+    terminal_invoke_body["topic"] = serde_json::json!("Terminal failure evidence");
     let terminal_invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
-        &invoke_body,
+        &terminal_invoke_body,
     )
     .signed_as(world, "operator")
     .with_key("committee-terminal-failure-invoke")

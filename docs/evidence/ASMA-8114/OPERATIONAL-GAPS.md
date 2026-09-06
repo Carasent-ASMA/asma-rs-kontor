@@ -49,3 +49,22 @@
 - Status: open; add a regression test and either correct the replay comparison or
   record a precise non-overlapping follow-up before closeout.
 
+## OG-04 — Kontor could not confirm a follow-up message position
+
+- Intended Kontor command: send one follow-up to existing ASMA-8110 AgentRun
+  `01a07398-d34a-7b31-a3a6-1547a37e71a6` after its archive suite exposed two
+  fixture regressions.
+- Failure class: session message delivery confirmation gap.
+- Exact result: `kontor_session_message_send` returned HTTP 503 and instructed
+  the caller to inspect canonical history; the subsequent timeline read did not
+  contain a confirmed position for that message.
+- Bounded fallback: `paseo send` delivered the same follow-up to the already
+  bound native agent `b600c003-b029-47fc-b5cc-ed120be11a1e`. No new agent,
+  workspace or identity was created, and no wider orchestration continued
+  through Paseo.
+- Current checkpoint: the same ASMA-8110 seat owns its worktree and correction;
+  deployment and live state remain untouched.
+- Owner: ASMA-8114 for the message-confirmation defect; ASMA-8110 retains its
+  implementation scope.
+- Status: open until the message-confirmation path is reproduced and assigned a
+  non-overlapping correction or shown already corrected by the merged runtime.

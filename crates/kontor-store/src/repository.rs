@@ -191,6 +191,7 @@ type ConsultationRunColumns = (
     String,
     i64,
     String,
+    Option<String>,
     String,
     String,
     String,
@@ -233,6 +234,7 @@ fn read_consultation_run(
         profile_id,
         profile_version,
         definition_hash,
+        semantic_identity_hash,
         question,
         question_hash,
         context,
@@ -254,6 +256,10 @@ fn read_consultation_run(
     // A stored NULL stays None. Nothing here reconstructs a topic from the
     // question beside it, which is exactly the inference the contract forbids.
     let topic = topic.as_deref().map(ExternalName::parse).transpose()?;
+    let semantic_identity_hash = semantic_identity_hash
+        .as_deref()
+        .map(ContentHash::parse)
+        .transpose()?;
     let question = BoundedText::parse(&question)?;
     let question_hash = ContentHash::parse(&question_hash)?;
     if ContentHash::of(question.as_str().as_bytes()) != question_hash {
@@ -291,6 +297,7 @@ fn read_consultation_run(
         profile_id,
         profile_version: read_version(profile_version)?,
         definition_hash: ContentHash::parse(&definition_hash)?,
+        semantic_identity_hash,
         question,
         question_hash,
         context: serde_json::from_str(context.json()).map_err(|error| {
@@ -2252,12 +2259,12 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO consultation_runs
                      (run_id, project_id, mini_project_id, family, profile_id,
-                      profile_version, definition_hash, question, question_hash,
+                      profile_version, definition_hash, semantic_identity_hash, question, question_hash,
                       context, context_hash, caller_seat_binding_id, topology_node_id,
                       invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
                       updated_at, settled_at, topic)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                         ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                 params![
                     run.id.as_text(),
                     run.project_id.to_string(),
@@ -2266,6 +2273,7 @@ impl SqliteStore {
                     run.profile_id,
                     version_column(run.profile_version),
                     run.definition_hash.as_str(),
+                    run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
                     run.question.as_str(),
                     run.question_hash.as_str(),
                     context,
@@ -2285,7 +2293,21 @@ impl SqliteStore {
                     run.topic.as_ref().map(ExternalName::as_str),
                 ],
             )
-            .map_err(backend)?;
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, detail)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation
+                        && detail.as_deref().is_some_and(|detail| {
+                            detail.contains("consultation_runs.project_id, consultation_runs.semantic_identity_hash")
+                                || detail.contains("consultation_runs_by_semantic_identity")
+                        }) =>
+                {
+                    conflict(
+                        "consultation semantic identity",
+                        "an Advisor or Committee run already owns this family, scope, template and topic",
+                    )
+                }
+                other => backend(other),
+            })?;
 
         if let Some(provenance) = run
             .context
@@ -2416,7 +2438,7 @@ impl SqliteStore {
             .connection
             .query_row(
                 "SELECT mini_project_id, profile_id, profile_version,
-                        definition_hash, question, question_hash, context,
+                        definition_hash, semantic_identity_hash, question, question_hash, context,
                         context_hash, caller_seat_binding_id, topology_node_id,
                         invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
                         updated_at, settled_at, topic
@@ -2429,7 +2451,7 @@ impl SqliteStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
@@ -2438,14 +2460,15 @@ impl SqliteStore {
                         row.get::<_, String>(10)?,
                         row.get::<_, String>(11)?,
                         row.get::<_, String>(12)?,
-                        row.get::<_, i64>(13)?,
-                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, i64>(14)?,
                         row.get::<_, Option<String>>(15)?,
-                        row.get::<_, i64>(16)?,
-                        row.get::<_, String>(17)?,
+                        row.get::<_, Option<String>>(16)?,
+                        row.get::<_, i64>(17)?,
                         row.get::<_, String>(18)?,
-                        row.get::<_, Option<String>>(19)?,
+                        row.get::<_, String>(19)?,
                         row.get::<_, Option<String>>(20)?,
+                        row.get::<_, Option<String>>(21)?,
                     ))
                 },
             )
@@ -2467,6 +2490,29 @@ impl SqliteStore {
                 "SELECT run_id, family FROM consultation_runs
                  WHERE project_id = ?1 AND invoke_key = ?2",
                 params![project_id.to_string(), key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((run_id, family)) = found else {
+            return Ok(None);
+        };
+        let family = ConsultationFamily::parse(&family)?;
+        self.get_consultation_run(project_id, consultation_run_id(family, &run_id)?)
+    }
+
+    /// The run owning one server-derived logical consultation identity.
+    pub fn get_consultation_run_by_semantic_identity(
+        &self,
+        project_id: ProjectId,
+        semantic_identity_hash: &ContentHash,
+    ) -> RepositoryResult<Option<StoredConsultationRun>> {
+        let found: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT run_id, family FROM consultation_runs
+                 WHERE project_id = ?1 AND semantic_identity_hash = ?2",
+                params![project_id.to_string(), semantic_identity_hash.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()

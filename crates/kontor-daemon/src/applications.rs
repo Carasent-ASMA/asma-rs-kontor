@@ -139,8 +139,9 @@ use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus};
 use kontor_core::consultation::{
     AdvisorProfileSpec, CommitteeRole, CommitteeTemplateSpec,
-    CommitteeVerdict as ConsultationVerdict, ConsultationFamily, ConsultationRunId,
-    ConsultationRunState, ConsultationScope, RecordedFinding, conjunctive_outcome,
+    CommitteeVerdict as ConsultationVerdict, ConsultationFamily, ConsultationIdentity,
+    ConsultationRunId, ConsultationRunState, ConsultationScope, RecordedFinding,
+    conjunctive_outcome, validate_semantic_topic,
 };
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
@@ -9413,6 +9414,31 @@ impl Services {
             })?;
         let definition_snapshot = TeamDefinitionSnapshot::from_revision(&definition)
             .map_err(|error| self.refuse_domain(&error))?;
+        let semantic_identity_hash = self.consultation_semantic_identity(
+            project_id,
+            epic_id,
+            request.task_id,
+            ConsultationFamily::Advisor,
+            revision,
+            &definition,
+            topic,
+            None,
+        )?;
+        if let Some(existing) = state
+            .with_store(|store| {
+                store.get_consultation_run_by_semantic_identity(project_id, &semantic_identity_hash)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "consultation_semantic_duplicate: this Advisor scope and topic already has one run",
+                )
+                .about("consultation semantic identity")
+                .located_at(format!("consultation-runs/{}", existing.id.as_text()))
+                .advising("read or resume the existing consultation run"));
+        }
         let question_hash = ContentHash::of(request.question.as_str().as_bytes());
         let context = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -9437,6 +9463,7 @@ impl Services {
             profile_id: revision.profile_id.clone(),
             profile_version: revision.version,
             definition_hash: revision.definition_hash.clone(),
+            semantic_identity_hash: Some(semantic_identity_hash),
             topic: Some(topic.clone()),
             question: request.question.clone(),
             question_hash,
@@ -9799,6 +9826,31 @@ impl Services {
             })?;
         let definition_snapshot = TeamDefinitionSnapshot::from_revision(&definition)
             .map_err(|error| self.refuse_domain(&error))?;
+        let semantic_identity_hash = self.consultation_semantic_identity(
+            project_id,
+            epic_id,
+            request.task_id,
+            ConsultationFamily::Committee,
+            template_revision,
+            &definition,
+            topic,
+            re_review,
+        )?;
+        if let Some(existing) = state
+            .with_store(|store| {
+                store.get_consultation_run_by_semantic_identity(project_id, &semantic_identity_hash)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "consultation_semantic_duplicate: this Committee scope and topic already has one run",
+                )
+                .about("consultation semantic identity")
+                .located_at(format!("consultation-runs/{}", existing.id.as_text()))
+                .advising("read or resume the existing consultation run"));
+        }
         let question_hash = ContentHash::of(request.question.as_str().as_bytes());
         let frozen_model_rungs = self.freeze_committee_model_rungs(
             project_id,
@@ -9856,6 +9908,7 @@ impl Services {
             profile_id: template_revision.profile_id.clone(),
             profile_version: template_revision.version,
             definition_hash: template_revision.definition_hash.clone(),
+            semantic_identity_hash: Some(semantic_identity_hash),
             topic: Some(topic.clone()),
             question: request.question.clone(),
             question_hash,
@@ -32876,6 +32929,87 @@ impl Services {
                 "the confirmed Jira binding cannot produce a canonical item code",
             )
         })
+    }
+
+    /// Validate the caller's topic as semantic input and derive the one
+    /// server-owned identity that may freeze a native consultation container.
+    fn consultation_semantic_identity(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+        family: ConsultationFamily,
+        revision: &StoredConsultationProfileRevision,
+        definition: &TeamDefinitionSpec,
+        topic: &ExternalName,
+        re_review: Option<&CommitteeReReviewProvenance>,
+    ) -> Result<ContentHash, ApiError> {
+        let kind = match family {
+            ConsultationFamily::Advisor => &self.domain.delivery.advisor_kind,
+            ConsultationFamily::Committee => &self.domain.delivery.committee_kind,
+        };
+        let container = definition.container(kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the pinned Team Definition has no container for this consultation family",
+            )
+        })?;
+        let item_code = self.item_code_for_subject(project_id, epic_id, task_id)?;
+        let jira_key = self
+            .state()?
+            .with_store(|store| {
+                if let Some(task_id) = task_id {
+                    store.confirmed_jira_task_key(project_id, task_id)
+                } else {
+                    store.confirmed_jira_epic_key(project_id, epic_id)
+                }
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the consultation scope has no confirmed Jira binding",
+                )
+            })?;
+        if let Err(error) = validate_semantic_topic(
+            topic,
+            &[jira_key.as_str(), item_code.as_str()],
+            container.prefix.as_str(),
+            definition.separator.as_str(),
+        ) {
+            let rule = match error {
+                kontor_core::DomainError::Invalid { rule, .. }
+                | kontor_core::DomainError::InvalidAt { rule, .. } => rule,
+                other => return Err(self.refuse_domain(&other)),
+            };
+            return Err(self
+                .deny(ApiErrorCode::InvalidRequest, rule)
+                .about("ConsultationTopic")
+                .located_at("topic"));
+        }
+        let re_review_hash = re_review
+            .map(|provenance| {
+                CanonicalDocument::from_serializable(&serde_json::json!({
+                    "schema_version": 1,
+                    "re_review": provenance,
+                }))
+                .map(|document| document.hash().clone())
+            })
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        ConsultationIdentity {
+            project_id,
+            epic_id,
+            task_id,
+            family,
+            profile_id: &revision.profile_id,
+            profile_version: revision.version,
+            definition_hash: &revision.definition_hash,
+            topic,
+            re_review_provenance_hash: re_review_hash.as_ref(),
+        }
+        .hash()
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     fn container_name(
