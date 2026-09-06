@@ -1,257 +1,267 @@
-# ASMA-8110 high-verification report: gate-verdict consumption and recovery
+# ASMA-8110 high-verification report: remediation re-verification
 
 Date: 2026-09-06
 Artifact: `high-verification-report`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-verification`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Candidate: `d59e4eb3103c7e21947a288e726f7015c47f6955`
-Status: **rejected — implementation changes required**
+Candidate: `5743d7ac014166ba3045803a68c211534ce98ea0`
+Handoff evidence: `e47128f47ab2806fd0b791c19b55f64d881fefa8`
+Status: **rejected — further implementation changes required**
 
 ## Verdict
 
-Candidate `d59e4eb3103c7e21947a288e726f7015c47f6955` does not satisfy the
-high-verification gate. The atomic route/recovery core and its focused happy
-paths work, but one safety-fence identity is evaluated against mutable later
-state, invalid exact receipt bindings are silently treated as legacy, the
-fresh-key concurrency path can lose its required receipt diagnostic, and the
-authoritative exported-tree gate is red. The frozen refusal and fence test
-matrix is also incomplete.
+The remediation closes the original route-time TeamRun defect and its named
+happy-path regressions pass, but candidate `5743d7a` still does not satisfy the
+amended high-verification contract.
 
-No production source was changed during verification. No daemon was started,
-no schema was migrated, no recovery was invoked, and no Jira/runtime/topology
-state was mutated.
+The authoritative archive command fails at online lockfile regeneration on the
+exact frozen tree. Two temporary adversarial tests also prove that a malformed
+`"result": null` binding is still downgraded to legacy and that the new
+post-transaction diagnostic decoration masks a cross-task source-receipt
+refusal as an already-consumed route. The required concurrent test does not
+actually synchronize both requests before either route commits, and the
+amended scope's deployment instructions still name schema/migration 89 while
+the candidate and deployed realm are at 90.
 
-## Candidate and handoff
+No production source was changed during verification. No daemon was started or
+stopped, no deployment or recovery was invoked, and no task, workflow, Jira,
+runtime, topology, TeamRun, AgentRun, seat, or native-session state was mutated.
 
-- Frozen handoff artifact: `high-change` at
-  `d59e4eb3103c7e21947a288e726f7015c47f6955`.
-- Reviewed implementation commit: `a7217ef`; `d59e4eb` changes only this task's
-  high-change document after it.
-- Merge base declared by the scope and reproduced by Git:
-  `98940604d9a554aa24e0d87474bf0807232499e5`.
-- The worktree was clean at handoff. The only verification-seat change is this
-  report.
-- The task's pinned profile is
-  `asma-high-stakes-primary-20260829@1`; its durable workflow was read at
-  `high-verification@3`, and implement turn ordinal 2 was settled with the
-  canonical `high-change` artifact.
+## Candidate and handoff boundary
+
+- Implement turn ordinal 3 is durably settled with `high-change`, evidence hash
+  `9b987aced783c5386feb0ebb69cb79a4cbade88ade59257a4a7effa03fc85097`,
+  and terminal timeline position `4:2796`.
+- The handoff freezes code commit
+  `5743d7ac014166ba3045803a68c211534ce98ea0`; evidence commit `e47128f` changes
+  only `HIGH-CHANGE-RECORD.md` on top of it.
+- A scratch repository created from `git archive 5743d7a` had tree hash
+  `03390e559e8a5d3715992d337765f9d5bd56bf61`, exactly equal to
+  `5743d7a^{tree}`. All candidate results below ran from that tree.
+- After the handoff, the shared branch was rebased again to `ed15e21`. Its tree
+  is byte-identical to current `origin/master` (`bf71bc2`) and differs from the
+  frozen handoff only in unrelated ASMA-8102 files. It was not substituted for
+  the exact candidate during verification.
+
+The previous rejection is preserved in Git at
+`3800cb27654c16dc075b4edf8955fd6b34b404d1`; this file supersedes its working
+tree report for the remediation verification while retaining that immutable
+history.
 
 ## Findings
 
-### F-8110-01 — high: a later TeamRun can become the fence's “preserved” run
+### F-8110-R1 — high: the authoritative archive gate is still red
 
-The scope requires the releasing turn to belong to the TeamRun preserved when
-the rejection was routed, and expressly says a turn from another run must not
-release the fence (`HIGH-SCOPE-RECORD.md:178-193`). The route row stores no
-TeamRun identity. At every advancement attempt,
-`rejection_fence_holds` calls `list_team_runs_for_task(...).last()`
-(`crates/kontor-daemon/src/applications.rs:1159-1163`). That repository query
-orders all runs oldest-first (`crates/kontor-store/src/graph.rs:1431-1445`), so
-any TeamRun created later for the same task replaces the route-time run in the
-predicate. A qualifying artifact turn on that later run then passes
-`turn.team_run_id == preserved_run` and releases the fence.
+`python3 scripts/verify-tree.py --mode archive` was run with registry access
+from the scratch Git repository whose committed tree exactly equals
+`5743d7a^{tree}`. It exited 1 during its first gate:
 
-This is not an append-only identity check; it is a mutable latest-run lookup.
-The fence test settles only roles in the original `runs` vector
-(`loopback_api.rs:10341-10399`) and never creates or settles another same-task
-TeamRun, so the required negative case is absent.
-
-Required correction: bind the fence to the route-time TeamRun identity, or
-obtain a scope ruling for another immutable derivation. Adding `team_run_id` to
-the route is the direct design, but the scope's exact field list omits it and
-therefore needs an explicit scope amendment. Add a regression with two
-same-task TeamRuns proving the later run cannot release the earlier route.
-
-### F-8110-02 — high: the authoritative archive gate is red
-
-`python3 scripts/verify-tree.py --mode archive` failed at its first gate on the
-frozen candidate. Online `cargo generate-lockfile` changed only:
-
-```diff
--name = "ipnet"
--version = "2.12.1"
--checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
-+name = "ipnet"
-+version = "2.12.2"
-+checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+```text
+Cargo.lock regeneration differs byte-for-byte from the committed lockfile
 ```
 
-The script reported `Cargo.lock regeneration differs byte-for-byte from the
-committed lockfile` and exited 1 before format, clippy, tests, audits or pnpm
-gates. An offline regeneration remains byte-identical, which isolates the
-failure to current registry resolution rather than a local edit, but the scope
-declares this online exported-tree command authoritative. Update/freeze the
-lock as project policy requires and rerun the complete archive gate on the new
-candidate.
+Current online resolution changes only:
 
-### F-8110-03 — medium: an invalid exact result binding is downgraded to legacy
+```diff
+-libflate 2.3.1
++libflate 2.3.2
 
-`bound_gate_record_result` reads any stored outbox payload and then calls
-`parse_gate_record_result(...).ok()`
-(`crates/kontor-store/src/repository.rs:11673-11689`). Consequently a payload
-whose hash is wrong, whose `result` object is partial, or whose binding is
-otherwise invalid becomes `None`, the same value used for a genuinely old
-receipt with no result binding. Recovery then falls back to matching intent and
-evaluation fields. With repeated otherwise-identical rejections, that can
-consume a caller-selected sequence even though the source receipt's corrupted
-binding did not authorize it.
+-ureq 3.4.0
++ureq 3.4.1
 
-The no-binding legacy case must remain supported. The invalid-binding case must
-propagate the parse/integrity error. Add negative tests for a bad payload hash,
-a partial result object and an invalid exact workflow/sequence binding; only a
-payload with no result binding at all may take the legacy comparison path.
+-ureq-proto 0.6.1
++ureq-proto 0.6.2
+```
 
-### F-8110-04 — medium: a concurrent second key can lose the original-receipt diagnostic
+The implementation receipt's earlier online equality is not reproducible at
+verification time. The authoritative command therefore reached none of format,
+clippy, workspace tests, audit, deny, pnpm install, typecheck, Vitest, or the
+production dependency audit.
 
-The service first reads `gate_rejection_route_by_rejection` in one
-`with_store` lock window and adds `located_at(command-receipts/{id})` if it
-finds a route (`crates/kontor-daemon/src/applications.rs:24746-24766`). It then
-releases that lock and later opens the recovery transaction. Two different
-fresh keys can both observe no route. The first transaction commits; the
-second transaction detects the route at
-`crates/kontor-store/src/repository.rs:12152-12170` and returns only the generic
-`already_routed()` conflict. Mapping that error back to the API has no route
-receipt with which to populate `diagnostic.at`.
+The implementation also reported an inherited workspace failure. An
+independent exact test reproduces it:
+`no_tool_names_a_store_a_database_or_a_migration` rejects the three ASMA-8101
+publication arguments named `repository`. Git history confirms those arguments
+already exist at candidate base `e4bb5fb`, and the ASMA-8110 delta adds no such
+argument. The baseline attribution is sound, but the amended scope explicitly
+requires complete successful archive output; an inherited failure is not a
+passing gate and still prevents all later stages from carrying evidence.
 
-The state effect is still prevented, but the response no longer meets the
-scope's requirement that every fresh-key already-consumed refusal name the
-original recovery receipt (`HIGH-SCOPE-RECORD.md:120-125`). Return the existing
-route from the transactional conflict path, or re-read and decorate that exact
-conflict after the failed transaction. Add a concurrent two-key test.
+Required correction: refresh or durably pin the lock according to project
+policy, resolve or formally disposition the publication-vocabulary baseline,
+and run the complete authoritative command successfully on a new exact SHA.
 
-### F-8110-05 — medium: the required negative matrix is incomplete
+### F-8110-R2 — high: `result: null` is treated as an absent legacy binding
 
-The named refusal test covers a nonexistent task, undeclared gate, missing
-sequence, wrong/missing receipt id, phase, target and two stale revisions
-(`loopback_api.rs:10119-10225`). It does not cover the scope's full list at
-`HIGH-SCOPE-RECORD.md:153-155`: wrong existing project/task binding, wrong
-receipt target or canonical intent fields, a non-rejected evaluation, a
-terminal task, or an inactive workflow. It also does not test same-key changed
-intent. The fence test covers a reviewer turn and an empty turn, but not another
-task/run despite the explicit requirement and MUT-8110-09.
+The amended scope allows legacy comparison only when a result binding is truly
+absent and requires malformed or partial bindings to fail closed
+(`HIGH-SCOPE-RECORD.md:169-173,292-297,436-438`). The implementation comment
+likewise says a stored payload with no `result` at all is legacy. The code does
+more: `bound_gate_record_result` returns `None` when the member is either absent
+**or null**:
 
-Add those cases with the same before/after census. The implementation report's
-mutation narrative is useful, but the final tree does not independently prove
-the omitted killers.
+```rust
+if payload.get("result").is_none_or(serde_json::Value::is_null) {
+    return Ok(None);
+}
+```
 
-## Verified behavior
+(`crates/kontor-store/src/repository.rs:11732-11737`.)
 
-Static review and the passing focused tests support the following parts of the
-candidate:
+A temporary QA case rewrote a valid gate-recording payload to contain
+`"result": null`, recomputed its payload hash, and otherwise reused the
+candidate's invalid-binding test. The expected refusal failed: the endpoint
+returned HTTP 200 with `applied: "created"` and wrote the recovery route. The
+probe was then removed and the scratch tree returned to the exact candidate.
 
-- migration 0089 creates the append-only route table, source/evaluation and
-  route-receipt uniqueness, and update/delete triggers;
-- a future rejection appends its evaluation, exact receipt result, route and
-  single workflow revision in one SQLite transaction;
-- the historical command is distinct, admin-only, chooses the frozen profile's
-  target, appends no evaluation, and handles ordinary replay before mutable
-  preconditions;
-- the focused recovery, route atomicity, reopen, contract, CLI/MCP and migration
-  tests pass under the committed lock;
-- `cargo fmt --all -- --check` and
-  `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+This is the same integrity failure class as original F-8110-03: a malformed
+present result can authorize the caller-selected legacy comparison path.
 
-## Test record
+Required correction: only an absent member may return `None`; a present null or
+non-object value must flow through strict parsing and refuse. Retain the new
+null case beside the hash, partial-object, mismatched-binding and absent-member
+cases.
 
-| Command | Result |
+### F-8110-R3 — high: route decoration masks an invalid source receipt
+
+On **every** error from `recover_gate_rejection_with_intent`, the service now
+looks up a route first by source receipt and then by caller-selected evaluation.
+If either exists it discards the store error and returns
+`already_routed_refusal` (`crates/kontor-daemon/src/applications.rs:25031-25072`).
+The code does not prove that the discarded error was the route-uniqueness
+conflict.
+
+A temporary QA case first created a valid route, then submitted a fresh key and
+a valid `RecordGateVerdict` receipt whose immutable target belonged to another
+task while retaining the already-routed gate/sequence. The store correctly
+rejected the cross-task source, but the service replaced that refusal with:
+
+```text
+409 revision_conflict
+at: command-receipts/{the-valid-route-receipt}
+```
+
+The probe expected the scope's cross-identity refusal with no unrelated receipt
+disclosure and failed. It was then removed and the exact candidate tree was
+restored.
+
+This violates `HIGH-SCOPE-RECORD.md:180-185`, which distinguishes wrong receipt
+target/intent from an already-consumed source and requires cross-identity
+requests to retain their typed invalid/not-found response.
+
+Required correction: decorate only the repository's exact already-routed
+conflict. Preserve every other error unchanged. Add post-route cases for a
+cross-task target, wrong canonical gate/intent, non-verdict receipt and invalid
+exact binding so caller-selected evaluation identity cannot mask source
+validation.
+
+### F-8110-R4 — medium: the required concurrency interleaving is not proved
+
+`concurrent_fresh_recovery_keys_name_the_single_original_route_receipt` starts
+two futures with `tokio::join!`, but it has no barrier between route pre-check
+and route transaction. The process-wide store mutex allows the winner to finish
+before the loser performs its pre-check. The implementation record confirms
+that this is what occurred and that the original mutation survived.
+
+The added second half is useful: it sequentially presents a different valid
+legacy receipt for the same routed evaluation and reaches the post-transaction
+decoration path. It is not the amended scope's required synchronization of two
+fresh keys before either commit (`HIGH-SCOPE-RECORD.md:298-302`). It also did not
+catch F-8110-R3 because the alternate receipt is a valid source.
+
+Required correction: add a deterministic test barrier or a store-level
+equivalent that proves both pre-checks observe no route before either route
+transaction commits, while retaining the evaluation-identity collision test.
+
+### F-8110-R5 — medium: authoritative deployment instructions still name v89
+
+The implementation correctly renumbered the route migration to
+`0090_gate_rejection_routes.sql` and set `SCHEMA_VERSION` to 90 after current
+master claimed v89 for publication attestations. The high-change record explains
+that integration decision. The amended high-scope record was not corrected:
+
+- `HIGH-SCOPE-RECORD.md:190` still requires migration 0089;
+- `HIGH-SCOPE-RECORD.md:406-408` still instructs delivery to require schema 89
+  and migration 0089 exactly once.
+
+The same-realm read-only census now observes schema 90 and the route table, so
+that protected delivery check cannot succeed as written. Correct the scope's
+file and schema references before any later delivery/readback relies on them.
+
+## Verified remediation behavior
+
+Static review and unmodified focused tests support these corrections:
+
+- every route now stores an immutable route-time `team_run_id`, and fence
+  evaluation compares settled turns to that id instead of recomputing the
+  latest TeamRun;
+- TeamRun resolution occurs only in transactions that actually write a route,
+  preserving the receiptless evaluation-append contract;
+- valid exact bindings fail on bad hashes, partial objects and mismatched
+  workflow/sequence bindings; a genuinely absent result member remains
+  recoverable through full legacy intent/evaluation comparison;
+- the official wrong-input, same-key, restart, route-uniqueness, later-TeamRun,
+  stale-artifact, migration and snapshot cases pass;
+- the recovery HTTP/MCP/CLI surface remains admin-only and mechanically aligned.
+
+These passing cases do not cure the three gate/code failures above.
+
+## Test record for exact candidate `5743d7a`
+
+| Command or probe | Result |
 |---|---|
-| `python3 scripts/verify-tree.py --mode archive` | **failed**: online lock regeneration changed `ipnet` 2.12.1 → 2.12.2 |
+| `python3 scripts/verify-tree.py --mode archive` | **failed**: current online lock regeneration differs (`libflate`, `ureq`, `ureq-proto`) |
 | `cargo fmt --all -- --check` | passed |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | passed |
+| `cargo test --locked -p kontor-daemon --test loopback_api rejection` | 6 passed |
+| exact `concurrent_fresh_recovery_keys_name_the_single_original_route_receipt` | 1 passed |
+| exact `a_phase_advancing_gate_replays_after_revision_change_and_restart` | 1 passed |
 | `cargo test --locked -p kontor-store --test repository_roundtrip rejection` | 2 passed |
-| `cargo test --locked -p kontor-daemon --test loopback_api rejection` | 3 passed |
+| exact route migration/snapshot test | 1 passed |
+| `cargo test --locked -p kontor-store --test schema_v1` | 57 passed |
 | `cargo test --locked -p kontor-core --test domain_state command_kind` | 1 passed |
 | `cargo test --locked -p kontor-mcp` | 63 passed |
-| `cargo test --locked -p kontor-cli` | 22 passed after rerunning outside the socket-restricted sandbox |
+| `cargo test --locked -p kontor-cli` | 22 passed |
 | `cargo test --locked -p kontor-tests-contract --test mcp_parity` | 12 passed |
-| `cargo test --locked -p kontor-store --test backup_snapshot gate_rejection` | 1 passed |
-| `cargo test --locked -p kontor-store --test schema_v1` | 56 passed, 1 transient `database is locked` failure |
-| exact rerun of `a_concurrent_first_open_initializes_exactly_one_realm` | passed |
-| `cargo test --workspace --locked` | passed (exit 0) |
+| exact `no_tool_names_a_store_a_database_or_a_migration` | **failed**, matching the reported inherited ASMA-8101 diagnostic |
+| temporary `result: null` invalid-binding probe | **failed**: recovery unexpectedly returned 200/created |
+| temporary post-route cross-task source probe | **failed**: invalid source was rewritten to an already-routed 409 and disclosed the route receipt |
 
-The initial archive attempt inside the filesystem/network sandbox failed only
-because crates.io DNS was unavailable. The recorded authoritative result above
-is the rerun with registry access. The first CLI run likewise hit a sandbox
-loopback-bind denial; the authorized rerun passed.
-
-## Inherited unresolved questions
-
-OQ-8110-01 and OQ-8110-02 remain open in
-[`HIGH-CHANGE-RECORD.md`](HIGH-CHANGE-RECORD.md). In particular, the candidate
-implements the authoring role named by the edge *into* the rejection target,
-while the literal scope says the edge *out of* it. The scope's examples and
-mutation requirement contradict that literal wording, so verification does not
-invent a resolution. F-8110-01 is independent of that role-direction question:
-whichever role is selected, its turn must still belong to the preserved
-route-time TeamRun.
-
-## Open questions
-
-### OQ-8110-03 — the live ASMA-8100 state no longer satisfies the frozen recovery invocation
-
-Subject: whether and how the ASMA-8100 same-realm qualification remains required
-after that task advanced beyond the rejection the command was scoped to consume.
-
-Attaches to: `ASMA-8110`,
-[`HIGH-SCOPE-RECORD.md`](HIGH-SCOPE-RECORD.md) section "Qualification,
-same-realm deployment, and ASMA-8100 recovery", and ASMA-8100 task
-`01a06e13-878c-7080-9801-d984bfe0eb04`.
-
-Why ambiguous: the frozen procedure requires ASMA-8100 to be a non-terminal
-task at task revision 2 with its active `docs@1` workflow at
-`technical-review@2`, then expects the recovery to route it to `authoring@3`.
-A fresh read-only census of the same realm on 2026-09-06 instead finds the task
-`done@5` and its active workflow at `final-review@5`. The gate history now also
-contains later technical-review evaluations through sequence 4 (passed) and
-passed final-review evaluations. Source receipt
-`01a07373-0b66-7b93-905f-c2a21bee494f` still binds exactly to workflow
-`01a06e1d-b3a4-78d1-91b9-87d8d6f7d03d`, gate sequence 1, but the recovery's
-terminal-task, task-revision, workflow-revision and current-phase preconditions
-must now refuse it. The scope expressly says such a fresh mismatch blocks the
-invocation and must be attached before an alternative is chosen.
-
-Options seen:
-
-1. Treat the live recovery objective as superseded because ASMA-8100 completed,
-   and qualify ASMA-8110's generic recovery behavior without mutating ASMA-8100.
-2. Qualify against a recoverable historical copy that still has the frozen
-   `technical-review@2` state, accepting that this is not the current same-realm
-   state named by the scope.
-3. Rescope a new non-terminal fixture/task for same-realm qualification and
-   explicitly waive the ASMA-8100-specific acceptance criterion.
-4. Require a new scoped recovery design for completed/later-advanced workflows;
-   the current command correctly refuses that expansion.
-
-No option is selected in this verification turn. Verification therefore covers
-the candidate code and tests only; it performs no deployment or recovery
-invocation and does not treat the ASMA-8100-specific acceptance criterion as
-satisfied.
+The archive command stopped at lock regeneration, so this turn does not claim a
+full workspace, audit, deny, pnpm, typecheck, Vitest or production-audit result
+for the candidate. The focused commands were run separately after that failure.
 
 ## Same-realm read-only census
 
-The observer daemon was unavailable, so verification did not infer live state
-from a failed API call. A read-only SQLite census found:
+The realm changed outside this verification turn after the prior report:
 
-- schema version 88; migration 0089 and its route table are not deployed;
-- `PRAGMA integrity_check` is `ok` and `PRAGMA foreign_key_check` returns no
-  rows;
-- ASMA-8100 task `01a06e13-878c-7080-9801-d984bfe0eb04` is `done@5`;
-- active `docs@1` workflow `01a06e1d-b3a4-78d1-91b9-87d8d6f7d03d` is at
-  `final-review@5`;
-- the technical-review gate now has four evaluations, with sequence 4 passed;
-- source receipt `01a07373-0b66-7b93-905f-c2a21bee494f` has an exact result
-  binding to that workflow and technical-review sequence 1. It is not the
-  no-result legacy shape described in the implementation handoff.
+- schema version is 90; `task_gate_rejection_routes` is present;
+- `PRAGMA integrity_check` is `ok`; `PRAGMA foreign_key_check` returns zero rows;
+- one route exists, recovering ASMA-8110's prior `high-verification-gate`
+  rejection from workflow revision 5 to `high-implementation@6`, bound to this
+  TeamRun;
+- ASMA-8110 is `ready` and its active workflow is at `high-implementation@6`;
+- ASMA-8100 remains `done@5` with its active workflow at `final-review@5`;
+- no route consumes protected ASMA-8100 receipt
+  `01a07373-0b66-7b93-905f-c2a21bee494f`.
 
-These facts are observations only. OQ-8110-03 records the decision they require.
+These are observations only. This turn did not cause any of those state changes.
 
-## Exit criteria for re-verification
+## Open questions
 
-1. Correct F-8110-01, F-8110-03 and F-8110-04, and add the missing tests in
-   F-8110-05.
-2. Obtain and record scope dispositions for OQ-8110-01, OQ-8110-02 and
-   OQ-8110-03 before relying on any affected behavior.
-3. Produce a new frozen commit whose authoritative archive gate passes in full.
-4. Keep same-realm deployment and any ASMA-8100 mutation with the delivery
-   owner after OQ-8110-03 is resolved.
+None. The settled implement turn, frozen candidate, later rebase, integrated
+tree and same-realm state are each evidenced directly. The amended scope
+resolves OQ-8110-01 through OQ-8110-03; this verification makes no unsupported
+choice among alternatives.
+
+## Exit criteria for another verification turn
+
+1. Correct F-8110-R2 and F-8110-R3 and retain adversarial regressions for both.
+2. Satisfy the deterministic concurrency requirement in F-8110-R4.
+3. Correct the authoritative v89/v90 scope and deployment references.
+4. Produce a new exact candidate whose online lock regeneration is identical,
+   whose workspace baseline is green or formally dispositioned by the scope
+   owner, and whose complete archive gate reaches exit 0.
+5. Re-run high verification from that exact committed tree. Do not mutate
+   ASMA-8100 or treat its terminal historical receipt as consumed.
