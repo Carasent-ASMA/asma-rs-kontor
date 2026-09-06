@@ -49,12 +49,14 @@ AgentRun, seat, native-session, workspace, and `cwd` identity remains fixed.
 
 ## Schema generation
 
-This work's route migration is **`0090_gate_rejection_routes.sql`** and
-`SCHEMA_VERSION` is **90**. It was scoped as 0089/89, but current master claimed
-v89 for ASMA-8101 publication attestations before this landed, so the route
-migration renumbered behind it. Every instruction below — including the
-protected delivery readback — names 90, and the deployed realm reads back at 90
-with `task_gate_rejection_routes` present.
+This work's route migration is **`0090_gate_rejection_routes.sql`**. It was
+scoped as 0089/89, but master claimed v89 for ASMA-8101 publication
+attestations before this landed, so the route migration renumbered behind it
+and first shipped at schema 90. The protected realm currently reads back at 90
+with `task_gate_rejection_routes` present. The frozen integration candidate
+also contains ASMA-8114's later migrations 0091/0092, so its
+`SCHEMA_VERSION` and the next protected delivery readback are **92**; this
+does not renumber or rewrite this work's 0090 migration.
 
 ## Required behavior
 
@@ -413,8 +415,8 @@ the scope or implementation seat—performs this sequence:
    TeamRun, reopen a task, or issue a recovery command. Restart against the same
    state root.
 6. Run SQLite `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require
-   `ok`, zero foreign-key rows, schema version 90, and migration 0090 exactly
-   once.
+   `ok`, zero foreign-key rows, schema version 92, and migrations 0090, 0091,
+   and 0092 exactly once.
 7. Read the realm, topology, ASMA-8100, its workflow, source receipt, gate
    history, and route ledger back. Require exact identity equality with step 4,
    `done@5`, `final-review@5`, the later passed evaluation unchanged, and no
