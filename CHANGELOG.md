@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-06 — deterministic consultation and publication identity (ASMA-8114)
+
+- Consultation callers now supply semantic topics only. Kontor rejects
+  repeated Jira/item codes, container prefixes and configured separators,
+  returns the complete Team Definition-rendered `container_name`, and enforces
+  one durable semantic Advisor/Committee identity across different retry keys.
+- Added an identity-preserving preview/apply correction for malformed legacy
+  Committee topics and their bound CSW titles.
+- Publication policy revision 2 requires a task branch and pull-request title
+  to carry the same confirmed Jira key; an epic branch may still publish one
+  of its confirmed child tasks.
+- Accepted the ASMA CLI's nested catalog-module worktree layout after exact
+  slug, Git common-directory and actual branch readback.
+
 All notable changes to Kontor are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
