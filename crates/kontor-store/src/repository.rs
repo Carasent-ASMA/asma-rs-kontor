@@ -12026,8 +12026,16 @@ fn bound_gate_record_result(
     // own digest cannot be asked whether it has a result, because the answer
     // would come from bytes nothing vouches for.
     let payload: serde_json::Value = stored_document(&json, &hash)?;
-    // A stored payload with no `result` at all is the legacy shape.
-    if payload.get("result").is_none_or(serde_json::Value::is_null) {
+    // Only an *absent* member is the legacy shape. A present `result` is a claim
+    // about what the recording transaction wrote, and every present claim is
+    // parsed strictly -- including `null`, which is a malformed binding rather
+    // than the absence of one. Treating a present null as "no binding" is how a
+    // corrupted payload reaches the legacy comparison and lets the caller's own
+    // `(gate, sequence)` stand in for the receipt's.
+    if !payload
+        .as_object()
+        .is_some_and(|body| body.contains_key("result"))
+    {
         return Ok(None);
     }
     parse_gate_record_result(&json, &hash, receipt).map(Some)

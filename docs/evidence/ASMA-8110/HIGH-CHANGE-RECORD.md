@@ -5,7 +5,110 @@ Artifact: `high-change`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-implementation`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: remediation complete after rejected high verification
+Status: second remediation, after the re-verification rejection of `5743d7a`
+
+## This turn: repair of the re-verification rejection
+
+The first remediation merged to master as
+[`bf71bc2`](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/199) (PR #199).
+Independent re-verification then rejected candidate `5743d7a` in
+[`HIGH-VERIFICATION-REPORT.md`](HIGH-VERIFICATION-REPORT.md) (local `66b34fe`,
+carried onto this branch). This section records the repair of those findings;
+everything below it describes the first remediation and is retained unchanged.
+
+The repair branches from newest `origin/master` (`bf71bc2`), which already
+contains the merged ASMA-8110 code, and preserves the task, TeamRun, AgentRun,
+seat, native-session, workspace and `cwd` identities untouched.
+
+### F-8110-R2 — a present `null` binding no longer falls back to legacy
+
+`bound_gate_record_result` returned `None` when `result` was absent **or null**.
+A present null is a malformed claim about what the recording transaction wrote,
+not the absence of a claim, so it reached the legacy comparison and let the
+caller's own `(gate, sequence)` stand in for the receipt's. Only an absent
+member now returns `None`; every present `result` is parsed strictly.
+
+Regression: the `NullResult` case in
+`gate_rejection_recovery_refuses_invalid_exact_bindings_but_accepts_an_absent_legacy_binding`,
+beside the hash, partial-object, mismatched-binding and absent-member cases.
+Verified non-vacuous by reinstating the old predicate: the case fails with the
+endpoint returning 200/`created`, exactly as the verifier observed.
+
+### F-8110-R3 — an invalid source receipt keeps its own refusal
+
+The post-transaction decoration ran on **every** store error, so a receipt
+belonging to another task was rewritten as `409 already routed` and disclosed a
+route receipt the caller had no right to. Decoration is now gated on the
+repository's own route-uniqueness conflict
+(`RepositoryError::Conflict { subject: "gate rejection route", .. }`); every
+other refusal is returned exactly as the store produced it, which means source
+validation runs to completion before any existing route can be named.
+
+Regression:
+`a_post_route_invalid_source_keeps_its_refusal_and_discloses_no_route_receipt`
+drives three post-route probes — a receipt targeting another task, one naming
+another gate, one that recorded no verdict — and asserts each is refused, names
+no route resource in `diagnostic.at`, does not contain the winning receipt
+anywhere in the body, and writes nothing.
+
+### F-8110-R4 — the concurrency proof is deterministic, and corrects the model
+
+`concurrent_recovery_keys_both_observe_no_route_before_either_commits`
+(store-level, which the report explicitly permits) performs the service's route
+pre-check for **both** keys and asserts both observe no route *before* either
+transaction opens. That is the barrier, established by ordering rather than by
+hoping a race lands.
+
+It also corrects the report's model of the race. A same-source loser does **not**
+reach the route-uniqueness check: both requests were built against workflow
+revision 1, the winner moves it to 2, and the loser's compare-and-swap fails
+first with a revision conflict naming the revision to re-read. That is a
+stronger stop, not a gap. The test pins that refusal exactly, then separately
+drives a caller whose expectations are current to the route-uniqueness conflict
+— the only error the service is allowed to decorate — and pins that too.
+
+### F-8110-R5 — the scope now names the deployed generation
+
+`HIGH-SCOPE-RECORD.md` still required migration 0089 and schema 89 in three
+places, including the protected delivery readback, while the candidate and the
+deployed realm are at 90. All three now say 0090/90, and a new
+"Schema generation" section records why the number moved so a later reader does
+not correct it back.
+
+### F-8110-R1 — the lockfile
+
+Regenerated against current registry resolution (`libflate`, `ureq`,
+`ureq-proto` and their dependents) and verified idempotent: a second
+`cargo generate-lockfile` is byte-identical to the committed file.
+
+**Residual risk, unchanged in kind:** this only holds while upstream resolution
+does not move again. The gate compares a *freshly resolved* lock to a committed
+one, so any registry publication between commit and verification re-opens
+F-8110-R1 for reasons no candidate controls. That is a property of the gate, not
+of this work, and it is the second time it has rejected a candidate.
+
+### New: a released rejection stays in verification until a fresh verdict
+
+The live database showed only rejection sequence 1, yet the workflow was
+observed back at the rejection target after a fresh implementation turn had
+settled. `a_released_rejection_stays_in_verification_until_a_fresh_gate_verdict`
+locks the intended behaviour: after the rework releases the fence the workflow
+lands in the gate's own phase, and neither reconciliation, nor a reviewer's
+turn, nor anything short of a **new** gate verdict moves it. It also asserts the
+rejection stays consumed exactly once and that no verdict is invented while the
+workflow waits.
+
+Current code passes it, so the live observation is explained by the recovery
+legitimately routing at revision 5→6 rather than by a re-consumption defect.
+Verified non-vacuous: making a rejected gate count as satisfying its phase
+advances the workflow straight past verification and the test fails.
+
+### Out of scope by instruction
+
+The inherited publication MCP vocabulary baseline
+(`no_tool_names_a_store_a_database_or_a_migration` flagging three ASMA-8101
+tools whose argument is named `repository`) is **ASMA-8115's**. It is untouched
+here and still present on master.
 
 ## What this remediation is
 
@@ -311,3 +414,132 @@ without any of this branch's commits.
 
 No deployment, no merge, no push to master, no Jira mutation, no recovery
 invocation, and no live-state change. ASMA-8100 remains untouched.
+
+## Second-remediation integration handoff
+
+The preceding `5743d7a` handoff is retained as the historical first-remediation
+record. It is not the current candidate.
+
+The second-remediation implementation and regression tests were integrated with
+current master `508a514` and frozen at `438f9760eb9faa1b5a830b751a476c3c7a24e44d`.
+That exact tree passed formatting, a locked all-target workspace check, and the
+focused null-binding, invalid-source non-disclosure, fresh-verdict fencing, and
+deterministic concurrent-recovery regressions. Its full locked workspace test
+run had one failure: the known parallel-load
+`a_concurrent_first_open_initializes_exactly_one_realm` transient, which passed
+three consecutive isolated reruns; every ASMA-8110 test passed.
+
+Independent verification then identified that the integrated master carries
+schema migrations 0091/0092 after this work's immutable 0090 migration. The
+scope's protected delivery readback was corrected to schema 92 in the
+documentation-only follow-up `4fd5b18`. Therefore the final candidate for PR
+#201 is **`4fd5b18`**: code tree `438f976` plus only that factual scope
+correction.
+
+The implementation seat reached its provider spend limit after completing the
+tests but before it could commit the already-authored change record or push.
+Root performed only that bounded integration remainder and recorded it as
+`operational_gap`; all task, TeamRun, AgentRun, seat, native-session,
+workspace, and `cwd` identities were preserved.
+
+## Third-remediation verification-environment correction
+
+Gate rejection sequence 2 was recorded after independent verification of
+`438f976` found one load-sensitive concurrent-first-open failure and the frozen
+handoff did not yet include the schema-92 documentation correction. The same
+first-open test then passed eight consecutive exact reruns against `d49b151`;
+the production migration path and its bounded timeout are unchanged.
+
+A fresh authoritative archive run against `d49b151` passed lockfile
+regeneration, formatting and clippy. The workspace test gate then exposed a
+separate deterministic harness error in
+`crates/kontor-cli/tests/memory_parity.rs`: a verification process launched by
+an identity-bound Kontor seat legitimately carries `KONTOR_AUTH`, and the child
+CLI deliberately prefers that seat-scoped operator credential. The fixture
+intends to exercise the explicit disk credential belonging to its temporary
+Realm, so inheriting the parent seat identity makes that Realm correctly answer
+`unauthenticated`.
+
+The fixture now removes `KONTOR_AUTH` from only the child CLI process. Production
+credential precedence is not changed, the credential is neither read nor
+logged, and the focused parity test passes while the parent verification seat
+remains identity-bound.
+
+The resumed archive then found the same unstated assumption in
+`client::tests::a_credential_file_yields_exactly_the_tier_that_was_asked_for`.
+`Credential::read` now delegates its unchanged on-disk branch to a private
+`read_file` helper, and that disk-format unit calls the helper directly. The
+identity-bound operator branch remains first in the public production method.
+Both the exact unit and `memory_parity` pass with the parent seat credential
+still present.
+
+During the rejected verification turn, the registered native workspace and
+worktree disappeared while the exact branch, Kontor task, TeamRun, AgentRuns,
+SeatBindings and native sessions remained. Supported topology materialization
+continued to refuse the stale binding after runtime settlement. Root therefore
+restored the exact registered path from the existing branch with a bounded
+`git worktree add`; no logical or runtime identity was replaced. Both the lost
+workspace and the unsupported restorative remainder are `operational_gap`
+evidence for closeout.
+
+## Fourth-remediation delivery: bounded direct fallback (`operational_gap`)
+
+Gate rejection sequence 2 (receipt `01a07741-cf6c-7330-9c89-0f8bb5979766`) put
+ASMA-8110 at `high-implementation` revision 7. The correction lineage for that
+rejection begins at local verification commit `66b34fe`, which is carried onto
+this branch as `25265c8`.
+
+Delivering that handoff to the preserved implementation seat through the
+supported Kontor path failed closed. The exact fact pattern, recorded so the
+closeout can judge the gap rather than infer it:
+
+- after the provider quota reset, `kontor_session_timeline_get`,
+  `kontor_runtime_settle`, `kontor_topology_materialize(ticket)`, and one fresh
+  `kontor_session_message_send` **each returned `409 stale_binding` without
+  delivery**;
+- `kontor_seat_attention` succeeded and preserved the exact seat;
+- a daemon restart attempted startup reconciliation, but the runtime refused the
+  persisted session generation;
+- root then used a bounded direct Paseo fallback to the **same** native agent.
+
+Nothing was replaced or re-created. The preserved identities are native agent
+`b600c003-b029-47fc-b5cc-ed120be11a1e`, AgentRun
+`01a07398-d34a-7b31-a3a6-1547a37e71a6`, SeatBinding
+`01a07398-b936-75b1-ae2c-121c255a7f75`, TeamRun
+`01a07398-b8d2-7363-8dcc-e92c061deffa`, task
+`01a07391-328e-74a3-a808-e7b5775c8438`, branch
+`fix/ASMA-8110-gate-recovery-binding-integrity`, and the exact registered
+worktree.
+
+No Kontor receipt exists for the four refused deliveries, so none may be
+recorded or inferred for them. No credential or authorization value was read,
+logged, or disclosed in establishing any of the above.
+
+Root additionally corrected two **test-boundary** credential assumptions so an
+inherited identity-bound seat credential is not mistaken for a Realm or on-disk
+fixture credential. Production credential precedence is unchanged; both
+corrections are confined to test setup and a private read helper.
+
+### Independent re-validation of the exact head
+
+Performed by this seat on `069d321` after the fallback delivery, to confirm the
+candidate rather than accept it on report:
+
+| Check | Result |
+|---|---|
+| `cargo generate-lockfile` byte-compare | **identical** |
+| `loopback_api rejection` (7 tests) | passed |
+| `loopback_api team_run` (6 tests) | passed |
+| `repository_roundtrip rejection` (2 tests) | passed |
+| `repository_roundtrip concurrent_recovery` (1 test) | passed |
+| `kontor-cli memory_parity` | passed |
+| `a_credential_file_yields_exactly_the_tier_that_was_asked_for` | passed |
+
+Every F-8110-R1…R5 correction and both new regressions are present in this tree
+and were re-confirmed by inspection: the strict absent-member binding check, the
+route-uniqueness-gated decoration, the deterministic pre-check barrier, the
+post-route invalid-source regression, and the released-rejection regression. The
+scope's protected readback now names schema 92 with migrations 0090, 0091 and
+0092, matching the integrated tree.
+
+This seat did not approve or advance the gate.

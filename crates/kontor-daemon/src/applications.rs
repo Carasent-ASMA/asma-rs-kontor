@@ -25755,6 +25755,27 @@ impl ApplicationOperations for Services {
         let (route, applied, receipt) = match outcome {
             Ok(recovered) => recovered,
             Err(error) => {
+                // Only the repository's own route-uniqueness conflict is
+                // decorated. Every other refusal is returned exactly as the
+                // store produced it.
+                //
+                // This is not a formality. A request may be refused because its
+                // source receipt belongs to another task, names another gate, or
+                // is not a verdict receipt at all -- and each of those is a
+                // statement about the *caller's* identity claim. Rewriting them
+                // into "already routed" would answer a question the caller did
+                // not ask, hide a genuine cross-identity error behind a
+                // plausible one, and disclose an unrelated route receipt to a
+                // caller who never proved a right to it.
+                if !matches!(
+                    error,
+                    RepositoryError::Conflict {
+                        subject: "gate rejection route",
+                        ..
+                    }
+                ) {
+                    return Err(self.refuse(&error));
+                }
                 // A rejection can be spent under either of the route's two
                 // unique identities: the source receipt it consumed, or the
                 // evaluation it belongs to. The pre-check only knows the first,

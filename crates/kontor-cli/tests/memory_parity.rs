@@ -18,6 +18,13 @@ fn credential(root: &std::path::Path, tier: &str) -> String {
 fn cli(root: &std::path::Path, base: &str, tier: &str, args: &[&str]) -> serde_json::Value {
     let output = Command::cargo_bin("kontor")
         .expect("CLI binary")
+        // This fixture exercises the named disk tier in its temporary Realm.
+        // A Kontor verification seat legitimately carries a seat-scoped
+        // operator credential for another Realm, and the CLI deliberately
+        // prefers that credential when it is inherited. Do not let the test
+        // harness substitute its caller identity for the fixture's explicit
+        // `--state-root` / `--tier` contract.
+        .env_remove("KONTOR_AUTH")
         .args(["--state-root", root.to_str().expect("UTF-8 root")])
         .args(["--base-url", base, "--tier", tier])
         .args(args)
