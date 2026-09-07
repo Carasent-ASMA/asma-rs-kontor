@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use kontor_accounts::{KeychainBackend, KeychainTarget, SystemKeychain};
 use kontor_core::id::{
-    CanonicalDocument, ContentHash, ExternalId, ExternalName, ProjectId, Timestamp,
+    BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, ProjectId, Timestamp,
 };
-use kontor_core::ticket::OwnershipAction;
+use kontor_core::ticket::{ObservedBody, OwnershipAction};
 use reqwest::{Client, Method, StatusCode, Url};
 use secrecy::ExposeSecret;
 use serde::Deserialize;
@@ -396,6 +396,7 @@ impl JiraConnector {
         }))?
         .hash()
         .clone();
+        let description = observed_body(issue.pointer("/fields/description"))?;
         let observation = WireObservation {
             status_id,
             status_name,
@@ -404,6 +405,7 @@ impl JiraConnector {
             assignee_account_id,
             assignee_display,
             update_token,
+            description,
             observation_hash,
         };
         let live_transitions = transitions
@@ -1100,6 +1102,53 @@ fn adf(text: &str) -> Value {
     })
 }
 
+/// Read one observed issue body into comparable evidence.
+///
+/// `None` for the whole field means the connector never reported it, so Kontor
+/// has no evidence either way. A JSON `null` is different: Jira says the issue
+/// exists and its body is empty, which is evidence, and is reported as a
+/// present-but-empty body rather than as missing evidence.
+///
+/// # Errors
+/// Returns [`JiraError`] when the body cannot be canonicalized or its rendered
+/// text exceeds the bounded-text limit.
+fn observed_body(value: Option<&Value>) -> Result<Option<ObservedBody>, JiraError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(Some(ObservedBody {
+            present: false,
+            content_hash: CanonicalDocument::from_serializable(&json!({
+                "schema_version": 1,
+                "body": Value::Null,
+            }))?
+            .hash()
+            .clone(),
+            plain_text: BoundedText::parse("")?,
+        }));
+    }
+    let content_hash = CanonicalDocument::from_serializable(&json!({
+        "schema_version": 1,
+        "body": value,
+    }))?
+    .hash()
+    .clone();
+    let rendered = adf_text(value);
+    let plain_text = BoundedText::parse(&rendered).or_else(|_| {
+        // An oversized body is still observable evidence: keep a bounded prefix
+        // so a refusal stays readable, and let the exact hash carry identity.
+        let mut truncated: String = rendered.chars().take(4000).collect();
+        truncated.push_str("\n[truncated]");
+        BoundedText::parse(&truncated)
+    })?;
+    Ok(Some(ObservedBody {
+        present: true,
+        content_hash,
+        plain_text,
+    }))
+}
+
 fn adf_text(value: &Value) -> String {
     let mut text = Vec::new();
     collect_text(value, &mut text);
@@ -1195,6 +1244,61 @@ fn oversized() -> JiraError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_description_field_is_missing_evidence() {
+        // The connector did not report the field at all. That is not the same
+        // as an empty body, and must not be reported as one.
+        assert!(observed_body(None).expect("read").is_none());
+    }
+
+    #[test]
+    fn a_null_description_is_evidence_of_an_empty_body() {
+        let observed = observed_body(Some(&Value::Null))
+            .expect("read")
+            .expect("body");
+        assert!(!observed.present);
+        assert!(observed.is_empty());
+        assert!(!observed.is_placeholder_only());
+    }
+
+    #[test]
+    fn an_adf_body_is_rendered_and_hashed() {
+        let document = adf("## Goal\nShip the thing.");
+        let observed = observed_body(Some(&document)).expect("read").expect("body");
+        assert!(observed.present);
+        assert!(!observed.is_empty());
+        assert_eq!(observed.plain_text.as_str(), "## Goal\nShip the thing.");
+        // The hash is over the exact document, so an identical rendering from a
+        // different structure is still a different body.
+        let other = observed_body(Some(&json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "## Goal"},
+                {"type": "text", "text": "Ship the thing."}
+            ]}]
+        })))
+        .expect("read")
+        .expect("body");
+        assert_ne!(observed.content_hash, other.content_hash);
+    }
+
+    #[test]
+    fn the_creation_marker_survives_the_adf_round_trip() {
+        // This is the exact body Kontor writes at create time, and the exact
+        // body observed on the five placeholder epics.
+        let marker =
+            "Kontor epic 01a0721b-ea30-7fe3-88a5-4d33ca613414: Publication identity enforcement";
+        let observed = observed_body(Some(&adf(marker)))
+            .expect("read")
+            .expect("body");
+        assert_eq!(observed.plain_text.as_str(), marker);
+        assert!(
+            observed.is_placeholder_only(),
+            "the connector must observe the creation marker as a placeholder"
+        );
+    }
 
     #[test]
     fn jira_validation_failure_names_only_safe_field_ids() {

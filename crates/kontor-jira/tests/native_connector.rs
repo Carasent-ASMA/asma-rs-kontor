@@ -133,6 +133,7 @@ fn wire_observation(status_id: &str, status_name: &str, token: &str) -> WireObse
         assignee_account_id: None,
         assignee_display: None,
         update_token: Some(ExternalId::parse(token).expect("update token")),
+        description: None,
         observation_hash: ContentHash::of(format!("{status_id}:{token}").as_bytes()),
     }
 }

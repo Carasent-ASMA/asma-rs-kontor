@@ -43,10 +43,10 @@ use kontor_core::id::{
 use kontor_core::state::Freshness;
 use kontor_core::ticket::{
     AssignmentResult, ExternalTicketObservation, ExternalWorkflowSpec, FieldEncoding, FieldOwner,
-    FieldValue, InternalTaskFacts, LiveTransition, OwnershipAction, ReconciliationInput,
-    ReconciliationOutcome, SelectedTransition, StatusConflictKind, StatusSelector,
-    StatusTransitionReceipt, TicketFieldSpec, TicketPrincipal, TicketSyncProjection,
-    TransitionPlan, reconcile, reconcile_after_resolved_conflict,
+    FieldValue, InternalTaskFacts, LiveTransition, ObservedBody, OwnershipAction,
+    ReconciliationInput, ReconciliationOutcome, SelectedTransition, StatusConflictKind,
+    StatusSelector, StatusTransitionReceipt, TicketFieldSpec, TicketPrincipal,
+    TicketSyncProjection, TransitionPlan, reconcile, reconcile_after_resolved_conflict,
 };
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -606,6 +606,13 @@ pub struct WireObservation {
     pub assignee_display: Option<ExternalName>,
     /// The connector's own update token.
     pub update_token: Option<ExternalId>,
+    /// The observed issue body, when the connector reported one.
+    ///
+    /// Absent means the connector did not report the field at all, which is
+    /// not the same as an issue whose body is empty: the first is missing
+    /// evidence, the second is evidence of missing content.
+    #[serde(default)]
+    pub description: Option<ObservedBody>,
     /// Digest of the canonical observation payload.
     pub observation_hash: ContentHash,
 }

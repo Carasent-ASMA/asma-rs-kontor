@@ -1251,6 +1251,120 @@ closed_enum! {
     }
 }
 
+closed_enum! {
+    /// Why an observed external body could not be adopted or overwritten.
+    ///
+    /// Status reconciliation answers "where is this ticket"; content
+    /// reconciliation answers "does its body still say what Kontor published".
+    /// The two are separate because a body can diverge while the status is
+    /// perfectly converged, which is exactly how a placeholder description
+    /// survives a green reconciliation.
+    ContentConflictKind, "ContentConflictKind" {
+        /// Kontor holds authored content but the external body is absent.
+        MissingExternalBody => "missing_external_body",
+        /// The external body still carries only the marker Kontor wrote at
+        /// creation, so no authored content ever reached the reader.
+        PlaceholderBodyOnly => "placeholder_body_only",
+        /// The external body diverged from the content Kontor last published.
+        DivergedFromProjection => "diverged_from_projection",
+        /// The external body carries edits Kontor never authored; they are
+        /// preserved and resolved by a human rather than overwritten.
+        HumanAuthoredDivergence => "human_authored_divergence",
+        /// The connector returned a body Kontor cannot canonicalize.
+        UnreadableExternalBody => "unreadable_external_body",
+    }
+}
+
+/// One external body Kontor observed, kept as comparable evidence.
+///
+/// The exact document hash is what decides divergence; the plain rendering
+/// exists so a refusal can be read by a human without fetching Jira again, and
+/// so emptiness is decided on rendered text rather than on document structure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedBody {
+    /// Whether the connector reported a body field at all.
+    pub present: bool,
+    /// Digest of the exact external body document.
+    pub content_hash: ContentHash,
+    /// The body rendered to plain text, bounded for evidence.
+    pub plain_text: BoundedText,
+}
+
+impl ObservedBody {
+    /// Whether the rendered body carries no readable content.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.present || self.plain_text.as_str().trim().is_empty()
+    }
+
+    /// Whether this body is only the creation marker Kontor itself wrote.
+    ///
+    /// Kontor stamps `Kontor <kind> <uuid>: <title>` when it creates an issue.
+    /// A body that never grew past that stamp has never carried authored
+    /// content, however converged its status looks.
+    #[must_use]
+    pub fn is_placeholder_only(&self) -> bool {
+        let text = self.plain_text.as_str().trim();
+        if text.is_empty() {
+            return false;
+        }
+        let Some(rest) = text.strip_prefix("Kontor ") else {
+            return false;
+        };
+        let Some((head, _)) = rest.split_once(':') else {
+            return false;
+        };
+        // `epic <uuid>` / `task <uuid>` and nothing else.
+        let mut parts = head.split_whitespace();
+        let (Some(kind), Some(id), None) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        matches!(kind, "epic" | "task") && id.len() == 36 && id.split('-').count() == 5
+    }
+}
+
+/// Classify one observed body against the content Kontor intends to publish.
+///
+/// Returns `None` when the observed body already equals the intended content,
+/// which is the only state that needs no decision. Divergence is never resolved
+/// by overwriting: a body Kontor did not author is reported as
+/// [`ContentConflictKind::HumanAuthoredDivergence`] so its owner decides.
+///
+/// `published_hash` is the digest of the content Kontor last successfully
+/// wrote. Without it Kontor cannot tell its own stale projection from somebody
+/// else's edit, so any divergence is attributed to a human.
+#[must_use]
+pub fn classify_body(
+    observed: Option<&ObservedBody>,
+    intended_hash: Option<&ContentHash>,
+    published_hash: Option<&ContentHash>,
+) -> Option<ContentConflictKind> {
+    let Some(observed) = observed else {
+        return Some(ContentConflictKind::UnreadableExternalBody);
+    };
+    let Some(intended) = intended_hash else {
+        // Nothing is intended, so nothing can conflict.
+        return None;
+    };
+    if observed.is_empty() {
+        return Some(ContentConflictKind::MissingExternalBody);
+    }
+    if &observed.content_hash == intended {
+        return None;
+    }
+    if observed.is_placeholder_only() {
+        return Some(ContentConflictKind::PlaceholderBodyOnly);
+    }
+    match published_hash {
+        // The reader still holds exactly what Kontor published, so the
+        // difference is Kontor's own newer projection, not a foreign edit.
+        Some(published) if published == &observed.content_hash => {
+            Some(ContentConflictKind::DivergedFromProjection)
+        }
+        _ => Some(ContentConflictKind::HumanAuthoredDivergence),
+    }
+}
+
 /// A recorded reconciliation conflict.
 ///
 /// A conflict keeps the exact inputs that produced it. Resolving one appends

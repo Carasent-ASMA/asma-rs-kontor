@@ -2454,6 +2454,7 @@ fn wire_observation(
         assignee_account_id: holder.cloned(),
         assignee_display: holder.map(|_| name("A Human")),
         update_token: Some(external("12345")),
+        description: None,
         observation_hash: ContentHash::of(status.status_id.as_str().as_bytes()),
     }
 }
