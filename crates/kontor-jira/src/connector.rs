@@ -732,6 +732,32 @@ impl JiraConnector {
             .unwrap_or(Value::Null);
         let explicit_link = plan.requested_key.is_some();
         let strict_content = !explicit_link || plan.require_marker;
+        // A body is held to the plan's exact text only while Kontor confirms an
+        // issue it just created. There, any difference means it wrote to or
+        // found the wrong issue.
+        //
+        // Recovering a previously planned Create by explicit key is a different
+        // question. Identity is already proven by the marker label checked
+        // below, and the body has had a life of its own since creation: the five
+        // placeholder epics were repaired by hand precisely because Kontor's
+        // generated body was wrong. Holding those to the generated text reported
+        // an authored description as an incompatible human move, which is what
+        // made the repair unrepeatable.
+        //
+        // So recovery asks the weaker, honest question — is there a body at all?
+        // A richer body is the one the reader wants and is preserved. An absent
+        // or empty one is refused, because it is neither an authored repair nor
+        // the marker Kontor wrote, and losing a body is not a recovery.
+        let body_refused = if explicit_link {
+            // Recovering an issue that already existed: there must be a body,
+            // and whatever it now says is the reader's to own.
+            plan.require_marker
+                && !observed_body(Some(&observed_description))?.is_some_and(|body| !body.is_empty())
+        } else {
+            // Confirming an issue Kontor just created or just found by marker:
+            // the body must be exactly the one it wrote.
+            observed_description != adf(&plan.description)
+        };
         let mismatch = if text_at(&value, &["fields", "project", "key"])?
             != self.project_key.as_str()
         {
@@ -740,7 +766,7 @@ impl JiraConnector {
             Some(MaterializationConflict::ParentMismatch)
         } else if strict_content && observed_summary != plan.summary {
             Some(MaterializationConflict::SummaryMismatch)
-        } else if strict_content && observed_description != adf(&plan.description) {
+        } else if body_refused {
             Some(MaterializationConflict::DescriptionMismatch)
         } else {
             None
@@ -797,7 +823,9 @@ impl JiraConnector {
                 "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
                 "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
                 "summary": plan.summary,
-                "description": plan.description,
+                // The observed body, not the planned one: this evidence must say
+                // what the reader has, and after a body repair those differ.
+                "description": observed_description,
                 "marker": plan.marker.as_str(),
             })
         } else if explicit_link {
@@ -1147,6 +1175,24 @@ fn observed_body(value: Option<&Value>) -> Result<Option<ObservedBody>, JiraErro
         content_hash,
         plain_text,
     }))
+}
+
+/// The digest an observed body would carry if it held exactly `text`.
+///
+/// Computed by rendering `text` to the same document a write sends and reading
+/// it back through [`observed_body`], so an intended body and an observed body
+/// are comparable by construction rather than by two hand-kept formulas that
+/// could drift apart. A drift there would silently report every repair as
+/// unconverged and invite a rewrite loop.
+///
+/// # Errors
+/// Returns [`JiraError`] when the rendered text cannot be canonicalized or
+/// exceeds the bounded-text limit.
+pub fn description_hash(text: &str) -> Result<ContentHash, JiraError> {
+    let document = adf(text);
+    let observed = observed_body(Some(&document))?
+        .ok_or_else(|| JiraError::refused("description", "a rendered body is always observable"))?;
+    Ok(observed.content_hash)
 }
 
 fn adf_text(value: &Value) -> String {

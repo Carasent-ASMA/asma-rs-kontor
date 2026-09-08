@@ -45,7 +45,7 @@ use kontor_core::ticket::{
     AssignmentResult, ExternalTicketObservation, ExternalWorkflowSpec, FieldEncoding, FieldOwner,
     FieldValue, InternalTaskFacts, LiveTransition, ObservedBody, OwnershipAction,
     ReconciliationInput, ReconciliationOutcome, SelectedTransition, StatusConflictKind,
-    StatusSelector, StatusTransitionReceipt, TicketFieldSpec, TicketPrincipal,
+    StatusSelector, StatusTransitionReceipt, TicketFieldKey, TicketFieldSpec, TicketPrincipal,
     TicketSyncProjection, TransitionPlan, reconcile, reconcile_after_resolved_conflict,
 };
 use kontor_core::{DomainError, DomainResult};
@@ -473,6 +473,42 @@ pub fn compile_field_writes(
     Ok(writes)
 }
 
+/// Resolve one outbound field write without a projection revision.
+///
+/// A [`TicketSyncProjection`] is identified by a ticket link, and an epic has
+/// no ticket link. Publishing an epic's description therefore cannot be
+/// expressed as a projection, and manufacturing a link id for it would blur
+/// which aggregate authorized the write. This applies the same ownership,
+/// direction and type rules through
+/// [`TicketFieldSpec::validate_outbound`], so the shorter path is not the
+/// weaker one.
+///
+/// # Errors
+/// Returns [`AsmaError::Domain`] when the specification does not permit Kontor
+/// to write this field, or when the value contradicts the mapping.
+pub fn compile_field_write(
+    field_spec: &CompiledFieldSpec,
+    key: TicketFieldKey,
+    value: &FieldValue,
+) -> Result<FieldWrite, AsmaError> {
+    let external = field_spec.spec().validate_outbound(key, value)?;
+    let mapping = field_spec
+        .spec()
+        .mapping(key)
+        .ok_or_else(|| AsmaError::refused("field write", "the validated mapping vanished"))?;
+    if !matches!(mapping.owner, FieldOwner::Kontor | FieldOwner::MirrorOnly) {
+        return Err(AsmaError::refused(
+            "field write",
+            "the pinned specification does not give Kontor this field to write",
+        ));
+    }
+    Ok(FieldWrite {
+        field_id: external.field_id.clone(),
+        encoding: external.encoding,
+        value: WireFieldValue::from_core(value),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // The wire
 // ---------------------------------------------------------------------------
@@ -640,6 +676,7 @@ impl WireObservation {
             assignee_account_id: self.assignee_account_id.clone(),
             assignee_display: self.assignee_display.clone(),
             external_version: self.update_token.clone(),
+            description: self.description.clone(),
             observed_at: observed_at.get(),
             payload_hash: self.observation_hash.clone(),
         })
@@ -948,6 +985,96 @@ impl JiraIssueDelegation<'_> {
             ));
         }
         self.raise_reported_failure("jira apply", &response)?;
+        Ok(response)
+    }
+
+    /// Write this delegation's field values alone, changing nothing else.
+    ///
+    /// The ordinary apply path is built around a [`TransitionPlan`], because
+    /// every write Kontor had until now was a status move. Publishing a
+    /// description is not a status move: the issue must stay exactly where it
+    /// is, keep its assignee, and change only its body. Reusing the transition
+    /// path would have meant manufacturing a destination status, which is how a
+    /// content repair silently becomes a lifecycle change.
+    ///
+    /// The observation is carried as `expected`, so a body edited between the
+    /// read and the write refuses instead of overwriting the newer text. The
+    /// connector confirms the write by reading the field back; an unconfirmed
+    /// write is an error, never a reported success.
+    ///
+    /// # Errors
+    /// Returns [`AsmaError`] when there is nothing to write, when the connector
+    /// runs the request as anything but an apply, when the issue moved under the
+    /// write, or when the readback does not confirm the field.
+    pub async fn publish_fields(
+        &self,
+        observed: &ObservedIssue,
+        authority: ApplyAuthority,
+    ) -> Result<JiraResponse, AsmaError> {
+        if self.field_writes.is_empty() {
+            return Err(AsmaError::refused(
+                "jira publish",
+                "a field publication carries at least one field write",
+            ));
+        }
+        let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": WIRE_SCHEMA_VERSION.get(),
+            "operation": "publish_fields",
+            "issue_key": self.issue_key.as_str(),
+            "projection_revision": self.projection_revision.get(),
+            "receipt": authority.authorized_by.to_string(),
+            "fields": self.field_writes.iter().map(|write| serde_json::json!({
+                "field_id": write.field_id.as_str(),
+                "encoding": write.encoding,
+                "value": write.value,
+            })).collect::<Vec<_>>(),
+        }))
+        .map_err(|_| {
+            AsmaError::refused(
+                "jira publish",
+                "the publication intent is not canonicalizable",
+            )
+        })?;
+        let request = JiraRequest {
+            schema_version: WIRE_SCHEMA_VERSION,
+            operation: JiraOperation::Apply,
+            issue_key: self.issue_key.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            intent_hash: Some(intent.hash().clone()),
+            field_spec_hash: Some(self.field_spec.hash().clone()),
+            workflow_spec_hash: Some(self.workflow_spec.hash().clone()),
+            expected: Some(ExpectedObservation {
+                status_id: observed.observation.status_id.clone(),
+                assignee_account_id: observed.observation.assignee_account_id.clone(),
+                update_token: observed.observation.update_token.clone(),
+                observation_hash: Some(observed.observation.observation_hash.clone()),
+            }),
+            field_writes: self.field_writes.to_vec(),
+            // No status move and no ownership change: this writes a body.
+            destination: None,
+            ownership_action: OwnershipAction::Preserve,
+            transition: None,
+            authorized_apply: true,
+        };
+        let response = self.exchange("jira publish", &request).await?;
+        if response.effective_operation != JiraOperation::Apply {
+            return Err(AsmaError::unavailable(
+                "jira publish",
+                crate::UnavailableReason::MalformedResponse,
+                format!(
+                    "an authorized publication ran as {}",
+                    response.effective_operation.as_str()
+                ),
+            ));
+        }
+        if response.outcome == JiraOutcome::Applied && response.confirmation.is_none() {
+            return Err(AsmaError::unavailable(
+                "jira publish",
+                crate::UnavailableReason::MalformedResponse,
+                "reported a published body without a refetched observation",
+            ));
+        }
+        self.raise_reported_failure("jira publish", &response)?;
         Ok(response)
     }
 

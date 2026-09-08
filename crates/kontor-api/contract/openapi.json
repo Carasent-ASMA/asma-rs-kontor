@@ -4259,6 +4259,147 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one epic's Jira description under an exact preview.",
+        "operationId": "apply_epic_description",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose Jira body is written",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DescriptionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DescriptionPublishedDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Decide what publishing one epic's Jira description would do.",
+        "operationId": "preview_epic_description",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose Jira body is judged",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DescriptionPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DescriptionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/jira:apply": {
       "post": {
         "tags": [
@@ -7684,6 +7825,147 @@
           },
           "409": {
             "description": "The profile pins a different team revision"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one task ticket's description under an exact preview.",
+        "operationId": "apply_task_description",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task whose ticket body is written",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DescriptionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DescriptionPublishedDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Decide what publishing one task ticket's description would do.",
+        "operationId": "preview_task_description",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task whose ticket body is judged",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DescriptionPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DescriptionPreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
           }
         }
       }
@@ -14710,6 +14992,157 @@
             "format": "int32",
             "description": "The completion/remediation round.",
             "minimum": 0
+          }
+        }
+      },
+      "DescriptionApplyRequest": {
+        "type": "object",
+        "description": "What applying one description publication is asked for.",
+        "required": [
+          "body",
+          "preview_hash"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "The body to publish, as plain text."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The digest a previous `description:preview` returned."
+          },
+          "replace_human_authored": {
+            "type": "boolean",
+            "description": "Deliberate permission to replace a body Kontor never published.\n\nAbsent it, a human-authored divergence is refused rather than\noverwritten. The epic content contract requires preserving authored\ncontent, so replacing it is an explicit, recorded decision and never a\nside effect of a repair."
+          }
+        }
+      },
+      "DescriptionPreviewDto": {
+        "type": "object",
+        "description": "What publishing that description would do, decided against the live issue.",
+        "required": [
+          "realm_id",
+          "external_issue_key",
+          "writes",
+          "requires_replace_authorization",
+          "intended_hash",
+          "preview_hash"
+        ],
+        "properties": {
+          "conflict": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The typed disagreement, as `ContentConflictKind` spells it, or absent\nwhen the reader already holds exactly this body."
+          },
+          "external_issue_key": {
+            "type": "string",
+            "description": "The external issue whose body this is about."
+          },
+          "intended_hash": {
+            "type": "string",
+            "description": "Digest the requested body will carry once published."
+          },
+          "observed_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of the exact observed body document."
+          },
+          "observed_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The observed body rendered to plain text."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The digest `description:apply` must present."
+          },
+          "published_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of the last body Kontor published here, if any."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was previewed in."
+          },
+          "requires_replace_authorization": {
+            "type": "boolean",
+            "description": "Whether applying would need explicit permission to replace a body Kontor\nnever published.\n\nThe conservative default: without proof that the observed body is\nKontor's own earlier publication, it is treated as somebody's writing and\nis not overwritten by accident."
+          },
+          "writes": {
+            "type": "boolean",
+            "description": "Whether applying would write. `false` means the body already matches."
+          }
+        }
+      },
+      "DescriptionPublishRequest": {
+        "type": "object",
+        "description": "What publishing one external issue's description is asked to write.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "The body to publish, as plain text.\n\nKontor holds no authored body of its own: the author supplies it here.\nThat is deliberate — a desired-state body Kontor re-asserted on every\nwakeup would fight every human edit forever."
+          }
+        }
+      },
+      "DescriptionPublishedDto": {
+        "type": "object",
+        "description": "What publishing one description produced.",
+        "required": [
+          "realm_id",
+          "external_issue_key",
+          "applied",
+          "body_hash",
+          "publication_id",
+          "confirmed_text",
+          "receipt_id"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call changed anything."
+          },
+          "body_hash": {
+            "type": "string",
+            "description": "Digest of the body now published."
+          },
+          "confirmed_text": {
+            "type": "string",
+            "description": "The body as the external system reported it *after* the write.\n\nRead back rather than echoed: the whole defect being fixed here is a\nsurface that reported success without ever reading what the reader sees."
+          },
+          "external_issue_key": {
+            "type": "string",
+            "description": "The external issue whose body was written."
+          },
+          "publication_id": {
+            "type": "string",
+            "description": "The append-only publication this recorded."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it happened in."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "The command receipt that authorizes it."
+          },
+          "replaced_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of the body this replaced, when one was observed."
           }
         }
       },
@@ -22463,6 +22896,43 @@
           }
         }
       },
+      "TicketContentConflictDto": {
+        "type": "object",
+        "description": "One typed disagreement about an external issue's body.\n\nSeparate from [`TicketFieldDiffDto`] because a field diff is a value Kontor\nwould write and this is a judgement about what the reader can see. It is\nreported rather than refused: every one of the five epics that published a\nKontor UUID as its description carries one, and a plan that refuses cannot be\nread by the operator about to repair it.",
+        "required": [
+          "link_id",
+          "external_issue_key",
+          "kind"
+        ],
+        "properties": {
+          "external_issue_key": {
+            "type": "string",
+            "description": "The external issue key."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The typed reason, as `ContentConflictKind` spells it."
+          },
+          "link_id": {
+            "type": "string",
+            "description": "The ticket link whose body this is about."
+          },
+          "observed_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of the exact observed body document, when one was observed."
+          },
+          "observed_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The observed body rendered to plain text, so the refusal is readable\nwithout fetching the issue again."
+          }
+        }
+      },
       "TicketFieldDiffDto": {
         "type": "object",
         "description": "One typed field difference between Kontor and an external ticket.\n\nThe set of fields is closed by the pinned field specification: there is no\nmember here that could carry an arbitrary status, an assignee or a comment.",
@@ -22564,12 +23034,20 @@
           "projection_hash",
           "links",
           "diff",
+          "content_conflicts",
           "converged"
         ],
         "properties": {
+          "content_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TicketContentConflictDto"
+            },
+            "description": "The typed body disagreements, if any."
+          },
           "converged": {
             "type": "boolean",
-            "description": "Whether every link is already converged."
+            "description": "Whether every link is already converged, in status **and** in content.\n\nContent is part of this answer deliberately. Reporting `true` while an\nissue's description still held only `Kontor <kind> <uuid>: <title>` is\nthe defect ASMA-8123 fixes: a caller asking whether a ticket is\nreconciled must not be told yes while its reader sees an internal UUID."
           },
           "diff": {
             "type": "array",

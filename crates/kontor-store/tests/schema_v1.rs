@@ -536,7 +536,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // correction evidence. v92 admits that exact correction for an already
     // settled consultation without making its verdict mutable. v93 freezes
     // native release intents separately from settled consultation evidence.
-    assert_eq!(SCHEMA_VERSION, 93);
+    // v94 makes an observed Jira body part of the immutable observation and
+    // keeps every description Kontor published, so a divergence can be
+    // attributed to Kontor's own stale projection rather than to a human edit
+    // (ASMA-8123).
+    assert_eq!(SCHEMA_VERSION, 94);
 }
 
 #[test]

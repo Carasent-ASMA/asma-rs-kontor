@@ -1060,6 +1060,89 @@ async fn explicit_link_confirms_level_zero_without_claiming_type_or_content() {
     );
 }
 
+/// A body repaired since creation is preserved by recovery, not refused.
+///
+/// This is the ASMA-8123 half that made the earlier repair unrepeatable. Five
+/// epics were created with `Kontor <kind> <uuid>: <title>` and repaired by hand;
+/// recovering them then compared the authored body against the generated one and
+/// refused it as an incompatible human move. Identity is proven by the marker,
+/// so a richer body is the reader's, and it survives.
+#[tokio::test]
+async fn recovery_preserves_a_body_authored_since_creation() {
+    let authored = "## Goal\nEnforce publication identity for every nondefault push.";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8101"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8101",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                "summary": "Publication identity enforcement",
+                "description": {"type": "doc", "version": 1, "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "## Goal"}]},
+                    {"type": "paragraph", "content": [{"type": "text", "text": "Enforce publication identity for every nondefault push."}]}
+                ]},
+                "labels": ["kontor-epic-recovery-fixture"]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(), "endpoint": server.uri(),
+                "project_key": "ASMA", "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connectors =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    // The plan still carries the generated placeholder, exactly as a replayed
+    // historical Create intent does.
+    let plan = JiraIssuePlan {
+        kind: JiraIssueKind::Epic,
+        requested_key: Some(ExternalId::parse("ASMA-8101").expect("key")),
+        marker: ExternalId::parse("kontor-epic-recovery-fixture").expect("marker"),
+        require_marker: true,
+        summary: "Publication identity enforcement".to_owned(),
+        description:
+            "Kontor epic 01a0721b-ea30-7fe3-88a5-4d33ca613414: Publication identity enforcement"
+                .to_owned(),
+        parent_key: None,
+    };
+    let recovered = connectors
+        .for_project(project_id)
+        .expect("configured project")
+        .materialize(&plan)
+        .await
+        .expect("a body authored since creation must recover, not refuse");
+    assert_eq!(recovered.issue_key.as_str(), "ASMA-8101");
+
+    // And the evidence names what the reader has, not what Kontor once planned:
+    // an identical recovery whose plan still holds the placeholder must hash to
+    // the same readback as one whose plan already holds the authored text.
+    let mut planned_authored = plan.clone();
+    planned_authored.description = authored.to_owned();
+    let same = connectors
+        .for_project(project_id)
+        .expect("configured project")
+        .materialize(&planned_authored)
+        .await
+        .expect("recovery is decided on the observed body");
+    assert_eq!(
+        recovered.readback_hash, same.readback_hash,
+        "recovery evidence must record the observed body, so the stale plan text cannot change it"
+    );
+}
+
 #[tokio::test]
 async fn materialization_identifies_each_mismatch_without_mutating_jira() {
     let server = MockServer::start().await;
@@ -1288,6 +1371,107 @@ async fn native_observe_reads_issue_transitions_and_principal() {
             .as_ref()
             .map(ExternalId::as_str),
         Some("acct-1")
+    );
+}
+
+/// The observation must carry the issue body, not just its status.
+///
+/// This is the ASMA-8123 defect at its exact site: the connector already asked
+/// Jira for `fields=*all`, so the body was always in the response and was
+/// simply dropped on the way into the observation. A reconciliation that cannot
+/// see a body reports `converged` against a placeholder forever.
+#[tokio::test]
+async fn native_observe_carries_the_issue_body() {
+    let marker = "Kontor task 01a07dcd-bac5-7e42-9530-f5a948ebaaa3: PUB-08 Jira description read and update projection with typed content conflicts";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "fields": {
+                "project": {"key": "ASMA"},
+                "status": {"id": "3", "name": "In Progress", "statusCategory": {"name": "In Progress"}},
+                "issuetype": {"name": "Task"},
+                "assignee": {"accountId": "acct-1", "displayName": "Operator"},
+                "updated": "2026-08-23T10:00:00.000+0000",
+                "description": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": marker}]
+                    }]
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-9/transitions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "transitions": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/myself"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"accountId": "acct-1"})),
+        )
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connector =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    let response = connector
+        .for_project(project_id)
+        .expect("project is configured")
+        .execute(
+            "observe",
+            &JiraRequest {
+                schema_version: SCHEMA_VERSION,
+                operation: JiraOperation::Observe,
+                issue_key: ExternalId::parse("ASMA-9").expect("issue key"),
+                idempotency_key: IdempotencyKey::parse("native-observe-body").expect("key"),
+                intent_hash: None,
+                field_spec_hash: None,
+                workflow_spec_hash: None,
+                expected: None,
+                field_writes: Vec::new(),
+                destination: None,
+                ownership_action: OwnershipAction::Preserve,
+                transition: None,
+                authorized_apply: false,
+            },
+        )
+        .await
+        .expect("native observation succeeds");
+    let body = response
+        .observation
+        .expect("observation")
+        .description
+        .expect("the observation must carry the issue body");
+    assert!(body.present);
+    assert_eq!(body.plain_text.as_str(), marker);
+    assert!(
+        body.is_placeholder_only(),
+        "the creation marker must be observable as a placeholder"
     );
 }
 

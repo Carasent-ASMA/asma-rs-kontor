@@ -177,6 +177,12 @@ entity_ids! {
     TicketProjectionId,
     /// Identifies one append-only observation of an external ticket.
     TicketObservationId,
+    /// Identifies one description Kontor published to an external ticket.
+    ///
+    /// Separate from a projection revision: a projection is what Kontor *would*
+    /// write, and this is the append-only fact that it did, carrying the exact
+    /// digest so a later divergence can be attributed rather than guessed at.
+    DescriptionPublicationId,
     /// Identifies one attempt to converge an external ticket's status/assignee.
     StatusTransitionReceiptId,
     /// Identifies an unresolved or resolved external-status conflict.

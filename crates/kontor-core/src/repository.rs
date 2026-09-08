@@ -65,8 +65,9 @@ use crate::succession::{
     SuccessionSuccessorRecord,
 };
 use crate::ticket::{
-    ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
-    StatusTransitionReceipt, TicketFieldSpec, TicketSyncProjection,
+    DescriptionPublication, DescriptionSubjectKind, ExternalCommentRevision,
+    ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict, StatusTransitionReceipt,
+    TicketFieldSpec, TicketSyncProjection,
 };
 use crate::{DomainError, DomainResult};
 
@@ -4845,6 +4846,50 @@ pub trait TicketRepository {
         project_id: ProjectId,
         observation: &ExternalTicketObservation,
     ) -> RepositoryResult<()>;
+
+    /// Append one description Kontor published to an external issue.
+    ///
+    /// Called only after the connector confirmed the write by reading the body
+    /// back, so this ledger never claims a publication the reader cannot see.
+    ///
+    /// # Errors
+    /// Refuses a dangling or cross-project subject, and refuses to rewrite an
+    /// existing publication: it is immutable evidence.
+    fn append_description_publication(
+        &self,
+        project_id: ProjectId,
+        publication: &DescriptionPublication,
+    ) -> RepositoryResult<()>;
+
+    /// The description one command receipt published, if it published one.
+    ///
+    /// A replayed idempotency key must answer with the publication that key
+    /// already made, not with whatever is newest for the subject — those differ
+    /// as soon as a second body is published, and answering with the newest
+    /// would report someone else's write as this call's result.
+    ///
+    /// # Errors
+    /// Refuses a dangling or cross-project receipt.
+    fn description_publication_by_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<DescriptionPublication>>;
+
+    /// The newest description Kontor published for one subject, if any.
+    ///
+    /// This is what separates Kontor's own stale projection from a human's
+    /// edit. Absent, every divergence is attributed to a human, which is the
+    /// conservative answer because it never licenses an overwrite.
+    ///
+    /// # Errors
+    /// Refuses a dangling or cross-project subject.
+    fn latest_description_publication(
+        &self,
+        project_id: ProjectId,
+        subject_kind: DescriptionSubjectKind,
+        subject_id: &str,
+    ) -> RepositoryResult<Option<DescriptionPublication>>;
 
     /// Append an inbound external comment revision.
     ///

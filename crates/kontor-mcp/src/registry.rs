@@ -2306,6 +2306,131 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Apply the plan a reconcile-plan produced.",
     },
+    // ---- Jira description read and update projection (ASMA-8123) ----
+    //
+    // Reconciliation converges a status; these converge a body. They are
+    // separate tools because they are separate authorities: moving a ticket is
+    // Kontor's own lifecycle decision, and replacing what a reader sees is not
+    // something Kontor may decide from its own facts. The body arrives from the
+    // author, and nothing here lets a caller ask Kontor to invent one.
+    ToolSpec {
+        name: "kontor_task_description_preview",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "body",
+                Place::Body,
+                ArgType::Text,
+                "The description to publish, as plain text.",
+            ),
+        ],
+        about: "What publishing this task ticket's description would do. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_task_description_apply",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            IDEMPOTENCY,
+            req(
+                "body",
+                Place::Body,
+                ArgType::Text,
+                "The description to publish, as plain text.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The digest the matching preview returned, so a stale decision is refused.",
+            ),
+            opt(
+                "replace_human_authored",
+                Place::Body,
+                ArgType::Bool,
+                "Deliberate permission to replace a body Kontor never published. Absent it, such a body is preserved and the call is refused.",
+            ),
+        ],
+        about: "Publish this task ticket's description, confirmed by readback.",
+    },
+    ToolSpec {
+        name: "kontor_epic_description_preview",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "body",
+                Place::Body,
+                ArgType::Text,
+                "The description to publish, as plain text.",
+            ),
+        ],
+        about: "What publishing this epic's Jira description would do. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_epic_description_apply",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "body",
+                Place::Body,
+                ArgType::Text,
+                "The description to publish, as plain text.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The digest the matching preview returned, so a stale decision is refused.",
+            ),
+            opt(
+                "replace_human_authored",
+                Place::Body,
+                ArgType::Bool,
+                "Deliberate permission to replace a body Kontor never published. Absent it, such a body is preserved and the call is refused.",
+            ),
+        ],
+        about: "Publish this epic's Jira description, confirmed by readback.",
+    },
     // ---- Trigger and intake (KON-MVP-22's primitives, exposed by KON-MVP-15) ----
     ToolSpec {
         name: "kontor_trigger_get",

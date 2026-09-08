@@ -124,11 +124,12 @@ use kontor_api::applications::{
     ValidateTopologySpecRequest,
 };
 use kontor_api::applications::{
-    GateProjectionDto, GateRejectionRecoveryDto, GateVerdictDto, ProvenanceDto, RecordGateRequest,
-    RecoverGateRejectionRequest, RedactionDto, ResolveContextRequest, ResolvedContextDto,
-    RuntimeSettlementDto, SelectionDto, SelectionRequest, SessionVerdictCitationDto,
-    TicketFieldDiffDto, TicketReconcileAppliedDto, TicketReconcileApplyRequest,
-    TicketReconcilePlanDto,
+    DescriptionApplyRequest, DescriptionPreviewDto, DescriptionPublishRequest,
+    DescriptionPublishedDto, GateProjectionDto, GateRejectionRecoveryDto, GateVerdictDto,
+    ProvenanceDto, RecordGateRequest, RecoverGateRejectionRequest, RedactionDto,
+    ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
+    SelectionRequest, SessionVerdictCitationDto, TicketContentConflictDto, TicketFieldDiffDto,
+    TicketReconcileAppliedDto, TicketReconcileApplyRequest, TicketReconcilePlanDto,
 };
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
@@ -149,12 +150,13 @@ use kontor_core::consultation::{
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
-    ExecutionAuthorizationId, ExternalId, ExternalName, GateKey, IdempotencyKey, IntakeReceiptId,
-    MiniProjectId, ModuleKey, Money, ProjectId, PublicationAttestationId, QuickSessionId,
-    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION,
-    SeatBindingId, SourceEventId, SpecVersion, StatusConflictId, SuccessionAttemptId,
-    SuccessionReceiptId, TaskId, TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId,
-    TicketProjectionId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
+    DescriptionPublicationId, ExecutionAuthorizationId, ExternalId, ExternalName, GateKey,
+    IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, ProjectId,
+    PublicationAttestationId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
+    RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId, SpecVersion,
+    StatusConflictId, SuccessionAttemptId, SuccessionReceiptId, TaskId, TeamDefinitionId,
+    TeamDefinitionMigrationId, TeamRunId, TicketProjectionId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::naming::{
     NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
@@ -208,14 +210,17 @@ use kontor_core::succession::{
     SuccessionSuccessorRecord,
 };
 use kontor_core::ticket::{
-    CommentPolicy, EpicCompletionEvidence, EpicReconciliationInput, EpicStatusConflict,
-    EpicStatusTransitionIntent, ExternalCommentRevision, ExternalEpicObservation,
+    CommentPolicy, ContentConflictKind, DescriptionPublication, DescriptionSubjectKind,
+    EpicCompletionEvidence, EpicReconciliationInput, EpicStatusConflict,
+    EpicStatusTransitionIntent, ExternalCommentRevision, ExternalEpicObservation, FieldValue,
     InternalEpicFacts, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflict,
-    StatusConflictKind, StatusSelector, TicketSyncProjection, TransitionPlan, reconcile_epic,
+    StatusConflictKind, StatusSelector, TicketFieldKey, TicketSyncProjection, TransitionPlan,
+    classify_body, classify_observed_body, reconcile_epic,
 };
 use kontor_jira::jira::{
-    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, IssueAmbiguityVerdict,
-    JiraIssueDelegation, JiraOutcome, Observed, PinnedProfile, SpecCatalog, TicketDelegation,
+    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldWrite, IssueAmbiguityVerdict,
+    JiraIssueDelegation, JiraOutcome, Observed, ObservedIssue, PinnedProfile, SpecCatalog,
+    TicketDelegation,
 };
 use kontor_jira::{JiraConnector, JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan};
 use kontor_policy::{
@@ -416,13 +421,40 @@ struct PreparedTicket {
         StatusConflictKind,
         Option<kontor_core::id::SemanticMilestoneKey>,
     )>,
+    /// What the observed body disagrees about, if anything.
+    ///
+    /// Kept separate from `conflict` on purpose. A status conflict makes the
+    /// whole plan refuse, because acting on a contested status is how a ticket
+    /// gets moved twice. A content conflict must not refuse: the five
+    /// placeholder epics all carry one, and a plan that refuses cannot be read
+    /// by the operator who is about to repair them.
+    content_conflict: Option<ContentConflictKind>,
     workflow_spec_version: SpecVersion,
+}
+
+/// Everything one description publication decides before it writes.
+///
+/// The specifications are owned rather than borrowed because a delegation is
+/// rebuilt for the write, and a borrow across the `await` between deciding and
+/// writing would tie the two together more tightly than the decision needs.
+struct PreparedDescription {
+    issue_key: ExternalId,
+    observed: Box<ObservedIssue>,
+    field_writes: Vec<FieldWrite>,
+    intended_hash: ContentHash,
+    published_hash: Option<ContentHash>,
+    conflict: Option<ContentConflictKind>,
+    body: BoundedText,
+    field_spec: CompiledFieldSpec,
+    workflow_spec: CompiledWorkflowSpec,
+    preview_hash: String,
 }
 
 /// The complete, externally observed plan one reconcile response names.
 struct PreparedTicketPlan {
     links: Vec<kontor_core::id::TicketLinkId>,
     diff: Vec<TicketFieldDiffDto>,
+    content_conflicts: Vec<TicketContentConflictDto>,
     hash: String,
     tickets: Vec<PreparedTicket>,
 }
@@ -444,6 +476,13 @@ pub struct JiraReconcileReport {
     pub applied: usize,
     /// Subjects refused or unavailable; the next pass retries from durable state.
     pub blocked: usize,
+    /// Subjects whose status agrees but whose body does not.
+    ///
+    /// Counted separately from `blocked` because a wrong body must not stop
+    /// status reconciliation, and separately from `converged` because a subject
+    /// whose reader sees `Kontor <kind> <uuid>` is not reconciled. Collapsing it
+    /// into either is the mistake ASMA-8123 exists to undo.
+    pub content_conflicts: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,6 +490,16 @@ enum JiraSubjectOutcome {
     Converged,
     Applied,
     Blocked,
+}
+
+/// What one automatic epic pass concluded, about status and about content.
+///
+/// Two verdicts rather than one, because they are independent: an epic can be
+/// exactly where it belongs and still show its readers a placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JiraSubjectVerdict {
+    outcome: JiraSubjectOutcome,
+    content_conflict: Option<ContentConflictKind>,
 }
 
 struct PreparedJiraMaterialization {
@@ -3065,7 +3114,7 @@ impl Services {
         project_id: ProjectId,
         epic: &MiniProject,
         issue_key: &ExternalId,
-    ) -> Result<JiraSubjectOutcome, ApiError> {
+    ) -> Result<JiraSubjectVerdict, ApiError> {
         let state = self.state()?;
         let (field_spec, workflow_spec) = self.jira_epic_specs(project_id)?;
         let facts = self.epic_jira_facts(project_id, epic)?;
@@ -3108,9 +3157,14 @@ impl Services {
             },
             assignee_account_id: observed.observation.assignee_account_id.clone(),
             external_version: observed.observation.update_token.clone(),
+            description: observed.observation.description.clone(),
             observed_at,
             payload_hash: observed.observation.observation_hash.clone(),
         };
+        // Asked on every pass and never allowed to change the status decision:
+        // a body is not a lifecycle, and refusing a transition because the
+        // description is wrong would leave the epic in the wrong place too.
+        let content_conflict = classify_observed_body(observation.description.as_ref());
         let outcome = reconcile_epic(&EpicReconciliationInput {
             spec: workflow_spec.spec(),
             observation: &observation,
@@ -3133,7 +3187,10 @@ impl Services {
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;
-                return Ok(JiraSubjectOutcome::Converged);
+                return Ok(JiraSubjectVerdict {
+                    outcome: JiraSubjectOutcome::Converged,
+                    content_conflict,
+                });
             }
             ReconciliationOutcome::Conflict(kind) => {
                 let inserted = state
@@ -3161,7 +3218,10 @@ impl Services {
                 if inserted {
                     state.signals().appended();
                 }
-                return Ok(JiraSubjectOutcome::Blocked);
+                return Ok(JiraSubjectVerdict {
+                    outcome: JiraSubjectOutcome::Blocked,
+                    content_conflict,
+                });
             }
             ReconciliationOutcome::Transition(plan) => *plan,
         };
@@ -3270,7 +3330,10 @@ impl Services {
             })
             .map_err(|error| self.refuse(&error))?;
         state.signals().appended();
-        Ok(JiraSubjectOutcome::Applied)
+        Ok(JiraSubjectVerdict {
+            outcome: JiraSubjectOutcome::Applied,
+            content_conflict,
+        })
     }
 
     /// Compile the internal facts the pure Jira policy is allowed to inspect.
@@ -3375,6 +3438,7 @@ impl Services {
             return Ok(PreparedTicketPlan {
                 links: Vec::new(),
                 diff: Vec::new(),
+                content_conflicts: Vec::new(),
                 hash: document.hash().as_str().to_owned(),
                 tickets: Vec::new(),
             });
@@ -3389,6 +3453,7 @@ impl Services {
         let (field_spec, workflow_spec) = self.jira_specs(&workflow)?;
         let jira = self.jira(project_id)?;
         let mut diff = Vec::new();
+        let mut content_conflicts = Vec::new();
         let mut tickets = Vec::new();
         for link in links {
             let facts = self.ticket_facts(project_id, &task, &workflow, link.revision)?;
@@ -3445,6 +3510,29 @@ impl Services {
             } else {
                 initial
             };
+            // The content question is asked on every pass, independently of the
+            // status outcome, because a body can be a placeholder while the
+            // status is perfectly converged. That combination is exactly what
+            // reported `converged` on five epics whose readers saw a UUID.
+            let content_conflict =
+                classify_observed_body(observed.observation.description.as_ref());
+            if let Some(kind) = content_conflict {
+                content_conflicts.push(TicketContentConflictDto {
+                    link_id: link.id.to_string(),
+                    external_issue_key: link.external_issue_key.as_str().to_owned(),
+                    kind: kind.as_str().to_owned(),
+                    observed_text: observed
+                        .observation
+                        .description
+                        .as_ref()
+                        .map(|body| body.plain_text.as_str().to_owned()),
+                    observed_hash: observed
+                        .observation
+                        .description
+                        .as_ref()
+                        .map(|body| body.content_hash.as_str().to_owned()),
+                });
+            }
             let (transition, conflict) = match outcome {
                 ReconciliationOutcome::NoOp => (None, None),
                 ReconciliationOutcome::Transition(plan) => {
@@ -3475,6 +3563,7 @@ impl Services {
                 observed,
                 transition,
                 conflict,
+                content_conflict,
                 workflow_spec_version: workflow_spec.spec().version,
             });
         }
@@ -3494,13 +3583,464 @@ impl Services {
                     "kind": kind.as_str(),
                     "milestone": milestone.as_ref().map(kontor_core::id::SemanticMilestoneKey::as_str),
                 })),
+                // The body verdict is part of what this plan asserts, so an
+                // apply cannot present a hash computed when the body still
+                // looked different.
+                "content_conflict": ticket.content_conflict.map(ContentConflictKind::as_str),
+                "description_hash": ticket.observed.observation.description.as_ref()
+                    .map(|body| body.content_hash.as_str()),
             })).collect::<Vec<_>>(),
         }))?;
         Ok(PreparedTicketPlan {
             links: tickets.iter().map(|ticket| ticket.link.id).collect(),
             diff,
+            content_conflicts,
             hash: document.hash().as_str().to_owned(),
             tickets,
+        })
+    }
+
+    /// Decide everything one description publication needs, without writing.
+    ///
+    /// Both the preview and the apply path run this, so what apply acts on is
+    /// exactly what preview reported. The alternative — preview deciding one
+    /// thing and apply re-deriving another — is how a caller ends up authorizing
+    /// a write against evidence it never saw.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_description(
+        &self,
+        project_id: ProjectId,
+        subject_kind: DescriptionSubjectKind,
+        subject_id: &str,
+        issue_key: ExternalId,
+        revision: AggregateRevision,
+        field_spec: CompiledFieldSpec,
+        workflow_spec: CompiledWorkflowSpec,
+        body: &str,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<PreparedDescription, ApiError> {
+        let state = self.state()?;
+        let body = BoundedText::parse(body).map_err(|error| self.refuse_domain(&error))?;
+        if body.as_str().trim().is_empty() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a published description carries readable text",
+            )
+            .advising(
+                "an empty body is not a repair; to record that an issue should have no description, leave it unpublished",
+            ));
+        }
+        let intended_hash = kontor_jira::description_hash(body.as_str())
+            .map_err(|error| self.refuse_jira(&error))?;
+        let field_writes = vec![
+            kontor_jira::jira::compile_field_write(
+                &field_spec,
+                TicketFieldKey::Description,
+                &FieldValue::Text { body: body.clone() },
+            )
+            .map_err(|error| self.refuse_jira(&error))?,
+        ];
+        let observed = JiraIssueDelegation {
+            exchange: self.jira(project_id)?,
+            field_spec: &field_spec,
+            workflow_spec: &workflow_spec,
+            issue_key: &issue_key,
+            projection_revision: revision,
+            field_writes: &field_writes,
+            idempotency_key,
+        }
+        .observe()
+        .await
+        .map_err(|error| self.refuse_jira(&error))?;
+        let published_hash = state
+            .with_store(|store| {
+                store.latest_description_publication(project_id, subject_kind, subject_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .map(|publication| publication.body_hash);
+        let conflict = classify_body(
+            observed.observation.description.as_ref(),
+            Some(&intended_hash),
+            published_hash.as_ref(),
+        );
+        // The preview digest binds the decision to the exact evidence it was
+        // taken on, including the body observed at that moment. If somebody
+        // edits the issue between preview and apply, the apply presents a stale
+        // digest and is refused rather than silently overwriting newer text.
+        let preview_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "publish_description",
+                "project_id": project_id.to_string(),
+                "subject_kind": subject_kind.as_str(),
+                "subject_id": subject_id,
+                "issue_key": issue_key.as_str(),
+                "intended_hash": intended_hash.as_str(),
+                "observed_hash": observed.observation.description.as_ref()
+                    .map(|observed_body| observed_body.content_hash.as_str()),
+                "published_hash": published_hash.as_ref().map(ContentHash::as_str),
+                "conflict": conflict.map(ContentConflictKind::as_str),
+            }))?
+            .hash()
+            .as_str()
+            .to_owned();
+        Ok(PreparedDescription {
+            issue_key,
+            observed: Box::new(observed),
+            field_writes,
+            intended_hash,
+            published_hash,
+            conflict,
+            body,
+            field_spec,
+            workflow_spec,
+            preview_hash,
+        })
+    }
+
+    /// Resolve the one Jira issue a task's description publication is about.
+    fn task_description_subject(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<
+        (
+            ExternalId,
+            AggregateRevision,
+            CompiledFieldSpec,
+            CompiledWorkflowSpec,
+        ),
+        ApiError,
+    > {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let links = state
+            .with_store(|store| store.list_task_ticket_links(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|link| matches!(link.connector.as_str(), "jira" | "connector.jira"))
+            .collect::<Vec<_>>();
+        let [link] = links.as_slice() else {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                if links.is_empty() {
+                    "this task carries no Jira link whose description could be published"
+                } else {
+                    "this task carries more than one Jira link, so no single description subject is unambiguous"
+                },
+            ));
+        };
+        let workflow = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "a Jira-linked task has no active workflow specification",
+                )
+            })?;
+        let (field_spec, workflow_spec) = self.jira_specs(&workflow)?;
+        Ok((
+            link.external_issue_key.clone(),
+            task.revision,
+            field_spec,
+            workflow_spec,
+        ))
+    }
+
+    /// Refuse a publication the observed body does not authorize.
+    ///
+    /// The safety-critical decision in this whole change. A body Kontor never
+    /// published is somebody's writing, and the epic content contract requires
+    /// preserving it. Defaulting the other way would license a repair path to
+    /// overwrite human-authored Jira content, so replacing it is an explicit,
+    /// recorded request and never a side effect.
+    fn authorize_description_write(
+        &self,
+        prepared: &PreparedDescription,
+        replace_human_authored: bool,
+    ) -> Result<(), ApiError> {
+        match prepared.conflict {
+            Some(ContentConflictKind::HumanAuthoredDivergence) if !replace_human_authored => {
+                Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the observed description is not one Kontor published, so replacing it is not implied by a repair",
+                    )
+                    .advising(
+                        "read the observed body in the preview; if it must still be replaced, apply again with replace_human_authored set",
+                    ))
+            }
+            Some(ContentConflictKind::UnreadableExternalBody) => Err(self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the connector reported no description field, so Kontor cannot say what a write would replace",
+                )
+                .advising("observe the issue again; nothing was written")),
+            _ => Ok(()),
+        }
+    }
+
+    /// Resolve the one Jira issue an epic's description publication is about.
+    fn epic_description_subject(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<
+        (
+            ExternalId,
+            AggregateRevision,
+            CompiledFieldSpec,
+            CompiledWorkflowSpec,
+        ),
+        ApiError,
+    > {
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let issue_key = state
+            .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "this epic carries no confirmed Jira binding whose description could be published",
+                )
+                .advising("materialize or link the epic's Jira issue first; nothing was written")
+            })?;
+        let (field_spec, workflow_spec) = self.jira_epic_specs(project_id)?;
+        Ok((issue_key, epic.revision, field_spec, workflow_spec))
+    }
+
+    /// The observe key one preview reads under.
+    ///
+    /// Derived rather than caller-supplied: a preview writes nothing, so it
+    /// needs no caller idempotency, and deriving it from the subject revision
+    /// keeps repeated previews of unchanged work on one key.
+    fn description_preview_key(
+        &self,
+        kind: &str,
+        subject_id: &str,
+        revision: AggregateRevision,
+    ) -> Result<IdempotencyKey, ApiError> {
+        IdempotencyKey::parse(&format!(
+            "description-preview:{kind}:{subject_id}:{}",
+            revision.get()
+        ))
+        .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Report one prepared publication without writing.
+    fn description_preview(
+        &self,
+        prepared: &PreparedDescription,
+    ) -> Result<DescriptionPreviewDto, ApiError> {
+        Ok(DescriptionPreviewDto {
+            realm_id: self.state()?.realm_id(),
+            external_issue_key: prepared.issue_key.as_str().to_owned(),
+            conflict: prepared.conflict.map(|kind| kind.as_str().to_owned()),
+            // Absent conflict means the reader already holds exactly this body,
+            // so applying would write nothing.
+            writes: prepared.conflict.is_some(),
+            requires_replace_authorization: matches!(
+                prepared.conflict,
+                Some(ContentConflictKind::HumanAuthoredDivergence)
+            ),
+            observed_text: prepared
+                .observed
+                .observation
+                .description
+                .as_ref()
+                .map(|body| body.plain_text.as_str().to_owned()),
+            observed_hash: prepared
+                .observed
+                .observation
+                .description
+                .as_ref()
+                .map(|body| body.content_hash.as_str().to_owned()),
+            intended_hash: prepared.intended_hash.as_str().to_owned(),
+            published_hash: prepared
+                .published_hash
+                .as_ref()
+                .map(|hash| hash.as_str().to_owned()),
+            preview_hash: prepared.preview_hash.clone(),
+        })
+    }
+
+    /// Publish one description, confirm it by readback and record the evidence.
+    ///
+    /// The order of the first two steps matters. The intent is derived from the
+    /// *request* — subject, body digest and replacement permission — and never
+    /// from the observed body, so a replayed key still recognizes its own
+    /// intent after the write changed what the issue says. Deciding the replay
+    /// first also means a retry never touches Jira at all.
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_description(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        subject_kind: DescriptionSubjectKind,
+        subject_id: &str,
+        target: AggregateRef,
+        command: CommandKind,
+        issue_key: ExternalId,
+        revision: AggregateRevision,
+        field_spec: CompiledFieldSpec,
+        workflow_spec: CompiledWorkflowSpec,
+        request: &DescriptionApplyRequest,
+    ) -> Result<DescriptionPublishedDto, ApiError> {
+        let state = self.state()?;
+        let requested_hash = kontor_jira::description_hash(&request.body)
+            .map_err(|error| self.refuse_jira(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "publish_description",
+            "project_id": project_id.to_string(),
+            "subject_kind": subject_kind.as_str(),
+            "subject_id": subject_id,
+            "issue_key": issue_key.as_str(),
+            "body_hash": requested_hash.as_str(),
+            "replace_human_authored": request.replace_human_authored,
+        }))?;
+
+        // A replayed key answers with what that key already did. Re-deriving
+        // freshness here would refuse the retry for a preview digest the first
+        // attempt itself invalidated by succeeding.
+        if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            let published = state
+                .with_store(|store| {
+                    store.description_publication_by_receipt(project_id, existing.id)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(DescriptionPublishedDto {
+                realm_id: state.realm_id(),
+                external_issue_key: issue_key.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+                body_hash: requested_hash.as_str().to_owned(),
+                replaced_hash: published
+                    .as_ref()
+                    .and_then(|publication| publication.replaced_hash.as_ref())
+                    .map(|hash| hash.as_str().to_owned()),
+                publication_id: published
+                    .as_ref()
+                    .map(|publication| publication.id.to_string())
+                    .unwrap_or_default(),
+                confirmed_text: published.map_or_else(
+                    || request.body.clone(),
+                    |publication| publication.body_text.as_str().to_owned(),
+                ),
+                receipt_id: existing.id.to_string(),
+            });
+        }
+
+        let prepared = self
+            .prepare_description(
+                project_id,
+                subject_kind,
+                subject_id,
+                issue_key,
+                revision,
+                field_spec,
+                workflow_spec,
+                &request.body,
+                key,
+            )
+            .await?;
+        if prepared.preview_hash != request.preview_hash {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the issue's description evidence changed since this preview was taken",
+                )
+                .advising("preview the publication again and apply that fresh digest; nothing was written"));
+        }
+        self.authorize_description_write(&prepared, request.replace_human_authored)?;
+        let receipt = self.record(key, project_id, command, target, revision, &intent)?;
+
+        // Nothing to write: the reader already holds exactly this body. The
+        // receipt still records that the question was asked and answered.
+        if prepared.conflict.is_none() {
+            return Ok(DescriptionPublishedDto {
+                realm_id: state.realm_id(),
+                external_issue_key: prepared.issue_key.as_str().to_owned(),
+                applied: AppliedDto::Unchanged,
+                body_hash: prepared.intended_hash.as_str().to_owned(),
+                replaced_hash: None,
+                publication_id: String::new(),
+                confirmed_text: prepared.body.as_str().to_owned(),
+                receipt_id: receipt.to_string(),
+            });
+        }
+
+        let response = JiraIssueDelegation {
+            exchange: self.jira(project_id)?,
+            field_spec: &prepared.field_spec,
+            workflow_spec: &prepared.workflow_spec,
+            issue_key: &prepared.issue_key,
+            projection_revision: revision,
+            field_writes: &prepared.field_writes,
+            idempotency_key: key,
+        }
+        .publish_fields(
+            &prepared.observed,
+            ApplyAuthority {
+                authorized_by: receipt,
+            },
+        )
+        .await
+        .map_err(|error| self.refuse_jira(&error))?;
+        // The connector confirms a write by re-reading the issue. Believing the
+        // request instead is exactly the mistake that let a placeholder body be
+        // reported as converged, so the confirmation is required here too.
+        let confirmed = response.confirmation.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the Jira boundary did not confirm the published description by readback",
+            )
+        })?;
+        let confirmed_body = confirmed.observation.description.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the confirming readback carried no description field",
+            )
+        })?;
+        if confirmed_body.content_hash != prepared.intended_hash {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the confirming readback reported a body different from the one published",
+            ));
+        }
+        let publication = DescriptionPublication {
+            id: DescriptionPublicationId::generate(),
+            subject_kind,
+            subject_id: subject_id.to_owned(),
+            external_issue_key: prepared.issue_key.clone(),
+            body_hash: prepared.intended_hash.clone(),
+            body_text: prepared.body.clone(),
+            replaced_hash: prepared
+                .observed
+                .observation
+                .description
+                .as_ref()
+                .map(|body| body.content_hash.clone()),
+            receipt_id: receipt,
+            published_at: kontor_api::now(),
+        };
+        state
+            .with_store(|store| store.append_description_publication(project_id, &publication))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(DescriptionPublishedDto {
+            realm_id: state.realm_id(),
+            external_issue_key: prepared.issue_key.as_str().to_owned(),
+            applied: AppliedDto::Created,
+            body_hash: publication.body_hash.as_str().to_owned(),
+            replaced_hash: publication
+                .replaced_hash
+                .as_ref()
+                .map(|hash| hash.as_str().to_owned()),
+            publication_id: publication.id.to_string(),
+            confirmed_text: confirmed_body.plain_text.as_str().to_owned(),
+            receipt_id: receipt.to_string(),
         })
     }
 
@@ -26154,6 +26694,108 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn preview_task_description(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &DescriptionPublishRequest,
+    ) -> Result<DescriptionPreviewDto, ApiError> {
+        let (issue_key, revision, field_spec, workflow_spec) =
+            self.task_description_subject(project_id, task_id)?;
+        let key = self.description_preview_key("task", &task_id.to_string(), revision)?;
+        let prepared = self
+            .prepare_description(
+                project_id,
+                DescriptionSubjectKind::Task,
+                &task_id.to_string(),
+                issue_key,
+                revision,
+                field_spec,
+                workflow_spec,
+                &request.body,
+                &key,
+            )
+            .await?;
+        self.description_preview(&prepared)
+    }
+
+    async fn apply_task_description(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &DescriptionApplyRequest,
+    ) -> Result<DescriptionPublishedDto, ApiError> {
+        let (issue_key, revision, field_spec, workflow_spec) =
+            self.task_description_subject(project_id, task_id)?;
+        self.publish_description(
+            key,
+            project_id,
+            DescriptionSubjectKind::Task,
+            &task_id.to_string(),
+            AggregateRef::Task { task_id },
+            CommandKind::PublishTicketDescription,
+            issue_key,
+            revision,
+            field_spec,
+            workflow_spec,
+            request,
+        )
+        .await
+    }
+
+    async fn preview_epic_description(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &DescriptionPublishRequest,
+    ) -> Result<DescriptionPreviewDto, ApiError> {
+        let (issue_key, revision, field_spec, workflow_spec) =
+            self.epic_description_subject(project_id, epic_id)?;
+        let key = self.description_preview_key("epic", &epic_id.to_string(), revision)?;
+        let prepared = self
+            .prepare_description(
+                project_id,
+                DescriptionSubjectKind::Epic,
+                &epic_id.to_string(),
+                issue_key,
+                revision,
+                field_spec,
+                workflow_spec,
+                &request.body,
+                &key,
+            )
+            .await?;
+        self.description_preview(&prepared)
+    }
+
+    async fn apply_epic_description(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &DescriptionApplyRequest,
+    ) -> Result<DescriptionPublishedDto, ApiError> {
+        let (issue_key, revision, field_spec, workflow_spec) =
+            self.epic_description_subject(project_id, epic_id)?;
+        self.publish_description(
+            key,
+            project_id,
+            DescriptionSubjectKind::Epic,
+            &epic_id.to_string(),
+            AggregateRef::MiniProject {
+                mini_project_id: epic_id,
+            },
+            CommandKind::PublishEpicDescription,
+            issue_key,
+            revision,
+            field_spec,
+            workflow_spec,
+            request,
+        )
+        .await
+    }
+
     async fn ticket_reconcile_plan(
         &self,
         project_id: ProjectId,
@@ -26182,8 +26824,9 @@ impl ApplicationOperations for Services {
             task_id,
             projection_hash: plan.hash,
             links: plan.links.iter().map(ToString::to_string).collect(),
-            converged: plan.diff.is_empty(),
+            converged: plan.diff.is_empty() && plan.content_conflicts.is_empty(),
             diff: plan.diff,
+            content_conflicts: plan.content_conflicts,
         })
     }
 
@@ -29187,14 +29830,32 @@ impl Services {
                     .reconcile_jira_epic(project.project_id, epic, &issue_key)
                     .await
                 {
-                    Ok(JiraSubjectOutcome::Converged) => {
-                        report.converged = report.converged.saturating_add(1);
-                    }
-                    Ok(JiraSubjectOutcome::Applied) => {
-                        report.applied = report.applied.saturating_add(1);
-                    }
-                    Ok(JiraSubjectOutcome::Blocked) => {
-                        report.blocked = report.blocked.saturating_add(1);
+                    Ok(verdict) => {
+                        if let Some(kind) = verdict.content_conflict {
+                            tracing::warn!(
+                                project_id = %project.project_id,
+                                epic_id = %epic.id,
+                                jira_issue = %issue_key,
+                                content_conflict = kind.as_str(),
+                                "a Jira epic does not show its readers an authored body"
+                            );
+                            report.content_conflicts = report.content_conflicts.saturating_add(1);
+                        }
+                        match verdict.outcome {
+                            // Only agreement in status *and* content is
+                            // convergence, so a placeholder body can never be
+                            // counted as a synchronized epic.
+                            JiraSubjectOutcome::Converged if verdict.content_conflict.is_none() => {
+                                report.converged = report.converged.saturating_add(1);
+                            }
+                            JiraSubjectOutcome::Converged => {}
+                            JiraSubjectOutcome::Applied => {
+                                report.applied = report.applied.saturating_add(1);
+                            }
+                            JiraSubjectOutcome::Blocked => {
+                                report.blocked = report.blocked.saturating_add(1);
+                            }
+                        }
                     }
                     Err(error) => {
                         tracing::warn!(
@@ -29280,8 +29941,22 @@ impl Services {
                     report.blocked = report.blocked.saturating_add(1);
                     continue;
                 }
+                if !plan.content_conflicts.is_empty() {
+                    for conflict in &plan.content_conflicts {
+                        tracing::warn!(
+                            project_id = %project.project_id,
+                            task_id = %task.id,
+                            jira_issue = %conflict.external_issue_key,
+                            content_conflict = %conflict.kind,
+                            "a Jira-linked task does not show its readers an authored body"
+                        );
+                    }
+                    report.content_conflicts = report.content_conflicts.saturating_add(1);
+                }
                 if plan.diff.is_empty() {
-                    report.converged = report.converged.saturating_add(1);
+                    if plan.content_conflicts.is_empty() {
+                        report.converged = report.converged.saturating_add(1);
+                    }
                     continue;
                 }
 

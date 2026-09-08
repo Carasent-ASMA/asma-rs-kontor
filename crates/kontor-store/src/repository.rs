@@ -25,10 +25,11 @@ use kontor_core::consultation::{
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
-    CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode, EventCursor,
-    ExternalId, ExternalName, GateKey, GuardrailEvaluationId, HolidaySourceId, IdempotencyKey,
-    IntakeReceiptId, MiniProjectId, ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey,
-    ProjectId, ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
+    CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode,
+    DescriptionPublicationId, EventCursor, ExternalId, ExternalName, GateKey,
+    GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
+    ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
+    ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
     RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
     ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId,
     SuccessionAttemptId, TaskId, TaskWorkflowId, TeamDefinitionId, TeamDefinitionMigrationId,
@@ -108,9 +109,9 @@ use kontor_core::succession::{
     SuccessionSuccessorRecord,
 };
 use kontor_core::ticket::{
-    EpicStatusConflict, EpicStatusTransitionIntent, ExternalCommentRevision,
-    ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict, StatusTransitionReceipt,
-    TicketFieldSpec, TicketSyncProjection,
+    DescriptionPublication, DescriptionSubjectKind, EpicStatusConflict, EpicStatusTransitionIntent,
+    ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
+    StatusTransitionReceipt, TicketFieldSpec, TicketSyncProjection,
 };
 
 type EpicTransitionIntentRow = (
@@ -16138,8 +16139,9 @@ impl TicketRepository for SqliteStore {
                 "INSERT INTO external_ticket_observations
                      (id, project_id, link_id, status_id, status_name, status_category,
                       issue_type, assignee_account_id, assignee_display, external_version,
-                      observed_at, payload_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                      observed_at, payload_hash, description_present, description_hash,
+                      description_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     observation.id.to_string(),
                     project_id.to_string(),
@@ -16161,12 +16163,132 @@ impl TicketRepository for SqliteStore {
                         .as_ref()
                         .map(ExternalId::as_str),
                     text(observation.observed_at),
-                    observation.payload_hash.as_str()
+                    observation.payload_hash.as_str(),
+                    // All three or none: the schema trigger refuses a half-written
+                    // body, because a hash without its rendering is evidence
+                    // nobody can read and a rendering without its hash is
+                    // evidence nobody can compare.
+                    observation
+                        .description
+                        .as_ref()
+                        .map(|body| i64::from(body.present)),
+                    observation
+                        .description
+                        .as_ref()
+                        .map(|body| body.content_hash.as_str()),
+                    observation
+                        .description
+                        .as_ref()
+                        .map(|body| body.plain_text.as_str())
                 ],
             )
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(())
+    }
+
+    fn append_description_publication(
+        &self,
+        project_id: ProjectId,
+        publication: &DescriptionPublication,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO ticket_description_publications
+                     (id, project_id, subject_kind, subject_id, external_issue_key,
+                      body_hash, body_text, replaced_hash, receipt_id, published_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    publication.id.to_string(),
+                    project_id.to_string(),
+                    publication.subject_kind.as_str(),
+                    publication.subject_id.as_str(),
+                    publication.external_issue_key.as_str(),
+                    publication.body_hash.as_str(),
+                    publication.body_text.as_str(),
+                    publication.replaced_hash.as_ref().map(ContentHash::as_str),
+                    publication.receipt_id.to_string(),
+                    text(publication.published_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn description_publication_by_receipt(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<DescriptionPublication>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, subject_kind, subject_id, external_issue_key, body_hash,
+                        body_text, replaced_hash, published_at
+                 FROM ticket_description_publications
+                 WHERE project_id = ?1 AND receipt_id = ?2",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), receipt_id.to_string()])
+            .map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok(None);
+        };
+        let replaced: Option<String> = row.get(6).map_err(backend)?;
+        Ok(Some(DescriptionPublication {
+            id: DescriptionPublicationId::parse(&crate::query::column_text(row, 0)?)?,
+            subject_kind: DescriptionSubjectKind::parse(&crate::query::column_text(row, 1)?)?,
+            subject_id: crate::query::column_text(row, 2)?,
+            external_issue_key: ExternalId::parse(&crate::query::column_text(row, 3)?)?,
+            body_hash: ContentHash::parse(&crate::query::column_text(row, 4)?)?,
+            body_text: BoundedText::parse(&crate::query::column_text(row, 5)?)?,
+            replaced_hash: replaced.as_deref().map(ContentHash::parse).transpose()?,
+            receipt_id,
+            published_at: read_timestamp(&crate::query::column_text(row, 7)?)?,
+        }))
+    }
+
+    fn latest_description_publication(
+        &self,
+        project_id: ProjectId,
+        subject_kind: DescriptionSubjectKind,
+        subject_id: &str,
+    ) -> RepositoryResult<Option<DescriptionPublication>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, external_issue_key, body_hash, body_text, replaced_hash,
+                        receipt_id, published_at
+                 FROM ticket_description_publications
+                 WHERE project_id = ?1 AND subject_kind = ?2 AND subject_id = ?3
+                 ORDER BY published_at DESC, id DESC LIMIT 1",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.to_string(),
+                subject_kind.as_str(),
+                subject_id
+            ])
+            .map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok(None);
+        };
+        let replaced: Option<String> = row.get(4).map_err(backend)?;
+        Ok(Some(DescriptionPublication {
+            id: DescriptionPublicationId::parse(&crate::query::column_text(row, 0)?)?,
+            subject_kind,
+            subject_id: subject_id.to_owned(),
+            external_issue_key: ExternalId::parse(&crate::query::column_text(row, 1)?)?,
+            body_hash: ContentHash::parse(&crate::query::column_text(row, 2)?)?,
+            body_text: BoundedText::parse(&crate::query::column_text(row, 3)?)?,
+            replaced_hash: replaced.as_deref().map(ContentHash::parse).transpose()?,
+            receipt_id: CommandReceiptId::parse(&crate::query::column_text(row, 5)?)?,
+            published_at: read_timestamp(&crate::query::column_text(row, 6)?)?,
+        }))
     }
 
     fn append_comment(

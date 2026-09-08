@@ -20,7 +20,9 @@
 //! * reporting a conflict when the observed body already equals the intent.
 
 use kontor_core::id::{BoundedText, CanonicalDocument, ContentHash};
-use kontor_core::ticket::{ContentConflictKind, ObservedBody, classify_body};
+use kontor_core::ticket::{
+    ContentConflictKind, ObservedBody, classify_body, classify_observed_body,
+};
 use serde_json::json;
 
 fn hash_of(text: &str) -> ContentHash {
@@ -54,11 +56,54 @@ fn an_observed_body_equal_to_the_intent_is_not_a_conflict() {
 }
 
 #[test]
-fn no_intended_content_can_never_conflict() {
+fn a_real_body_with_nothing_intended_is_not_kontors_to_judge() {
     // Kontor publishes nothing for this issue, so whatever the body says is not
     // Kontor's to judge. This is what keeps operator-owned issues untouched.
     let observed = body("Entirely human-authored notes.");
     assert_eq!(classify_body(Some(&observed), None, None), None);
+    assert_eq!(classify_observed_body(Some(&observed)), None);
+}
+
+#[test]
+fn reconciliation_judges_a_body_without_any_intended_content() {
+    // The question reconciliation asks. It has no authored body to compare
+    // against and must still refuse to call these three states agreement,
+    // because that combination — converged status, unreadable body — is the
+    // whole reported defect.
+    let marker = body("Kontor epic 01a0721b-ea30-7fe3-88a5-4d33ca613414: Publication identity");
+    assert_eq!(
+        classify_observed_body(Some(&marker)),
+        Some(ContentConflictKind::PlaceholderBodyOnly)
+    );
+    assert_eq!(
+        classify_observed_body(Some(&absent_body())),
+        Some(ContentConflictKind::MissingExternalBody)
+    );
+    assert_eq!(
+        classify_observed_body(None),
+        Some(ContentConflictKind::UnreadableExternalBody)
+    );
+}
+
+#[test]
+fn reconciliation_never_reports_divergence() {
+    // Without authored content there is nothing to diverge *from*, so this path
+    // has no opinion about a body Kontor did not write. Reporting divergence
+    // here would flag every legitimately human-authored issue on every pass.
+    let observed = body("A body Kontor would never have written.");
+    assert_eq!(classify_observed_body(Some(&observed)), None);
+}
+
+#[test]
+fn a_placeholder_is_a_conflict_even_when_nothing_is_intended() {
+    // The ordering that matters: `classify_body` decides missing, empty and
+    // placeholder-only first, so a caller holding no authored body still learns
+    // that the reader is looking at a marker.
+    let marker = body("Kontor task 01a07dcd-bac5-7e42-9530-f5a948ebaaa3: PUB-08");
+    assert_eq!(
+        classify_body(Some(&marker), None, None),
+        Some(ContentConflictKind::PlaceholderBodyOnly)
+    );
 }
 
 #[test]

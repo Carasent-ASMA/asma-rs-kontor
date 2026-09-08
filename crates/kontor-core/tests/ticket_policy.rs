@@ -117,6 +117,7 @@ fn observation(
         assignee_account_id: assignee.cloned(),
         assignee_display: None,
         external_version: None,
+        description: None,
         observed_at: at("2026-08-09T10:00:00Z"),
         payload_hash: ContentHash::of(b"observation"),
     }
@@ -822,6 +823,7 @@ fn an_epic_closes_only_from_completion_and_child_evidence() {
         status: current,
         assignee_account_id: Some(external("acct-kontor")),
         external_version: Some(external("1")),
+        description: None,
         observed_at: at("2026-08-09T10:00:00Z"),
         payload_hash: ContentHash::of(b"epic-observation"),
     };
@@ -878,6 +880,7 @@ fn an_external_hold_with_unfinished_epic_work_is_an_incompatible_human_move() {
             status: hold_status(&spec),
             assignee_account_id: Some(principal().account_id),
             external_version: Some(external("1")),
+            description: None,
             observed_at: at("2026-08-09T10:00:00Z"),
             payload_hash: ContentHash::of(b"held-epic-observation"),
         };
@@ -935,6 +938,7 @@ fn an_epic_route_selects_only_the_configured_next_hop() {
         status: source,
         assignee_account_id: Some(external("acct-kontor")),
         external_version: Some(external("1")),
+        description: None,
         observed_at: at("2026-08-09T10:00:00Z"),
         payload_hash: ContentHash::of(b"epic-route-observation"),
     };

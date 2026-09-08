@@ -5224,6 +5224,28 @@ pub struct TicketFieldDiffDto {
     pub external: Option<String>,
 }
 
+/// One typed disagreement about an external issue's body.
+///
+/// Separate from [`TicketFieldDiffDto`] because a field diff is a value Kontor
+/// would write and this is a judgement about what the reader can see. It is
+/// reported rather than refused: every one of the five epics that published a
+/// Kontor UUID as its description carries one, and a plan that refuses cannot be
+/// read by the operator about to repair it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TicketContentConflictDto {
+    /// The ticket link whose body this is about.
+    pub link_id: String,
+    /// The external issue key.
+    pub external_issue_key: String,
+    /// The typed reason, as `ContentConflictKind` spells it.
+    pub kind: String,
+    /// The observed body rendered to plain text, so the refusal is readable
+    /// without fetching the issue again.
+    pub observed_text: Option<String>,
+    /// Digest of the exact observed body document, when one was observed.
+    pub observed_hash: Option<String>,
+}
+
 /// What reconciling one task's tickets would do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TicketReconcilePlanDto {
@@ -5239,8 +5261,100 @@ pub struct TicketReconcilePlanDto {
     pub links: Vec<String>,
     /// The typed differences, if any.
     pub diff: Vec<TicketFieldDiffDto>,
-    /// Whether every link is already converged.
+    /// The typed body disagreements, if any.
+    pub content_conflicts: Vec<TicketContentConflictDto>,
+    /// Whether every link is already converged, in status **and** in content.
+    ///
+    /// Content is part of this answer deliberately. Reporting `true` while an
+    /// issue's description still held only `Kontor <kind> <uuid>: <title>` is
+    /// the defect ASMA-8123 fixes: a caller asking whether a ticket is
+    /// reconciled must not be told yes while its reader sees an internal UUID.
     pub converged: bool,
+}
+
+/// What publishing one external issue's description is asked to write.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct DescriptionPublishRequest {
+    /// The body to publish, as plain text.
+    ///
+    /// Kontor holds no authored body of its own: the author supplies it here.
+    /// That is deliberate — a desired-state body Kontor re-asserted on every
+    /// wakeup would fight every human edit forever.
+    pub body: String,
+}
+
+/// What publishing that description would do, decided against the live issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DescriptionPreviewDto {
+    /// The Realm it was previewed in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The external issue whose body this is about.
+    pub external_issue_key: String,
+    /// The typed disagreement, as `ContentConflictKind` spells it, or absent
+    /// when the reader already holds exactly this body.
+    pub conflict: Option<String>,
+    /// Whether applying would write. `false` means the body already matches.
+    pub writes: bool,
+    /// Whether applying would need explicit permission to replace a body Kontor
+    /// never published.
+    ///
+    /// The conservative default: without proof that the observed body is
+    /// Kontor's own earlier publication, it is treated as somebody's writing and
+    /// is not overwritten by accident.
+    pub requires_replace_authorization: bool,
+    /// The observed body rendered to plain text.
+    pub observed_text: Option<String>,
+    /// Digest of the exact observed body document.
+    pub observed_hash: Option<String>,
+    /// Digest the requested body will carry once published.
+    pub intended_hash: String,
+    /// Digest of the last body Kontor published here, if any.
+    pub published_hash: Option<String>,
+    /// The digest `description:apply` must present.
+    pub preview_hash: String,
+}
+
+/// What applying one description publication is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct DescriptionApplyRequest {
+    /// The body to publish, as plain text.
+    pub body: String,
+    /// The digest a previous `description:preview` returned.
+    pub preview_hash: String,
+    /// Deliberate permission to replace a body Kontor never published.
+    ///
+    /// Absent it, a human-authored divergence is refused rather than
+    /// overwritten. The epic content contract requires preserving authored
+    /// content, so replacing it is an explicit, recorded decision and never a
+    /// side effect of a repair.
+    #[serde(default)]
+    pub replace_human_authored: bool,
+}
+
+/// What publishing one description produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DescriptionPublishedDto {
+    /// The Realm it happened in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The external issue whose body was written.
+    pub external_issue_key: String,
+    /// Whether this call changed anything.
+    pub applied: AppliedDto,
+    /// Digest of the body now published.
+    pub body_hash: String,
+    /// Digest of the body this replaced, when one was observed.
+    pub replaced_hash: Option<String>,
+    /// The append-only publication this recorded.
+    pub publication_id: String,
+    /// The body as the external system reported it *after* the write.
+    ///
+    /// Read back rather than echoed: the whole defect being fixed here is a
+    /// surface that reported success without ever reading what the reader sees.
+    pub confirmed_text: String,
+    /// The command receipt that authorizes it.
+    pub receipt_id: String,
 }
 
 /// What `ticket:reconcile-apply` is asked for.
@@ -7142,6 +7256,40 @@ pub trait ApplicationOperations: Send + Sync {
         request: &RecoverGateRejectionRequest,
     ) -> Result<GateRejectionRecoveryDto, ApiError>;
 
+    /// Decide what publishing one task ticket's description would do.
+    async fn preview_task_description(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &DescriptionPublishRequest,
+    ) -> Result<DescriptionPreviewDto, ApiError>;
+
+    /// Publish one task ticket's description and confirm it by readback.
+    async fn apply_task_description(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &DescriptionApplyRequest,
+    ) -> Result<DescriptionPublishedDto, ApiError>;
+
+    /// Decide what publishing one epic's Jira description would do.
+    async fn preview_epic_description(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &DescriptionPublishRequest,
+    ) -> Result<DescriptionPreviewDto, ApiError>;
+
+    /// Publish one epic's Jira description and confirm it by readback.
+    async fn apply_epic_description(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &DescriptionApplyRequest,
+    ) -> Result<DescriptionPublishedDto, ApiError>;
+
     /// Correct one task's pinned work profile before a run snapshots it.
     async fn select_profile(
         &self,
@@ -8344,6 +8492,120 @@ pub async fn preview_jira_materialization(
     Ok(Json(state.applications().preview_jira_materialization(
         project_id, epic_id, &request,
     )?))
+}
+
+/// Decide what publishing one task ticket's description would do.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task whose ticket body is judged")
+    ),
+    request_body = DescriptionPublishRequest,
+    responses((status = 200, body = DescriptionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn preview_task_description(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    Json(request): Json<DescriptionPublishRequest>,
+) -> Result<Json<DescriptionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_task_description(project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Publish one task ticket's description under an exact preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task whose ticket body is written"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = DescriptionApplyRequest,
+    responses((status = 200, body = DescriptionPublishedDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn apply_task_description(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<DescriptionApplyRequest>,
+) -> Result<Json<DescriptionPublishedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_task_description(&key, project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Decide what publishing one epic's Jira description would do.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose Jira body is judged")
+    ),
+    request_body = DescriptionPublishRequest,
+    responses((status = 200, body = DescriptionPreviewDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn preview_epic_description(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    Json(request): Json<DescriptionPublishRequest>,
+) -> Result<Json<DescriptionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_epic_description(project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Publish one epic's Jira description under an exact preview.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose Jira body is written"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = DescriptionApplyRequest,
+    responses((status = 200, body = DescriptionPublishedDto), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn apply_epic_description(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<DescriptionApplyRequest>,
+) -> Result<Json<DescriptionPublishedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_epic_description(&key, project_id, epic_id, &request)
+            .await?,
+    ))
 }
 
 /// Apply one exact Jira materialization preview and confirm every item.

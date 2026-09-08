@@ -115,6 +115,15 @@ closed_enum! {
         ReconcileTicket => "reconcile_ticket",
         /// Materialize or verify one epic's complete Jira binding set.
         MaterializeJira => "materialize_jira",
+        /// Publish one task ticket's description and confirm it by readback.
+        ///
+        /// Distinct from [`CommandKind::ReconcileTicket`]: reconciliation moves
+        /// a status and never writes a body, and a body repair moves no status.
+        /// One kind for both would make an audit unable to answer which of the
+        /// two a receipt authorized.
+        PublishTicketDescription => "publish_ticket_description",
+        /// Publish one epic's Jira description and confirm it by readback.
+        PublishEpicDescription => "publish_epic_description",
         /// Activate ASMA policy after every Jira binding is confirmed.
         ActivateAsmaEpic => "activate_asma_epic",
         /// Settle a run against what its runtime currently reports.
@@ -515,6 +524,7 @@ impl CommandKind {
             | Self::TransitionEpic
             | Self::StartScheduledWork
             | Self::MaterializeJira
+            | Self::PublishEpicDescription
             | Self::ActivateAsmaEpic => {
                 witness(matches!(target, A::MiniProject))
             }
@@ -524,6 +534,7 @@ impl CommandKind {
             | Self::SelectTaskTeam
             | Self::SelectTaskAccount
             | Self::ReconcileTicket
+            | Self::PublishTicketDescription
             // Pulling comments and claiming ownership both cover *every* link a
             // task holds, so the task is the aggregate the authority is over. A
             // receipt naming one link would understate what it authorized.
