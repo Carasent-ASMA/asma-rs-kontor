@@ -450,7 +450,17 @@ impl DescriptionJira {
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|block| block["content"][0]["text"].as_str().map(str::to_owned))
+            .map(|block| {
+                // Jira stores a blank line as a paragraph with no `content`
+                // key at all, so an absent one renders as an empty line rather
+                // than disappearing.
+                block["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|node| node["text"].as_str())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -42993,7 +43003,17 @@ async fn an_epic_placeholder_body_is_typed_reported_and_repairable() {
 
     let preview_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview");
     let apply_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply");
-    let authored = "## Goal\nRefuse every nondefault publication without a confirmed binding.";
+    // Deliberately multi-paragraph and carrying a plan URL: a blank line is the
+    // one shape Jira normalizes (it drops the empty `content` array), and a
+    // reader-facing body always has both. Sending the un-normalized form made a
+    // successful write report as unconfirmed.
+    let authored = concat!(
+        "Goal\n",
+        "Refuse every nondefault publication without a confirmed binding.\n",
+        "\n",
+        "Detailed plan\n",
+        "Publication plan — https://github.com/Carasent-ASMA/asma-modules/blob/master/plan/p.md",
+    );
 
     // 1. The placeholder is named for what it is, and is Kontor's own to replace.
     let preview = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
