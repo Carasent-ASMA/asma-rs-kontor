@@ -1125,9 +1125,54 @@ fn adf(text: &str) -> Value {
         "version": 1,
         "content": text.lines().map(|line| json!({
             "type": "paragraph",
-            "content": if line.is_empty() { Vec::<Value>::new() } else { vec![json!({"type": "text", "text": line})] }
+            "content": adf_line(line)
         })).collect::<Vec<_>>()
     })
+}
+
+/// Split one line into ADF text nodes, marking bare URLs as links.
+///
+/// A plan reference has to be *clickable* for a Jira reader — the epic content
+/// contract asks for a link, and a bare URL sitting in a paragraph is not one.
+/// Marking them here rather than accepting a richer input format keeps the
+/// authored body plain text everywhere else: the caller writes prose, and the
+/// only structure Kontor infers is the one it can infer unambiguously.
+fn adf_line(line: &str) -> Vec<Value> {
+    let mut nodes = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < line.len() {
+        let Some(offset) = ["https://", "http://"]
+            .iter()
+            .filter_map(|scheme| line[cursor..].find(scheme))
+            .min()
+        else {
+            break;
+        };
+        let start = cursor.saturating_add(offset);
+        let end = line[start..]
+            .find(char::is_whitespace)
+            .map_or(line.len(), |length| start.saturating_add(length));
+        // Sentence punctuation that happens to follow a URL is not part of it.
+        let url = line[start..end].trim_end_matches(['.', ',', ')', ';', ':', '!', '?']);
+        if url.ends_with("//") {
+            // A bare scheme is not a link. Skip it rather than emit an empty one.
+            cursor = end;
+            continue;
+        }
+        if start > cursor {
+            nodes.push(json!({"type": "text", "text": &line[cursor..start]}));
+        }
+        nodes.push(json!({
+            "type": "text",
+            "text": url,
+            "marks": [{"type": "link", "attrs": {"href": url}}]
+        }));
+        cursor = start.saturating_add(url.len());
+    }
+    if cursor < line.len() {
+        nodes.push(json!({"type": "text", "text": &line[cursor..]}));
+    }
+    nodes
 }
 
 /// Read one observed issue body into comparable evidence.
@@ -1195,10 +1240,73 @@ pub fn description_hash(text: &str) -> Result<ContentHash, JiraError> {
     Ok(observed.content_hash)
 }
 
+/// Render one external body to the plain text a human would read.
+///
+/// Inline nodes are joined *within* their block and blocks are separated by a
+/// newline. Joining every text node with a newline instead — which is what this
+/// did before ASMA-8123 — turns one sentence into as many lines as it has bold
+/// runs and links, so the evidence a refusal quotes reads as fragments rather
+/// than prose. The whole reason this rendering exists is to be readable without
+/// fetching the issue again.
 fn adf_text(value: &Value) -> String {
-    let mut text = Vec::new();
-    collect_text(value, &mut text);
-    text.join("\n")
+    let mut blocks = Vec::new();
+    collect_blocks(value, &mut blocks);
+    blocks.join("\n")
+}
+
+/// Whether an ADF node is a block, and therefore starts its own line.
+fn is_block(kind: &str) -> bool {
+    matches!(
+        kind,
+        "paragraph"
+            | "heading"
+            | "blockquote"
+            | "codeBlock"
+            | "listItem"
+            | "bulletList"
+            | "orderedList"
+            | "panel"
+            | "rule"
+            | "tableRow"
+            | "tableCell"
+            | "tableHeader"
+    )
+}
+
+fn collect_blocks(value: &Value, output: &mut Vec<String>) {
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let has_block_child = value
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|content| {
+            content.iter().any(|child| {
+                child
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_block)
+            })
+        });
+    if is_block(kind) && !has_block_child {
+        let mut inline = Vec::new();
+        collect_text(value, &mut inline);
+        output.push(inline.concat());
+        return;
+    }
+    if let Some(content) = value.get("content").and_then(Value::as_array) {
+        for child in content {
+            collect_blocks(child, output);
+        }
+        return;
+    }
+    // A bare inline node with no block around it is still readable text.
+    let mut inline = Vec::new();
+    collect_text(value, &mut inline);
+    if !inline.is_empty() {
+        output.push(inline.concat());
+    }
 }
 
 fn collect_text(value: &Value, output: &mut Vec<String>) {
@@ -1290,6 +1398,66 @@ fn oversized() -> JiraError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plan_reference_is_written_as_a_clickable_link() {
+        // The epic content contract asks for a link a Jira reader can follow.
+        let document = adf(
+            "Detailed plan\nPublication plan — https://github.com/Carasent-ASMA/asma-modules/blob/master/plan/x.md",
+        );
+        let paragraph = &document["content"][1]["content"];
+        assert_eq!(paragraph[0]["text"], "Publication plan — ");
+        assert!(
+            paragraph[0].get("marks").is_none(),
+            "prose around a URL is not itself a link"
+        );
+        assert_eq!(
+            paragraph[1]["marks"][0]["attrs"]["href"],
+            "https://github.com/Carasent-ASMA/asma-modules/blob/master/plan/x.md"
+        );
+        // And the rendering still reads as the one line it was written as.
+        assert_eq!(
+            adf_text(&document),
+            "Detailed plan\nPublication plan — https://github.com/Carasent-ASMA/asma-modules/blob/master/plan/x.md"
+        );
+    }
+
+    #[test]
+    fn sentence_punctuation_after_a_url_stays_out_of_the_link() {
+        let document = adf("See https://example.com/a. Then stop.");
+        let paragraph = &document["content"][0]["content"];
+        assert_eq!(
+            paragraph[1]["marks"][0]["attrs"]["href"],
+            "https://example.com/a"
+        );
+        assert_eq!(paragraph[2]["text"], ". Then stop.");
+        assert_eq!(adf_text(&document), "See https://example.com/a. Then stop.");
+    }
+
+    #[test]
+    fn an_inline_run_renders_as_one_line_not_one_line_per_node() {
+        // The shape every hand-authored Jira body has: bold runs and links
+        // inside one paragraph. Rendering each node on its own line is what made
+        // the observed evidence read as fragments.
+        let observed = observed_body(Some(&json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Branches carrying no "},
+                    {"type": "text", "text": "ASMA-<number>", "marks": [{"type": "strong"}]},
+                    {"type": "text", "text": " key are refused."}
+                ]
+            }]
+        })))
+        .expect("read")
+        .expect("body");
+        assert_eq!(
+            observed.plain_text.as_str(),
+            "Branches carrying no ASMA-<number> key are refused."
+        );
+    }
 
     #[test]
     fn a_missing_description_field_is_missing_evidence() {
