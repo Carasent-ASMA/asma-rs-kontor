@@ -1123,10 +1123,20 @@ fn adf(text: &str) -> Value {
     json!({
         "type": "doc",
         "version": 1,
-        "content": text.lines().map(|line| json!({
-            "type": "paragraph",
-            "content": adf_line(line)
-        })).collect::<Vec<_>>()
+        "content": text.lines().map(|line| {
+            let inline = adf_line(line);
+            // A blank line is a paragraph with no children, and Jira stores that
+            // as `{"type": "paragraph"}` — it drops an empty `content` array.
+            // Sending the empty array means the confirming readback compares a
+            // document Jira will never return, so an otherwise successful write
+            // is reported as unconfirmed. Kontor only ever wrote single-line
+            // bodies before ASMA-8123, which is why this never showed.
+            if inline.is_empty() {
+                json!({"type": "paragraph"})
+            } else {
+                json!({"type": "paragraph", "content": inline})
+            }
+        }).collect::<Vec<_>>()
     })
 }
 
@@ -1398,6 +1408,23 @@ fn oversized() -> JiraError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_line_is_written_the_way_jira_stores_it() {
+        // Jira drops an empty `content` array. Sending one means the confirming
+        // readback compares against a document Jira will never return, so a
+        // successful multi-paragraph write reports as unconfirmed — which is
+        // exactly what happened to the first ASMA-8123 repair run.
+        let document = adf("First.\n\nSecond.");
+        assert_eq!(
+            document["content"][1],
+            json!({"type": "paragraph"}),
+            "an empty paragraph carries no content key"
+        );
+        assert_eq!(document["content"][0]["content"][0]["text"], "First.");
+        // The rendering still shows the blank line it was written as.
+        assert_eq!(adf_text(&document), "First.\n\nSecond.");
+    }
 
     #[test]
     fn a_plan_reference_is_written_as_a_clickable_link() {
