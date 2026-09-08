@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use kontor_accounts::{KeychainBackend, KeychainTarget, SystemKeychain};
 use kontor_core::id::{
-    CanonicalDocument, ContentHash, ExternalId, ExternalName, ProjectId, Timestamp,
+    BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, ProjectId, Timestamp,
 };
-use kontor_core::ticket::OwnershipAction;
+use kontor_core::ticket::{ObservedBody, OwnershipAction};
 use reqwest::{Client, Method, StatusCode, Url};
 use secrecy::ExposeSecret;
 use serde::Deserialize;
@@ -396,6 +396,7 @@ impl JiraConnector {
         }))?
         .hash()
         .clone();
+        let description = observed_body(issue.pointer("/fields/description"))?;
         let observation = WireObservation {
             status_id,
             status_name,
@@ -404,6 +405,7 @@ impl JiraConnector {
             assignee_account_id,
             assignee_display,
             update_token,
+            description,
             observation_hash,
         };
         let live_transitions = transitions
@@ -730,6 +732,32 @@ impl JiraConnector {
             .unwrap_or(Value::Null);
         let explicit_link = plan.requested_key.is_some();
         let strict_content = !explicit_link || plan.require_marker;
+        // A body is held to the plan's exact text only while Kontor confirms an
+        // issue it just created. There, any difference means it wrote to or
+        // found the wrong issue.
+        //
+        // Recovering a previously planned Create by explicit key is a different
+        // question. Identity is already proven by the marker label checked
+        // below, and the body has had a life of its own since creation: the five
+        // placeholder epics were repaired by hand precisely because Kontor's
+        // generated body was wrong. Holding those to the generated text reported
+        // an authored description as an incompatible human move, which is what
+        // made the repair unrepeatable.
+        //
+        // So recovery asks the weaker, honest question — is there a body at all?
+        // A richer body is the one the reader wants and is preserved. An absent
+        // or empty one is refused, because it is neither an authored repair nor
+        // the marker Kontor wrote, and losing a body is not a recovery.
+        let body_refused = if explicit_link {
+            // Recovering an issue that already existed: there must be a body,
+            // and whatever it now says is the reader's to own.
+            plan.require_marker
+                && !observed_body(Some(&observed_description))?.is_some_and(|body| !body.is_empty())
+        } else {
+            // Confirming an issue Kontor just created or just found by marker:
+            // the body must be exactly the one it wrote.
+            observed_description != adf(&plan.description)
+        };
         let mismatch = if text_at(&value, &["fields", "project", "key"])?
             != self.project_key.as_str()
         {
@@ -738,7 +766,7 @@ impl JiraConnector {
             Some(MaterializationConflict::ParentMismatch)
         } else if strict_content && observed_summary != plan.summary {
             Some(MaterializationConflict::SummaryMismatch)
-        } else if strict_content && observed_description != adf(&plan.description) {
+        } else if body_refused {
             Some(MaterializationConflict::DescriptionMismatch)
         } else {
             None
@@ -795,7 +823,9 @@ impl JiraConnector {
                 "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
                 "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
                 "summary": plan.summary,
-                "description": plan.description,
+                // The observed body, not the planned one: this evidence must say
+                // what the reader has, and after a body repair those differ.
+                "description": observed_description,
                 "marker": plan.marker.as_str(),
             })
         } else if explicit_link {
@@ -1100,6 +1130,71 @@ fn adf(text: &str) -> Value {
     })
 }
 
+/// Read one observed issue body into comparable evidence.
+///
+/// `None` for the whole field means the connector never reported it, so Kontor
+/// has no evidence either way. A JSON `null` is different: Jira says the issue
+/// exists and its body is empty, which is evidence, and is reported as a
+/// present-but-empty body rather than as missing evidence.
+///
+/// # Errors
+/// Returns [`JiraError`] when the body cannot be canonicalized or its rendered
+/// text exceeds the bounded-text limit.
+fn observed_body(value: Option<&Value>) -> Result<Option<ObservedBody>, JiraError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(Some(ObservedBody {
+            present: false,
+            content_hash: CanonicalDocument::from_serializable(&json!({
+                "schema_version": 1,
+                "body": Value::Null,
+            }))?
+            .hash()
+            .clone(),
+            plain_text: BoundedText::parse("")?,
+        }));
+    }
+    let content_hash = CanonicalDocument::from_serializable(&json!({
+        "schema_version": 1,
+        "body": value,
+    }))?
+    .hash()
+    .clone();
+    let rendered = adf_text(value);
+    let plain_text = BoundedText::parse(&rendered).or_else(|_| {
+        // An oversized body is still observable evidence: keep a bounded prefix
+        // so a refusal stays readable, and let the exact hash carry identity.
+        let mut truncated: String = rendered.chars().take(4000).collect();
+        truncated.push_str("\n[truncated]");
+        BoundedText::parse(&truncated)
+    })?;
+    Ok(Some(ObservedBody {
+        present: true,
+        content_hash,
+        plain_text,
+    }))
+}
+
+/// The digest an observed body would carry if it held exactly `text`.
+///
+/// Computed by rendering `text` to the same document a write sends and reading
+/// it back through [`observed_body`], so an intended body and an observed body
+/// are comparable by construction rather than by two hand-kept formulas that
+/// could drift apart. A drift there would silently report every repair as
+/// unconverged and invite a rewrite loop.
+///
+/// # Errors
+/// Returns [`JiraError`] when the rendered text cannot be canonicalized or
+/// exceeds the bounded-text limit.
+pub fn description_hash(text: &str) -> Result<ContentHash, JiraError> {
+    let document = adf(text);
+    let observed = observed_body(Some(&document))?
+        .ok_or_else(|| JiraError::refused("description", "a rendered body is always observable"))?;
+    Ok(observed.content_hash)
+}
+
 fn adf_text(value: &Value) -> String {
     let mut text = Vec::new();
     collect_text(value, &mut text);
@@ -1195,6 +1290,61 @@ fn oversized() -> JiraError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_description_field_is_missing_evidence() {
+        // The connector did not report the field at all. That is not the same
+        // as an empty body, and must not be reported as one.
+        assert!(observed_body(None).expect("read").is_none());
+    }
+
+    #[test]
+    fn a_null_description_is_evidence_of_an_empty_body() {
+        let observed = observed_body(Some(&Value::Null))
+            .expect("read")
+            .expect("body");
+        assert!(!observed.present);
+        assert!(observed.is_empty());
+        assert!(!observed.is_placeholder_only());
+    }
+
+    #[test]
+    fn an_adf_body_is_rendered_and_hashed() {
+        let document = adf("## Goal\nShip the thing.");
+        let observed = observed_body(Some(&document)).expect("read").expect("body");
+        assert!(observed.present);
+        assert!(!observed.is_empty());
+        assert_eq!(observed.plain_text.as_str(), "## Goal\nShip the thing.");
+        // The hash is over the exact document, so an identical rendering from a
+        // different structure is still a different body.
+        let other = observed_body(Some(&json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "## Goal"},
+                {"type": "text", "text": "Ship the thing."}
+            ]}]
+        })))
+        .expect("read")
+        .expect("body");
+        assert_ne!(observed.content_hash, other.content_hash);
+    }
+
+    #[test]
+    fn the_creation_marker_survives_the_adf_round_trip() {
+        // This is the exact body Kontor writes at create time, and the exact
+        // body observed on the five placeholder epics.
+        let marker =
+            "Kontor epic 01a0721b-ea30-7fe3-88a5-4d33ca613414: Publication identity enforcement";
+        let observed = observed_body(Some(&adf(marker)))
+            .expect("read")
+            .expect("body");
+        assert_eq!(observed.plain_text.as_str(), marker);
+        assert!(
+            observed.is_placeholder_only(),
+            "the connector must observe the creation marker as a placeholder"
+        );
+    }
 
     #[test]
     fn jira_validation_failure_names_only_safe_field_ids() {

@@ -16,7 +16,7 @@ pub mod jira;
 
 pub use connector::{
     JiraComment, JiraConfig, JiraConnector, JiraConnectors, JiraCreateFields, JiraIssueKind,
-    JiraIssuePlan, JiraIssueReadback, JiraProjectConfig,
+    JiraIssuePlan, JiraIssueReadback, JiraProjectConfig, description_hash,
 };
 
 /// Why Jira could not answer.

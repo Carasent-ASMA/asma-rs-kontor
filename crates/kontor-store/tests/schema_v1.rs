@@ -202,6 +202,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "team_runs",
     "team_templates",
     "teams_projection",
+    "ticket_description_publications",
     "ticket_field_specs",
     "ticket_sync_projections",
     "trigger_specs",
@@ -536,7 +537,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // correction evidence. v92 admits that exact correction for an already
     // settled consultation without making its verdict mutable. v93 freezes
     // native release intents separately from settled consultation evidence.
-    assert_eq!(SCHEMA_VERSION, 93);
+    // v94 makes an observed Jira body part of the immutable observation and
+    // keeps every description Kontor published, so a divergence can be
+    // attributed to Kontor's own stale projection rather than to a human edit
+    // (ASMA-8123).
+    assert_eq!(SCHEMA_VERSION, 94);
 }
 
 #[test]
@@ -1839,6 +1844,9 @@ fn the_operational_hardening_v35_lineage_converges_without_losing_its_receipt() 
         "consultation_profile_revisions",
         "completion_profile_revisions",
         "consultation_runs",
+        // v94: the ledger that lets a divergence be attributed to Kontor's own
+        // stale projection rather than to a human edit (ASMA-8123).
+        "ticket_description_publications",
     ] {
         let exists: i64 = connection
             .query_row(
@@ -1849,6 +1857,21 @@ fn the_operational_hardening_v35_lineage_converges_without_losing_its_receipt() 
             .expect("the catalogue is readable");
         assert_eq!(exists, 1, "the converged table `{table}` is missing");
     }
+    // The observed body is three columns or none, and a fresh realm must hold
+    // all three: a hash without its rendering is evidence nobody can read, and a
+    // rendering without its hash is evidence nobody can compare.
+    let description_columns: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('external_ticket_observations')
+             WHERE name IN ('description_present', 'description_hash', 'description_text')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the observation columns are readable");
+    assert_eq!(
+        description_columns, 3,
+        "v94 must carry the observed body on the immutable observation"
+    );
     let receipt_triggers: i64 = connection
         .query_row(
             "SELECT count(*) FROM sqlite_schema

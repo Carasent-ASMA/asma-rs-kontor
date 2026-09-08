@@ -518,6 +518,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_jira_materialization),
             )
             .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview",
+                post(applications::preview_epic_description),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply",
+                post(applications::apply_epic_description),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
                 post(applications::preview_topology_upgrade),
             )
@@ -846,6 +854,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
                 post(applications::ticket_reconcile_plan),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
+                post(applications::preview_task_description),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply",
+                post(applications::apply_task_description),
             )
             .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",

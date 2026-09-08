@@ -1320,6 +1320,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one epic's Jira description under an exact preview. */
+        post: operations["apply_epic_description"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide what publishing one epic's Jira description would do. */
+        post: operations["preview_epic_description"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/jira:apply": {
         parameters: {
             query?: never;
@@ -2297,6 +2331,40 @@ export interface paths {
         put?: never;
         /** Confirm the team revision a task's pinned profile prescribes. */
         post: operations["select_team"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one task ticket's description under an exact preview. */
+        post: operations["apply_task_description"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide what publishing one task ticket's description would do. */
+        post: operations["preview_task_description"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5195,6 +5263,90 @@ export interface components {
              * @description The completion/remediation round.
              */
             round: number;
+        };
+        /** @description What applying one description publication is asked for. */
+        DescriptionApplyRequest: {
+            /** @description The body to publish, as plain text. */
+            body: string;
+            /** @description The digest a previous `description:preview` returned. */
+            preview_hash: string;
+            /**
+             * @description Deliberate permission to replace a body Kontor never published.
+             *
+             *     Absent it, a human-authored divergence is refused rather than
+             *     overwritten. The epic content contract requires preserving authored
+             *     content, so replacing it is an explicit, recorded decision and never a
+             *     side effect of a repair.
+             */
+            replace_human_authored?: boolean;
+        };
+        /** @description What publishing that description would do, decided against the live issue. */
+        DescriptionPreviewDto: {
+            /**
+             * @description The typed disagreement, as `ContentConflictKind` spells it, or absent
+             *     when the reader already holds exactly this body.
+             */
+            conflict?: string | null;
+            /** @description The external issue whose body this is about. */
+            external_issue_key: string;
+            /** @description Digest the requested body will carry once published. */
+            intended_hash: string;
+            /** @description Digest of the exact observed body document. */
+            observed_hash?: string | null;
+            /** @description The observed body rendered to plain text. */
+            observed_text?: string | null;
+            /** @description The digest `description:apply` must present. */
+            preview_hash: string;
+            /** @description Digest of the last body Kontor published here, if any. */
+            published_hash?: string | null;
+            /** @description The Realm it was previewed in. */
+            realm_id: string;
+            /**
+             * @description Whether applying would need explicit permission to replace a body Kontor
+             *     never published.
+             *
+             *     The conservative default: without proof that the observed body is
+             *     Kontor's own earlier publication, it is treated as somebody's writing and
+             *     is not overwritten by accident.
+             */
+            requires_replace_authorization: boolean;
+            /** @description Whether applying would write. `false` means the body already matches. */
+            writes: boolean;
+        };
+        /** @description What publishing one external issue's description is asked to write. */
+        DescriptionPublishRequest: {
+            /**
+             * @description The body to publish, as plain text.
+             *
+             *     Kontor holds no authored body of its own: the author supplies it here.
+             *     That is deliberate — a desired-state body Kontor re-asserted on every
+             *     wakeup would fight every human edit forever.
+             */
+            body: string;
+        };
+        /** @description What publishing one description produced. */
+        DescriptionPublishedDto: {
+            /** @description Whether this call changed anything. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Digest of the body now published. */
+            body_hash: string;
+            /**
+             * @description The body as the external system reported it *after* the write.
+             *
+             *     Read back rather than echoed: the whole defect being fixed here is a
+             *     surface that reported success without ever reading what the reader sees.
+             */
+            confirmed_text: string;
+            /** @description The external issue whose body was written. */
+            external_issue_key: string;
+            /** @description The append-only publication this recorded. */
+            publication_id: string;
+            /** @description The Realm it happened in. */
+            realm_id: string;
+            /** @description The command receipt that authorizes it. */
+            receipt_id: string;
+            /** @description Digest of the body this replaced, when one was observed. */
+            replaced_hash?: string | null;
         };
         /**
          * @description The native shape the server derived for one node.
@@ -8939,6 +9091,30 @@ export interface components {
             task_revision: number;
         };
         /**
+         * @description One typed disagreement about an external issue's body.
+         *
+         *     Separate from [`TicketFieldDiffDto`] because a field diff is a value Kontor
+         *     would write and this is a judgement about what the reader can see. It is
+         *     reported rather than refused: every one of the five epics that published a
+         *     Kontor UUID as its description carries one, and a plan that refuses cannot be
+         *     read by the operator about to repair it.
+         */
+        TicketContentConflictDto: {
+            /** @description The external issue key. */
+            external_issue_key: string;
+            /** @description The typed reason, as `ContentConflictKind` spells it. */
+            kind: string;
+            /** @description The ticket link whose body this is about. */
+            link_id: string;
+            /** @description Digest of the exact observed body document, when one was observed. */
+            observed_hash?: string | null;
+            /**
+             * @description The observed body rendered to plain text, so the refusal is readable
+             *     without fetching the issue again.
+             */
+            observed_text?: string | null;
+        };
+        /**
          * @description One typed field difference between Kontor and an external ticket.
          *
          *     The set of fields is closed by the pinned field specification: there is no
@@ -8979,7 +9155,16 @@ export interface components {
         };
         /** @description What reconciling one task's tickets would do. */
         TicketReconcilePlanDto: {
-            /** @description Whether every link is already converged. */
+            /** @description The typed body disagreements, if any. */
+            content_conflicts: components["schemas"]["TicketContentConflictDto"][];
+            /**
+             * @description Whether every link is already converged, in status **and** in content.
+             *
+             *     Content is part of this answer deliberately. Reporting `true` while an
+             *     issue's description still held only `Kontor <kind> <uuid>: <title>` is
+             *     the defect ASMA-8123 fixes: a caller asking whether a ticket is
+             *     reconciled must not be told yes while its reader sees an internal UUID.
+             */
             converged: boolean;
             /** @description The typed differences, if any. */
             diff: components["schemas"]["TicketFieldDiffDto"][];
@@ -13207,6 +13392,125 @@ export interface operations {
             };
         };
     };
+    apply_epic_description: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose Jira body is written */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DescriptionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DescriptionPublishedDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_epic_description: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose Jira body is judged */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DescriptionPublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DescriptionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_jira_materialization: {
         parameters: {
             query?: never;
@@ -15929,6 +16233,125 @@ export interface operations {
             };
             /** @description The profile pins a different team revision */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_task_description: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task whose ticket body is written */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DescriptionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DescriptionPublishedDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_task_description: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task whose ticket body is judged */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DescriptionPublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DescriptionPreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -30,20 +30,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use kontor_core::DomainError;
 use kontor_core::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ScheduleOverride,
     WorkCalendarAssignment, WorkScope,
 };
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, CommandReceiptId, ExecutionAuthorizationId,
-    ExternalId, ExternalName, ExternalProjectKey, MiniProjectId, PhaseKey, ProjectId, RoleKey,
-    ScheduleOverrideId, SpecVersion, StatusConflictId, StatusTransitionReceiptId, TaskId,
-    TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId, TicketProjectionId, Timestamp,
-    WorkProfileKey, format_utc_timestamp,
+    AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CommandReceiptId, ContentHash,
+    ExecutionAuthorizationId, ExternalId, ExternalName, ExternalProjectKey, MiniProjectId,
+    PhaseKey, ProjectId, RoleKey, ScheduleOverrideId, SpecVersion, StatusConflictId,
+    StatusTransitionReceiptId, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, TicketLinkId,
+    TicketProjectionId, Timestamp, WorkProfileKey, format_utc_timestamp,
 };
 use kontor_core::repository::{RepositoryError, RepositoryResult, Task, TaskWorkflow};
 use kontor_core::spec::IntakeResult;
 use kontor_core::state::{DesiredRunState, ObservedRunState, RunLifecycle};
+use kontor_core::ticket::ObservedBody;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AuthorizationEvidence, CalendarAdmission, Candidate,
     ExternalWorkEvidence, IntakeLineage, RosterGovernance, RuntimeAdmissionEvidence, TaskOrigin,
@@ -295,6 +297,12 @@ pub struct TicketObservation {
     pub assignee_display: Option<ExternalName>,
     /// The external version token, when the external system issues one.
     pub external_version: Option<ExternalId>,
+    /// The body this observation saw, when the connector reported one.
+    ///
+    /// Readable here because "what does the issue's description actually say"
+    /// had no answer through any supported Kontor surface, which is how five
+    /// epics kept a placeholder body through repeated green reconciliations.
+    pub description: Option<ObservedBody>,
     /// When the observation was taken.
     pub observed_at: Timestamp,
 }
@@ -1137,7 +1145,8 @@ impl SqliteStore {
             .connection
             .prepare(
                 "SELECT id, status_id, status_name, status_category, issue_type,
-                        assignee_account_id, assignee_display, external_version, observed_at
+                        assignee_account_id, assignee_display, external_version, observed_at,
+                        description_present, description_hash, description_text
                  FROM external_ticket_observations
                  WHERE project_id = ?1 AND link_id = ?2
                  ORDER BY observed_at DESC, id DESC LIMIT ?3",
@@ -1164,6 +1173,7 @@ impl SqliteStore {
                 assignee_account_id: assignee.as_deref().map(ExternalId::parse).transpose()?,
                 assignee_display: display.as_deref().map(ExternalName::parse).transpose()?,
                 external_version: version.as_deref().map(ExternalId::parse).transpose()?,
+                description: read_observed_body(row, 9, 10, 11)?,
                 observed_at: read_timestamp(&column_text(row, 8)?)?,
             });
         }
@@ -1354,6 +1364,34 @@ fn read_link(row: &Row<'_>) -> RepositoryResult<TicketLinkSummary> {
 }
 
 /// One text column.
+/// Read one observed body from its three columns, or `None` when absent.
+///
+/// The schema keeps the three consistent, so a partial row means the database
+/// was written by something that bypassed it. That is reported rather than
+/// repaired into a body nobody observed.
+fn read_observed_body(
+    row: &Row<'_>,
+    present: usize,
+    hash: usize,
+    text: usize,
+) -> RepositoryResult<Option<ObservedBody>> {
+    let present: Option<i64> = row.get(present).map_err(backend)?;
+    let hash: Option<String> = row.get(hash).map_err(backend)?;
+    let text: Option<String> = row.get(text).map_err(backend)?;
+    match (present, hash, text) {
+        (None, None, None) => Ok(None),
+        (Some(present), Some(hash), Some(text)) => Ok(Some(ObservedBody {
+            present: present != 0,
+            content_hash: ContentHash::parse(&hash)?,
+            plain_text: BoundedText::parse(&text)?,
+        })),
+        _ => Err(RepositoryError::from(DomainError::invalid(
+            "ObservedBody",
+            "an observed description is present, hashed and rendered together",
+        ))),
+    }
+}
+
 pub(crate) fn column_text(row: &Row<'_>, index: usize) -> RepositoryResult<String> {
     row.get(index).map_err(backend)
 }

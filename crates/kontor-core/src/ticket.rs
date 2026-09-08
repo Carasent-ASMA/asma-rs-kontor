@@ -23,9 +23,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{
     AggregateRevision, BoundedText, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash,
-    ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey, GateKey, IdempotencyKey,
-    MiniProjectId, PhaseKey, SchemaVersion, SemanticMilestoneKey, SpecVersion, StatusConflictId,
-    TaskId, TicketLinkId, TicketObservationId, TicketProjectionId, Timestamp, WorkProfileKey,
+    DescriptionPublicationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
+    GateKey, IdempotencyKey, MiniProjectId, PhaseKey, SchemaVersion, SemanticMilestoneKey,
+    SpecVersion, StatusConflictId, TaskId, TicketLinkId, TicketObservationId, TicketProjectionId,
+    Timestamp, WorkProfileKey,
 };
 use crate::state::{Freshness, GateState, TaskState, TerminalOutcome};
 use crate::{DomainError, DomainResult};
@@ -299,6 +300,52 @@ impl TicketFieldSpec {
         self.mappings.iter().find(|m| m.key == key)
     }
 
+    /// Validate one outbound value and return the mapping that would write it.
+    ///
+    /// The single place these rules live, so a caller that writes one field
+    /// cannot be held to a weaker standard than a caller that writes a whole
+    /// projection. Publishing a description is exactly such a caller: an epic
+    /// has no ticket-link identity, so it cannot express its one field as a
+    /// projection revision, and it must still obey the same ownership and type
+    /// rules.
+    ///
+    /// # Errors
+    /// Rejects an unmapped field, a private field written outward, a field with
+    /// no direction or no external mapping, an inbound-only field written
+    /// outward, and a value whose type contradicts the mapping.
+    pub fn validate_outbound(
+        &self,
+        key: TicketFieldKey,
+        value: &FieldValue,
+    ) -> DomainResult<&ExternalFieldMapping> {
+        let mapping = self.mapping(key).ok_or(DomainError::Invalid {
+            subject: "TicketFieldSpec",
+            rule: "projects a field the pinned specification does not map",
+        })?;
+        if mapping.owner == FieldOwner::Private {
+            return Err(DomainError::invalid(
+                "TicketFieldSpec",
+                "projects a private field outward",
+            ));
+        }
+        let direction = mapping.direction.ok_or(DomainError::Invalid {
+            subject: "TicketFieldSpec",
+            rule: "projects a field with no direction",
+        })?;
+        if direction == FieldDirection::Inbound {
+            return Err(DomainError::invalid(
+                "TicketFieldSpec",
+                "projects an inbound-only field outward",
+            ));
+        }
+        let external = mapping.external.as_ref().ok_or(DomainError::Invalid {
+            subject: "TicketFieldSpec",
+            rule: "projects a field with no external mapping",
+        })?;
+        validate_field_value(value, external)?;
+        Ok(external)
+    }
+
     /// Validate, canonicalize and hash in one step.
     ///
     /// # Errors
@@ -419,35 +466,20 @@ impl TicketSyncProjection {
                     "projects the same field twice",
                 ));
             }
-            let mapping = spec.mapping(field.key).ok_or(DomainError::Invalid {
-                subject: "TicketSyncProjection",
-                rule: "projects a field the pinned specification does not map",
-            })?;
+            // An unmapped field is refused whether or not it carries a value:
+            // naming a field the specification does not know is a projection
+            // error even when it asks for no write.
+            if spec.mapping(field.key).is_none() {
+                return Err(DomainError::invalid(
+                    "TicketSyncProjection",
+                    "projects a field the pinned specification does not map",
+                ));
+            }
             let Some(value) = &field.value else {
                 // Absent is always legal: it means "do not write".
                 continue;
             };
-            if mapping.owner == FieldOwner::Private {
-                return Err(DomainError::invalid(
-                    "TicketSyncProjection",
-                    "projects a private field outward",
-                ));
-            }
-            let direction = mapping.direction.ok_or(DomainError::Invalid {
-                subject: "TicketSyncProjection",
-                rule: "projects a field with no direction",
-            })?;
-            if direction == FieldDirection::Inbound {
-                return Err(DomainError::invalid(
-                    "TicketSyncProjection",
-                    "projects an inbound-only field outward",
-                ));
-            }
-            let external = mapping.external.as_ref().ok_or(DomainError::Invalid {
-                subject: "TicketSyncProjection",
-                rule: "projects a field with no external mapping",
-            })?;
-            validate_field_value(value, external)?;
+            spec.validate_outbound(field.key, value)?;
         }
         for mapping in &spec.mappings {
             if mapping.required
@@ -1064,6 +1096,12 @@ pub struct ExternalTicketObservation {
     pub assignee_display: Option<ExternalName>,
     /// The external system's own version/update token.
     pub external_version: Option<ExternalId>,
+    /// The observed issue body, when the connector reported one.
+    ///
+    /// `None` is missing evidence, not an empty body. Reconciliation reads this
+    /// to answer "does the reader still see what Kontor published", which a
+    /// converged status cannot answer.
+    pub description: Option<ObservedBody>,
     /// When Kontor observed it.
     pub observed_at: Timestamp,
     /// Digest of the canonical observation payload.
@@ -1097,6 +1135,12 @@ pub struct ExternalEpicObservation {
     pub assignee_account_id: Option<ExternalId>,
     /// The external system's own version/update token.
     pub external_version: Option<ExternalId>,
+    /// The observed issue body, when the connector reported one.
+    ///
+    /// An epic body is the one readers actually quote, and it is the one the
+    /// five placeholder epics were wrong about, so it is evidence here for the
+    /// same reason it is on a task observation.
+    pub description: Option<ObservedBody>,
     /// When Kontor observed it.
     pub observed_at: Timestamp,
     /// Digest of the canonical observation payload.
@@ -1249,6 +1293,192 @@ closed_enum! {
         /// a persisted conflict must still be readable.
         TerminalOwnershipViolation => "terminal_ownership_violation",
     }
+}
+
+closed_enum! {
+    /// Why an observed external body could not be adopted or overwritten.
+    ///
+    /// Status reconciliation answers "where is this ticket"; content
+    /// reconciliation answers "does its body still say what Kontor published".
+    /// The two are separate because a body can diverge while the status is
+    /// perfectly converged, which is exactly how a placeholder description
+    /// survives a green reconciliation.
+    ContentConflictKind, "ContentConflictKind" {
+        /// Kontor holds authored content but the external body is absent.
+        MissingExternalBody => "missing_external_body",
+        /// The external body still carries only the marker Kontor wrote at
+        /// creation, so no authored content ever reached the reader.
+        PlaceholderBodyOnly => "placeholder_body_only",
+        /// The external body diverged from the content Kontor last published.
+        DivergedFromProjection => "diverged_from_projection",
+        /// The external body carries edits Kontor never authored; they are
+        /// preserved and resolved by a human rather than overwritten.
+        HumanAuthoredDivergence => "human_authored_divergence",
+        /// The connector returned a body Kontor cannot canonicalize.
+        UnreadableExternalBody => "unreadable_external_body",
+    }
+}
+
+/// One external body Kontor observed, kept as comparable evidence.
+///
+/// The exact document hash is what decides divergence; the plain rendering
+/// exists so a refusal can be read by a human without fetching Jira again, and
+/// so emptiness is decided on rendered text rather than on document structure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedBody {
+    /// Whether the connector reported a body field at all.
+    pub present: bool,
+    /// Digest of the exact external body document.
+    pub content_hash: ContentHash,
+    /// The body rendered to plain text, bounded for evidence.
+    pub plain_text: BoundedText,
+}
+
+impl ObservedBody {
+    /// Whether the rendered body carries no readable content.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.present || self.plain_text.as_str().trim().is_empty()
+    }
+
+    /// Whether this body is only the creation marker Kontor itself wrote.
+    ///
+    /// Kontor stamps `Kontor <kind> <uuid>: <title>` when it creates an issue.
+    /// A body that never grew past that stamp has never carried authored
+    /// content, however converged its status looks.
+    #[must_use]
+    pub fn is_placeholder_only(&self) -> bool {
+        let text = self.plain_text.as_str().trim();
+        if text.is_empty() {
+            return false;
+        }
+        let Some(rest) = text.strip_prefix("Kontor ") else {
+            return false;
+        };
+        let Some((head, _)) = rest.split_once(':') else {
+            return false;
+        };
+        // `epic <uuid>` / `task <uuid>` and nothing else.
+        let mut parts = head.split_whitespace();
+        let (Some(kind), Some(id), None) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        matches!(kind, "epic" | "task") && id.len() == 36 && id.split('-').count() == 5
+    }
+}
+
+/// Classify one observed body on its own, with nothing authored to compare.
+///
+/// This is the question *reconciliation* asks, and it needs no authored content:
+/// "is what the reader sees a body at all?" A description that is empty, or that
+/// never grew past the marker Kontor stamped at creation, is wrong however
+/// converged the status is — which is exactly how five epics published an
+/// internal Kontor UUID as their reader-facing text while every status check
+/// passed.
+///
+/// It deliberately never reports divergence. Without authored content Kontor has
+/// no opinion about what a body *should* say, so a real body — however unlike
+/// anything Kontor would have written — is not a conflict here. That is what
+/// keeps operator-owned issues out of this judgement entirely.
+#[must_use]
+pub fn classify_observed_body(observed: Option<&ObservedBody>) -> Option<ContentConflictKind> {
+    let Some(observed) = observed else {
+        return Some(ContentConflictKind::UnreadableExternalBody);
+    };
+    if observed.is_empty() {
+        return Some(ContentConflictKind::MissingExternalBody);
+    }
+    if observed.is_placeholder_only() {
+        return Some(ContentConflictKind::PlaceholderBodyOnly);
+    }
+    None
+}
+
+/// Classify one observed body against the content Kontor intends to publish.
+///
+/// Returns `None` when the observed body already equals the intended content,
+/// which is the only state that needs no decision. Divergence is never resolved
+/// by overwriting: a body Kontor did not author is reported as
+/// [`ContentConflictKind::HumanAuthoredDivergence`] so its owner decides.
+///
+/// `published_hash` is the digest of the content Kontor last successfully
+/// wrote. Without it Kontor cannot tell its own stale projection from somebody
+/// else's edit, so any divergence is attributed to a human.
+#[must_use]
+pub fn classify_body(
+    observed: Option<&ObservedBody>,
+    intended_hash: Option<&ContentHash>,
+    published_hash: Option<&ContentHash>,
+) -> Option<ContentConflictKind> {
+    // Missing, empty and placeholder-only are wrong whether or not anything is
+    // intended, so they are decided first and identically on both paths.
+    if let Some(kind) = classify_observed_body(observed) {
+        return Some(kind);
+    }
+    let Some(observed) = observed else {
+        return Some(ContentConflictKind::UnreadableExternalBody);
+    };
+    let Some(intended) = intended_hash else {
+        // A real body, and nothing intended to replace it. Not Kontor's to judge.
+        return None;
+    };
+    if &observed.content_hash == intended {
+        return None;
+    }
+    match published_hash {
+        // The reader still holds exactly what Kontor published, so the
+        // difference is Kontor's own newer projection, not a foreign edit.
+        Some(published) if published == &observed.content_hash => {
+            Some(ContentConflictKind::DivergedFromProjection)
+        }
+        _ => Some(ContentConflictKind::HumanAuthoredDivergence),
+    }
+}
+
+closed_enum! {
+    /// Which aggregate a published description belongs to.
+    ///
+    /// An epic and a task are separate aggregates with separate authority. One
+    /// untyped id column for both would let an epic's body be attributed to a
+    /// task, and the epic body is the one readers quote.
+    DescriptionSubjectKind, "DescriptionSubjectKind" {
+        /// A mini-project's own external issue.
+        Epic => "epic",
+        /// One task's linked external issue.
+        Task => "task",
+    }
+}
+
+/// One description Kontor published, kept so a later divergence is attributable.
+///
+/// This is evidence, not desired state. Kontor does not hold an authored body it
+/// re-asserts on every wakeup: the author supplies it, Kontor writes it once and
+/// remembers the exact digest. A body still equal to that digest is Kontor's own
+/// projection going stale; a body equal to nothing Kontor published is a human's
+/// edit, and is reported rather than overwritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DescriptionPublication {
+    /// This publication's id.
+    pub id: DescriptionPublicationId,
+    /// Which aggregate authorized it.
+    pub subject_kind: DescriptionSubjectKind,
+    /// That aggregate's id, as text, because an epic and a task id are not the
+    /// same type and this record stores whichever one `subject_kind` names.
+    pub subject_id: String,
+    /// The external issue whose body was written.
+    pub external_issue_key: ExternalId,
+    /// Digest of the document Kontor wrote, computed exactly as an observed
+    /// body's is so the two compare without re-deriving either.
+    pub body_hash: ContentHash,
+    /// The text Kontor published.
+    pub body_text: BoundedText,
+    /// The observed digest this replaced, when one was observed. This is what
+    /// makes a repair auditable: it names what the reader had before.
+    pub replaced_hash: Option<ContentHash>,
+    /// The command receipt that authorized the write.
+    pub receipt_id: CommandReceiptId,
+    /// When Kontor published it.
+    pub published_at: Timestamp,
 }
 
 /// A recorded reconciliation conflict.

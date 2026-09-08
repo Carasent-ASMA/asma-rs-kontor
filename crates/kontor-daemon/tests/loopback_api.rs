@@ -392,11 +392,134 @@ impl Respond for MultiHopEpicJira {
                     },
                     "issuetype": {"name": "Epic", "hierarchyLevel": 1},
                     "assignee": null,
+                    "description": {"type": "doc", "version": 1, "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "An authored epic body, so this fixture is about its route alone."}]
+                    }]},
                     "updated": format!("2026-09-03T10:00:0{index}.000+0000")
                 }
             }));
         }
         ResponseTemplate::new(404)
+    }
+}
+
+/// A Jira whose body is real state: it is read, written and read back.
+///
+/// The defect ASMA-8123 fixes could not be reproduced against a fake that only
+/// answered reads, because the whole failure is that a write never happened and
+/// a read never noticed. This one keeps the description, applies a `PUT` to it
+/// and serves what it now holds, so a test can assert what a reader would see.
+#[derive(Clone)]
+struct DescriptionJira {
+    key: &'static str,
+    issue_type: &'static str,
+    hierarchy_level: i64,
+    /// Status id, name and category, so a fixture can be a converged ticket
+    /// whose *body* is the only thing wrong with it.
+    status: (&'static str, &'static str, &'static str),
+    body: Arc<Mutex<serde_json::Value>>,
+    writes: Arc<AtomicUsize>,
+}
+
+impl DescriptionJira {
+    fn new(key: &'static str, issue_type: &'static str, hierarchy_level: i64, body: &str) -> Self {
+        Self {
+            key,
+            issue_type,
+            hierarchy_level,
+            status: ("10000", "To Do", "To Do"),
+            body: Arc::new(Mutex::new(adf_document(body))),
+            writes: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn with_status(mut self, id: &'static str, name: &'static str, category: &'static str) -> Self {
+        self.status = (id, name, category);
+        self
+    }
+
+    /// Replace the body, for a fixture whose marker embeds a server-assigned id.
+    fn set_body(&self, text: &str) {
+        *self.body.lock().expect("the body is not poisoned") = adf_document(text);
+    }
+
+    fn rendered(&self) -> String {
+        let held = self.body.lock().expect("the body is not poisoned").clone();
+        held["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block["content"][0]["text"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// The exact document shape Kontor's connector writes, so a fake body and a
+/// written body are the same kind of thing.
+fn adf_document(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "doc",
+        "version": 1,
+        "content": text.lines().map(|line| serde_json::json!({
+            "type": "paragraph",
+            "content": if line.is_empty() {
+                Vec::<serde_json::Value>::new()
+            } else {
+                vec![serde_json::json!({"type": "text", "text": line})]
+            }
+        })).collect::<Vec<_>>()
+    })
+}
+
+impl Respond for DescriptionJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path();
+        if request.method.as_str() == "GET" && path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        // Checked before the issue route: the transitions path contains it.
+        if path.ends_with("/transitions") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": []}));
+        }
+        if !path.contains(&format!("/rest/api/3/issue/{}", self.key)) {
+            return ResponseTemplate::new(404);
+        }
+        if request.method.as_str() == "PUT" {
+            let Some(written) = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|payload| payload["fields"]["description"].as_object().cloned())
+            else {
+                return ResponseTemplate::new(400);
+            };
+            *self.body.lock().expect("the body is not poisoned") =
+                serde_json::Value::Object(written);
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(204);
+        }
+        let held = self.body.lock().expect("the body is not poisoned").clone();
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": self.key,
+            "fields": {
+                "project": {"key": "ASMA"},
+                "status": {
+                    "id": self.status.0,
+                    "name": self.status.1,
+                    "statusCategory": {"name": self.status.2}
+                },
+                "issuetype": {
+                    "name": self.issue_type,
+                    "hierarchyLevel": self.hierarchy_level,
+                    "subtask": false
+                },
+                "assignee": null,
+                "updated": "2026-09-08T10:00:00.000+0000",
+                "description": held
+            }
+        }))
     }
 }
 
@@ -590,6 +713,10 @@ impl Respond for StatefulTaskJira {
                     },
                     "issuetype": {"name": "Task", "hierarchyLevel": 0},
                     "assignee": {"accountId": "acct-kontor", "displayName": "Kontor"},
+                    "description": {"type": "doc", "version": 1, "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "An authored task body, so this fixture is about status alone."}]
+                    }]},
                     "updated": if transitioned {"2026-09-03T10:00:01.000+0000"} else {"2026-09-03T10:00:00.000+0000"}
                 }
             }));
@@ -639,6 +766,10 @@ impl Respond for HeldTaskJira {
                     },
                     "issuetype": {"name": "Task", "hierarchyLevel": 0},
                     "assignee": {"accountId": "acct-kontor", "displayName": "Kontor"},
+                    "description": {"type": "doc", "version": 1, "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "An authored task body, so this fixture is about the hold alone."}]
+                    }]},
                     "updated": if transitioned {"2026-09-05T10:00:01.000+0000"} else {"2026-09-05T10:00:00.000+0000"}
                 }
             }));
@@ -8728,8 +8859,6 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
     let epic_id = MiniProjectId::generate();
     let task_id = TaskId::generate();
     let task_marker = format!("kontor-task-{task_id}");
-    let task_description = format!("Kontor task {task_id}: Recover original Jira batch");
-
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-8049"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -8768,7 +8897,7 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
             ResponseTemplate::new(200)
                 .set_body_json(served_readback.lock().expect("readback lock").clone())
         })
-        .expect(3)
+        .expect(2)
         .mount(&server)
         .await;
 
@@ -8893,13 +9022,12 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
             .jira_materialization_items(project_id, &original_batch_id)
             .expect("the original items read")
     });
-    for (rule, repair) in [
-        (
-            "the Jira issue description differs from the pending creation intent",
-            "description",
-        ),
-        ("the Jira issue lacks the pending creation marker", "marker"),
-    ] {
+    // Recovery is no longer refused for a body that differs from the generated
+    // creation text. Since ASMA-8123 identity is proven by the marker and a body
+    // authored since the pending create is the reader's, so it is preserved —
+    // refusing it is what made the placeholder repair unrepeatable. The marker
+    // remains the proof, and remains the refusal.
+    for rule in ["the Jira issue lacks the pending creation marker"] {
         let refused = Call::post(
             format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
             &apply_body,
@@ -8942,13 +9070,8 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
                     .expect("activation read")
             );
         });
-        let mut readback = task_readback.lock().expect("readback lock");
-        if repair == "description" {
-            readback["fields"]["description"]["content"][0]["content"][0]["text"] =
-                serde_json::json!(task_description);
-        } else {
-            readback["fields"]["labels"] = serde_json::json!([task_marker]);
-        }
+        task_readback.lock().expect("readback lock")["fields"]["labels"] =
+            serde_json::json!([task_marker]);
     }
     let applied = Call::post(
         format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
@@ -42845,4 +42968,445 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
         "the replay reuses the durable admission rather than creating another: {}",
         after_replay.body
     );
+}
+
+/// The whole ASMA-8123 defect and its repair, end to end through the daemon.
+///
+/// The epic's Jira body holds only `Kontor epic <uuid>: <title>` — the exact
+/// state five epics reached, where every status check passed and readers were
+/// shown an internal UUID. Reconciliation must stop calling that converged, and
+/// there must be a supported way to repair it that proves the reader sees the
+/// new text.
+#[tokio::test]
+async fn an_epic_placeholder_body_is_typed_reported_and_repairable() {
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let placeholder = format!("Kontor epic {epic_id}: Publication identity enforcement");
+    let jira = DescriptionJira::new("ASMA-8301", "Epic", 1, &placeholder);
+    let writes = Arc::clone(&jira.writes);
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(jira.clone())
+        .mount(&server)
+        .await;
+    let world = description_world(&server, project_id, epic_id, "ASMA-8301").await;
+
+    let preview_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview");
+    let apply_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply");
+    let authored = "## Goal\nRefuse every nondefault publication without a confirmed binding.";
+
+    // 1. The placeholder is named for what it is, and is Kontor's own to replace.
+    let preview = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["conflict"], "placeholder_body_only");
+    assert_eq!(preview.json()["writes"], true);
+    assert_eq!(preview.json()["requires_replace_authorization"], false);
+    assert_eq!(preview.json()["observed_text"], placeholder.as_str());
+    assert_eq!(preview.json()["published_hash"], serde_json::Value::Null);
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        0,
+        "a preview must not reach the boundary"
+    );
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    // 2. A stale decision cannot be applied, even though the body is repairable.
+    let stale = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "body": authored,
+            "preview_hash": "0".repeat(64)
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("epic-description-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(writes.load(Ordering::SeqCst), 0, "{}", stale.body);
+
+    // 3. The repair writes once and is confirmed by reading the issue back.
+    let applied = Call::post(
+        &apply_uri,
+        &serde_json::json!({"body": authored, "preview_hash": preview_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("epic-description-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["applied"], "created");
+    assert_eq!(applied.json()["confirmed_text"], authored);
+    assert_eq!(applied.json()["external_issue_key"], "ASMA-8301");
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    // The evidence names what the reader had before, not just what it has now.
+    assert!(
+        applied.json()["replaced_hash"].is_string(),
+        "{}",
+        applied.body
+    );
+    assert_eq!(
+        jira.rendered(),
+        authored,
+        "the reader must now see the authored body"
+    );
+
+    // 4. Replaying the same key writes nothing a second time.
+    let replay = Call::post(
+        &apply_uri,
+        &serde_json::json!({"body": authored, "preview_hash": preview_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("epic-description-apply")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        1,
+        "a replayed key must not write again: {}",
+        replay.body
+    );
+
+    // 5. And the same body is now agreement rather than a conflict.
+    let settled = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["conflict"], serde_json::Value::Null);
+    assert_eq!(settled.json()["writes"], false);
+    assert!(
+        settled.json()["published_hash"].is_string(),
+        "the publication ledger must remember what Kontor wrote: {}",
+        settled.body
+    );
+}
+
+/// A body Kontor never published is somebody's writing, and is kept.
+///
+/// The safety-critical half. If divergence defaulted to "Kontor's own stale
+/// projection", this repair path would be licensed to overwrite human-authored
+/// Jira content, which the epic content contract forbids. Replacing it stays
+/// possible, but only as an explicit, recorded request.
+#[tokio::test]
+async fn a_human_authored_body_is_preserved_until_replacement_is_authorized() {
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let authored_by_a_human = "Notes from the workshop.\nDo not overwrite this.";
+    let jira = DescriptionJira::new("ASMA-8302", "Epic", 1, authored_by_a_human);
+    let writes = Arc::clone(&jira.writes);
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(jira.clone())
+        .mount(&server)
+        .await;
+    let world = description_world(&server, project_id, epic_id, "ASMA-8302").await;
+
+    let preview_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview");
+    let apply_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply");
+    let replacement = "## Goal\nSomething Kontor would rather say.";
+
+    let preview = Call::post(&preview_uri, &serde_json::json!({"body": replacement}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["conflict"], "human_authored_divergence");
+    assert_eq!(preview.json()["requires_replace_authorization"], true);
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    // Refused, and nothing reached Jira.
+    let refused = Call::post(
+        &apply_uri,
+        &serde_json::json!({"body": replacement, "preview_hash": preview_hash}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("epic-description-unauthorized")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(writes.load(Ordering::SeqCst), 0, "{}", refused.body);
+    assert_eq!(
+        jira.rendered(),
+        authored_by_a_human,
+        "a refused publication must leave the reader's body exactly as it was"
+    );
+
+    // Authorized deliberately, it proceeds.
+    let authorized = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "body": replacement,
+            "preview_hash": preview_hash,
+            "replace_human_authored": true
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("epic-description-authorized")
+    .send(&world)
+    .await;
+    assert_eq!(authorized.status, 200, "{}", authorized.body);
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    assert_eq!(jira.rendered(), replacement);
+}
+
+/// Bring up a daemon whose configured Jira is this fake, with one bound epic.
+async fn description_world(
+    server: &MockServer,
+    project_id: ProjectId,
+    epic_id: MiniProjectId,
+    jira_key: &str,
+) -> World {
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    // The temporary directory must outlive the connectors' configuration read,
+    // which has already happened, so it is safe to drop here.
+    drop(config_root);
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Jira description projection"),
+                root_path: name("/tmp/kontor-jira-description"),
+                created_at: at("2026-09-08T10:00:00Z"),
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Publication identity enforcement"),
+                created_at: at("2026-09-08T10:01:00Z"),
+            })
+            .expect("the epic is created");
+    });
+    confirm_promoted_epic_identity(
+        &world,
+        &project_id.to_string(),
+        &epic_id.to_string(),
+        "DESC",
+        jira_key,
+    );
+    // The exact epic workflow revision must be installed before any Jira
+    // operation on the epic: the selection is by entity kind and frozen
+    // profile, and falling back to whatever is bundled is refused.
+    world.daemon.state().with_store(|store| {
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "epic"
+                    && compiled.spec().work_profile.is_none()
+            })
+            .expect("the generic epic workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the exact epic workflow is installed");
+    });
+    world
+}
+
+/// Reconciliation must stop calling a placeholder body converged.
+///
+/// This is the reported defect in one assertion. The ticket's status agrees
+/// with Kontor perfectly; only its description is wrong, still holding the
+/// `Kontor task <uuid>: <title>` marker written at creation. Before ASMA-8123
+/// `ticket:reconcile-plan` answered `converged: true` with an empty diff, which
+/// is how five epics published an internal UUID to their readers while every
+/// check passed.
+#[tokio::test]
+async fn reconcile_plan_refuses_to_call_a_placeholder_body_converged() {
+    let project_id = ProjectId::generate();
+    let jira = DescriptionJira::new("ASMA-8303", "Task", 0, "placeholder set below").with_status(
+        "10214",
+        "In Development",
+        "In Progress",
+    );
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(jira.clone())
+        .mount(&server)
+        .await;
+    let world = jira_configured_world(&server, project_id, "Placeholder body project").await;
+
+    // The epic graph is applied through the API, so the task id — and therefore
+    // the exact marker text — is the one Kontor itself would have written.
+    let project_read = Call::get(format!("/v1/projects/{project_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("placeholder-body-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project_id}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"].as_u64().expect("revision"),
+            "Placeholder body epic",
+            &category,
+            serde_json::json!([{
+                "title": "PUB-08 Jira description read and update projection",
+                "ticket_links": [{
+                    "connector": "connector.jira",
+                    "external_issue_key": "ASMA-8303"
+                }]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("placeholder-body-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let task_id = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    let installed =
+        install_jira_workflow(&world, &project_id.to_string(), "placeholder-body-workflow").await;
+    assert_eq!(installed.status, 200, "{}", installed.body);
+
+    // Exactly the body Kontor writes at creation, and nothing more.
+    let marker =
+        format!("Kontor task {task_id}: PUB-08 Jira description read and update projection");
+    jira.set_body(&marker);
+
+    let plan_uri = format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan");
+    let plan = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert_eq!(
+        plan.json()["converged"],
+        false,
+        "a placeholder body is not convergence: {}",
+        plan.body
+    );
+    let conflicts = plan.json()["content_conflicts"]
+        .as_array()
+        .expect("typed content conflicts")
+        .clone();
+    assert_eq!(conflicts.len(), 1, "{}", plan.body);
+    assert_eq!(conflicts[0]["kind"], "placeholder_body_only");
+    assert_eq!(conflicts[0]["external_issue_key"], "ASMA-8303");
+    assert_eq!(
+        conflicts[0]["observed_text"],
+        marker.as_str(),
+        "the refusal must be readable without fetching the issue again"
+    );
+
+    // An authored body is not a conflict, and the same plan now converges. This
+    // is the half that proves the check is about content and not about noise.
+    jira.set_body("## Goal\nRead a Jira body back and type its conflicts.");
+    let repaired = Call::post(&plan_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert!(
+        repaired.json()["content_conflicts"]
+            .as_array()
+            .expect("typed content conflicts")
+            .is_empty(),
+        "an authored body is nobody's conflict: {}",
+        repaired.body
+    );
+    assert_eq!(repaired.json()["converged"], true, "{}", repaired.body);
+}
+
+/// Start a daemon whose configured Jira is this fake, with one stored project.
+///
+/// The project is created in the store rather than through the API because the
+/// connector configuration must name its id before the daemon starts, and
+/// `projects:ensure` assigns one server-side.
+async fn jira_configured_world(
+    server: &MockServer,
+    project_id: ProjectId,
+    label: &'static str,
+) -> World {
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    drop(config_root);
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name(label),
+                root_path: name("/tmp/kontor-jira-description-task"),
+                created_at: at("2026-09-08T10:00:00Z"),
+            })
+            .expect("the project is created");
+    });
+    world
 }
