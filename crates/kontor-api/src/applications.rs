@@ -5353,6 +5353,13 @@ pub struct DescriptionPublishedDto {
     /// Read back rather than echoed: the whole defect being fixed here is a
     /// surface that reported success without ever reading what the reader sees.
     pub confirmed_text: String,
+    /// Whether this publication was settled by a refetch after its confirming
+    /// read failed, rather than confirmed inline.
+    ///
+    /// Reported because the two are not the same evidence. The write landed
+    /// either way, but a settled one spent a moment in which Kontor could not
+    /// say so, and an audit asking "how do we know" deserves that answer.
+    pub recovered_lost_confirmation: bool,
     /// The command receipt that authorizes it.
     pub receipt_id: String,
 }

@@ -15106,6 +15106,7 @@
           "body_hash",
           "publication_id",
           "confirmed_text",
+          "recovered_lost_confirmation",
           "receipt_id"
         ],
         "properties": {
@@ -15136,6 +15137,10 @@
           "receipt_id": {
             "type": "string",
             "description": "The command receipt that authorizes it."
+          },
+          "recovered_lost_confirmation": {
+            "type": "boolean",
+            "description": "Whether this publication was settled by a refetch after its confirming\nread failed, rather than confirmed inline.\n\nReported because the two are not the same evidence. The write landed\neither way, but a settled one spent a moment in which Kontor could not\nsay so, and an audit asking \"how do we know\" deserves that answer."
           },
           "replaced_hash": {
             "type": [
