@@ -420,6 +420,14 @@ struct DescriptionJira {
     status: (&'static str, &'static str, &'static str),
     body: Arc<Mutex<serde_json::Value>>,
     writes: Arc<AtomicUsize>,
+    /// When set, the first read *after* a write fails, which is exactly how a
+    /// write that landed loses its confirmation.
+    drop_confirmation: Arc<AtomicBool>,
+    /// Body a third party writes at the same moment the confirmation is lost.
+    ///
+    /// Applied inside the fake rather than from a racing task, so the refetch
+    /// deterministically sees the overtaken body instead of whichever write won.
+    overtake_with: Arc<Mutex<Option<String>>>,
 }
 
 impl DescriptionJira {
@@ -431,6 +439,8 @@ impl DescriptionJira {
             status: ("10000", "To Do", "To Do"),
             body: Arc::new(Mutex::new(adf_document(body))),
             writes: Arc::new(AtomicUsize::new(0)),
+            drop_confirmation: Arc::new(AtomicBool::new(false)),
+            overtake_with: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -509,6 +519,22 @@ impl Respond for DescriptionJira {
                 serde_json::Value::Object(written);
             self.writes.fetch_add(1, Ordering::SeqCst);
             return ResponseTemplate::new(204);
+        }
+        // Only after a write, so this drops the *confirming* read rather than
+        // the observation the write is planned against. The write is already
+        // stored; only the answer about it is lost.
+        if self.writes.load(Ordering::SeqCst) > 0
+            && self.drop_confirmation.swap(false, Ordering::SeqCst)
+        {
+            if let Some(text) = self
+                .overtake_with
+                .lock()
+                .expect("the overtake is not poisoned")
+                .take()
+            {
+                *self.body.lock().expect("the body is not poisoned") = adf_document(&text);
+            }
+            return ResponseTemplate::new(503);
         }
         let held = self.body.lock().expect("the body is not poisoned").clone();
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -43429,4 +43455,214 @@ async fn jira_configured_world(
             .expect("the project is created");
     });
     world
+}
+
+/// A body that reached its reader is recorded, even when the answer was lost.
+///
+/// `publish_fields` fails both when the write did not happen and when only the
+/// confirming read failed. Treating those alike is what left 18 live bodies
+/// published to their readers while Kontor's ledger said nothing had ever been
+/// published — which then attributes a later divergence to a human who never
+/// touched the issue.
+#[tokio::test]
+async fn a_publication_whose_confirmation_was_lost_is_settled_by_refetch() {
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let placeholder = format!("Kontor epic {epic_id}: Publication identity enforcement");
+    let jira = DescriptionJira::new("ASMA-8304", "Epic", 1, &placeholder);
+    let writes = Arc::clone(&jira.writes);
+    let drop_confirmation = Arc::clone(&jira.drop_confirmation);
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(jira.clone())
+        .mount(&server)
+        .await;
+    let world = description_world(&server, project_id, epic_id, "ASMA-8304").await;
+
+    let preview_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview");
+    let apply_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply");
+    let authored = concat!(
+        "Goal\n",
+        "Refuse every nondefault publication without a confirmed binding.\n",
+        "\n",
+        "Detailed plan\n",
+        "Publication plan — https://github.com/Carasent-ASMA/asma-modules/blob/master/plan/p.md",
+    );
+
+    let preview = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["conflict"], "placeholder_body_only");
+
+    // The write will land; its confirming read will not come back.
+    drop_confirmation.store(true, Ordering::SeqCst);
+    let applied = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "body": authored,
+            "preview_hash": preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("lost-confirmation-apply")
+    .send(&world)
+    .await;
+    assert_eq!(
+        applied.status, 200,
+        "a write that reached its reader is not a failure: {}",
+        applied.body
+    );
+    assert_eq!(applied.json()["applied"], "created");
+    assert_eq!(
+        applied.json()["recovered_lost_confirmation"],
+        true,
+        "the response must say how this was settled: {}",
+        applied.body
+    );
+    assert_eq!(applied.json()["confirmed_text"], authored);
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        1,
+        "settling by refetch must not write a second time: {}",
+        applied.body
+    );
+    assert!(
+        applied.json()["publication_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the publication must be recorded, or a later divergence is misattributed: {}",
+        applied.body
+    );
+
+    // And because it was recorded, Kontor can now recognize its own projection.
+    let settled = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["conflict"], serde_json::Value::Null);
+    assert!(
+        settled.json()["published_hash"].is_string(),
+        "the ledger must remember what Kontor published: {}",
+        settled.body
+    );
+}
+
+/// A body overtaken by somebody else is not settled as Kontor's own.
+///
+/// The third verdict, and the one that must never be collapsed into the other
+/// two: if the confirming read is lost *and* the body is now neither the old one
+/// nor the intended one, somebody wrote while this attempt was in flight.
+/// Recording a publication there would claim their text as Kontor's projection.
+#[tokio::test]
+async fn a_body_overtaken_during_a_lost_confirmation_is_refused() {
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let placeholder = format!("Kontor epic {epic_id}: Publication identity enforcement");
+    let jira = DescriptionJira::new("ASMA-8306", "Epic", 1, &placeholder);
+    let drop_confirmation = Arc::clone(&jira.drop_confirmation);
+    let overtaken = jira.clone();
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(jira.clone())
+        .mount(&server)
+        .await;
+    let world = description_world(&server, project_id, epic_id, "ASMA-8306").await;
+
+    let preview_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview");
+    let authored = "Goal\nWhat Kontor meant to publish.";
+    let preview = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+
+    // The write lands, its confirmation is lost, and the body is then replaced
+    // by a third party before the refetch arrives.
+    drop_confirmation.store(true, Ordering::SeqCst);
+    let interloper = "Notes somebody else wrote while this was in flight.";
+    *overtaken
+        .overtake_with
+        .lock()
+        .expect("the overtake is not poisoned") = Some(interloper.to_owned());
+    let refused = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply"),
+        &serde_json::json!({
+            "body": authored,
+            "preview_hash": preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("overtaken-apply")
+    .send(&world)
+    .await;
+    assert_eq!(
+        jira.rendered(),
+        interloper,
+        "the interloper's body is what is live"
+    );
+    assert_eq!(
+        refused.status, 503,
+        "a body Kontor did not end up owning must not be settled as its own: {}",
+        refused.body
+    );
+
+    // Nothing was recorded, so the interloper's text is still attributed to a
+    // human rather than to Kontor's projection.
+    let after = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(after.json()["published_hash"], serde_json::Value::Null);
+}
+
+/// A write that never landed still refuses, and records nothing.
+#[tokio::test]
+async fn a_publication_that_never_landed_is_still_refused() {
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let placeholder = format!("Kontor epic {epic_id}: Publication identity enforcement");
+    // Every read fails, so the refetch cannot prove anything either.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let jira = DescriptionJira::new("ASMA-8305", "Epic", 1, &placeholder);
+    let writes = Arc::clone(&jira.writes);
+    Mock::given(any())
+        .respond_with(jira.clone())
+        .mount(&server)
+        .await;
+    let world = description_world(&server, project_id, epic_id, "ASMA-8305").await;
+
+    let preview_uri = format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview");
+    let authored = "Goal\nSomething the reader never receives.";
+    let preview = Call::post(&preview_uri, &serde_json::json!({"body": authored}))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply"),
+        &serde_json::json!({
+            "body": authored,
+            "preview_hash": preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("never-landed-apply")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 503, "{}", refused.body);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        jira.rendered(),
+        placeholder,
+        "a refused publication leaves the reader's body exactly as it was"
+    );
 }

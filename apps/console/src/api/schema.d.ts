@@ -5345,6 +5345,15 @@ export interface components {
             realm_id: string;
             /** @description The command receipt that authorizes it. */
             receipt_id: string;
+            /**
+             * @description Whether this publication was settled by a refetch after its confirming
+             *     read failed, rather than confirmed inline.
+             *
+             *     Reported because the two are not the same evidence. The write landed
+             *     either way, but a settled one spent a moment in which Kontor could not
+             *     say so, and an audit asking "how do we know" deserves that answer.
+             */
+            recovered_lost_confirmation: boolean;
             /** @description Digest of the body this replaced, when one was observed. */
             replaced_hash?: string | null;
         };

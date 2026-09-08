@@ -846,6 +846,27 @@ pub struct ApplyAuthority {
     pub authorized_by: CommandReceiptId,
 }
 
+/// What a refetch proves about a body publication whose result was never seen.
+///
+/// Deliberately the same three-way shape as [`AmbiguityVerdict`], because the
+/// question is the same one: a write was sent, the answer was lost, and only
+/// fresh evidence can say what happened. Collapsing it to a boolean would lose
+/// the case that matters most — a body that is now neither the old one nor the
+/// intended one, which means somebody else wrote while this attempt was in
+/// flight.
+#[derive(Debug, Clone)]
+pub enum BodyAmbiguityVerdict {
+    /// The reader now holds exactly the intended document. The write landed and
+    /// only its confirmation was lost.
+    AlreadyPublished(Box<ObservedIssue>),
+    /// The reader still holds exactly the body from before the attempt. Nothing
+    /// happened, so one retry under the same idempotency key is permitted.
+    NoEffect(Box<ObservedIssue>),
+    /// The body is neither the old one nor the intended one, or the connector
+    /// reported no body at all. A human decides; nothing is claimed.
+    Contradictory(Box<ObservedIssue>),
+}
+
 /// What a refetch proves about an apply whose result was never seen.
 #[derive(Debug, Clone)]
 pub enum AmbiguityVerdict {
@@ -1076,6 +1097,42 @@ impl JiraIssueDelegation<'_> {
         }
         self.raise_reported_failure("jira publish", &response)?;
         Ok(response)
+    }
+
+    /// Re-read a body publication whose confirmation was lost.
+    ///
+    /// [`Self::publish_fields`] fails when the connector cannot confirm the
+    /// write by reading it back — including when the write itself succeeded and
+    /// only the confirming read failed. Reporting that as a plain failure is
+    /// wrong in a specific and damaging way: the reader already sees the new
+    /// body while Kontor's ledger says nothing was ever published, so a later
+    /// divergence gets attributed to a human who never touched it.
+    ///
+    /// # Errors
+    /// Returns [`AsmaError`] when the refetch itself cannot be performed. That
+    /// is not a verdict: it means the question is still unanswered.
+    pub async fn reconcile_body_after_ambiguity(
+        &self,
+        before: &ObservedIssue,
+        intended: &ContentHash,
+    ) -> Result<BodyAmbiguityVerdict, AsmaError> {
+        let after = Box::new(self.refetch().await?);
+        let Some(observed) = after.observation.description.as_ref() else {
+            // No body evidence at all is not agreement and not a proven no-op.
+            return Ok(BodyAmbiguityVerdict::Contradictory(after));
+        };
+        if &observed.content_hash == intended {
+            return Ok(BodyAmbiguityVerdict::AlreadyPublished(after));
+        }
+        let unchanged = before
+            .observation
+            .description
+            .as_ref()
+            .is_some_and(|prior| prior.content_hash == observed.content_hash);
+        if unchanged {
+            return Ok(BodyAmbiguityVerdict::NoEffect(after));
+        }
+        Ok(BodyAmbiguityVerdict::Contradictory(after))
     }
 
     /// Re-read an apply with an unknown result before authorizing any retry.

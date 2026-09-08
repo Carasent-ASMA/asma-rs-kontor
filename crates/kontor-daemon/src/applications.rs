@@ -218,9 +218,9 @@ use kontor_core::ticket::{
     classify_body, classify_observed_body, reconcile_epic,
 };
 use kontor_jira::jira::{
-    ApplyAuthority, CompiledFieldSpec, CompiledWorkflowSpec, FieldWrite, IssueAmbiguityVerdict,
-    JiraIssueDelegation, JiraOutcome, Observed, ObservedIssue, PinnedProfile, SpecCatalog,
-    TicketDelegation,
+    ApplyAuthority, BodyAmbiguityVerdict, CompiledFieldSpec, CompiledWorkflowSpec, FieldWrite,
+    IssueAmbiguityVerdict, JiraIssueDelegation, JiraOutcome, Observed, ObservedIssue,
+    PinnedProfile, SpecCatalog, TicketDelegation,
 };
 use kontor_jira::{JiraConnector, JiraConnectors, JiraError, JiraIssueKind, JiraIssuePlan};
 use kontor_policy::{
@@ -3928,6 +3928,7 @@ impl Services {
                     || request.body.clone(),
                     |publication| publication.body_text.as_str().to_owned(),
                 ),
+                recovered_lost_confirmation: false,
                 receipt_id: existing.id.to_string(),
             });
         }
@@ -3967,11 +3968,12 @@ impl Services {
                 replaced_hash: None,
                 publication_id: String::new(),
                 confirmed_text: prepared.body.as_str().to_owned(),
+                recovered_lost_confirmation: false,
                 receipt_id: receipt.to_string(),
             });
         }
 
-        let response = JiraIssueDelegation {
+        let delegation = JiraIssueDelegation {
             exchange: self.jira(project_id)?,
             field_spec: &prepared.field_spec,
             workflow_spec: &prepared.workflow_spec,
@@ -3979,25 +3981,56 @@ impl Services {
             projection_revision: revision,
             field_writes: &prepared.field_writes,
             idempotency_key: key,
-        }
-        .publish_fields(
-            &prepared.observed,
-            ApplyAuthority {
-                authorized_by: receipt,
-            },
-        )
-        .await
-        .map_err(|error| self.refuse_jira(&error))?;
-        // The connector confirms a write by re-reading the issue. Believing the
-        // request instead is exactly the mistake that let a placeholder body be
-        // reported as converged, so the confirmation is required here too.
-        let confirmed = response.confirmation.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the Jira boundary did not confirm the published description by readback",
+        };
+        let published = delegation
+            .publish_fields(
+                &prepared.observed,
+                ApplyAuthority {
+                    authorized_by: receipt,
+                },
             )
-        })?;
-        let confirmed_body = confirmed.observation.description.ok_or_else(|| {
+            .await;
+        // A publication that cannot be confirmed is not the same thing as a
+        // publication that did not happen. `publish_fields` fails on both, and
+        // treating them alike is how 18 bodies reached their readers while the
+        // ledger said nothing had ever been published — which then attributes a
+        // later divergence to a human who never touched the issue. So the write
+        // is re-read before it is called a failure.
+        let (confirmed_observation, recovered) = match published {
+            Ok(response) => {
+                let confirmation = response.confirmation.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Jira boundary did not confirm the published description by readback",
+                    )
+                })?;
+                (confirmation.observation, false)
+            }
+            Err(lost) => {
+                match delegation
+                    .reconcile_body_after_ambiguity(&prepared.observed, &prepared.intended_hash)
+                    .await
+                {
+                    Ok(BodyAmbiguityVerdict::AlreadyPublished(after)) => {
+                        tracing::warn!(
+                            project_id = %project_id,
+                            issue_key = %prepared.issue_key,
+                            detail = %lost,
+                            "a published description was settled by refetch after its confirming read failed"
+                        );
+                        (after.observation, true)
+                    }
+                    // Proven not to have happened, or proven to have been
+                    // overtaken by somebody else. Either way the original
+                    // refusal is the honest answer, and nothing is recorded.
+                    Ok(_) => return Err(self.refuse_jira(&lost)),
+                    // The refetch could not be performed, so the question is
+                    // still open. Report the original failure, not a verdict.
+                    Err(_) => return Err(self.refuse_jira(&lost)),
+                }
+            }
+        };
+        let confirmed_body = confirmed_observation.description.ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
                 "the confirming readback carried no description field",
@@ -4040,6 +4073,7 @@ impl Services {
                 .map(|hash| hash.as_str().to_owned()),
             publication_id: publication.id.to_string(),
             confirmed_text: confirmed_body.plain_text.as_str().to_owned(),
+            recovered_lost_confirmation: recovered,
             receipt_id: receipt.to_string(),
         })
     }
