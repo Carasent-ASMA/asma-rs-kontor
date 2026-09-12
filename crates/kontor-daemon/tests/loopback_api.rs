@@ -43667,3 +43667,926 @@ async fn a_publication_that_never_landed_is_still_refused() {
         "a refused publication leaves the reader's body exactly as it was"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASMA-8117 — typed Jira-key Team Definition tokens.
+//
+// The mutants these tests exist to kill:
+//
+// * rendering a container from the caller's execution scope instead of the
+//   subject its own topology node records;
+// * substituting an item code, a title, a numeric suffix or a native id when a
+//   required confirmed binding is missing, instead of refusing;
+// * refusing *after* a native prepare, retitle or launch has already happened.
+// ---------------------------------------------------------------------------
+
+/// The prepared ASMA-8117 successor of the bundled Operational v1 definition:
+/// the same document at an unused version, with each container template moved
+/// to its typed Jira-key token and nothing else changed.
+///
+/// `docs/evidence/ASMA-8117/team-definition-successors/asma-operational-v4.json`
+/// is this exact document; `kontor-core`'s `team_definition_successors` suite
+/// proves the two agree field by field.
+fn jira_key_successor_definition() -> kontor_core::spec::TeamDefinitionSpec {
+    use kontor_core::naming::{NativeNameSegment, NativeNameTemplate, NativeNameToken};
+
+    let mut definition = kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .team_definitions
+        .into_iter()
+        .next()
+        .expect("the bundled Team Definition");
+    definition.version = SpecVersion::parse(4).expect("the next unused Operational version");
+    for container in &mut definition.containers {
+        let (from, to) = match container.kind.as_str() {
+            "ESW" | "ECP" => (NativeNameToken::EpicItemCode, NativeNameToken::EpicJiraKey),
+            "TSW" => (NativeNameToken::TaskItemCode, NativeNameToken::TaskJiraKey),
+            "ASW" | "CSW" => (
+                NativeNameToken::ScopeItemCode,
+                NativeNameToken::ScopeJiraKey,
+            ),
+            other => panic!("the bundled definition has no {other} container"),
+        };
+        let segments = container
+            .name_template
+            .segments()
+            .expect("a typed bundled template")
+            .iter()
+            .map(|segment| match segment {
+                NativeNameSegment::Token(found) if *found == from => NativeNameSegment::Token(to),
+                other => other.clone(),
+            })
+            .collect();
+        container.name_template =
+            NativeNameTemplate::from_segments(segments).expect("the successor template is valid");
+    }
+    definition
+        .validate()
+        .expect("the prepared successor is publishable");
+    definition
+}
+
+/// Publish the successor and move one epic's pin onto it, through the exact
+/// public validate/publish/upgrade routes an operator would use.
+async fn current_project_revision(world: &World, project: &str) -> u64 {
+    let read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    read.json()["revision"]
+        .as_u64()
+        .expect("the project revision")
+}
+
+async fn pin_jira_key_successor(
+    world: &World,
+    project: &str,
+    epic: &str,
+    key_prefix: &str,
+) -> kontor_core::spec::TeamDefinitionSpec {
+    let definition = jira_key_successor_definition();
+    let candidate = serde_json::to_value(&definition).expect("the successor serializes");
+    let validated = Call::post(
+        format!("/v1/projects/{project}/team-definitions:validate"),
+        &serde_json::json!({"candidate": candidate}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(validated.status, 200, "{}", validated.body);
+    assert!(
+        validated.json()["violations"]
+            .as_array()
+            .expect("validation violations")
+            .is_empty(),
+        "the successor validates against the published topology: {}",
+        validated.body
+    );
+    let published = Call::post(
+        format!("/v1/projects/{project}/team-definitions:publish"),
+        &serde_json::json!({
+            "candidate": candidate,
+            "validation_hash": validated.json()["validation_hash"],
+            "expected_revision": current_project_revision(world, project).await
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key_prefix}-publish"))
+    .send(world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+
+    let upgrade = serde_json::json!({
+        "target_definition": {
+            "id": definition.definition_id.to_string(),
+            "version": definition.version.get()
+        },
+        "legacy_topics": {},
+        "expected_revision": current_project_revision(world, project).await
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &serde_json::json!({
+            "upgrade": upgrade,
+            "preview_hash": preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key_prefix}-upgrade"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["pinned_definition"]["version"],
+        u64::from(definition.version.get())
+    );
+    definition
+}
+
+/// Every bound container title in one epic, by topology kind.
+async fn bound_titles(world: &World, project: &str, epic: &str) -> BTreeMap<String, String> {
+    let inspected = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(inspected.status, 200, "{}", inspected.body);
+    inspected.json()["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .filter_map(|node| {
+            let id = TopologyNodeId::parse(node["topology_node_id"].as_str()?).ok()?;
+            Some((
+                node["kind_key"].as_str()?.to_owned(),
+                world.fake.container_title(id)?,
+            ))
+        })
+        .collect()
+}
+
+/// ESW, ECP and TSW render the exact confirmed keys of their own subjects, and
+/// a required key with no confirmed binding refuses before any native effect.
+#[tokio::test]
+async fn jira_key_containers_render_the_confirmed_binding_of_their_own_subject() {
+    let composed = compose_realm("/tmp/kontor-asma8117-jira-key-containers").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+
+    let (task_id, epic_key, task_key) = world.daemon.state().with_store(|store| {
+        let task = store
+            .list_epic_tasks(project_id, epic_id)
+            .expect("the epic tasks read")
+            .into_iter()
+            .next()
+            .expect("the composed epic has a task");
+        let epic_key = store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("the epic binding reads")
+            .expect("the composed epic is confirmed");
+        let task_key = store
+            .confirmed_jira_task_key(project_id, task.id)
+            .expect("the task binding reads")
+            .expect("the composed task is confirmed");
+        (task.id, epic_key, task_key)
+    });
+    assert_ne!(
+        epic_key.as_str(),
+        task_key.as_str(),
+        "the fixture must be able to tell the two subjects apart"
+    );
+
+    let control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": composed.project_revision
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8117-materialize-control")
+    .send(world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task_id.to_string()},
+            "expected_revision": composed.project_revision
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8117-materialize-ticket")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+
+    // Before the upgrade the epic still renders from its pinned item-code
+    // template, which is exactly the compatibility this change must not break.
+    let before = bound_titles(world, project, epic).await;
+    assert!(
+        before
+            .get("TSW")
+            .is_some_and(|title| !title.contains(task_key.as_str())),
+        "the item-code pin renders a projection, not the key: {before:?}"
+    );
+
+    pin_jira_key_successor(world, project, epic, "asma8117-containers").await;
+
+    let after = bound_titles(world, project, epic).await;
+    assert_eq!(
+        after.get("ESW").map(String::as_str),
+        Some(format!("ESW • {epic_key}").as_str()),
+        "ESW carries the confirmed epic key: {after:?}"
+    );
+    assert_eq!(
+        after.get("ECP").map(String::as_str),
+        Some(format!("ECP • {epic_key}").as_str()),
+        "ECP carries the confirmed epic key: {after:?}"
+    );
+    assert_eq!(
+        after.get("TSW").map(String::as_str),
+        Some(format!("TSW • {task_key}").as_str()),
+        "TSW carries its own node's confirmed task key, not the epic's: {after:?}"
+    );
+
+    // Seat labels stay on their own vocabulary: no seat repeats a Jira key,
+    // a topic or a container prefix.
+    let seats = Call::get(format!(
+        "/v1/projects/{project}/topology:inspect?epic_id={epic}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    for seat in seats.json()["nodes"]
+        .as_array()
+        .expect("topology nodes")
+        .iter()
+        .flat_map(|node| node["seats"].as_array().cloned().unwrap_or_default())
+    {
+        if let Some(title) = seat["observed_binding"]["display_name"].as_str() {
+            assert!(
+                !title.contains(epic_key.as_str()) && !title.contains(task_key.as_str()),
+                "a seat title leaked its container's scope: {title}"
+            );
+        }
+    }
+
+    // A required Jira-key token whose confirmed binding is gone must refuse
+    // before any native effect, rather than reaching for the item code, the
+    // task title, the epic beside it or the node's own UUID.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    assert_eq!(
+        connection
+            .execute("DELETE FROM jira_task_binding_confirmations", [])
+            .expect("the task confirmation is withdrawn"),
+        1
+    );
+    drop(connection);
+
+    world.fake.take_calls();
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": current_project_revision(world, project).await}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 409, "{}", previewed.body);
+    assert_eq!(previewed.code(), "placement_blocked");
+    assert!(
+        previewed.body.contains("confirmed Jira binding"),
+        "the refusal names the missing confirmed binding: {}",
+        previewed.body
+    );
+    assert!(
+        !previewed.body.contains(task_key.as_str())
+            && !previewed.body.contains(&task_id.to_string()),
+        "nothing withdrawn or internal may stand in for the key: {}",
+        previewed.body
+    );
+    assert!(
+        world.fake.take_calls().iter().all(|call| !matches!(
+            call,
+            AdapterCall::PrepareContainer(_)
+                | AdapterCall::RetitleContainer(_)
+                | AdapterCall::RetitleSeat(_)
+                | AdapterCall::Launch(_)
+                | AdapterCall::LaunchHostedSeat(_)
+                | AdapterCall::LaunchConsultation(_)
+        )),
+        "identity validation precedes every runtime mutation",
+    );
+
+    // A preview refusing proves only that the preview refuses. The contract is
+    // that a *mutating* route stops before any native effect, so the same
+    // withdrawn binding is driven through `topology:materialize` — the public
+    // route that actually prepares, retitles and launches containers.
+    world.fake.take_calls();
+    let mutating = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task_id.to_string()},
+            "expected_revision": current_project_revision(world, project).await
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8117-materialize-without-a-binding")
+    .send(world)
+    .await;
+    assert_eq!(mutating.status, 409, "{}", mutating.body);
+    assert_eq!(mutating.code(), "placement_blocked");
+    assert!(
+        mutating.body.contains("confirmed Jira binding"),
+        "the mutating route names the missing confirmed binding: {}",
+        mutating.body
+    );
+    let after_mutating = world.fake.take_calls();
+    assert!(
+        after_mutating.iter().all(|call| !matches!(
+            call,
+            AdapterCall::PrepareContainer(_)
+                | AdapterCall::RetitleContainer(_)
+                | AdapterCall::RetitleSeat(_)
+                | AdapterCall::Launch(_)
+                | AdapterCall::LaunchHostedSeat(_)
+                | AdapterCall::LaunchConsultation(_)
+        )),
+        "a mutating route must refuse before any native effect: {after_mutating:?}",
+    );
+
+    // And the containers still carry the titles they were bound with: a
+    // refused mutation left every native identity exactly as it found it.
+    let unchanged = bound_titles(world, project, epic).await;
+    assert_eq!(unchanged, after, "a refusal must not retitle anything");
+}
+
+/// Everything both consultation families need: a confirmed epic and ticket,
+/// bound containers, the pinned Jira-key successor, one Core Team caller in the
+/// epic's control plane, and a published Advisor profile.
+struct ConsultationFixture {
+    composed: Composed,
+    task_id: TaskId,
+    epic_key: ExternalId,
+    task_key: ExternalId,
+    caller: String,
+}
+
+async fn jira_key_consultation_fixture(root: &str) -> ConsultationFixture {
+    let composed = compose_realm(root).await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    adopt_session_base(world, project, composed.project_revision).await;
+
+    let (task_id, epic_key, task_key) = world.daemon.state().with_store(|store| {
+        let task = store
+            .list_epic_tasks(project_id, epic_id)
+            .expect("the epic tasks read")
+            .into_iter()
+            .next()
+            .expect("the composed epic has a task");
+        let epic_key = store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("the epic binding reads")
+            .expect("the composed epic is confirmed");
+        let task_key = store
+            .confirmed_jira_task_key(project_id, task.id)
+            .expect("the task binding reads")
+            .expect("the composed task is confirmed");
+        (task.id, epic_key, task_key)
+    });
+    assert_ne!(epic_key.as_str(), task_key.as_str());
+    // Bind the epic's containers first: a naming migration repairs exactly the
+    // native identities that already exist, and a consultation is a child of a
+    // bound ESW.
+    for (scope, target, key) in [
+        (
+            "epic_control",
+            serde_json::json!({"scope": "epic_control", "epic_id": epic}),
+            "asma8117-consultation-materialize-control",
+        ),
+        (
+            "ticket",
+            serde_json::json!({"scope": "ticket", "task_id": task_id.to_string()}),
+            "asma8117-consultation-materialize-ticket",
+        ),
+    ] {
+        let materialized = Call::post(
+            format!("/v1/projects/{project}/topology:materialize"),
+            &serde_json::json!({
+                "target": target,
+                "expected_revision": current_project_revision(world, project).await
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+        .send(world)
+        .await;
+        assert_eq!(materialized.status, 200, "{scope}: {}", materialized.body);
+    }
+
+    pin_jira_key_successor(world, project, epic, "asma8117-consultation").await;
+
+    // The one caller for both consultations sits in the epic's control plane.
+    // It belongs to no task, so if the subject ever came from the caller the
+    // task-scoped row below could not render a task key at all.
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let control = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8117-consultation-core-seats")
+    .send(world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+    let caller = control.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA caller")
+        .to_owned();
+
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    advisor["allowed_scopes"] = serde_json::json!(["epic", "ticket"]);
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": preview.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8117-consultation-profile")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    ConsultationFixture {
+        task_id,
+        epic_key,
+        task_key,
+        caller,
+        composed,
+    }
+}
+
+/// The Committee family carries the same durable subject as the Advisor, and is
+/// asserted on its own so a mutation cannot be caught only by the ASW rows.
+#[tokio::test]
+async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8117-committee-subject").await;
+    let ConsultationFixture {
+        composed,
+        task_id,
+        epic_key,
+        task_key,
+        caller,
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let (task_id, epic_key, task_key, caller) =
+        (*task_id, epic_key.clone(), task_key.clone(), caller.clone());
+
+    // The preset is published through the store because this suite does not
+    // exercise the Committee authoring routes.
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+
+    let invoke_committee = |topic: &'static str, task: Option<String>, key: &'static str| {
+        let caller = caller.clone();
+        let profile = committee_profile.clone();
+        let version = template.version.get();
+        async move {
+            let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+                .signed_as(world, "observer")
+                .send(world)
+                .await;
+            let mut body = serde_json::json!({
+                "profile": {"id": profile, "version": version},
+                "topic": topic,
+                "question": "Which confirmed key names this consultation?",
+                "caller_seat_binding_id": caller,
+                "expected_revision": epic_read.json()["revision"],
+            });
+            if let Some(task) = task {
+                body["task_id"] = serde_json::json!(task);
+            }
+            let invoked = Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+                &body,
+            )
+            .signed_as(world, "operator")
+            .with_key(key)
+            .send(world)
+            .await;
+            assert_eq!(invoked.status, 200, "{}", invoked.body);
+            invoked.json()["container_name"]
+                .as_str()
+                .expect("a rendered Committee container")
+                .to_owned()
+        }
+    };
+
+    assert_eq!(
+        invoke_committee("Release readiness", None, "asma8117-committee-epic").await,
+        format!("CSW • {epic_key} • Release readiness"),
+    );
+    assert_eq!(
+        invoke_committee(
+            "Naming review",
+            Some(task_id.to_string()),
+            "asma8117-committee-task"
+        )
+        .await,
+        format!("CSW • {task_key} • Naming review"),
+        "a task-scoped Committee must not fall back to the containing epic",
+    );
+}
+
+/// A consultation container is named from the subject its own topology node
+/// records — never from the seat that called it, and never from the containing
+/// epic just because the caller sits there.
+#[tokio::test]
+async fn consultation_containers_follow_their_recorded_subject_not_their_caller() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8117-consultation-subject").await;
+    let ConsultationFixture {
+        composed,
+        task_id,
+        epic_key,
+        task_key,
+        caller,
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let (task_id, epic_key, task_key, caller) =
+        (*task_id, epic_key.clone(), task_key.clone(), caller.clone());
+
+    let invoke = |topic: &'static str, task: Option<String>, key: &'static str| {
+        let caller = caller.clone();
+        async move {
+            let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+                .signed_as(world, "observer")
+                .send(world)
+                .await;
+            let mut body = serde_json::json!({
+                "profile": {"id": ADVISOR_PROFILE, "version": 1},
+                "topic": topic,
+                "question": "Which confirmed key names this consultation?",
+                "caller_seat_binding_id": caller,
+                "expected_revision": epic_read.json()["revision"],
+            });
+            if let Some(task) = task {
+                body["task_id"] = serde_json::json!(task);
+            }
+            let invoked = Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+                &body,
+            )
+            .signed_as(world, "operator")
+            .with_key(key)
+            .send(world)
+            .await;
+            assert_eq!(invoked.status, 200, "{}", invoked.body);
+            invoked.json()["container_name"]
+                .as_str()
+                .expect("a rendered Advisor container")
+                .to_owned()
+        }
+    };
+
+    // The epic is the subject: the containing epic's confirmed key names it.
+    assert_eq!(
+        invoke("Release readiness", None, "asma8117-advisor-epic").await,
+        format!("ASW • {epic_key} • Release readiness"),
+    );
+
+    // The same caller, in the same epic, asking about one ticket. The subject
+    // is frozen on the run — `ux_topology_node_task` keeps the node's task for
+    // the ticket's own delivery workspace — so the ticket's confirmed key
+    // names the container, not the epic the caller sits in.
+    assert_eq!(
+        invoke(
+            "Naming review",
+            Some(task_id.to_string()),
+            "asma8117-advisor-task"
+        )
+        .await,
+        format!("ASW • {task_key} • Naming review"),
+        "a task-scoped consultation must not fall back to the containing epic",
+    );
+
+    // A retry under the same idempotency key replays the original receipt: it
+    // must return that run's frozen subject, not decide one again.
+    let replayed = invoke(
+        "Naming review",
+        Some(task_id.to_string()),
+        "asma8117-advisor-task",
+    )
+    .await;
+    assert_eq!(
+        replayed,
+        format!("ASW • {task_key} • Naming review"),
+        "a replayed invocation renders the subject it froze the first time",
+    );
+
+    // The delivery workspace still owns the node-level task, and the two
+    // consultation nodes hold none: the subject is recorded beside the run.
+    let (nodes, subjects) = world.daemon.state().with_store(|store| {
+        let nodes: Vec<_> = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic topology reads")
+            .into_iter()
+            .filter(|node| node.kind.as_str() == "ASW")
+            .map(|node| (node.id, node.task_id))
+            .collect();
+        let subjects: Vec<_> = nodes
+            .iter()
+            .map(|(id, _)| {
+                store
+                    .get_consultation_run_by_topology_node(project_id, *id)
+                    .expect("the consultation run reads")
+                    .expect("each ASW node has a run")
+                    .subject
+            })
+            .collect();
+        (nodes, subjects)
+    });
+    assert_eq!(nodes.len(), 2, "both consultations created a node");
+    assert!(
+        nodes.iter().all(|(_, task_id)| task_id.is_none()),
+        "a consultation must not claim the delivery workspace's node task",
+    );
+    assert_eq!(
+        subjects,
+        vec![
+            Some(kontor_core::consultation::ConsultationSubject::Epic),
+            Some(kontor_core::consultation::ConsultationSubject::Task(
+                task_id
+            )),
+        ],
+        "each run froze the exact subject it was invoked about",
+    );
+}
+
+/// A consultation invoked before the subject was recorded has no subject to
+/// render. Naming it refuses rather than reaching for the caller's seat or the
+/// epic that happens to contain it.
+#[tokio::test]
+async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
+    let composed = compose_realm("/tmp/kontor-asma8117-absent-subject").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    adopt_session_base(world, project, composed.project_revision).await;
+
+    let (task_id, epic_key, task_key) = world.daemon.state().with_store(|store| {
+        let task = store
+            .list_epic_tasks(project_id, epic_id)
+            .expect("the epic tasks read")
+            .into_iter()
+            .next()
+            .expect("the composed epic has a task");
+        let epic_key = store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("the epic binding reads")
+            .expect("the composed epic is confirmed");
+        let task_key = store
+            .confirmed_jira_task_key(project_id, task.id)
+            .expect("the task binding reads")
+            .expect("the composed task is confirmed");
+        (task.id, epic_key, task_key)
+    });
+
+    for (scope, target, key) in [
+        (
+            "epic_control",
+            serde_json::json!({"scope": "epic_control", "epic_id": epic}),
+            "asma8117-absent-materialize-control",
+        ),
+        (
+            "ticket",
+            serde_json::json!({"scope": "ticket", "task_id": task_id.to_string()}),
+            "asma8117-absent-materialize-ticket",
+        ),
+    ] {
+        let materialized = Call::post(
+            format!("/v1/projects/{project}/topology:materialize"),
+            &serde_json::json!({
+                "target": target,
+                "expected_revision": current_project_revision(world, project).await
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(key)
+        .send(world)
+        .await;
+        assert_eq!(materialized.status, 200, "{scope}: {}", materialized.body);
+    }
+    pin_jira_key_successor(world, project, epic, "asma8117-absent").await;
+
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let control = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8117-absent-core-seats")
+    .send(world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+    let caller = control.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA caller")
+        .to_owned();
+
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    advisor["allowed_scopes"] = serde_json::json!(["epic", "ticket"]);
+    let preview = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:preview"),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project}/advisor-profiles:apply"),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": preview.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8117-absent-profile")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "topic": "Naming review",
+            "question": "Which confirmed key names this consultation?",
+            "caller_seat_binding_id": caller,
+            "task_id": task_id.to_string(),
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8117-absent-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(
+        invoked.json()["container_name"],
+        format!("ASW • {task_key} • Naming review")
+    );
+
+    // Reproduce a run recorded before schema v94: its subject was discarded at
+    // invocation and cannot be recovered. The frozen-input trigger refuses to
+    // rewrite a subject, so the fixture removes it exactly as the legacy-shape
+    // fixtures elsewhere in this suite do.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database reopens");
+    connection
+        .execute("DROP TRIGGER consultation_run_inputs_are_frozen", [])
+        .expect("the fixture can expose the pre-v94 shape");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE consultation_runs SET subject_kind = NULL, subject_task_id = NULL",
+                [],
+            )
+            .expect("the legacy subject-less row is reproduced"),
+        1
+    );
+    drop(connection);
+
+    world.fake.take_calls();
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/native-names:preview"),
+        &serde_json::json!({"expected_revision": current_project_revision(world, project).await}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 409, "{}", previewed.body);
+    assert_eq!(previewed.code(), "placement_blocked");
+    assert!(
+        previewed.body.contains("no durably recorded subject"),
+        "the refusal names the missing subject: {}",
+        previewed.body
+    );
+    // Neither substitute leaked into a rendered name on the way to refusing.
+    assert!(
+        !previewed.body.contains(epic_key.as_str()),
+        "the containing epic is not a substitute subject: {}",
+        previewed.body
+    );
+    assert!(
+        world.fake.take_calls().iter().all(|call| !matches!(
+            call,
+            AdapterCall::PrepareContainer(_)
+                | AdapterCall::RetitleContainer(_)
+                | AdapterCall::RetitleSeat(_)
+                | AdapterCall::Launch(_)
+                | AdapterCall::LaunchHostedSeat(_)
+                | AdapterCall::LaunchConsultation(_)
+        )),
+        "an unnameable consultation must refuse before any native effect",
+    );
+}

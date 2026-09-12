@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 94;
+pub const SCHEMA_VERSION: i64 = 95;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -354,6 +354,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0092_settled_consultation_topic_corrections.sql"),
     include_str!("../migrations/0093_consultation_session_releases.sql"),
     include_str!("../migrations/0094_jira_description_projection.sql"),
+    include_str!("../migrations/0095_consultation_subject.sql"),
 ];
 
 const _: () = assert!(

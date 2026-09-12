@@ -540,8 +540,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v94 makes an observed Jira body part of the immutable observation and
     // keeps every description Kontor published, so a divergence can be
     // attributed to Kontor's own stale projection rather than to a human edit
-    // (ASMA-8123).
-    assert_eq!(SCHEMA_VERSION, 94);
+    // (ASMA-8123). v95 records the epic or ticket one consultation was asked
+    // about, frozen beside its run because the node's task belongs to the
+    // delivery workspace, and leaves a pre-v95 run's subject visibly
+    // unrecorded.
+    assert_eq!(SCHEMA_VERSION, 95);
 }
 
 #[test]
