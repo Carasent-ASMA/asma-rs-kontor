@@ -43978,15 +43978,22 @@ async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connect
         "an already-followed rename is not redone"
     );
 
-    // The zero-extra-read invariant, stated rather than assumed. Following a
-    // rename reuses the answer the status observation already produced, so a
-    // pass that reconciles an identity costs exactly what a pass that does not.
-    // The resident loop is bounded on this; an identity check that asked Jira
-    // again would double the cost of every pass.
+    // The read budget, stated exactly rather than assumed.
+    //
+    // Steady state is what the resident loop is bounded on, and it is unchanged:
+    // discovering that an identity still agrees costs nothing, because it rides
+    // the status observation already being made. A *rename* costs exactly one
+    // additional read, and only in the pass that follows it — the evidence has
+    // to be re-established at the confirmed address, since the boundary hashes
+    // the key it was asked under and an observation taken as `ASMA-1` cannot
+    // validate a read of `MOVED-9`.
+    //
+    // So: one extra read, once, per rename; never a second read per pass.
     let replay_reads = reads.load(Ordering::SeqCst) - before_replay;
     assert_eq!(
-        replay_reads, reads_for_one_pass,
-        "following a rename must not cost an extra Jira read"
+        replay_reads + 1,
+        reads_for_one_pass,
+        "a rename costs exactly one re-observation, and a steady pass costs none"
     );
 }
 
@@ -44757,6 +44764,9 @@ async fn a_ledger_refused_rename_is_permanent_while_only_outages_are_transient()
 /// An epic whose issue has been renamed, recording every outbound write.
 #[derive(Clone)]
 struct RenamedEpicJira {
+    /// The immutable id Jira reports. `901` is the same issue renamed; anything
+    /// else is a different issue wearing the key.
+    issue_id: &'static str,
     writes: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -44774,11 +44784,11 @@ impl Respond for RenamedEpicJira {
         if path.ends_with("/transitions") {
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "transitions": [{
-                    "id": "start-development",
+                    "id": "to-be-groomed",
                     "to": {
-                        "id": "10214",
-                        "name": "In Development",
-                        "statusCategory": {"name": "In Progress"}
+                        "id": "10236",
+                        "name": "TO BE GROOMED",
+                        "statusCategory": {"name": "To Do"}
                     }
                 }]
             }));
@@ -44788,7 +44798,7 @@ impl Respond for RenamedEpicJira {
             // issue holds now.
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": "MOVED-9",
-                "id": "901",
+                "id": self.issue_id,
                 "fields": {
                     "project": {"key": "ASMA"},
                     "status": {
@@ -44815,6 +44825,7 @@ async fn an_epic_same_issue_rename_never_addresses_the_superseded_key() {
     let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
     Mock::given(any())
         .respond_with(RenamedEpicJira {
+            issue_id: "901",
             writes: Arc::clone(&writes),
         })
         .mount(&server)
@@ -44824,6 +44835,16 @@ async fn an_epic_same_issue_rename_never_addresses_the_superseded_key() {
     let epic_id = MiniProjectId::generate();
     let (world, _config) = world_with_jira(&server, project_id).await;
     seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    // Placement needs an explicit legacy code before it derives an item code.
+    // It is a backlog code, not a Jira key: no issue key is put in that field.
+    world.daemon.state().with_store(|store| {
+        let code = kontor_core::backlog_identity::EpicBacklogCode::parse("AUTO")
+            .expect("an explicit legacy backlog code");
+        store
+            .assign_epic_backlog_code(project_id, epic_id, Some(&code), at("2026-09-12T10:00:00Z"))
+            .expect("the epic receives its explicit legacy code");
+    });
 
     let report = world.daemon.reconcile_jira_once().await;
     assert_eq!(report.renamed, 1, "the epic follows its issue: {report:?}");
@@ -44841,17 +44862,70 @@ async fn an_epic_same_issue_rename_never_addresses_the_superseded_key() {
 
     // And nothing was addressed to the superseded route.
     //
-    // This fixture does not yet drive the epic as far as its transition: the
-    // pass blocks afterwards on legacy epic setup unrelated to identity (see
-    // OQ-004), so it deliberately does not assert that a write *happened*.
-    // The property that a write, when it happens, addresses the current key is
-    // proved deterministically by the unit regression
-    // `a_same_issue_rename_selects_the_current_key_for_every_write`, which the
-    // stale-selector mutant M14 fails. This case guards the end-to-end shape
-    // and will assert the transition itself once that path is reachable.
+    // The write actually happened, at the current address. An empty write list
+    // would satisfy "no path names ASMA-1" while proving nothing, so the
+    // non-emptiness is asserted first.
     let emitted = writes.lock().expect("the write log locks").clone();
     assert!(
+        !emitted.is_empty(),
+        "the pass must reach the native write boundary: {report:?}"
+    );
+    assert!(
+        emitted
+            .iter()
+            .any(|path| path.contains("/rest/api/3/issue/MOVED-9/")),
+        "dry run and apply address the current key: {emitted:?}"
+    );
+    assert!(
         emitted.iter().all(|path| !path.contains("ASMA-1")),
-        "the superseded route is never called: {emitted:?}"
+        "the superseded route is never addressed: {emitted:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_epic_key_that_moved_to_another_issue_is_still_refused_after_the_refresh() {
+    let server = MockServer::start().await;
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(any())
+        .respond_with(RenamedEpicJira {
+            // A different immutable issue now answers at that key.
+            issue_id: "999",
+            writes: Arc::clone(&writes),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+    world.daemon.state().with_store(|store| {
+        let code = kontor_core::backlog_identity::EpicBacklogCode::parse("AUTO")
+            .expect("an explicit legacy backlog code");
+        store
+            .assign_epic_backlog_code(project_id, epic_id, Some(&code), at("2026-09-12T10:00:00Z"))
+            .expect("the epic receives its explicit legacy code");
+    });
+
+    let report = world.daemon.reconcile_jira_once().await;
+    assert_eq!(
+        report.renamed, 0,
+        "an anti-rebind is never a rename: {report:?}"
+    );
+
+    // Refreshing evidence at the new address must not become a way to adopt a
+    // different issue: the binding stays put and nothing is written.
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_epic_key(project_id, epic_id)
+                .expect("epic key")
+                .map(|key| key.as_str().to_owned()),
+            Some("ASMA-1".to_owned())
+        );
+    });
+    assert!(
+        writes.lock().expect("the write log locks").is_empty(),
+        "a different immutable issue receives no Jira effect"
     );
 }

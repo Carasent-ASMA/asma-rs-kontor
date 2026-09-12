@@ -509,6 +509,10 @@ enum IdentityDecision {
     Proceed {
         /// The key Jira reports now, which a rename may have changed.
         current_key: ExternalId,
+        /// The immutable issue this subject is proven to be. Carried so a
+        /// refreshed observation can be re-proved at the new address without
+        /// reading the ledger again.
+        issue_id: ExternalId,
         /// Whether this pass reconciled a rename.
         renamed: bool,
     },
@@ -3205,6 +3209,7 @@ impl Services {
         if observed.issue_key == *confirmed_key {
             return IdentityDecision::Proceed {
                 current_key: confirmed_key.clone(),
+                issue_id: stored_issue_id,
                 renamed: false,
             };
         }
@@ -3232,6 +3237,7 @@ impl Services {
             // the request was made under.
             Ok(_) => IdentityDecision::Proceed {
                 current_key: observed.issue_key.clone(),
+                issue_id: stored_issue_id,
                 renamed: true,
             },
             // A ledger refusal is a durable rule speaking, not an outage. Only a
@@ -3338,6 +3344,57 @@ impl Services {
         // Every key-bearing object below is built from this, never from the
         // pre-observation delegation.
         let issue_key = &Self::write_key_for(issue_key, &decided);
+        let current_delegation = JiraIssueDelegation {
+            exchange: self.jira(project_id)?,
+            field_spec: &field_spec,
+            workflow_spec: &workflow_spec,
+            issue_key,
+            projection_revision: epic.revision,
+            field_writes: &empty_fields,
+            idempotency_key: &observe_key,
+        };
+        // Addressing the new key is necessary but not sufficient: the evidence
+        // still describes the *request* that produced it. The boundary hashes a
+        // document containing the key it was asked under, so an observation
+        // taken as `ASMA-1` cannot validate a later read of `MOVED-9` — the two
+        // hashes differ by the alias alone and the connector refuses it as a
+        // human move before any write.
+        //
+        // So a rename re-observes at the confirmed address, making the evidence
+        // and the address agree. The refreshed answer must still prove the same
+        // immutable issue; if it does not, the key moved to a different issue
+        // between the two reads and this is an anti-rebind, not a rename.
+        //
+        // Human-move protection is unchanged: the refreshed observation is the
+        // baseline this pass validates against, so a genuine move after it still
+        // refuses. Nothing is inferred from the key's shape.
+        let observed = if let IdentityDecision::Proceed {
+            issue_id,
+            renamed: true,
+            ..
+        } = &decided
+        {
+            let refreshed = current_delegation
+                .observe()
+                .await
+                .map_err(|error| self.refuse_jira(&error))?;
+            let proven = refreshed
+                .response
+                .observed_identity
+                .as_ref()
+                .is_some_and(|identity| {
+                    identity.issue_id == *issue_id && identity.issue_key == *issue_key
+                });
+            if !proven {
+                return Ok(JiraSubjectVerdict {
+                    outcome: JiraSubjectOutcome::Blocked,
+                    content_conflict: None,
+                });
+            }
+            refreshed
+        } else {
+            observed
+        };
         if !observed
             .observation
             .issue_type
@@ -3436,15 +3493,6 @@ impl Services {
         // revision and the observed evidence are the same objects, so the
         // immutable UUID, the external issue id, the evidence/revision checks
         // and the anti-rebind decision above are all untouched.
-        let current_delegation = JiraIssueDelegation {
-            exchange: self.jira(project_id)?,
-            field_spec: &field_spec,
-            workflow_spec: &workflow_spec,
-            issue_key,
-            projection_revision: epic.revision,
-            field_writes: &empty_fields,
-            idempotency_key: &observe_key,
-        };
         let provisional_intent = current_delegation
             .intent(&observed, &plan)
             .map_err(|error| self.refuse_jira(&error))?;
@@ -3728,6 +3776,7 @@ impl Services {
                 IdentityDecision::Proceed {
                     current_key,
                     renamed,
+                    ..
                 } => {
                     identity_renamed = identity_renamed || renamed;
                     current_key
@@ -36332,8 +36381,10 @@ mod tests {
         let entry = ExternalId::parse("ASMA-1").expect("entry key");
         let current = ExternalId::parse("MOVED-9").expect("current key");
 
+        let issue_id = ExternalId::parse("901").expect("immutable issue id");
         let renamed = IdentityDecision::Proceed {
             current_key: current.clone(),
+            issue_id: issue_id.clone(),
             renamed: true,
         };
         let selected = Services::write_key_for(&entry, &renamed);
@@ -36350,6 +36401,7 @@ mod tests {
         // selector cannot be satisfied by always returning something new.
         let unchanged = IdentityDecision::Proceed {
             current_key: entry.clone(),
+            issue_id,
             renamed: false,
         };
         assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
