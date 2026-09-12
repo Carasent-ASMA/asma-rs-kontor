@@ -1906,11 +1906,7 @@ fn establish_immutable_issue_id(
              WHERE external_issue_id IS NULL AND project_id = ?1
                AND link_id = (SELECT link_id FROM canonical_jira_task_links
                               WHERE project_id = ?1 AND external_issue_key = ?3)",
-            params![
-                item.project_id.to_string(),
-                issue_id.as_str(),
-                key.as_str()
-            ],
+            params![item.project_id.to_string(), issue_id.as_str(), key.as_str()],
         ),
     }
     .map_err(unique_conflict(

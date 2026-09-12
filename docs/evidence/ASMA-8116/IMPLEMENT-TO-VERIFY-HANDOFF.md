@@ -7,7 +7,7 @@ Artifact: implement-to-verify-handoff
 | Field | Value |
 | --- | --- |
 | Branch | `feat/ASMA-8116-implement-confirmed-jira-key-resolution-and-public-projections` |
-| Head | `8c87e4e` |
+| Head | see the commit recorded below |
 | Integrated onto | `origin/master` `e40b5f4` (contained; verified ancestor) |
 | Worktree | `/Users/igor/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor` |
 | Schema | `SCHEMA_VERSION = 95`, migration `0095_immutable_jira_issue_identity.sql` |
@@ -78,6 +78,29 @@ required.
 | Weaken the progress predicate to `binding_id.is_some()` only | killed — the unattached case fails `in_progress` vs `ready` |
 
 No mutation was retained.
+
+## Ownership boundary (clarified 2026-09-12)
+
+ASMA-8117 owns and has committed `ConfirmedJiraKey`, the `EPIC_JIRA_KEY` /
+`TASK_JIRA_KEY` / `SCOPE_JIRA_KEY` tokens, lazy token resolution, successor
+definitions and its own schema `0095`, on `945530cab9f8d8cabd251f7c3ce888062a30d328`.
+None of that is duplicated or cherry-picked here, and `JiraItemCode` is
+untouched — `crates/kontor-core/src/backlog_identity.rs` and its tests are
+byte-identical to `origin/master`.
+
+Two items are therefore **ASMA-8119 integration dependencies, not 8116 blockers**:
+
+1. **Seeded naming / `mcp_journey`.** `an_empty_realm_is_bootstrapped_through_mcp_tools_alone`
+   fails here with `placement_blocked: the epic has no active immutable backlog
+   code`, because the seeded templates name item-code tokens and this branch does
+   not carry 8117's Jira-key tokens. Resolved by 8117 in 8119 integration.
+2. **Migration number.** This branch carries `0095_immutable_jira_issue_identity.sql`
+   with `SCHEMA_VERSION = 95`. **ASMA-8117 also uses 0095.** The pair is a
+   collision to be settled during 8119 integration. The number here is retained
+   only because it is internally coherent — `0094` is master's
+   `jira_description_projection`, the array position and the script's own
+   `PRAGMA user_version` agree, and `schema_v1` asserts 95. The final merged
+   number is deliberately **not guessed**.
 
 ## Blockers
 
