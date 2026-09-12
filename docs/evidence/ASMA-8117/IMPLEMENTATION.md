@@ -259,51 +259,60 @@ under the same idempotency key renders the subject it froze the first time.
 
 ### MUT-002
 
-Seeded at the current site `crates/kontor-daemon/src/applications.rs:34466`,
-changing task-scoped consultation selection to fall back to the
-caller/containing epic:
+**Mutation site.** `crates/kontor-daemon/src/applications.rs:34466`, inside
+`subject_task_for_container`, changing task-scoped consultation selection to
+fall back to the caller/containing epic:
 
 ```text
 -            Some(ConsultationSubject::Task(task_id)) => Ok(Some(task_id)),
 +            Some(ConsultationSubject::Task(_)) => Ok(None),
 ```
 
+**Unmutated source identity.** `crates/kontor-daemon/src/applications.rs`
+SHA-256
+`831e812c789cdac1d99670d2258849320205db95dcf93d923d727b1a2e24fca2`, captured
+before seeding and again after restoring.
+
+**The command.** One command, whose filter selects the two tests that assert
+the ASW and CSW subject rows:
+
 ```text
 cargo test -p kontor-daemon --test loopback_api -- \
-    consultation_containers_follow_their_recorded_subject_not_their_caller
+    _containers_follow_their_recorded_subject_not_their_caller
 ```
 
-The filter selects exactly these two tests and nothing else:
+Appending `--list` to that exact filter enumerates its selection and nothing
+else — `committee_containers_follow_their_recorded_subject_not_their_caller`
+and `consultation_containers_follow_their_recorded_subject_not_their_caller`,
+count 2.
+
+**Observed red, mutant in place.** Both families failed independently, each on
+its own assertion rather than one riding on the other:
 
 ```text
-cargo test -p kontor-daemon --test loopback_api -- \
-    _containers_follow_their_recorded_subject_not_their_caller --list
+test consultation_containers_follow_their_recorded_subject_not_their_caller ... FAILED
+  left: "ASW • ASMA-463041493 • Naming review"
+ right: "ASW • ASMA-518272654 • Naming review"
+test committee_containers_follow_their_recorded_subject_not_their_caller ... FAILED
+  left: "CSW • ASMA-73860482 • Naming review"
+ right: "CSW • ASMA-518272654 • Naming review"
 
-committee_containers_follow_their_recorded_subject_not_their_caller: test
-consultation_containers_follow_their_recorded_subject_not_their_caller: test
-# count = 2
-```
-
-Run with the mutant in place, the same filter without `--list`, both families
-FAILED independently in one command:
-
-```text
-consultation_containers_follow_…  left: "ASW • ASMA-215693660 • Naming review"
-                                 right: "ASW • ASMA-518272654 • Naming review"
-committee_containers_follow_…     left: "CSW • ASMA-671035026 • Naming review"
-                                 right: "CSW • ASMA-518272654 • Naming review"
-```
-
-```text
 test result: FAILED. 0 passed; 2 failed; 0 ignored; 315 filtered out
 ```
 
 i.e. the mutant rendered the containing epic instead of the advised ticket on
-both ASW and CSW, and each family caught it on its own assertion rather than
-one riding on the other. Production code was then restored from an untouched
-copy: `crates/kontor-daemon/src/applications.rs` returns to SHA-256
-`831e812c789cdac1…`, `git diff` against it is empty, and the same filter reran
-`2 passed; 0 failed`.
+both ASW and CSW.
+
+**Observed green, restored.** The file was restored from an untouched copy,
+returning to the SHA-256 above with an empty `git diff`, and the same command
+reran:
+
+```text
+test consultation_containers_follow_their_recorded_subject_not_their_caller ... ok
+test committee_containers_follow_their_recorded_subject_not_their_caller ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 315 filtered out
+```
 
 ### Workspace gates
 
