@@ -13,9 +13,19 @@ ALTER TABLE jira_epic_bindings
     ADD COLUMN external_issue_id TEXT
     CHECK (external_issue_id IS NULL OR length(external_issue_id) BETWEEN 1 AND 64);
 
+-- How many times this binding's key has moved. It only ever advances, which is
+-- what makes an authority describe one *occurrence* of a transition rather than
+-- an edge between two key strings: a key may become current again, but the
+-- occurrence it was reached by never recurs.
+ALTER TABLE jira_epic_bindings
+    ADD COLUMN rename_sequence INTEGER NOT NULL DEFAULT 0 CHECK (rename_sequence >= 0);
+
 ALTER TABLE jira_task_binding_confirmations
     ADD COLUMN external_issue_id TEXT
     CHECK (external_issue_id IS NULL OR length(external_issue_id) BETWEEN 1 AND 64);
+
+ALTER TABLE jira_task_binding_confirmations
+    ADD COLUMN rename_sequence INTEGER NOT NULL DEFAULT 0 CHECK (rename_sequence >= 0);
 
 -- One immutable Jira issue names at most one subject per project in each
 -- ledger. SQLite holds NULLs distinct in a unique index, so pre-migration rows
@@ -84,9 +94,13 @@ CREATE TABLE jira_rename_authorizations (
     -- binding has moved past it.
     from_external_issue_key TEXT NOT NULL CHECK (length(from_external_issue_key) BETWEEN 1 AND 256),
     external_issue_key      TEXT NOT NULL CHECK (length(external_issue_key) BETWEEN 1 AND 256),
+    -- The occurrence this authority was issued against. A key string can become
+    -- current again; the sequence it was current at cannot, so a historical
+    -- A->B row cannot authorize a later A->B.
+    from_rename_sequence    INTEGER NOT NULL CHECK (from_rename_sequence >= 0),
     authorized_at           TEXT NOT NULL,
     CHECK (from_external_issue_key <> external_issue_key),
-    PRIMARY KEY (project_id, link_id, from_external_issue_key, external_issue_key),
+    PRIMARY KEY (project_id, link_id, from_rename_sequence),
     FOREIGN KEY (project_id, link_id)
         REFERENCES jira_links (project_id, id) ON DELETE RESTRICT
 ) STRICT;
@@ -127,6 +141,8 @@ WHEN NEW.external_issue_key <> OLD.external_issue_key
        -- destination can be restored without fresh readback authorizing C->B.
        AND authority.from_external_issue_key = OLD.external_issue_key
        AND authority.external_issue_key = NEW.external_issue_key
+       -- Exact to this occurrence, not merely to this pair of key strings.
+       AND authority.from_rename_sequence = confirmation.rename_sequence
        AND confirmation.external_issue_id IS NOT NULL
        AND confirmation.external_issue_id = authority.external_issue_id
  )
@@ -144,9 +160,10 @@ CREATE TABLE jira_epic_rename_authorizations (
     external_issue_id       TEXT NOT NULL CHECK (length(external_issue_id) BETWEEN 1 AND 64),
     from_external_issue_key TEXT NOT NULL CHECK (length(from_external_issue_key) BETWEEN 1 AND 256),
     external_issue_key      TEXT NOT NULL CHECK (length(external_issue_key) BETWEEN 1 AND 256),
+    from_rename_sequence    INTEGER NOT NULL CHECK (from_rename_sequence >= 0),
     authorized_at           TEXT NOT NULL,
     CHECK (from_external_issue_key <> external_issue_key),
-    PRIMARY KEY (project_id, epic_id, from_external_issue_key, external_issue_key)
+    PRIMARY KEY (project_id, epic_id, from_rename_sequence)
 ) STRICT;
 
 CREATE TRIGGER jira_epic_rename_authorizations_immutable
@@ -171,6 +188,8 @@ WHEN NEW.external_issue_key <> OLD.external_issue_key
        AND authority.epic_id = NEW.epic_id
        AND authority.from_external_issue_key = OLD.external_issue_key
        AND authority.external_issue_key = NEW.external_issue_key
+       AND authority.from_rename_sequence = OLD.rename_sequence
+       AND NEW.rename_sequence = OLD.rename_sequence + 1
        AND NEW.external_issue_id IS NOT NULL
        AND authority.external_issue_id = NEW.external_issue_id
  )

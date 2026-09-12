@@ -2899,3 +2899,127 @@ fn a_stale_epic_rename_authority_cannot_restore_an_earlier_destination() {
         Some("CURRENT-1".to_owned())
     );
 }
+
+#[test]
+fn a_task_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let (link_id, _batch) = confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+
+    // A -> B -> C -> A, all through supported reconciliation. The starting key
+    // is current again at the end, which is the case a predecessor *string*
+    // cannot distinguish: the first A->B authority names the same two keys as
+    // the move now being attempted.
+    for destination in ["HISTORIC-2", "CURRENT-2", "ASMA-2"] {
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-2"),
+                &external(destination),
+                &ContentHash::of(destination.as_bytes()),
+                now,
+            )
+            .unwrap_or_else(|error| panic!("the rename to {destination} is authorized: {error:?}"));
+    }
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("task key")
+            .map(|key| key.as_str().to_owned()),
+        Some("ASMA-2".to_owned()),
+        "the cycle returns the binding to its original key"
+    );
+
+    // The first A->B authority was issued against occurrence 0 and spent there.
+    // This is a *new* occurrence of A->B and needs its own fresh readback.
+    let mut connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    let replay = connection.transaction().expect("the replay starts");
+    replay
+        .execute(
+            "UPDATE jira_links SET external_issue_key = 'HISTORIC-2'
+             WHERE project_id = ?1 AND id = ?2",
+            rusqlite::params![project_id.to_string(), link_id.to_string()],
+        )
+        .expect("the mutable link row is writable on its own");
+    let refused = replay.execute(
+        "UPDATE canonical_jira_task_links SET external_issue_key = 'HISTORIC-2'
+         WHERE project_id = ?1 AND task_id = ?2",
+        rusqlite::params![project_id.to_string(), task_id.to_string()],
+    );
+    assert!(
+        refused.is_err(),
+        "a spent authority must not reactivate when its key string becomes current again"
+    );
+    drop(replay);
+    drop(connection);
+
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("task key")
+            .map(|key| key.as_str().to_owned()),
+        Some("ASMA-2".to_owned())
+    );
+    // Freshly proven motion still works from the recurring key.
+    assert_eq!(
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-2"),
+                &external("HISTORIC-2"),
+                &ContentHash::of(b"fresh-proof"),
+                now,
+            )
+            .expect("a freshly proven rename is admitted for the new occurrence")
+            .jira_key
+            .as_str(),
+        "HISTORIC-2"
+    );
+}
+
+#[test]
+fn an_epic_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+
+    for destination in ["HISTORIC-1", "CURRENT-1", "ASMA-1"] {
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-1"),
+                &external(destination),
+                &ContentHash::of(destination.as_bytes()),
+                now,
+            )
+            .unwrap_or_else(|error| panic!("the rename to {destination} is authorized: {error:?}"));
+    }
+
+    let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    let refused = connection.execute(
+        "UPDATE jira_epic_bindings SET external_issue_key = 'HISTORIC-1'
+         WHERE project_id = ?1 AND epic_id = ?2",
+        rusqlite::params![project_id.to_string(), epic_id.to_string()],
+    );
+    assert!(
+        refused.is_err(),
+        "a spent epic authority must not reactivate after a key cycle"
+    );
+    drop(connection);
+
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("epic key")
+            .map(|key| key.as_str().to_owned()),
+        Some("ASMA-1".to_owned())
+    );
+}

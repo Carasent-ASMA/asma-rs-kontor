@@ -514,7 +514,26 @@ enum IdentityDecision {
     },
     /// Identity is unproven, contradicted, or could not be reconciled. No
     /// policy, no intent and no external effect may follow for this subject.
-    Stop,
+    Stop(IdentityRefusal),
+}
+
+/// Why an identity decision stopped a subject.
+///
+/// The three are not interchangeable. A different immutable issue is a
+/// permanent safety contradiction and must never invite a retry; an unproven
+/// identity is a durable fail-closed state that clears only when a supported
+/// readback establishes proof; a transport or repository failure is exactly the
+/// transient outage that *should* be retried. Collapsing them into one code
+/// told an operator nothing and made anti-rebind look like an outage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityRefusal {
+    /// The key now answers for a different immutable Jira issue.
+    DifferentIssue,
+    /// The binding predates immutable identity, or the answer carried none, so
+    /// sameness cannot be proven either way.
+    UnprovenIdentity,
+    /// A connector or repository failure. Transient by nature.
+    Transient,
 }
 
 /// Two verdicts rather than one, because they are independent: an epic can be
@@ -3154,10 +3173,10 @@ impl Services {
         observed: Option<&kontor_jira::jira::JiraIssueIdentity>,
     ) -> IdentityDecision {
         let Some(observed) = observed else {
-            return IdentityDecision::Stop;
+            return IdentityDecision::Stop(IdentityRefusal::UnprovenIdentity);
         };
         let Ok(state) = self.state() else {
-            return IdentityDecision::Stop;
+            return IdentityDecision::Stop(IdentityRefusal::Transient);
         };
         let stored_issue_id = state
             .with_store(|store| store.confirmed_jira_identities(project_id))
@@ -3170,10 +3189,10 @@ impl Services {
         let Some(stored_issue_id) = stored_issue_id else {
             // Confirmed before the immutable id was retained. Nothing here can
             // prove this is still the same issue, so nothing proceeds on it.
-            return IdentityDecision::Stop;
+            return IdentityDecision::Stop(IdentityRefusal::UnprovenIdentity);
         };
         if observed.issue_id != stored_issue_id {
-            return IdentityDecision::Stop;
+            return IdentityDecision::Stop(IdentityRefusal::DifferentIssue);
         }
         if observed.issue_key == *confirmed_key {
             return IdentityDecision::Proceed {
@@ -3188,7 +3207,7 @@ impl Services {
             "issue_id": observed.issue_id.as_str(),
             "key": observed.issue_key.as_str(),
         })) else {
-            return IdentityDecision::Stop;
+            return IdentityDecision::Stop(IdentityRefusal::Transient);
         };
         let readback_hash = document.hash().clone();
         let reconciled = state.with_store(|store| {
@@ -3207,7 +3226,30 @@ impl Services {
                 current_key: observed.issue_key.clone(),
                 renamed: true,
             },
-            Err(_) => IdentityDecision::Stop,
+            Err(_) => IdentityDecision::Stop(IdentityRefusal::Transient),
+        }
+    }
+
+    /// Turn an identity refusal into the response it deserves.
+    fn refuse_identity(&self, refusal: IdentityRefusal) -> ApiError {
+        match refusal {
+            // A permanent safety contradiction, and it has to read like one.
+            // Routing it through the generic repository conflict flattened it to
+            // `revision_conflict`, which tells a caller to re-read and try
+            // again — exactly the wrong advice for a key that now belongs to
+            // somebody else's issue.
+            IdentityRefusal::DifferentIssue => self.deny(
+                ApiErrorCode::StaleBinding,
+                "the Jira key now answers for a different immutable issue than the confirmed binding",
+            ),
+            IdentityRefusal::UnprovenIdentity => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this Jira binding has no immutable issue identity to prove, so nothing may act on it",
+            ),
+            IdentityRefusal::Transient => self.deny(
+                ApiErrorCode::Unavailable,
+                "the Jira issue behind this subject could not be identified this pass",
+            ),
         }
     }
 
@@ -3260,7 +3302,7 @@ impl Services {
                 }
                 current_key
             }
-            IdentityDecision::Stop => {
+            IdentityDecision::Stop(_) => {
                 return Ok(JiraSubjectVerdict {
                     outcome: JiraSubjectOutcome::Blocked,
                     content_conflict: None,
@@ -3593,7 +3635,9 @@ impl Services {
             let wire_key_text = format!("{}:{}", idempotency_key.as_str(), link.id);
             let wire_key = IdempotencyKey::parse(&wire_key_text)
                 .map_err(|error| self.refuse_domain(&error))?;
-            let projection = TicketSyncProjection {
+            // Built for a given key, because the key this subject answers to
+            // may change between observing it and planning against it.
+            let project_under = |external_issue_key: ExternalId| TicketSyncProjection {
                 schema_version: SCHEMA_VERSION,
                 id: TicketProjectionId::generate(),
                 link_id: link.id,
@@ -3602,12 +3646,13 @@ impl Services {
                 field_spec_project: field_spec.spec().project.clone(),
                 field_spec_issue_type: field_spec.spec().issue_type.clone(),
                 field_spec_version: field_spec.spec().version,
-                external_issue_key: link.external_issue_key.clone(),
+                external_issue_key,
                 fields: Vec::new(),
                 comment_policy: CommentPolicy::InboundOnly,
                 external_comment_cursor: None,
                 computed_at: kontor_api::now(),
             };
+            let projection = project_under(link.external_issue_key.clone());
             let delegation = TicketDelegation {
                 exchange: jira,
                 field_spec: &field_spec,
@@ -3626,22 +3671,39 @@ impl Services {
             // conflict record nor an intent nor a connector apply, and a task
             // whose key moved on the same issue must be reconciled before the
             // plan is built so the plan is about the issue Jira actually holds.
-            match self.decide_jira_identity(
+            let current_key = match self.decide_jira_identity(
                 project_id,
                 kontor_store::JiraBindingSubject::Task(task_id),
                 &link.external_issue_key,
                 observed.response.observed_identity.as_ref(),
             ) {
-                IdentityDecision::Proceed { renamed, .. } => {
+                IdentityDecision::Proceed {
+                    current_key,
+                    renamed,
+                } => {
                     identity_renamed = identity_renamed || renamed;
+                    current_key
                 }
-                IdentityDecision::Stop => {
-                    return Err(self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the Jira issue behind this task could not be identified as the confirmed one",
-                    ));
+                IdentityDecision::Stop(refusal) => {
+                    return Err(self.refuse_identity(refusal));
                 }
-            }
+            };
+            // Everything downstream is rebuilt under the key Jira reports now.
+            // The observation is reused, so this costs no request; what changes
+            // is that the plan, the stored projection and every outbound effect
+            // name the current issue key instead of the one this pass happened
+            // to ask under. Emitting the superseded key works only for as long
+            // as Jira keeps redirecting it, which is not an identity contract.
+            let projection = project_under(current_key);
+            let delegation = TicketDelegation {
+                exchange: jira,
+                field_spec: &field_spec,
+                workflow_spec: &workflow_spec,
+                projection: &projection,
+                facts: &facts,
+                link_id: link.id,
+                idempotency_key: &wire_key,
+            };
             let initial = delegation.plan(&observed);
             let outcome = if let ReconciliationOutcome::Conflict(kind) = initial {
                 let authorized = state

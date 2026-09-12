@@ -1662,20 +1662,29 @@ impl SqliteStore {
                 // a binding already holds moves nothing, so there is no
                 // transition to authorize and recording one would be a fiction.
                 if current_key != key.as_str() {
+                    let occurrence: i64 = transaction
+                        .query_row(
+                            "SELECT rename_sequence FROM jira_epic_bindings
+                             WHERE project_id = ?1 AND epic_id = ?2",
+                            params![project_id.to_string(), epic_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(backend)?;
                     transaction
                         .execute(
                             "INSERT INTO jira_epic_rename_authorizations
                              (project_id, epic_id, external_issue_id,
-                              from_external_issue_key, external_issue_key, authorized_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                         ON CONFLICT(project_id, epic_id, from_external_issue_key,
-                                     external_issue_key) DO NOTHING",
+                              from_external_issue_key, external_issue_key,
+                              from_rename_sequence, authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(project_id, epic_id, from_rename_sequence) DO NOTHING",
                             params![
                                 project_id.to_string(),
                                 epic_id,
                                 issue_id.as_str(),
                                 current_key,
                                 key.as_str(),
+                                occurrence,
                                 &confirmed,
                             ],
                         )
@@ -1687,7 +1696,8 @@ impl SqliteStore {
                 transaction
                     .execute(
                         "UPDATE jira_epic_bindings
-                         SET external_issue_key = ?3, readback_hash = ?4, confirmed_at = ?5
+                         SET external_issue_key = ?3, readback_hash = ?4, confirmed_at = ?5,
+                             rename_sequence = rename_sequence + 1
                          WHERE project_id = ?1 AND epic_id = ?2 AND external_issue_id = ?6",
                         params![
                             project_id.to_string(),
@@ -1711,20 +1721,29 @@ impl SqliteStore {
                 // the rename is authorized by something recorded rather than by
                 // the state of another mutable row the same caller just wrote.
                 if current_key != key.as_str() {
+                    let occurrence: i64 = transaction
+                        .query_row(
+                            "SELECT rename_sequence FROM jira_task_binding_confirmations
+                             WHERE project_id = ?1 AND link_id = ?2",
+                            params![project_id.to_string(), &link_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(backend)?;
                     transaction
                         .execute(
                             "INSERT INTO jira_rename_authorizations
                              (project_id, link_id, external_issue_id,
-                              from_external_issue_key, external_issue_key, authorized_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                         ON CONFLICT(project_id, link_id, from_external_issue_key,
-                                     external_issue_key) DO NOTHING",
+                              from_external_issue_key, external_issue_key,
+                              from_rename_sequence, authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(project_id, link_id, from_rename_sequence) DO NOTHING",
                             params![
                                 project_id.to_string(),
                                 &link_id,
                                 issue_id.as_str(),
                                 current_key,
                                 key.as_str(),
+                                occurrence,
                                 &confirmed,
                             ],
                         )
@@ -1756,7 +1775,8 @@ impl SqliteStore {
                 transaction
                     .execute(
                         "UPDATE jira_task_binding_confirmations
-                         SET readback_hash = ?3, confirmed_at = ?4
+                         SET readback_hash = ?3, confirmed_at = ?4,
+                             rename_sequence = rename_sequence + 1
                          WHERE project_id = ?1 AND link_id = ?2 AND external_issue_id = ?5",
                         params![
                             project_id.to_string(),

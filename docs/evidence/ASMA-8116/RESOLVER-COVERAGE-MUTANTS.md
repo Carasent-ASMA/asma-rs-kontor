@@ -68,3 +68,13 @@ alone, the named test run, and the source restored byte-for-byte.
 M8 and M9 each survived one earlier assertion shape; see
 `GATE-2-REPAIR-REPORT.md` for what each survival exposed about the test.
 
+## Gate-3 repair mutations
+
+| # | Mutation | Test | Result |
+| --- | --- | --- | --- |
+| M8 | Epic identity refusal made non-terminal | `the_resident_reconciler_refuses_a_key_that_now_answers_for_another_issue` | **killed** at the corrected write boundary |
+| M9 | Task identity refusal made non-terminal | `the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue` | **killed** at the corrected write boundary |
+
+Both were re-seeded after the fixtures were given the statuses and routes of the
+workflow that governs each subject kind, so the kill now observes the promised
+write boundary rather than an incidental later refusal.

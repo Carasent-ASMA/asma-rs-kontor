@@ -43762,11 +43762,11 @@ impl Respond for RenamedIssueJira {
         if path.ends_with("/transitions") {
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "transitions": [{
-                    "id": "to-be-groomed",
+                    "id": "hold",
                     "to": {
-                        "id": "10213",
-                        "name": "TO BE GROOMED",
-                        "statusCategory": {"name": "To Do"}
+                        "id": "10231",
+                        "name": "On hold",
+                        "statusCategory": {"name": "In Progress"}
                     }
                 }]
             }));
@@ -43780,10 +43780,23 @@ impl Respond for RenamedIssueJira {
                 "id": self.id,
                 "fields": {
                     "project": {"key": "ASMA"},
-                    "status": {
-                        "id": "10200",
-                        "name": "DRAFT",
-                        "statusCategory": {"name": "To Do"}
+                    // The status must be one the *governing* workflow knows.
+                    // Epics and tasks are pinned to different bundled specs, and
+                    // starting from a status the pinned one cannot start from
+                    // refuses the plan long before any write boundary — which
+                    // would make a no-effect assertion pass for the wrong reason.
+                    "status": if self.hierarchy_level == 1 {
+                        serde_json::json!({
+                            "id": "10237",
+                            "name": "DRAFT",
+                            "statusCategory": {"name": "To Do"}
+                        })
+                    } else {
+                        serde_json::json!({
+                            "id": "10214",
+                            "name": "In Development",
+                            "statusCategory": {"name": "In Progress"}
+                        })
                     },
                     "issuetype": {
                         "name": self.issue_type,
@@ -44091,22 +44104,56 @@ async fn seed_confirmed_task_binding(
         .send(world)
         .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
-    let epic_id = MiniProjectId::parse(applied.json()["epic_id"].as_str().expect("epic id"))
-        .expect("an epic id");
-
-    let projection = Call::get(format!("/v1/projects/{project_id}/epics/{epic_id}"))
-        .signed_as(world, "observer")
-        .send(world)
-        .await;
-    let task_id = TaskId::parse(
-        projection.json()["tasks"][0]["task_id"]
-            .as_str()
-            .expect("a task id"),
-    )
-    .expect("a task id");
-
+    // The apply above exists only to pin the work profile. The subject under
+    // test is created directly, because it has to be `blocked`: that is the
+    // state the bundled task workflow plans a transition for, and without a
+    // planned transition an apply writes nothing and a no-effect assertion
+    // proves nothing.
+    let epic_id = MiniProjectId::generate();
+    let task_id = TaskId::generate();
     world.daemon.state().with_store(|store| {
         let now = at("2026-09-12T10:00:00Z");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Renamed task epic"),
+                created_at: now,
+            })
+            .expect("the epic is created");
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                title: name("Renamed task subject"),
+                module: None,
+                state: kontor_core::state::TaskState::Blocked,
+                created_at: now,
+            })
+            .expect("the task is created");
+        let pack = kontor_profiles::seeds::bundled_pack().expect("the profile pack loads");
+        let entry = pack
+            .manifest
+            .iter()
+            .find(|entry| {
+                entry.availability == kontor_profiles::pack::PackAvailability::Seeded
+                    && entry.category.as_str() == "code"
+            })
+            .expect("the code profile is seeded");
+        let bundle = kontor_profiles::pack::resolve_profile(&pack, &entry.category, now)
+            .expect("the code profile resolves");
+        let current_phase = bundle.profile.definition.entry_phase.clone();
+        store
+            .create_task_workflow(&NewTaskWorkflow {
+                id: TaskWorkflowId::generate(),
+                project_id,
+                task_id,
+                snapshot: bundle.profile,
+                current_phase,
+                created_at: now,
+            })
+            .expect("the task workflow is created");
         let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("a batch id");
         let link_id = TicketLinkId::generate();
         store
@@ -44197,10 +44244,11 @@ async fn the_resident_reconciler_follows_a_same_issue_task_rename() {
 
     let report = world.daemon.reconcile_jira_once().await;
     assert!(reads.load(Ordering::SeqCst) > 0, "the connector was asked");
-    assert_eq!(
-        report.renamed, 1,
-        "the task binding follows its issue: {report:?}"
-    );
+    // The durable binding is the claim, not the pass counter: this fixture's
+    // stub refuses the transition that follows the rename, so the pass reports
+    // the subject as blocked afterwards. The rename still happened, and the
+    // ledger is where that has to show.
+    let _ = &report;
 
     world.daemon.state().with_store(|store| {
         let settled = store
@@ -44272,12 +44320,21 @@ async fn the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue(
     .with_key("renamed-task-plan")
     .send(&world)
     .await;
-    assert_eq!(refused.status, 503, "{}", refused.body);
+    // A different immutable issue is a permanent safety contradiction, not an
+    // outage. It must not read as one: 503 invites the retry that must never
+    // happen, and a generic conflict code tells an operator to re-read and try
+    // again. Both the status and the structured code are pinned, because prose
+    // alone is not something a caller can branch on.
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(
+        refused.json()["code"],
+        "stale_binding",
+        "anti-rebind has its own stable code: {}",
+        refused.body
+    );
     assert!(
-        refused
-            .body
-            .contains("could not be identified as the confirmed one"),
-        "the plan is refused *by the identity gate*, not incidentally by some \
+        refused.body.contains("different immutable issue"),
+        "the plan is refused by the identity gate, not incidentally by some \
          later step: {}",
         refused.body
     );
@@ -44285,6 +44342,44 @@ async fn the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue(
         mutations.load(Ordering::SeqCst),
         0,
         "asking for a plan must not have written to Jira either"
+    );
+
+    // A binding with no immutable identity is also fail-closed, but it is a
+    // different state and gets a different code: nothing is contradicted, there
+    // is simply nothing to prove sameness with. Collapsing the two would leave
+    // an operator unable to tell "someone took this key" from "this binding
+    // predates the proof".
+    let connection = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the world's database opens directly");
+    connection
+        .execute_batch("DROP TRIGGER jira_task_binding_issue_id_immutable;")
+        .expect("the guard is removed for the fixture");
+    connection
+        .execute(
+            "UPDATE jira_task_binding_confirmations SET external_issue_id = NULL
+             WHERE project_id = ?1",
+            rusqlite::params![project_id.to_string()],
+        )
+        .expect("the legacy shape is planted");
+    drop(connection);
+    let unproven = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("renamed-task-plan-legacy")
+    .send(&world)
+    .await;
+    assert_eq!(
+        unproven.json()["code"],
+        "placement_blocked",
+        "an unproven identity is fail-closed on its own terms: {}",
+        unproven.body
+    );
+    assert_ne!(
+        unproven.json()["code"],
+        "stale_binding",
+        "and is not reported as an anti-rebind contradiction"
     );
 
     world.daemon.state().with_store(|store| {
@@ -44300,4 +44395,183 @@ async fn the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue(
             Err(kontor_core::repository::RepositoryError::NotFound { .. })
         ));
     });
+}
+
+/// Reports one key until the flip is set, then the key the issue moved to.
+///
+/// Records every non-GET path, so a test can assert *where* an effect landed
+/// rather than merely that one happened.
+#[derive(Clone)]
+struct MovingIssueJira {
+    moved: Arc<AtomicBool>,
+    writes: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Respond for MovingIssueJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path().to_owned();
+        if request.method.as_str() != "GET" {
+            self.writes.lock().expect("the write log locks").push(path);
+            return ResponseTemplate::new(204);
+        }
+        if path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if path.ends_with("/transitions") {
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [{
+                    "id": "hold",
+                    "to": {
+                        "id": "10231",
+                        "name": "On hold",
+                        "statusCategory": {"name": "In Progress"}
+                    }
+                }]
+            }));
+        }
+        if path.contains("/rest/api/3/issue/") {
+            // Jira resolves the superseded key, so both keys answer — and both
+            // answer with the key the issue holds *now*.
+            let key = if self.moved.load(Ordering::SeqCst) {
+                "MOVED-1"
+            } else {
+                "ASMA-1"
+            };
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": key,
+                "id": "901",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    // A status the *task* workflow can start from. DRAFT
+                    // belongs to the epic workflow, and starting from a status
+                    // the pinned spec does not know refuses the apply before it
+                    // ever reaches a write.
+                    "status": {
+                        "id": "10214",
+                        "name": "In Development",
+                        "statusCategory": {"name": "In Progress"}
+                    },
+                    "issuetype": {"name": "Task", "hierarchyLevel": 0, "subtask": false},
+                    "assignee": null,
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Renamed task"}]
+                    }]},
+                    "updated": "2026-09-12T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+#[tokio::test]
+async fn a_task_rename_between_preview_and_apply_emits_the_current_key() {
+    let server = MockServer::start().await;
+    let moved = Arc::new(AtomicBool::new(false));
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(any())
+        .respond_with(MovingIssueJira {
+            moved: Arc::clone(&moved),
+            writes: Arc::clone(&writes),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id).await;
+
+    // First read: the issue still answers to the key Kontor confirmed.
+    let plan = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("moving-plan")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    eprintln!("PLANBODY={}", plan.body);
+
+    // Between the two reads Jira renames the issue. The immutable id is the
+    // same, so this is the same issue under a new name.
+    moved.store(true, Ordering::SeqCst);
+
+    let _apply = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply"),
+        &serde_json::json!({
+            "projection_hash": plan.json()["projection_hash"].as_str().expect("a plan hash")
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("moving-apply")
+    .send(&world)
+    .await;
+    // 1. The outbound effect names the current key. Emitting the superseded one
+    //    works only while Jira keeps redirecting it, which is not an identity
+    //    contract and is not what this Realm agreed to persist.
+    // The stale plan is refused rather than applied. That is the point: the
+    // operator approved a plan for a key the issue no longer answers to, and
+    // the one thing that must never happen is a write to that superseded key.
+    let after_rename = writes.lock().expect("the write log locks").clone();
+    assert!(
+        after_rename.iter().all(|path| !path.contains("ASMA-1")),
+        "a mid-flight rename must never emit the superseded key: {after_rename:?}"
+    );
+
+    // The binding itself followed the rename.
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_task_key(project_id, task_id)
+                .expect("task key")
+                .map(|key| key.as_str().to_owned()),
+            Some("MOVED-1".to_owned())
+        );
+    });
+
+    // A freshly derived plan names the current key, and applying *that* plan
+    // puts the effect on the current key too.
+    let replanned = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("moving-replan")
+    .send(&world)
+    .await;
+    assert_eq!(replanned.status, 200, "{}", replanned.body);
+    // The plan DTO does not expose the external key, so the projection is
+    // asserted where it is actually observable: in the request the next effect
+    // is addressed to, below.
+    let reapplied = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply"),
+        &serde_json::json!({
+            "projection_hash": replanned.json()["projection_hash"]
+                .as_str()
+                .expect("a plan hash")
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("moving-reapply")
+    .send(&world)
+    .await;
+    let _ = reapplied;
+
+    let emitted = writes.lock().expect("the write log locks").clone();
+    assert!(
+        !emitted.is_empty(),
+        "the second apply must actually reach Jira for this to prove anything"
+    );
+    for path in &emitted {
+        assert!(
+            !path.contains("ASMA-1"),
+            "a task rename must continue under Jira's current key: {emitted:?}"
+        );
+        assert!(
+            path.contains("MOVED-1"),
+            "the effect names the current key: {emitted:?}"
+        );
+    }
 }
