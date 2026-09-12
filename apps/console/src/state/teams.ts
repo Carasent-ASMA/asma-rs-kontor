@@ -1330,8 +1330,8 @@ export const FIXTURE_CATALOG: ModelCatalog = {
       degradedLane: true,
     },
     {
-      id: 'deepseek-v4-flash',
-      label: 'DeepSeek V4 Flash',
+      id: 'deepseek-flash',
+      label: 'DeepSeek V4.1 Flash',
       provider: 'deepseek',
       isDefault: false,
       // Was 256_000, which no source supports; the design doc claimed a
@@ -1341,17 +1341,17 @@ export const FIXTURE_CATALOG: ModelCatalog = {
       // names cannot be obtained by that mechanism at all.
       contextWindow: observedNotPromoted<number | null>(
         null,
-        'live model catalog(provider="opencode") → route "deepseek/deepseek-v4-flash" returned no contextWindowMaxTokens (0 of 361 routes report one)',
+        'live model catalog(provider="opencode") → route "deepseek/deepseek-flash" returned no contextWindowMaxTokens (0 of 361 routes report one)',
       ),
       // This row describes the direct route, and the live payload confirms the
       // ladder exactly. It is still not promoted: `openrouter/deepseek/
-      // deepseek-v4-flash` exposes high/xhigh instead, and three further
-      // `deepseek-v4-flash` routes exist, so the price cell on this row cannot
+      // deepseek-flash` exposes high/xhigh instead, and three further
+      // `deepseek-flash` routes exist, so the price cell on this row cannot
       // say which contract it describes — and a row whose price is contested
       // does not get to promote its other cells piecemeal.
       efforts: observedNotPromoted<readonly EffortLevel[]>(
         ['low', 'high', 'max'],
-        'live model catalog(provider="opencode") → route "deepseek/deepseek-v4-flash" thinkingOptions [low, high, max]',
+        'live model catalog(provider="opencode") → route "deepseek/deepseek-flash" thinkingOptions [low, high, max]',
       ),
       // The cache-miss input rate. NOT promotable, and not only because it is
       // uncited here: the published curve has a cache-hit rate two orders of
@@ -1603,7 +1603,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
           chain: [
             { provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
             { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
-            { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
+            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
@@ -1626,7 +1626,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         role: selects('SWE'),
         capabilities: {
           chain: [
-            { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
+            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
             { provider: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh' },
             {
               provider: 'openrouter',
@@ -1648,7 +1648,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         role: selects('QA'),
         capabilities: {
           chain: [
-            { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
+            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
@@ -1672,7 +1672,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
           chain: [
             { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
             { provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
-            { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'max' },
+            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
@@ -1698,7 +1698,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         capabilities: {
           chain: [
             { provider: 'cursor', model: 'auto-smart', effort: 'unset' },
-            { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'high' },
+            { provider: 'deepseek', model: 'deepseek-flash', effort: 'high' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
@@ -1720,7 +1720,7 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         capabilities: {
           chain: [
             { provider: 'cursor', model: 'auto-smart', effort: 'unset' },
-            { provider: 'deepseek', model: 'deepseek-v4-flash', effort: 'high' },
+            { provider: 'deepseek', model: 'deepseek-flash', effort: 'high' },
             {
               provider: 'openrouter',
               model: 'nvidia/nemotron-3-ultra-550b-a55b:free',

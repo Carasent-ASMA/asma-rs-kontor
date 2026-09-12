@@ -12203,7 +12203,9 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
         ("claude" | "claude-work" | "claude-personal", "claude-fable-5" | "claude-fable-5-1") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultracode"])
         }
-        ("opencode", "deepseek/deepseek-v4-flash") => effort_is(&["low", "high", "max"]),
+        ("opencode", "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash") => {
+            effort_is(&["low", "high", "max"])
+        }
         _ => false,
     }
 }
@@ -12214,7 +12216,7 @@ fn default_model_for_provider(provider: &str) -> Option<&'static str> {
     match provider_family(provider) {
         "claude" => Some("claude-opus-5"),
         "codex" => Some("gpt-5.6-sol"),
-        "opencode" => Some("deepseek/deepseek-v4-flash"),
+        "opencode" => Some("deepseek/deepseek-flash"),
         _ => None,
     }
 }
@@ -16055,7 +16057,7 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }),
             serde_json::json!({
-                "id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "provider": "opencode",
+                "id": "deepseek/deepseek-flash", "label": "DeepSeek V4.1 Flash", "provider": "opencode",
                 "isDefault": true,
                 "contextWindow": { "value": null, "provenance": provenance },
                 "efforts": { "value": ["low", "high", "max"], "provenance": provenance },
