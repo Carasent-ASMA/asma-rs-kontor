@@ -1,6 +1,6 @@
 # ASMA-8117 implementation record
 
-Date: 2026-09-06 (implemented), 2026-09-12 (rebased, re-verified, gate-1 repairs)
+Date: 2026-09-06 (implemented), 2026-09-12 (rebased, re-verified, gate-1 and gate-2 repairs)
 Artifact: `high-change`
 Task: Jira `ASMA-8117` / Kontor `01a07722-c376-77f2-bee9-609793e172de`
 Epic: Jira `ASMA-8049` / Kontor `01a0539a-51c9-7301-9bd7-26c09167b23e`
@@ -182,6 +182,29 @@ container title is byte-identical afterwards.
 **4 — MUT-002 at the new head.** Re-seeded, killed and restored at the exact
 current site; see below.
 
+## High-verification gate 2 repairs
+
+Gate 2 was REJECTED on evidence and hygiene only — receipt
+`01a095e1-db95-73e3-8442-5a1beb0f536e`, verifier evidence hash
+`d2520571ad425b11ef3f04991af29e5119172ed212ddf8b6feefe2d67c34fa54`. The
+production repairs were independently accepted and are unchanged; nothing under
+`crates/` was touched for gate 2.
+
+**1 — a second generated bundle.** The gate-1 repair commit staged with
+`git add -A` and swept in `docs/evidence/KON-MVP-18/run-08fbac17cca1d649`, a
+directory the daemon suite generates as a side effect. Removed in follow-up
+commit `1ba3c56`, staged by explicit path, after every test run for this round
+had finished. Verified afterwards: no KON-MVP-18 run directory on this branch
+is absent from master, and `git diff --check origin/master...HEAD` is clean.
+`git add -A` is not used on this branch again.
+
+**2 — MUT-002 covering both families in one command.** Recorded below with the
+filter proof.
+
+**3 — run identities.** The workspace record now names each run once with its
+own log hash, and no sentence attributes two failures to the 2439-pass run. See
+*Run identities* under Verification.
+
 ## Verification
 
 Focused commands, adjusted to the final test names:
@@ -250,7 +273,19 @@ cargo test -p kontor-daemon --test loopback_api -- \
     consultation_containers_follow_their_recorded_subject_not_their_caller
 ```
 
-Both families FAILED as required, independently:
+The filter selects exactly these two tests and nothing else:
+
+```text
+cargo test -p kontor-daemon --test loopback_api -- \
+    _containers_follow_their_recorded_subject_not_their_caller --list
+
+committee_containers_follow_their_recorded_subject_not_their_caller: test
+consultation_containers_follow_their_recorded_subject_not_their_caller: test
+# count = 2
+```
+
+Run with the mutant in place, the same filter without `--list`, both families
+FAILED independently in one command:
 
 ```text
 consultation_containers_follow_…  left: "ASW • ASMA-215693660 • Naming review"
@@ -259,9 +294,16 @@ committee_containers_follow_…     left: "CSW • ASMA-671035026 • Naming rev
                                  right: "CSW • ASMA-518272654 • Naming review"
 ```
 
+```text
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 315 filtered out
+```
+
 i.e. the mutant rendered the containing epic instead of the advised ticket on
-both ASW and CSW. Production code was restored from an untouched copy — the
-diff against the restored file is empty — and the same command reran green.
+both ASW and CSW, and each family caught it on its own assertion rather than
+one riding on the other. Production code was then restored from an untouched
+copy: `crates/kontor-daemon/src/applications.rs` returns to SHA-256
+`831e812c789cdac1…`, `git diff` against it is empty, and the same filter reran
+`2 passed; 0 failed`.
 
 ### Workspace gates
 
@@ -269,34 +311,54 @@ diff against the restored file is empty — and the same command reran green.
 | --- | --- |
 | `cargo fmt --all -- --check` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace --no-fail-fast` | 2439 passed, 1 failed, 9 ignored, 123 binaries (post-repair) |
+| `cargo test --workspace --no-fail-fast` | run B below — 2439 passed, 1 failed, 9 ignored |
 
-The nine ignored are the suites' predeclared live-environment cases. The one
-failure is analysed below; `--no-fail-fast` was used because a plain
-`cargo test --workspace` stops at the first failing binary and would have left
-most of the workspace unreported.
+`--no-fail-fast` is used because a plain `cargo test --workspace` stops at the
+first failing binary and would leave most of the workspace unreported. The nine
+ignored are the suites' predeclared live-environment cases.
 
-Two failures appear in the workspace run. Neither is introduced by this change,
-and neither is dismissed as noise — both were attributed before being reported.
+### Run identities
 
-**`loopback_api::replaying_a_partial_admission_delivers_its_durable_follow_up`
-— pre-existing on master.** It fails deterministically (3/3 isolated runs) with
-`revision_conflict: the task moved since the caller read it` against its
-hard-coded `"expected_task_revision": 1`. The test body in this branch is
+Three distinct runs are cited anywhere in this record. Each is named once, with
+its own identity, and no observation is carried from one to another.
+
+| Run | Command | Source | Log SHA-256 | Result |
+| --- | --- | --- | --- | --- |
+| **A** | `cargo test --workspace --no-fail-fast` | pre-repair tree, `fcfbc714` | `bea64c5ab1721b6769a6876997752cb4622924615319d992ce4f3852371d3792` | 2434 passed, **1** failed, 9 ignored, 123 binaries |
+| **B** | `cargo test --workspace --no-fail-fast` | post-repair tree, later committed as `59a49fd` | `61a866646b3aea7855ee6b8e11ebdea68d47495c2ccb3da84b49edee8665b44b` | 2439 passed, **1** failed, 9 ignored, 123 binaries |
+| **C** | `cargo test -p kontor-store --test consultation_subject --test schema_v1` | post-repair tree | not retained | one failure, named below |
+
+Run **B** is the workspace record for this branch. It has **exactly one**
+failing test. Run B is reused rather than repeated: every commit after
+`59a49fd` changes only `docs/`, so no source file has moved since it ran, and
+rerunning inside the worktree would regenerate the evidence bundle that was
+just removed.
+
+### The one failure in run B
+
+`loopback_api::replaying_a_partial_admission_delivers_its_durable_follow_up`
+is **pre-existing on master**. It fails deterministically (3/3 isolated runs)
+with `revision_conflict: the task moved since the caller read it` against its
+hard-coded `"expected_task_revision": 1`. The test body on this branch is
 byte-identical to `origin/master`'s, and the same test fails identically on an
 unmodified detached checkout of `e40b5f4` — same assertion, same line, same
-refusal. It is therefore master breakage that this branch inherits, not a
-regression here. This change does not write task revisions. The throwaway
-probe worktree was removed; no branch, session or external identity was
-created for it.
+refusal. This change writes no task revisions, so it is inherited breakage, not
+a regression here. The throwaway probe worktree was removed; no branch, session
+or external identity was created for it.
 
-**`schema_v1::a_concurrent_first_open_initializes_exactly_one_realm` — load
-contention, matching the flake ASMA-8116 recorded.** Four threads race a first
-open through a barrier. It passed 5/5 in isolation and 57/57 twice when
-`schema_v1` runs as its own suite; it fails only when a heavy suite runs
-alongside it. This change does add a migration, which lengthens first open, so
-the attribution is stated as observed behaviour rather than as proof of
-independence.
+The same single test is also the only failure in run A.
+
+### A separate observation, from run C only
+
+`schema_v1::a_concurrent_first_open_initializes_exactly_one_realm` failed once
+under **run C**, where a heavy suite runs alongside it. Four threads race a
+first open through a barrier; it passed 5/5 in isolation and 57/57 twice with
+`schema_v1` as its own suite.
+
+This test did **not** fail in run A or run B, and it is deliberately not
+counted against either. It is recorded here because this change does add a
+migration, which lengthens first open — stated as observed behaviour under one
+named command, not as proof of independence.
 
 ## Open question
 
