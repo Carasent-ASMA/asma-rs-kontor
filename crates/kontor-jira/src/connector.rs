@@ -397,9 +397,23 @@ impl JiraConnector {
             optional_external_at(&issue, &["fields", "assignee", "accountId"])?;
         let assignee_display = optional_name_at(&issue, &["fields", "assignee", "displayName"])?;
         let update_token = optional_external_at(&issue, &["fields", "updated"])?;
+        // Evidence describes what was *observed*, not what was asked for. Jira
+        // resolves a superseded key to the issue that now owns it, so a read
+        // addressed to an alias answers for the canonical key; hashing the
+        // requested alias instead made that same answer unusable at the address
+        // it just proved, and a later read of the canonical key produced an
+        // otherwise identical hash that compared unequal.
+        //
+        // Every mutable field the caller protects against a human move is still
+        // inside this document, so the protection is unchanged: only the alias
+        // drift is removed.
+        let identity = JiraIssueIdentity {
+            issue_key: external_at(&issue, &["key"])?,
+            issue_id: external_at(&issue, &["id"])?,
+        };
         let observation_hash = CanonicalDocument::from_serializable(&json!({
             "schema_version": 1,
-            "key": issue_key.as_str(),
+            "key": identity.issue_key.as_str(),
             "project": project,
             "fields": issue.get("fields").cloned().unwrap_or(Value::Null),
         }))?
@@ -448,10 +462,7 @@ impl JiraConnector {
             // Read from the answer already in hand. Observing identity must
             // never cost a second request, because the resident reconciler is
             // bounded on exactly this.
-            identity: JiraIssueIdentity {
-                issue_key: external_at(&issue, &["key"])?,
-                issue_id: external_at(&issue, &["id"])?,
-            },
+            identity,
         })
     }
 

@@ -43978,22 +43978,16 @@ async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connect
         "an already-followed rename is not redone"
     );
 
-    // The read budget, stated exactly rather than assumed.
-    //
-    // Steady state is what the resident loop is bounded on, and it is unchanged:
-    // discovering that an identity still agrees costs nothing, because it rides
-    // the status observation already being made. A *rename* costs exactly one
-    // additional read, and only in the pass that follows it — the evidence has
-    // to be re-established at the confirmed address, since the boundary hashes
-    // the key it was asked under and an observation taken as `ASMA-1` cannot
-    // validate a read of `MOVED-9`.
-    //
-    // So: one extra read, once, per rename; never a second read per pass.
+    // The read budget, stated exactly. A rename costs no identity read of its
+    // own: the one response that resolved the alias already carried the
+    // canonical key and the immutable id, and the boundary hashes its evidence
+    // under the key it observed — so that single answer is valid at the address
+    // the writes use. A pass that follows a rename therefore reads exactly as
+    // often as one with nothing to reconcile.
     let replay_reads = reads.load(Ordering::SeqCst) - before_replay;
     assert_eq!(
-        replay_reads + 1,
-        reads_for_one_pass,
-        "a rename costs exactly one re-observation, and a steady pass costs none"
+        replay_reads, reads_for_one_pass,
+        "following a rename must not cost an extra Jira identity read"
     );
 }
 
@@ -44767,6 +44761,9 @@ struct RenamedEpicJira {
     /// The immutable id Jira reports. `901` is the same issue renamed; anything
     /// else is a different issue wearing the key.
     issue_id: &'static str,
+    /// Every issue read, so a pass that asks twice can be told from one that
+    /// asks once.
+    issue_reads: Arc<AtomicUsize>,
     writes: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -44794,6 +44791,7 @@ impl Respond for RenamedEpicJira {
             }));
         }
         if path.contains("/rest/api/3/issue/") {
+            self.issue_reads.fetch_add(1, Ordering::SeqCst);
             // Jira resolves the superseded key and answers with the key the
             // issue holds now.
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -44822,10 +44820,12 @@ impl Respond for RenamedEpicJira {
 #[tokio::test]
 async fn an_epic_same_issue_rename_never_addresses_the_superseded_key() {
     let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
     let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
     Mock::given(any())
         .respond_with(RenamedEpicJira {
             issue_id: "901",
+            issue_reads: Arc::clone(&issue_reads),
             writes: Arc::clone(&writes),
         })
         .mount(&server)
@@ -44880,16 +44880,32 @@ async fn an_epic_same_issue_rename_never_addresses_the_superseded_key() {
         emitted.iter().all(|path| !path.contains("ASMA-1")),
         "the superseded route is never addressed: {emitted:?}"
     );
+
+    // And the rename cost no identity read of its own. This pass reached the
+    // native write boundary, so it exercised every read the epic path makes; a
+    // second pass with nothing left to reconcile must read exactly as often.
+    // Re-establishing evidence by asking Jira again would show up here.
+    let renaming_reads = issue_reads.load(Ordering::SeqCst);
+    issue_reads.store(0, Ordering::SeqCst);
+    let steady = world.daemon.reconcile_jira_once().await;
+    assert_eq!(steady.renamed, 0, "the rename is not redone: {steady:?}");
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        renaming_reads,
+        "following a rename must not cost an extra Jira identity read"
+    );
 }
 
 #[tokio::test]
-async fn an_epic_key_that_moved_to_another_issue_is_still_refused_after_the_refresh() {
+async fn an_epic_key_naming_another_immutable_issue_is_refused_before_the_binding_moves() {
     let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
     let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
     Mock::given(any())
         .respond_with(RenamedEpicJira {
             // A different immutable issue now answers at that key.
             issue_id: "999",
+            issue_reads: Arc::clone(&issue_reads),
             writes: Arc::clone(&writes),
         })
         .mount(&server)
@@ -44907,25 +44923,62 @@ async fn an_epic_key_that_moved_to_another_issue_is_still_refused_after_the_refr
             .expect("the epic receives its explicit legacy code");
     });
 
+    // The occurrence the binding sits at before the pass. If the rename were
+    // committed before the same-issue proof completed, this would advance even
+    // though the answer names a different issue.
+    let occurrence_before = epic_rename_occurrence(&world, project_id, epic_id);
+
     let report = world.daemon.reconcile_jira_once().await;
     assert_eq!(
         report.renamed, 0,
         "an anti-rebind is never a rename: {report:?}"
     );
 
-    // Refreshing evidence at the new address must not become a way to adopt a
-    // different issue: the binding stays put and nothing is written.
+    // The one response that resolved the alias named a different immutable
+    // issue, so the proof fails and nothing may move. Each of these would fail
+    // if the binding advanced before the proof completed.
     world.daemon.state().with_store(|store| {
         assert_eq!(
             store
                 .confirmed_jira_epic_key(project_id, epic_id)
                 .expect("epic key")
                 .map(|key| key.as_str().to_owned()),
-            Some("ASMA-1".to_owned())
+            Some("ASMA-1".to_owned()),
+            "the old binding is unchanged"
+        );
+        assert!(
+            matches!(
+                store.resolve_confirmed_jira_key(project_id, "MOVED-9"),
+                Err(kontor_core::repository::RepositoryError::NotFound { .. })
+            ),
+            "the contested key resolves to nothing"
         );
     });
+    assert_eq!(
+        epic_rename_occurrence(&world, project_id, epic_id),
+        occurrence_before,
+        "a refused proof must not spend a rename occurrence"
+    );
     assert!(
         writes.lock().expect("the write log locks").is_empty(),
         "a different immutable issue receives no Jira effect"
     );
+}
+
+/// The rename occurrence an epic binding currently sits at.
+///
+/// Read directly, because it is the durable trace of whether a rename was
+/// committed: a binding that advanced has spent an occurrence, whatever the
+/// pass reported.
+fn epic_rename_occurrence(world: &World, project_id: ProjectId, epic_id: MiniProjectId) -> i64 {
+    let connection = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the world's database opens directly");
+    connection
+        .query_row(
+            "SELECT rename_sequence FROM jira_epic_bindings
+             WHERE project_id = ?1 AND epic_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("the occurrence reads")
 }

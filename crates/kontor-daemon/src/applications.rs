@@ -3353,48 +3353,13 @@ impl Services {
             field_writes: &empty_fields,
             idempotency_key: &observe_key,
         };
-        // Addressing the new key is necessary but not sufficient: the evidence
-        // still describes the *request* that produced it. The boundary hashes a
-        // document containing the key it was asked under, so an observation
-        // taken as `ASMA-1` cannot validate a later read of `MOVED-9` — the two
-        // hashes differ by the alias alone and the connector refuses it as a
-        // human move before any write.
-        //
-        // So a rename re-observes at the confirmed address, making the evidence
-        // and the address agree. The refreshed answer must still prove the same
-        // immutable issue; if it does not, the key moved to a different issue
-        // between the two reads and this is an anti-rebind, not a rename.
-        //
-        // Human-move protection is unchanged: the refreshed observation is the
-        // baseline this pass validates against, so a genuine move after it still
-        // refuses. Nothing is inferred from the key's shape.
-        let observed = if let IdentityDecision::Proceed {
-            issue_id,
-            renamed: true,
-            ..
-        } = &decided
-        {
-            let refreshed = current_delegation
-                .observe()
-                .await
-                .map_err(|error| self.refuse_jira(&error))?;
-            let proven = refreshed
-                .response
-                .observed_identity
-                .as_ref()
-                .is_some_and(|identity| {
-                    identity.issue_id == *issue_id && identity.issue_key == *issue_key
-                });
-            if !proven {
-                return Ok(JiraSubjectVerdict {
-                    outcome: JiraSubjectOutcome::Blocked,
-                    content_conflict: None,
-                });
-            }
-            refreshed
-        } else {
-            observed
-        };
+        // No second read. The one response that resolved the alias already
+        // carried the canonical current key and the immutable issue id, and the
+        // boundary now hashes its evidence under the key it observed — so that
+        // single observation is already valid at the address the writes use.
+        // Asking Jira again to re-establish evidence it had just returned was
+        // both an extra identity read and, because the binding advanced first,
+        // a proof taken after the fact.
         if !observed
             .observation
             .issue_type
