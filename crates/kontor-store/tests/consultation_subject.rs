@@ -54,6 +54,10 @@ struct World {
     project_id: ProjectId,
     mini_project_id: MiniProjectId,
     task_id: TaskId,
+    /// A task in a *different* epic of the same project.
+    sibling_task_id: TaskId,
+    /// A task in a different project entirely.
+    foreign_task_id: TaskId,
     topology: TopologySnapshot,
     esw: TopologyNodeId,
     caller: SeatBindingId,
@@ -96,6 +100,63 @@ fn world() -> World {
             created_at,
         })
         .expect("the task is created");
+
+    // A sibling epic in the same project, holding its own task. Its ticket is
+    // reachable by id and satisfies the column's foreign key, so it is exactly
+    // what a containment rule has to refuse.
+    let sibling_epic_id = MiniProjectId::generate();
+    store
+        .create_mini_project(&NewMiniProject {
+            id: sibling_epic_id,
+            project_id,
+            name: name("Sibling epic"),
+            created_at,
+        })
+        .expect("the sibling epic is created");
+    let sibling_task_id = TaskId::generate();
+    store
+        .create_task(&NewTask {
+            id: sibling_task_id,
+            project_id,
+            mini_project_id: Some(sibling_epic_id),
+            title: name("A sibling epic's task"),
+            module: None,
+            state: TaskState::Ready,
+            created_at,
+        })
+        .expect("the sibling task is created");
+
+    // And a task in another project entirely.
+    let foreign_project_id = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: foreign_project_id,
+            name: name("Foreign project"),
+            root_path: name("/tmp/foreign-project"),
+            created_at,
+        })
+        .expect("the foreign project is created");
+    let foreign_epic_id = MiniProjectId::generate();
+    store
+        .create_mini_project(&NewMiniProject {
+            id: foreign_epic_id,
+            project_id: foreign_project_id,
+            name: name("Foreign epic"),
+            created_at,
+        })
+        .expect("the foreign epic is created");
+    let foreign_task_id = TaskId::generate();
+    store
+        .create_task(&NewTask {
+            id: foreign_task_id,
+            project_id: foreign_project_id,
+            mini_project_id: Some(foreign_epic_id),
+            title: name("Another project's task"),
+            module: None,
+            state: TaskState::Ready,
+            created_at,
+        })
+        .expect("the foreign task is created");
 
     let domain = bundled_operational_domain().expect("the bundled domain validates");
     let topology_spec = domain.topology_specs.first().expect("a topology").clone();
@@ -203,6 +264,8 @@ fn world() -> World {
         project_id,
         mini_project_id,
         task_id,
+        sibling_task_id,
+        foreign_task_id,
         topology,
         esw,
         caller,
@@ -269,6 +332,201 @@ fn consult(
         )
         .expect("the consultation run is durable");
     (run, asw)
+}
+
+/// Attempt one consultation, returning the store's answer rather than panicking.
+fn try_consult(
+    world: &World,
+    key: &str,
+    subject: Option<ConsultationSubject>,
+) -> Result<(), kontor_core::repository::RepositoryError> {
+    let asw = TopologyNodeId::generate();
+    let question = BoundedText::parse("Which confirmed key names this?").expect("a question");
+    let context = serde_json::json!({ "schema_version": 1 });
+    let context_hash = CanonicalDocument::from_serializable(&context)
+        .expect("canonical context")
+        .hash()
+        .clone();
+    let run = StoredConsultationRun {
+        id: ConsultationRunId::Advisor(AdvisorRunId::generate()),
+        project_id: world.project_id,
+        mini_project_id: world.mini_project_id,
+        topic: Some(name("Naming review")),
+        profile_id: PROFILE.to_owned(),
+        profile_version: SpecVersion::FIRST,
+        definition_hash: ContentHash::of(b"subject-advisor"),
+        semantic_identity_hash: Some(ContentHash::of(key.as_bytes())),
+        subject,
+        question_hash: ContentHash::of(question.as_str().as_bytes()),
+        question,
+        context,
+        context_hash,
+        caller_seat_binding_id: world.caller,
+        topology_node_id: asw,
+        invoke_key: IdempotencyKey::parse(key).expect("a key"),
+        invoke_intent_hash: ContentHash::of(key.as_bytes()),
+        state: ConsultationRunState::Materializing,
+        round: 1,
+        result: None,
+        result_hash: None,
+        revision: AggregateRevision::INITIAL,
+        created_at: world.created_at,
+        updated_at: world.created_at,
+        settled_at: None,
+    };
+    world.store.create_consultation_run(
+        &run,
+        &NewSessionTopologyNode {
+            id: asw,
+            project_id: world.project_id,
+            mini_project_id: Some(world.mini_project_id),
+            topology: world.topology.clone(),
+            kind: TopologyKindKey::parse("ASW").expect("the advisor kind"),
+            parent_id: Some(world.esw),
+            task_id: None,
+            created_at: world.created_at,
+        },
+        &[],
+    )
+}
+
+#[test]
+fn a_subject_from_another_project_is_refused() {
+    let world = world();
+
+    // The ticket exists, so the column's own foreign key is satisfied. It
+    // belongs to another project, so it is not a subject this epic may name.
+    let refused = try_consult(
+        &world,
+        "subject-cross-project",
+        Some(ConsultationSubject::Task(world.foreign_task_id)),
+    )
+    .expect_err("a cross-project subject must be refused");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                subject: "consultation subject",
+                ..
+            }
+        ),
+        "unexpected refusal: {refused}"
+    );
+}
+
+#[test]
+fn a_subject_from_a_sibling_epic_in_the_same_project_is_refused() {
+    let world = world();
+
+    // Same project, same caller authority, different epic. The containing epic
+    // is what bounds a consultation's subject, not the project.
+    let refused = try_consult(
+        &world,
+        "subject-sibling-epic",
+        Some(ConsultationSubject::Task(world.sibling_task_id)),
+    )
+    .expect_err("a sibling-epic subject must be refused");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                subject: "consultation subject",
+                ..
+            }
+        ),
+        "unexpected refusal: {refused}"
+    );
+}
+
+#[test]
+fn storage_refuses_an_uncontained_subject_even_without_the_repository_check() {
+    let world = world();
+    consult(
+        &world,
+        "subject-storage-guard",
+        Some(ConsultationSubject::Epic),
+    );
+    let connection = rusqlite::Connection::open(world.home.path().join("kontor.db"))
+        .expect("the database reopens");
+    // The frozen-inputs trigger would refuse any subject change on its own, so
+    // leaving it in place would let this test pass without containment being
+    // enforced at all. Removing it is what makes the assertion below mean what
+    // it says.
+    connection
+        .execute("DROP TRIGGER consultation_run_inputs_are_frozen", [])
+        .expect("the fixture isolates the containment rule");
+
+    // Written straight at the table, past the repository's own validation, to
+    // prove the containment rule is in storage and not only in Rust.
+    for (label, task_id) in [
+        ("another project", world.foreign_task_id),
+        ("a sibling epic", world.sibling_task_id),
+    ] {
+        let written = connection.execute(
+            "UPDATE consultation_runs SET subject_kind = 'task', subject_task_id = ?1",
+            rusqlite::params![task_id.to_string()],
+        );
+        assert!(
+            written.is_err(),
+            "storage must refuse a subject from {label}",
+        );
+    }
+
+    // The contained ticket is still accepted, so the rule rejects by
+    // containment rather than by refusing every task subject.
+    connection
+        .execute(
+            "UPDATE consultation_runs SET subject_kind = 'task', subject_task_id = ?1",
+            rusqlite::params![world.task_id.to_string()],
+        )
+        .expect("this epic's own task remains a valid subject");
+}
+
+/// The repository's one scope-relationship check now covers the subject too.
+#[test]
+fn the_run_node_and_subject_must_all_describe_one_scope() {
+    let world = world();
+
+    // The pre-existing halves of the relationship still hold.
+    assert!(
+        try_consult(&world, "subject-scope-ok", Some(ConsultationSubject::Epic)).is_ok(),
+        "a well-formed epic-scoped run is admitted"
+    );
+
+    // And the subject is now part of the same relationship: same project, same
+    // containing epic, or it is not this consultation's subject.
+    for (label, task_id) in [
+        ("another project", world.foreign_task_id),
+        ("a sibling epic", world.sibling_task_id),
+    ] {
+        let refused = try_consult(
+            &world,
+            &format!("subject-scope-{}", label.replace(' ', "-")),
+            Some(ConsultationSubject::Task(task_id)),
+        )
+        .expect_err("an uncontained subject breaks the scope relationship");
+        assert!(
+            matches!(
+                refused,
+                kontor_core::repository::RepositoryError::Conflict {
+                    subject: "consultation subject",
+                    ..
+                }
+            ),
+            "{label}: unexpected refusal: {refused}"
+        );
+    }
+
+    // The epic's own task completes the relationship.
+    assert!(
+        try_consult(
+            &world,
+            "subject-scope-contained",
+            Some(ConsultationSubject::Task(world.task_id))
+        )
+        .is_ok(),
+        "the containing epic's own task is a valid subject"
+    );
 }
 
 #[test]

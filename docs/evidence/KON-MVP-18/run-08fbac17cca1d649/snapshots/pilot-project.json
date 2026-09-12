@@ -1,0 +1,61 @@
+{
+  "declared_name": "Kontor pilot (disposable)",
+  "declared_root_path": "/tmp/kontor-pilot/realm",
+  "realm_scope": "each section opens its own realm and project so no case can pass on another case's residue; this is the fixture's declared identity, not a persisted row",
+  "tasks": [
+    {
+      "category": "code",
+      "expected_to_be_admissible": true,
+      "key": "pilot-code",
+      "module": "pilot.code",
+      "pack": "bundled",
+      "title": "Pilot coding task",
+      "worktree": "pilot-code-tree"
+    },
+    {
+      "category": "ux-ui-layout",
+      "expected_to_be_admissible": true,
+      "key": "pilot-ux",
+      "module": "pilot.ux",
+      "pack": "bundled",
+      "title": "Pilot UX/UI/layout task",
+      "worktree": "pilot-ux-tree"
+    },
+    {
+      "category": "research",
+      "expected_to_be_admissible": true,
+      "key": "pilot-research",
+      "module": "pilot.research",
+      "pack": "bundled",
+      "title": "Pilot research task",
+      "worktree": "pilot-research-tree"
+    },
+    {
+      "category": "docs",
+      "expected_to_be_admissible": true,
+      "key": "pilot-docs",
+      "module": "pilot.docs",
+      "pack": "bundled",
+      "title": "Pilot documentation task",
+      "worktree": "pilot-docs-tree"
+    },
+    {
+      "category": "incident-response-v1",
+      "expected_to_be_admissible": true,
+      "key": "pilot-incident",
+      "module": "pilot.incident",
+      "pack": "incident",
+      "title": "Pilot incident-response task",
+      "worktree": "pilot-incident-tree"
+    },
+    {
+      "category": "code",
+      "expected_to_be_admissible": false,
+      "key": "pilot-code-contender",
+      "module": "pilot.code",
+      "pack": "bundled",
+      "title": "Pilot collision contender (must never launch)",
+      "worktree": null
+    }
+  ]
+}

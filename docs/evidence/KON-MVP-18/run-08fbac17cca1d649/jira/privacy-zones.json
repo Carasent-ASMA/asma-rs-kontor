@@ -1,0 +1,56 @@
+{
+  "absent_field": {
+    "field_id_absent_from_the_wire": true,
+    "rule": "an absent value is skipped by `compile_field_writes`; there is no `clear` variant and no null on the wire"
+  },
+  "canaries_absent_from_the_wire": {
+    "jira_owned": true,
+    "private": true
+  },
+  "comments": {
+    "policy_variants": 1,
+    "rule": "`JiraRequest` has no comment field and there is no outbound comment payload type, so an outbound comment is a type change rather than a configuration change",
+    "serialized_request_mentions_a_comment": false,
+    "the_only_policy": "inbound_only"
+  },
+  "inbound_only_projected_outward": "projects an inbound-only field outward",
+  "owner_direction_matrix": [
+    {
+      "allows": [
+        "outbound",
+        "bidirectional"
+      ],
+      "owner": "kontor"
+    },
+    {
+      "allows": [
+        "inbound",
+        "bidirectional"
+      ],
+      "owner": "jira"
+    },
+    {
+      "allows": [
+        "outbound"
+      ],
+      "owner": "mirror_only"
+    },
+    {
+      "allows": [],
+      "owner": "private"
+    }
+  ],
+  "private_value_projected_outward": "projects a private field outward",
+  "same_field_projected_twice": "projects the same field twice",
+  "writes_emitted": 2,
+  "written_field_ids": [
+    "summary",
+    "customfield_10251"
+  ],
+  "zones": {
+    "jira": "severity — readable, never pushed; repro_steps — inbound only",
+    "kontor": "summary — owned, projected once",
+    "mirror_only": "product — mirrored outward without being owned",
+    "private": "agent_status — Zone C: no direction, no external mapping"
+  }
+}
