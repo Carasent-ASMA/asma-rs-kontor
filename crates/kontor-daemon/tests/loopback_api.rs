@@ -2644,7 +2644,7 @@ async fn a_team_draft_cannot_publish_a_route_outside_the_governed_catalog() {
     assert_eq!(refused.code(), "invalid_request");
 
     draft["slots"][0]["capabilities"]["chain"][0]["model"] =
-        serde_json::json!("deepseek/deepseek-v4-flash");
+        serde_json::json!("deepseek/deepseek-flash");
     let accepted = Call::post("/v1/teams/drafts:save", &draft)
         .signed_as(&world, "operator")
         .with_key("team-route-flash-accepted")
@@ -28410,7 +28410,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
             "seat_binding_id": lsa_binding,
             "expected_native_id": lsa_predecessor_native,
             "expected_generation": lsa_predecessor_generation,
-            "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "high"}
+            "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"}
         }),
     )
     .signed_as(&world, "admin")
@@ -28424,7 +28424,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
             "seat_binding_id": lsa_binding,
             "expected_native_id": lsa_predecessor_native,
             "expected_generation": lsa_predecessor_generation,
-            "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-v4-flash", "effort": "high"},
+            "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"},
             "preview_hash": route_preview.json()["preview_hash"],
         }),
     )
@@ -33860,7 +33860,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "expected_generation": tpm_generation,
         "desired_model_route": {
             "provider": "opencode",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "deepseek/deepseek-flash",
             "effort": "high"
         }
     });
@@ -33902,7 +33902,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "expected_generation": tpm_generation,
         "desired_model_route": {
             "provider": "opencode",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "deepseek/deepseek-flash",
             "effort": "high"
         },
         "preview_hash": preview.json()["preview_hash"],
@@ -34053,7 +34053,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "expected_generation": corrected_generation,
         "desired_model_route": {
             "provider": "opencode",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "deepseek/deepseek-flash",
             "effort": "high"
         }
     });
@@ -41314,8 +41314,9 @@ async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
             .as_array()
             .expect("models")
             .iter()
-            .any(|model| model["provider"] == "opencode"
-                && model["id"] == "deepseek/deepseek-v4-flash"),
+            .any(
+                |model| model["provider"] == "opencode" && model["id"] == "deepseek/deepseek-flash"
+            ),
         "the catalog describes the route used by OpenCode seats: {}",
         catalog.body
     );

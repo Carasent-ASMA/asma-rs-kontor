@@ -377,7 +377,7 @@ describe('validateChain', () => {
       [
         rung('codex', 'gpt-5.6-sol', 'xhigh'),
         rung('claude', 'claude-opus-5', 'xhigh'),
-        rung('deepseek', 'deepseek-v4-flash', 'max'),
+        rung('deepseek', 'deepseek-flash', 'max'),
         rung('openrouter', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'high'),
       ],
       FIXTURE_CATALOG,
@@ -392,10 +392,10 @@ describe('validateChain', () => {
   it(`refuses more than ${MAX_RUNGS} rungs`, () => {
     const issues = validateChain(
       [
-        rung('deepseek', 'deepseek-v4-flash', 'max'),
+        rung('deepseek', 'deepseek-flash', 'max'),
         rung('codex', 'gpt-5.6-sol', 'high'),
         rung('claude', 'claude-opus-5', 'high'),
-        rung('deepseek', 'deepseek-v4-flash', 'high'),
+        rung('deepseek', 'deepseek-flash', 'high'),
         rung('codex', 'gpt-5.6-terra', 'high'),
       ],
       FIXTURE_CATALOG,
@@ -458,7 +458,7 @@ describe('validateChain', () => {
 
   it('refuses an effort the route does not expose', () => {
     const issues = validateChain(
-      [rung('deepseek', 'deepseek-v4-flash', 'ultra'), rung('codex', 'gpt-5.6-sol', 'high')],
+      [rung('deepseek', 'deepseek-flash', 'ultra'), rung('codex', 'gpt-5.6-sol', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(issues)).toEqual(['effort_not_exposed'])
@@ -467,7 +467,7 @@ describe('validateChain', () => {
 
   it('refuses any effort on a route with no effort lever', () => {
     const issues = validateChain(
-      [rung('cursor', 'auto-smart', 'high'), rung('deepseek', 'deepseek-v4-flash', 'max')],
+      [rung('cursor', 'auto-smart', 'high'), rung('deepseek', 'deepseek-flash', 'max')],
       FIXTURE_CATALOG,
     )
     expect(codes(issues)).toEqual(['effort_not_exposed'])
@@ -477,12 +477,12 @@ describe('validateChain', () => {
   it('accepts unset only on a route with no effort lever', () => {
     expect(
       validateChain(
-        [rung('cursor', 'auto-smart', 'unset'), rung('deepseek', 'deepseek-v4-flash', 'max')],
+        [rung('cursor', 'auto-smart', 'unset'), rung('deepseek', 'deepseek-flash', 'max')],
         FIXTURE_CATALOG,
       ),
     ).toEqual([])
     const unpinned = validateChain(
-      [rung('deepseek', 'deepseek-v4-flash', 'unset'), rung('codex', 'gpt-5.6-sol', 'high')],
+      [rung('deepseek', 'deepseek-flash', 'unset'), rung('codex', 'gpt-5.6-sol', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(unpinned)).toEqual(['effort_unset'])
@@ -491,7 +491,7 @@ describe('validateChain', () => {
   it('refuses a route the catalog does not serve, and judges nothing else about that rung', () => {
     const issues = validateChain(
       [
-        rung('deepseek', 'deepseek-v4-flash', 'max'),
+        rung('deepseek', 'deepseek-flash', 'max'),
         rung('codex', 'gpt-9-imaginary', 'low'),
       ],
       FIXTURE_CATALOG,
@@ -501,7 +501,7 @@ describe('validateChain', () => {
 
   it('refuses a route that belongs to another provider', () => {
     const issues = validateChain(
-      [rung('codex', 'claude-opus-5', 'xhigh'), rung('deepseek', 'deepseek-v4-flash', 'max')],
+      [rung('codex', 'claude-opus-5', 'xhigh'), rung('deepseek', 'deepseek-flash', 'max')],
       FIXTURE_CATALOG,
     )
     // Under (provider, id) keying this is simply a pair the catalog does not
@@ -512,7 +512,7 @@ describe('validateChain', () => {
 
   it('refuses a provider the catalog does not serve', () => {
     const issues = validateChain(
-      [rung('nowhere', 'deepseek-v4-flash', 'max'), rung('codex', 'gpt-5.6-sol', 'high')],
+      [rung('nowhere', 'deepseek-flash', 'max'), rung('codex', 'gpt-5.6-sol', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(issues)).toEqual(['unknown_provider', 'unknown_model'])
@@ -802,7 +802,7 @@ describe('reviewSeat', () => {
   it('says a band cannot be checked when nothing establishes the ceiling', () => {
     const review = reviewSeat(
       seat({
-        chain: [rung('cursor', 'auto-smart', 'unset'), rung('deepseek', 'deepseek-v4-flash', 'max')],
+        chain: [rung('cursor', 'auto-smart', 'unset'), rung('deepseek', 'deepseek-flash', 'max')],
         context: { class: 'lean', enforcement: 'best_effort' },
       }),
       FIXTURE_CATALOG,
@@ -945,7 +945,7 @@ describe('the effort ladder', () => {
     )
     expect(ladders).toEqual({
       'cursor/auto-smart': [],
-      'deepseek/deepseek-v4-flash': ['low', 'high', 'max'],
+      'deepseek/deepseek-flash': ['low', 'high', 'max'],
       'codex/gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       'codex/gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       'codex/gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -1068,7 +1068,7 @@ describe('the fixtures', () => {
       // Was 256_000, which nothing supports; the design claimed a correction to
       // 1M that never landed, and the vendor is served through a provider that
       // returns no window on any route.
-      'deepseek/deepseek-v4-flash': null,
+      'deepseek/deepseek-flash': null,
       // Was 400_000 on both, which nothing supports.
       'codex/gpt-5.6-sol': null,
       'codex/gpt-5.6-terra': null,
@@ -1131,7 +1131,7 @@ describe('the fixtures', () => {
     // Terra at rung 4, not rung 3: the policy separated the two Codex rungs on
     // 2026-08-21 because adjacent they were one rung. Same four pins.
     expect(chains['implementer']).toEqual([
-      'deepseek/deepseek-v4-flash@max',
+      'deepseek/deepseek-flash@max',
       'codex/gpt-5.6-luna@xhigh',
       'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free@high',
       'codex/gpt-5.6-terra@high',

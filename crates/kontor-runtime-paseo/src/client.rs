@@ -181,16 +181,21 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 ///
 /// OpenCode is not added to the ordinary provider table above. The sole
 /// exception is the exact ASMA-8001 progression fallback accepted by an
-/// operator in an Admin-authorized initial recovery profile. Its `plan` mode is
-/// behavioral guidance, not OS-level containment; the qualified canary proved
-/// shell writes remain possible. Every other OpenCode provider alias, model,
+/// operator in an Admin-authorized initial recovery profile, under either the
+/// historical `deepseek/deepseek-v4-flash` id or its 2026-09-12 renamed
+/// successor `deepseek/deepseek-flash`. Its `plan` mode is behavioral
+/// guidance, not OS-level containment; the qualified canary proved shell
+/// writes remain possible. Every other OpenCode provider alias, model,
 /// effort, template route and future recovery source remains refused.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
     if rung.provider.0 == "opencode" {
-        let exact_model = rung.model.0 == "deepseek/deepseek-v4-flash";
+        let exact_model = matches!(
+            rung.model.0.as_str(),
+            "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
+        );
         let exact_effort = rung.effort.is_some_and(|effort| effort.as_str() == "max");
         if exact_model && exact_effort && provenance.is_operator_accepted_initial_recovery_profile()
         {
@@ -2392,36 +2397,31 @@ mod tests {
     /// without silently changing provider, model, effort or permission mode.
     #[test]
     fn opencode_deepseek_flash_max_consultation_fallback_is_constructible() {
-        let request = PaseoRpc::consultation_agent_create(
-            "request-deepseek-fallback".to_owned(),
-            "wks_1",
-            "/w/epic",
-            &route(
-                "opencode",
-                "deepseek/deepseek-v4-flash",
-                Some(EffortLevel::Max),
-            ),
-            &accepted_initial_recovery_provenance(),
-            "Reviewer",
-            &labels(),
-            "audit without mutation",
-            "seat-secret-value",
-        )
-        .expect("the operator-authorized OpenCode fallback is constructible");
+        for model in ["deepseek/deepseek-v4-flash", "deepseek/deepseek-flash"] {
+            let request = PaseoRpc::consultation_agent_create(
+                "request-deepseek-fallback".to_owned(),
+                "wks_1",
+                "/w/epic",
+                &route("opencode", model, Some(EffortLevel::Max)),
+                &accepted_initial_recovery_provenance(),
+                "Reviewer",
+                &labels(),
+                "audit without mutation",
+                "seat-secret-value",
+            )
+            .expect("the operator-authorized OpenCode fallback is constructible");
 
-        assert_eq!(request.message["config"]["provider"], "opencode");
-        assert_eq!(
-            request.message["config"]["model"],
-            "deepseek/deepseek-v4-flash"
-        );
-        assert_eq!(request.message["config"]["thinkingOptionId"], "max");
-        assert_eq!(request.message["config"]["modeId"], "plan");
-        assert!(request.message.get("env").is_none());
-        assert!(!format!("{request:?}").contains("seat-secret-value"));
-        assert_eq!(
-            request.envelope()["message"]["env"]["KONTOR_AUTH"],
-            "seat-secret-value"
-        );
+            assert_eq!(request.message["config"]["provider"], "opencode");
+            assert_eq!(request.message["config"]["model"], model);
+            assert_eq!(request.message["config"]["thinkingOptionId"], "max");
+            assert_eq!(request.message["config"]["modeId"], "plan");
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("seat-secret-value"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "seat-secret-value"
+            );
+        }
     }
 
     #[test]
