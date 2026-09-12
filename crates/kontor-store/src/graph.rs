@@ -2158,6 +2158,10 @@ fn evaluate_epic_in(
     store_specifications(transaction, request)?;
 
     let (mini_project, epic_applied) = ensure_mini_project(transaction, request)?;
+    // A legacy backlog code is allocated only when apply declares one. Omitting
+    // it allocates no namespace: under the Jira-key policy the confirmed key is
+    // the public identifier, and an existing short code is a read-only
+    // historical mapping rather than something a write path may mint.
     let epic_backlog_code = match request.epic_backlog_code {
         Some(code) => Some(ensure_epic_backlog_code(
             transaction,

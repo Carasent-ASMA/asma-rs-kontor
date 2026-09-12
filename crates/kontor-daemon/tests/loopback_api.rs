@@ -43720,6 +43720,7 @@ async fn a_publication_that_never_landed_is_still_refused() {
         placeholder,
         "a refused publication leaves the reader's body exactly as it was"
     );
+}
 
 /// A stable immutable Jira issue id derived from a key.
 ///
