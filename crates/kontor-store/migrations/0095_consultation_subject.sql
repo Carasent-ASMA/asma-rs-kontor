@@ -106,4 +106,46 @@ BEGIN
     SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
 END;
 
+-- A subject has to be inside the consultation that names it.
+--
+-- The column's own foreign key can only say the ticket exists somewhere: it
+-- references `tasks(id)`, and a composite key over (project_id,
+-- mini_project_id, id) cannot be added through ALTER TABLE ADD COLUMN. So a
+-- ticket from another project, or from a sibling epic in the same project,
+-- would satisfy the foreign key while naming a subject this epic's ASW/CSW has
+-- no authority to render. Containment is therefore enforced here, in storage,
+-- as well as by the repository before it.
+CREATE TRIGGER consultation_subject_is_contained
+BEFORE INSERT ON consultation_runs
+WHEN NEW.subject_task_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+        FROM tasks
+       WHERE tasks.id = NEW.subject_task_id
+         AND tasks.project_id = NEW.project_id
+         AND tasks.mini_project_id IS NEW.mini_project_id
+  )
+BEGIN
+    SELECT RAISE(ABORT,
+        'a consultation subject must be a task of the same project and epic');
+END;
+
+-- The frozen-inputs trigger already refuses moving a subject, so this cannot
+-- fire today. It exists so that a later migration relaxing that rule cannot
+-- silently open a path to an uncontained subject.
+CREATE TRIGGER consultation_subject_stays_contained
+BEFORE UPDATE OF subject_task_id ON consultation_runs
+WHEN NEW.subject_task_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+        FROM tasks
+       WHERE tasks.id = NEW.subject_task_id
+         AND tasks.project_id = NEW.project_id
+         AND tasks.mini_project_id IS NEW.mini_project_id
+  )
+BEGIN
+    SELECT RAISE(ABORT,
+        'a consultation subject must be a task of the same project and epic');
+END;
+
 PRAGMA user_version = 95;

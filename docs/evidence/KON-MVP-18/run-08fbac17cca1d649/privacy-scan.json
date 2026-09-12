@@ -1,0 +1,49 @@
+{
+  "canaries": [
+    {
+      "planted_as": "the body of a session message sent through POST /v1/sessions/{id}/messages",
+      "role": "transcript",
+      "sha256": "d4e87fe08846a82e979794e54d60660d05442749ca67c728f4f1c7d32b714b8e"
+    },
+    {
+      "planted_as": "runtime-authored content the daemon relays but must not keep",
+      "role": "token",
+      "sha256": "4fc04e4fce6d920e8aeb24950c87decc4b7ff2bf2ffd5342fdd87f915d440d83"
+    },
+    {
+      "planted_as": "the launch prompt handed to the runtime",
+      "role": "prompt",
+      "sha256": "7b3523236db58d7bbd789cb852e08f67ee97efeec795994082306b93414a0375"
+    }
+  ],
+  "excluded": {
+    "path": "credentials.json",
+    "why": "it legitimately holds this Realm's tier secrets; no canary was planted in it"
+  },
+  "export_surface": {
+    "evidence": "no backup or export route, command or writer exists anywhere in `crates/kontor-daemon`, `crates/kontor-store` or `crates/kontor-api`",
+    "exists": false
+  },
+  "leaks": [],
+  "log_surface": {
+    "evidence": "the daemon emits `tracing` to the process subscriber and writes no log file into its state root",
+    "state_root_log_files": 0
+  },
+  "positive_control": {
+    "found_in_state_root": true,
+    "what": "the pilot project id, which the control plane certainly persists",
+    "why": "an empty canary result is only evidence if the same scanner finds something that is genuinely there"
+  },
+  "scanned_roots": [
+    "the daemon's state root, every file including *.db, *.db-wal and *.db-shm",
+    "the pilot's ephemeral bundle root",
+    "the pilot's retained bundle root"
+  ],
+  "state_root_files": [
+    "credentials.json",
+    "kontor.db",
+    "kontor.db-shm",
+    "kontor.db-wal",
+    "kontor.lock"
+  ]
+}

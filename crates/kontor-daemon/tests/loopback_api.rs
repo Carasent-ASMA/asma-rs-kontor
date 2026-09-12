@@ -43991,14 +43991,63 @@ async fn jira_key_containers_render_the_confirmed_binding_of_their_own_subject()
         )),
         "identity validation precedes every runtime mutation",
     );
+
+    // A preview refusing proves only that the preview refuses. The contract is
+    // that a *mutating* route stops before any native effect, so the same
+    // withdrawn binding is driven through `topology:materialize` — the public
+    // route that actually prepares, retitles and launches containers.
+    world.fake.take_calls();
+    let mutating = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task_id.to_string()},
+            "expected_revision": current_project_revision(world, project).await
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8117-materialize-without-a-binding")
+    .send(world)
+    .await;
+    assert_eq!(mutating.status, 409, "{}", mutating.body);
+    assert_eq!(mutating.code(), "placement_blocked");
+    assert!(
+        mutating.body.contains("confirmed Jira binding"),
+        "the mutating route names the missing confirmed binding: {}",
+        mutating.body
+    );
+    let after_mutating = world.fake.take_calls();
+    assert!(
+        after_mutating.iter().all(|call| !matches!(
+            call,
+            AdapterCall::PrepareContainer(_)
+                | AdapterCall::RetitleContainer(_)
+                | AdapterCall::RetitleSeat(_)
+                | AdapterCall::Launch(_)
+                | AdapterCall::LaunchHostedSeat(_)
+                | AdapterCall::LaunchConsultation(_)
+        )),
+        "a mutating route must refuse before any native effect: {after_mutating:?}",
+    );
+
+    // And the containers still carry the titles they were bound with: a
+    // refused mutation left every native identity exactly as it found it.
+    let unchanged = bound_titles(world, project, epic).await;
+    assert_eq!(unchanged, after, "a refusal must not retitle anything");
 }
 
-/// A consultation container is named from the subject its own topology node
-/// records — never from the seat that called it, and never from the containing
-/// epic just because the caller sits there.
-#[tokio::test]
-async fn consultation_containers_follow_their_recorded_subject_not_their_caller() {
-    let composed = compose_realm("/tmp/kontor-asma8117-consultation-subject").await;
+/// Everything both consultation families need: a confirmed epic and ticket,
+/// bound containers, the pinned Jira-key successor, one Core Team caller in the
+/// epic's control plane, and a published Advisor profile.
+struct ConsultationFixture {
+    composed: Composed,
+    task_id: TaskId,
+    epic_key: ExternalId,
+    task_key: ExternalId,
+    caller: String,
+}
+
+async fn jira_key_consultation_fixture(root: &str) -> ConsultationFixture {
+    let composed = compose_realm(root).await;
     let world = &composed.world;
     let project = &composed.project;
     let epic = &composed.epic;
@@ -44117,6 +44166,127 @@ async fn consultation_containers_follow_their_recorded_subject_not_their_caller(
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
 
+    ConsultationFixture {
+        task_id,
+        epic_key,
+        task_key,
+        caller,
+        composed,
+    }
+}
+
+/// The Committee family carries the same durable subject as the Advisor, and is
+/// asserted on its own so a mutation cannot be caught only by the ASW rows.
+#[tokio::test]
+async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8117-committee-subject").await;
+    let ConsultationFixture {
+        composed,
+        task_id,
+        epic_key,
+        task_key,
+        caller,
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let (task_id, epic_key, task_key, caller) =
+        (*task_id, epic_key.clone(), task_key.clone(), caller.clone());
+
+    // The preset is published through the store because this suite does not
+    // exercise the Committee authoring routes.
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+
+    let invoke_committee = |topic: &'static str, task: Option<String>, key: &'static str| {
+        let caller = caller.clone();
+        let profile = committee_profile.clone();
+        let version = template.version.get();
+        async move {
+            let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+                .signed_as(world, "observer")
+                .send(world)
+                .await;
+            let mut body = serde_json::json!({
+                "profile": {"id": profile, "version": version},
+                "topic": topic,
+                "question": "Which confirmed key names this consultation?",
+                "caller_seat_binding_id": caller,
+                "expected_revision": epic_read.json()["revision"],
+            });
+            if let Some(task) = task {
+                body["task_id"] = serde_json::json!(task);
+            }
+            let invoked = Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+                &body,
+            )
+            .signed_as(world, "operator")
+            .with_key(key)
+            .send(world)
+            .await;
+            assert_eq!(invoked.status, 200, "{}", invoked.body);
+            invoked.json()["container_name"]
+                .as_str()
+                .expect("a rendered Committee container")
+                .to_owned()
+        }
+    };
+
+    assert_eq!(
+        invoke_committee("Release readiness", None, "asma8117-committee-epic").await,
+        format!("CSW • {epic_key} • Release readiness"),
+    );
+    assert_eq!(
+        invoke_committee(
+            "Naming review",
+            Some(task_id.to_string()),
+            "asma8117-committee-task"
+        )
+        .await,
+        format!("CSW • {task_key} • Naming review"),
+        "a task-scoped Committee must not fall back to the containing epic",
+    );
+}
+
+/// A consultation container is named from the subject its own topology node
+/// records — never from the seat that called it, and never from the containing
+/// epic just because the caller sits there.
+#[tokio::test]
+async fn consultation_containers_follow_their_recorded_subject_not_their_caller() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8117-consultation-subject").await;
+    let ConsultationFixture {
+        composed,
+        task_id,
+        epic_key,
+        task_key,
+        caller,
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let (task_id, epic_key, task_key, caller) =
+        (*task_id, epic_key.clone(), task_key.clone(), caller.clone());
+
     let invoke = |topic: &'static str, task: Option<String>, key: &'static str| {
         let caller = caller.clone();
         async move {
@@ -44156,8 +44326,6 @@ async fn consultation_containers_follow_their_recorded_subject_not_their_caller(
         format!("ASW • {epic_key} • Release readiness"),
     );
 
-    // The same caller, in the same epic, asking about one task: the subject
-    // recorded on the new node is that task, so its key names the container.
     // The same caller, in the same epic, asking about one ticket. The subject
     // is frozen on the run — `ux_topology_node_task` keeps the node's task for
     // the ticket's own delivery workspace — so the ticket's confirmed key

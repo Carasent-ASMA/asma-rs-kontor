@@ -1,6 +1,6 @@
 # ASMA-8117 implementation record
 
-Date: 2026-09-06 (implemented), 2026-09-12 (rebased and re-verified)
+Date: 2026-09-06 (implemented), 2026-09-12 (rebased, re-verified, gate-1 repairs)
 Artifact: `high-change`
 Task: Jira `ASMA-8117` / Kontor `01a07722-c376-77f2-bee9-609793e172de`
 Epic: Jira `ASMA-8049` / Kontor `01a0539a-51c9-7301-9bd7-26c09167b23e`
@@ -139,6 +139,49 @@ selects, deploys or migrates them — ASMA-8120 owns those receipts.
 OQ-8117-01 is resolved as recorded: option (a), the next unused version in each
 source lineage (Operational v1/v2/v3 → v4/v5/v6, Recovery v2 → v3).
 
+## High-verification gate 1 repairs
+
+Gate 1 was REJECTED — receipt `01a09599-673a-7e72-aef2-cde9d8d799ed`, verifier
+evidence hash
+`a391c5e36f1925cf8f83d735be129ab74d6e7c2cb1e835856e7bd7c57bfc3837`. Four
+findings, all repaired on this branch with `fcfbc714` preserved as history.
+
+**1 — subject containment.** `subject_task_id` only referenced `tasks(id)`, so a
+ticket from another project, or from a sibling epic in the same project, would
+satisfy the foreign key while naming a subject the epic has no authority to
+render. `tasks` is unique on `(project_id, id)` and SQLite cannot add a
+composite foreign key through `ALTER TABLE ADD COLUMN`, so containment is now
+enforced twice: `consultation_subject_is_contained` /
+`consultation_subject_stays_contained` in storage, and an explicit check in
+`create_consultation_run` that returns a legible
+`Conflict { subject: "consultation subject" }`. Covered by
+`a_subject_from_another_project_is_refused`,
+`a_subject_from_a_sibling_epic_in_the_same_project_is_refused`,
+`storage_refuses_an_uncontained_subject_even_without_the_repository_check`
+(which drops the frozen-inputs trigger first, or it would pass without
+containment being enforced at all), and the general relationship test
+`the_run_node_and_subject_must_all_describe_one_scope`. Kill-proven: removing
+both triggers makes the storage test fail on the cross-project subject.
+
+**2 — unrelated evidence bundle.** `fcfbc714` swept 53 files of
+`docs/evidence/KON-MVP-18/run-461f54595d89cec3` in through a `git add -A`; they
+were also the only `git diff --check` violation. Removed in follow-up commit
+`e4f0aff` rather than by rewriting history, leaving the rest of the KON-MVP-18
+evidence untouched. `git diff --check origin/master..HEAD` is now clean.
+
+**3 — Committee/CSW and a mutating refusal.** The Committee family now has its
+own daemon test,
+`committee_containers_follow_their_recorded_subject_not_their_caller`, split out
+behind a shared fixture so a mutation cannot be caught only by the ASW rows —
+both families now fail independently under MUT-002. The missing-binding refusal
+no longer rests on a preview: the same withdrawn confirmation is driven through
+`topology:materialize`, a mutating public route, asserting `placement_blocked`,
+zero `PrepareContainer`/`Retitle*`/`Launch*` adapter calls, and that every bound
+container title is byte-identical afterwards.
+
+**4 — MUT-002 at the new head.** Re-seeded, killed and restored at the exact
+current site; see below.
+
 ## Verification
 
 Focused commands, adjusted to the final test names:
@@ -193,8 +236,9 @@ under the same idempotency key renders the subject it froze the first time.
 
 ### MUT-002
 
-Seeded in `crates/kontor-daemon/src/applications.rs:33400`, changing
-task-scoped consultation selection to fall back to the caller/containing epic:
+Seeded at the current site `crates/kontor-daemon/src/applications.rs:34466`,
+changing task-scoped consultation selection to fall back to the
+caller/containing epic:
 
 ```text
 -            Some(ConsultationSubject::Task(task_id)) => Ok(Some(task_id)),
@@ -206,10 +250,18 @@ cargo test -p kontor-daemon --test loopback_api -- \
     consultation_containers_follow_their_recorded_subject_not_their_caller
 ```
 
-FAILED as required — `left: "ASW • ASMA-76098410 • Naming review"` against
-`right: "ASW • ASMA-518272654 • Naming review"`, i.e. the mutant rendered the
-containing epic instead of the advised ticket. Production code was restored
-from an untouched copy and the same command reran green.
+Both families FAILED as required, independently:
+
+```text
+consultation_containers_follow_…  left: "ASW • ASMA-215693660 • Naming review"
+                                 right: "ASW • ASMA-518272654 • Naming review"
+committee_containers_follow_…     left: "CSW • ASMA-671035026 • Naming review"
+                                 right: "CSW • ASMA-518272654 • Naming review"
+```
+
+i.e. the mutant rendered the containing epic instead of the advised ticket on
+both ASW and CSW. Production code was restored from an untouched copy — the
+diff against the restored file is empty — and the same command reran green.
 
 ### Workspace gates
 
@@ -217,7 +269,7 @@ from an untouched copy and the same command reran green.
 | --- | --- |
 | `cargo fmt --all -- --check` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace --no-fail-fast` | 2434 passed, 1 failed, 9 ignored, 123 binaries |
+| `cargo test --workspace --no-fail-fast` | 2439 passed, 1 failed, 9 ignored, 123 binaries (post-repair) |
 
 The nine ignored are the suites' predeclared live-environment cases. The one
 failure is analysed below; `--no-fail-fast` was used because a plain

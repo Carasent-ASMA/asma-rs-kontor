@@ -1,0 +1,112 @@
+{
+  "auto_arm_policy": {
+    "bounded_validates": true,
+    "declared_bounds": [
+      "capability.granted_to",
+      "capability.execution_authorization",
+      "max_concurrency",
+      "budget"
+    ],
+    "unbounded_variant_unrepresentable": true,
+    "zero_budget_bound_refused": true,
+    "zero_concurrency_refused": true
+  },
+  "bounded_auto_arm_is_onboardable": {
+    "canonicalize_error": null,
+    "covered_by": "`crates/kontor-core/tests/spec_validation.rs` now canonicalizes the bounded policy it validates, and `crates/kontor-store/tests/intake_lineage.rs` stores one and arms work under it",
+    "fix": "KON-MVP-22 renamed the field to `execution_authorization`. The shared scanner is unchanged and no path is exempted from it: the name that collided was the domain's, not the scanner's",
+    "insert_trigger_spec_error": null,
+    "was": "`ExecutionCapability` named its field `authorization`, which is a `FORBIDDEN_KEYS` entry in `kontor_core::id::reject_sensitive_material`. Every route to a digest goes through `CanonicalDocument::from_value`, so a bounded auto-arm `TriggerSpec` validated and then could not be canonicalized, hashed, receipted or inserted"
+  },
+  "contradictions_refused": {
+    "approved_without_work": "an approval or a bounded auto-arm arms the work it names",
+    "rejected_carrying_work": "a rejection is terminal and creates no work"
+  },
+  "persisted_decisions": [
+    {
+      "decision": "approved",
+      "intake_created_work_rows": 1,
+      "intake_decisions_rows": 1,
+      "lineage": {
+        "execution_authorization": null,
+        "receipt_id": "0192f0c0-0000-7000-8000-00000000011f",
+        "task_id": "0192f0c0-0000-7000-8000-000000000120",
+        "trigger": "pilot.intake",
+        "trigger_version": 1
+      },
+      "persisted_outcome": "approved",
+      "proposal_result": "proposed"
+    },
+    {
+      "decision": "rejected",
+      "intake_created_work_rows": 0,
+      "intake_decisions_rows": 1,
+      "lineage": null,
+      "persisted_outcome": "rejected",
+      "proposal_result": "proposed"
+    },
+    {
+      "decision": "bounded_auto_arm",
+      "intake_created_work_rows": 1,
+      "intake_decisions_rows": 1,
+      "lineage": {
+        "execution_authorization": "0192f0c0-0000-7000-8000-00000000011b",
+        "receipt_id": "0192f0c0-0000-7000-8000-000000000128",
+        "task_id": "0192f0c0-0000-7000-8000-000000000129",
+        "trigger": "pilot.intake.armed",
+        "trigger_version": 1
+      },
+      "persisted_outcome": "auto_armed",
+      "proposal_result": "proposed"
+    }
+  ],
+  "scheduler_admission": [
+    {
+      "admitted": true,
+      "case": "manual",
+      "rejection": null
+    },
+    {
+      "admitted": false,
+      "case": "absent_lineage",
+      "rejection": "intake_receipt_missing"
+    },
+    {
+      "admitted": false,
+      "case": "armed_other_task",
+      "rejection": "intake_receipt_mismatched"
+    },
+    {
+      "admitted": true,
+      "case": "approved",
+      "rejection": null
+    },
+    {
+      "admitted": true,
+      "case": "auto_armed_with_authorization",
+      "rejection": null
+    },
+    {
+      "admitted": false,
+      "case": "proposed_without_authorization",
+      "rejection": "intake_receipt_not_approved"
+    },
+    {
+      "admitted": false,
+      "case": "rejected",
+      "rejection": "intake_receipt_not_approved"
+    },
+    {
+      "admitted": false,
+      "case": "ignored",
+      "rejection": "intake_receipt_not_approved"
+    },
+    {
+      "admitted": false,
+      "case": "duplicate",
+      "rejection": "intake_receipt_not_approved"
+    }
+  ],
+  "store_problems": [],
+  "unmerged_seam": "None for the domain. KON-MVP-22 merged `kontor-intake`, the two-commit intake transaction, the append-only decision tables and the lineage the scheduler reads. What remains staged is the *transport* (`kontor_api::query::STAGED[0]`): no HTTP or CLI surface serves intake yet, so this driver calls the store directly, exactly as an operator's command would"
+}

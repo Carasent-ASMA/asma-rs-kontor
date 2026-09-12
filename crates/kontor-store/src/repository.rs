@@ -2241,6 +2241,38 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
+        // The subject has to be inside the consultation naming it. The
+        // column's foreign key only proves the ticket exists somewhere:
+        // `tasks` is unique on (project_id, id) and SQLite cannot add a
+        // composite foreign key through ALTER TABLE ADD COLUMN, so a ticket
+        // from another project — or from a sibling epic in this one — would
+        // satisfy it while naming a subject this epic has no authority over.
+        // Storage refuses it too; this refusal is the legible one.
+        if let Some(subject_task_id) = run.subject.and_then(ConsultationSubject::task_id) {
+            let contained: bool = transaction
+                .query_row(
+                    "SELECT EXISTS (
+                         SELECT 1
+                           FROM tasks
+                          WHERE id = ?1
+                            AND project_id = ?2
+                            AND mini_project_id IS ?3
+                     )",
+                    params![
+                        subject_task_id.to_string(),
+                        run.project_id.to_string(),
+                        run.mini_project_id.to_string(),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if !contained {
+                return Err(RepositoryError::Conflict {
+                    subject: "consultation subject",
+                    rule: "the advised task belongs to another project or epic",
+                });
+            }
+        }
         transaction
             .execute(
                 "INSERT INTO topology_nodes

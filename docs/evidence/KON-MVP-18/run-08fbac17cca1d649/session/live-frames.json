@@ -1,0 +1,74 @@
+{
+  "anchor": "0192f0c0-0000-7000-8000-0000000000fa:1:20",
+  "anchor_sequence": 20,
+  "contiguous_from_anchor": true,
+  "desktop": {
+    "frames": [
+      {
+        "epoch": 1,
+        "frame_id": "1:21",
+        "kind": "message",
+        "message_id": null,
+        "payload_sha256": "d0d63091aa1b36869caec0106b168733e24e31d261f080faec3498fb54c903f9",
+        "permission_id": null,
+        "sequence": 21
+      },
+      {
+        "epoch": 1,
+        "frame_id": "1:22",
+        "kind": "message",
+        "message_id": null,
+        "payload_sha256": "038fabf3bcc3156c49b3dc1017d2ee0a4be239da8e5fa3336c2f78f520cef887",
+        "permission_id": null,
+        "sequence": 22
+      },
+      {
+        "epoch": 1,
+        "frame_id": "1:23",
+        "kind": "message",
+        "message_id": null,
+        "payload_sha256": "e7c76820131d33797c320218b9dc3924876db27ffbda1f11355d8c27cb61fae9",
+        "permission_id": null,
+        "sequence": 23
+      }
+    ],
+    "status": 200,
+    "user_agent": "kontor-pilot/desktop (1440x900)"
+  },
+  "identical": true,
+  "phone": {
+    "frames": [
+      {
+        "epoch": 1,
+        "frame_id": "1:21",
+        "kind": "message",
+        "message_id": null,
+        "payload_sha256": "d0d63091aa1b36869caec0106b168733e24e31d261f080faec3498fb54c903f9",
+        "permission_id": null,
+        "sequence": 21
+      },
+      {
+        "epoch": 1,
+        "frame_id": "1:22",
+        "kind": "message",
+        "message_id": null,
+        "payload_sha256": "038fabf3bcc3156c49b3dc1017d2ee0a4be239da8e5fa3336c2f78f520cef887",
+        "permission_id": null,
+        "sequence": 22
+      },
+      {
+        "epoch": 1,
+        "frame_id": "1:23",
+        "kind": "message",
+        "message_id": null,
+        "payload_sha256": "e7c76820131d33797c320218b9dc3924876db27ffbda1f11355d8c27cb61fae9",
+        "permission_id": null,
+        "sequence": 23
+      }
+    ],
+    "status": 200,
+    "user_agent": "kontor-pilot/phone (390x844)"
+  },
+  "redaction": "frame ids, normalized kinds, positions and payload digests only",
+  "strictly_after_anchor": true
+}

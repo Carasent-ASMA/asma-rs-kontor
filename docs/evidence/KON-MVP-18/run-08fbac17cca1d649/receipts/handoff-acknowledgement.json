@@ -1,0 +1,17 @@
+{
+  "acknowledged_at": "2026-08-12T09:01:00Z",
+  "bindings": {
+    "original_binding_unchanged": true,
+    "runtime_a_disowns_b": true,
+    "runtime_a_vouches_for_its_own": true,
+    "runtime_b_disowns_a": true,
+    "runtime_b_vouches_for_its_own": true
+  },
+  "bound_to_this_capsule": true,
+  "capsule_hash": "c81b9c3d510e50f53bb355244c76478fe6d84de7fe423505c41b53890b19083b",
+  "realm_id": "0192f0c0-0000-7000-8000-000000000085",
+  "receipt_id": "0192f0c0-0000-7000-8000-00000000008c",
+  "receiver_run_id": "0192f0c0-0000-7000-8000-000000000086",
+  "refuses_an_edited_capsule": true,
+  "refuses_the_producing_run": true
+}
