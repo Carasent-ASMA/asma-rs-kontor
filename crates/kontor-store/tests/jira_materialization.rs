@@ -2004,6 +2004,71 @@ fn a_canonical_task_key_cannot_be_changed_by_direct_sql() {
 }
 
 #[test]
+fn two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let (link_id, _batch) = confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+
+    // The whole forge, in one raw transaction: update the mutable link row to
+    // the new key first, then update the canonical row to match it. An earlier
+    // guard treated that agreement as proof, which meant two ordinary updates
+    // could mint a rename nobody ever read back from Jira.
+    let mut connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    let forge = connection
+        .transaction()
+        .expect("the forging transaction starts");
+    forge
+        .execute(
+            "UPDATE jira_links SET external_issue_key = 'FORGED-9'
+             WHERE project_id = ?1 AND id = ?2",
+            rusqlite::params![project_id.to_string(), link_id.to_string()],
+        )
+        .expect("the mutable link row is writable on its own");
+    let refused = forge.execute(
+        "UPDATE canonical_jira_task_links SET external_issue_key = 'FORGED-9'
+         WHERE project_id = ?1 AND task_id = ?2",
+        rusqlite::params![project_id.to_string(), task_id.to_string()],
+    );
+    assert!(
+        refused.is_err(),
+        "direct SQL must not forge the tail of a proven same-issue rename"
+    );
+    drop(forge);
+    drop(connection);
+
+    // Nothing moved: the task still answers to the key it was confirmed under.
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("task key")
+            .map(|key| key.as_str().to_owned()),
+        Some("ASMA-2".to_owned())
+    );
+    assert!(matches!(
+        store.resolve_confirmed_jira_key(project_id, "FORGED-9"),
+        Err(RepositoryError::NotFound { .. })
+    ));
+
+    // And the supported path still works, which is what makes the guard a
+    // guard rather than a wall.
+    let renamed = store
+        .reconcile_confirmed_jira_key(
+            project_id,
+            &issue_id("ASMA-2"),
+            &external("NEW-22"),
+            &ContentHash::of(b"authorized-rename"),
+            now,
+        )
+        .expect("an authorized same-issue rename still succeeds");
+    assert_eq!(renamed.subject, JiraBindingSubject::Task(task_id));
+    assert_eq!(renamed.jira_key.as_str(), "NEW-22");
+}
+
+#[test]
 fn resolution_is_project_scoped_and_never_reaches_a_foreign_projects_binding() {
     let root = tempfile::tempdir().expect("state root");
     let path = root.path().join("kontor.db");
@@ -2446,5 +2511,190 @@ fn a_uniqueness_violation_establishing_an_immutable_issue_is_a_typed_conflict() 
             );
         }
         other => panic!("a uniqueness violation must be a typed domain conflict: {other:?}"),
+    }
+}
+
+#[test]
+fn a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger() {
+    for (legacy_subject, contested_from) in [("epic", "ASMA-2"), ("task", "ASMA-1")] {
+        let root = tempfile::tempdir().expect("state root");
+        let path = root.path().join("kontor.db");
+        let store = SqliteStore::open(&path).expect("store opens");
+        let (project_id, epic_id, task_id, now) = seed_graph(&store);
+        let (_link_id, batch_id) = confirm_epic_and_task(
+            &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+        );
+
+        // Reduce only the replaying subject to the migrated pre-v95 shape, so
+        // its exact replay takes the branch that establishes an id.
+        let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+        connection
+            .execute_batch(
+                "DROP TRIGGER jira_epic_binding_issue_id_immutable;
+                 DROP TRIGGER jira_task_binding_issue_id_immutable;",
+            )
+            .expect("guards removed for the fixture");
+        let table = if legacy_subject == "epic" {
+            "jira_epic_bindings"
+        } else {
+            "jira_task_binding_confirmations"
+        };
+        connection
+            .execute(
+                &format!("UPDATE {table} SET external_issue_id = NULL WHERE project_id = ?1"),
+                rusqlite::params![project_id.to_string()],
+            )
+            .expect("the legacy shape is planted");
+        drop(connection);
+
+        // Replay the legacy subject's own exact key and hash, but present the
+        // immutable issue the *other* ledger already holds. One confirmed Jira
+        // issue may name only one subject, and an exact replay is not a licence
+        // to break that.
+        let items = store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("confirmed items");
+        let item = items
+            .iter()
+            .find(|item| (legacy_subject == "epic") == (item.item_kind == JiraItemKind::Epic))
+            .expect("the replaying subject's item");
+        let own_key = item
+            .confirmed_key
+            .as_ref()
+            .map(ExternalId::as_str)
+            .expect("a confirmed key")
+            .to_owned();
+        let refusal = store.confirm_jira_materialization_item(
+            item,
+            &external(&own_key),
+            &issue_id(contested_from),
+            &ContentHash::of(own_key.as_bytes()),
+            now,
+        );
+        assert!(
+            matches!(refusal, Err(RepositoryError::Conflict { .. })),
+            "a legacy {legacy_subject} replay must not claim the immutable issue of {contested_from}: {refusal:?}"
+        );
+
+        // And nothing was committed: the contested issue still names exactly
+        // one subject.
+        let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+        let holders: i64 = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM jira_epic_bindings
+                          WHERE project_id = ?1 AND external_issue_id = ?2)
+                      + (SELECT count(*) FROM jira_task_binding_confirmations
+                          WHERE project_id = ?1 AND external_issue_id = ?2)",
+                rusqlite::params![project_id.to_string(), issue_id(contested_from).as_str()],
+                |row| row.get(0),
+            )
+            .expect("holders readable");
+        assert_eq!(
+            holders, 1,
+            "the contested immutable issue still names exactly one subject"
+        );
+    }
+}
+
+#[test]
+fn a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+    drop(store);
+
+    // Two writers renaming the *same* immutable issue, repeatedly. Renaming an
+    // issue twice is legitimate, so both may commit; what must never happen is
+    // a caller committing a rename and then being told about somebody else's.
+    //
+    // The window this guards is small — it opens only between a commit and a
+    // read taken after it — so one interleaving proves nothing. Sustained
+    // contention is what makes the window reachable, and the assertion is a
+    // property every single round has to satisfy.
+    const ROUNDS: usize = 40;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let racers: Vec<_> = ["AAA", "BBB"]
+        .into_iter()
+        .map(|tag| {
+            let path = path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let store = SqliteStore::open(&path).expect("the racer opens the store");
+                barrier.wait();
+                let mut committed = 0_usize;
+                for round in 0..ROUNDS {
+                    let requested = format!("{tag}-{}", round + 1);
+                    match store.reconcile_confirmed_jira_key(
+                        project_id,
+                        &issue_id("ASMA-1"),
+                        &external(&requested),
+                        &ContentHash::of(requested.as_bytes()),
+                        now,
+                    ) {
+                        Ok(binding) => {
+                            committed += 1;
+                            assert_eq!(
+                                binding.jira_key.as_str(),
+                                requested,
+                                "a caller that committed a rename is told its own key, not a later one"
+                            );
+                            assert_eq!(
+                                binding.subject,
+                                JiraBindingSubject::Epic(epic_id),
+                                "a rename never moves the binding to another subject"
+                            );
+                        }
+                        // Losing the key to the other writer is legitimate.
+                        Err(RepositoryError::Conflict { .. }) => {}
+                        // `NotFound` is not. This fixture always has a binding
+                        // carrying the immutable issue, so the only way to see
+                        // it is a caller reading *after* its own commit and
+                        // finding the key already renamed by somebody else —
+                        // reporting a failure for a write that succeeded.
+                        Err(RepositoryError::NotFound { .. }) => panic!(
+                            "a committed rename was reported as NotFound: the answer was read \
+                             after the commit instead of inside it"
+                        ),
+                        other => panic!("unexpected refusal shape: {other:?}"),
+                    }
+                }
+                committed
+            })
+        })
+        .collect();
+
+    let committed: usize = racers
+        .into_iter()
+        .map(|racer| racer.join().expect("the racer does not panic"))
+        .sum();
+    assert!(
+        committed > 0,
+        "the contention fixture must actually commit renames"
+    );
+
+    // The realm settles coherently: the immutable issue holds exactly one key,
+    // and it still names the epic it started on.
+    let store = SqliteStore::open(&path).expect("store reopens");
+    let state = store
+        .jira_epic_binding_state(project_id, epic_id)
+        .expect("the epic still has a readable binding state");
+    match state {
+        JiraBindingState::Confirmed(binding) => {
+            assert_eq!(binding.subject, JiraBindingSubject::Epic(epic_id));
+            assert_eq!(
+                store
+                    .resolve_confirmed_jira_key(project_id, binding.jira_key.as_str())
+                    .expect("the settled key resolves")
+                    .subject,
+                JiraBindingSubject::Epic(epic_id)
+            );
+        }
+        JiraBindingState::AwaitingJiraBinding => {
+            panic!("a confirmed binding never becomes awaiting through renames")
+        }
     }
 }

@@ -1506,6 +1506,74 @@ impl SqliteStore {
         transaction.commit().map_err(backend)
     }
 
+    /// Every confirmed Jira binding in one project, with its immutable id.
+    ///
+    /// The id is `None` for a binding confirmed before it was retained. Such a
+    /// binding is reported so a caller can see it, not so it can be renamed:
+    /// it cannot prove sameness and stays fail-closed.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn confirmed_jira_identities(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<(JiraBindingSubject, ExternalId, Option<ExternalId>)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT 'epic', binding.epic_id, NULL, binding.external_issue_key,
+                        binding.external_issue_id
+                 FROM jira_epic_bindings AS binding
+                 WHERE binding.project_id = ?1
+                 UNION ALL
+                 SELECT 'task', NULL, ledger.task_id, ledger.external_issue_key,
+                        confirmation.external_issue_id
+                 FROM canonical_jira_task_links AS ledger
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1
+                 ORDER BY 1, 4",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        let mut identities = Vec::with_capacity(rows.len());
+        for (kind, epic_id, task_id, key, issue_id) in rows {
+            let subject = match kind.as_str() {
+                "epic" => JiraBindingSubject::Epic(MiniProjectId::parse(
+                    epic_id.as_deref().ok_or(RepositoryError::Conflict {
+                        subject: "confirmed Jira binding",
+                        rule: "the epic binding has no epic identity",
+                    })?,
+                )?),
+                _ => JiraBindingSubject::Task(TaskId::parse(task_id.as_deref().ok_or(
+                    RepositoryError::Conflict {
+                        subject: "confirmed Jira binding",
+                        rule: "the task binding has no task identity",
+                    },
+                )?)?),
+            };
+            identities.push((
+                subject,
+                ExternalId::parse(&key)?,
+                issue_id.as_deref().map(ExternalId::parse).transpose()?,
+            ));
+        }
+        Ok(identities)
+    }
+
     /// Reconcile a confirmed binding whose Jira key changed on the same issue.
     ///
     /// Identity is the immutable issue id, so this is addressed by id and never
@@ -1584,7 +1652,7 @@ impl SqliteStore {
             ));
         }
         let confirmed = text(confirmed_at);
-        match (epic, task) {
+        match (&epic, &task) {
             (Some((epic_id, _)), None) => {
                 transaction
                     .execute(
@@ -1606,10 +1674,31 @@ impl SqliteStore {
                     ))?;
             }
             (None, Some((task_id, link_id, _))) => {
-                // Order matters and is load-bearing. The canonical ledger's
-                // guard admits a key change only once the link ledger already
-                // names the new key, so the link is updated first and the
-                // canonical row follows inside the same transaction.
+                // Record the authority first, inside this transaction. The
+                // canonical ledger's guard admits a key change only against an
+                // authority row naming this link, this new key and the
+                // immutable issue the confirmation ledger already holds — so
+                // the rename is authorized by something recorded rather than by
+                // the state of another mutable row the same caller just wrote.
+                transaction
+                    .execute(
+                        "INSERT INTO jira_rename_authorizations
+                             (project_id, link_id, external_issue_id, external_issue_key,
+                              authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(project_id, link_id, external_issue_key) DO NOTHING",
+                        params![
+                            project_id.to_string(),
+                            &link_id,
+                            issue_id.as_str(),
+                            key.as_str(),
+                            &confirmed,
+                        ],
+                    )
+                    .map_err(unique_conflict(
+                        "Jira task binding",
+                        "the reconciled Jira key is already confirmed in this project",
+                    ))?;
                 transaction
                     .execute(
                         "UPDATE jira_links SET external_issue_key = ?3
@@ -1652,8 +1741,46 @@ impl SqliteStore {
             }
             (Some(_), Some(_)) => unreachable!("the cross-ledger case returned above"),
         }
+        // Read the answer inside the transaction that wrote it. Resolving after
+        // the commit opens a window in which another writer renames the same
+        // immutable issue first, and this caller then reports `NotFound` — or
+        // somebody else's binding — for a write that in fact succeeded.
+        let (subject, revision) = match (&epic, &task) {
+            (Some((epic_id, _)), None) => {
+                let epic_id = MiniProjectId::parse(epic_id)?;
+                let revision: i64 = transaction
+                    .query_row(
+                        "SELECT revision FROM mini_projects
+                         WHERE project_id = ?1 AND id = ?2",
+                        params![project_id.to_string(), epic_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                (JiraBindingSubject::Epic(epic_id), revision)
+            }
+            (None, Some((task_id, _, _))) => {
+                let task_id = TaskId::parse(task_id)?;
+                let revision: i64 = transaction
+                    .query_row(
+                        "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                        params![project_id.to_string(), task_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                (JiraBindingSubject::Task(task_id), revision)
+            }
+            _ => unreachable!("the empty and cross-ledger cases returned above"),
+        };
+        let settled = ConfirmedJiraBinding {
+            project_id,
+            subject,
+            jira_key: key.clone(),
+            readback_hash: readback_hash.clone(),
+            confirmed_at,
+            revision: revision_of(revision)?,
+        };
         transaction.commit().map_err(backend)?;
-        self.resolve_confirmed_jira_key(project_id, key.as_str())
+        Ok(settled)
     }
 
     /// Confirm the batch only when every planned item is confirmed.
@@ -1875,6 +2002,38 @@ fn establish_immutable_issue_id(
             .optional()
             .map_err(backend)?,
     };
+    // The per-table unique index cannot see the other ledger, and this helper
+    // runs on the exact-replay path that returns before the caller's
+    // cross-subject guard is ever reached. Checking here is what stops one
+    // immutable Jira issue from being committed onto both an epic and a task.
+    let claimed_elsewhere: bool = match item.item_kind {
+        JiraItemKind::Epic => transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM jira_task_binding_confirmations
+                     WHERE project_id = ?1 AND external_issue_id = ?2
+                 )",
+                params![item.project_id.to_string(), issue_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?,
+        JiraItemKind::Task => transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM jira_epic_bindings
+                     WHERE project_id = ?1 AND external_issue_id = ?2
+                 )",
+                params![item.project_id.to_string(), issue_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?,
+    };
+    if claimed_elsewhere {
+        return Err(conflict(
+            "confirmed Jira binding",
+            "the immutable Jira issue is already confirmed for another subject in this project",
+        ));
+    }
     match stored {
         // Nothing is confirmed under this key yet, so there is no binding to
         // establish an id on. The ordinary confirmation path writes it.

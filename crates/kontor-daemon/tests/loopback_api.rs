@@ -43731,3 +43731,205 @@ fn jira_issue_id(key: &str) -> ExternalId {
     let digits: String = key.chars().filter(char::is_ascii_digit).collect();
     ExternalId::parse(&format!("90{digits}")).expect("an immutable Jira issue id")
 }
+
+/// Answers every issue GET with one fixed identity.
+#[derive(Clone)]
+struct RenamedIssueJira {
+    key: &'static str,
+    id: &'static str,
+    reads: Arc<AtomicUsize>,
+}
+
+impl Respond for RenamedIssueJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        if request.method.as_str() == "GET" && request.url.path().contains("/rest/api/3/issue/") {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": self.key,
+                "id": self.id,
+                "fields": {"project": {"key": "ASMA"}}
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+/// Seed one project with a confirmed epic binding on `ASMA-1` / immutable `901`.
+async fn seed_confirmed_epic_binding(world: &World, project_id: ProjectId, epic_id: MiniProjectId) {
+    world.daemon.state().with_store(|store| {
+        let now = at("2026-09-12T10:00:00Z");
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: ExternalName::parse("Renamed").expect("name"),
+                root_path: ExternalName::parse("/tmp/renamed").expect("path"),
+                created_at: now,
+            })
+            .expect("project");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: ExternalName::parse("Renamed epic").expect("name"),
+                created_at: now,
+            })
+            .expect("epic");
+        let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("batch");
+        store
+            .plan_jira_materialization(
+                &NewJiraMaterializationBatch {
+                    id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    idempotency_key: "renamed-epic".to_owned(),
+                    preview_hash: ContentHash::of(b"renamed-preview"),
+                    expected_revision: AggregateRevision::INITIAL,
+                    created_at: now,
+                },
+                &[NewJiraMaterializationItem {
+                    id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("item"),
+                    batch_id: batch_id.clone(),
+                    project_id,
+                    epic_id,
+                    task_id: None,
+                    link_id: None,
+                    ordinal: 0,
+                    item_kind: JiraItemKind::Epic,
+                    intent_kind: JiraIntentKind::Link,
+                    requested_key: Some(ExternalId::parse("ASMA-1").expect("key")),
+                    marker: ExternalId::parse("kontor-epic-renamed").expect("marker"),
+                }],
+            )
+            .expect("the plan is durable");
+        let item = store
+            .jira_materialization_items(project_id, &batch_id)
+            .expect("planned item")
+            .remove(0);
+        store
+            .confirm_jira_materialization_item(
+                &item,
+                &ExternalId::parse("ASMA-1").expect("key"),
+                &ExternalId::parse("901").expect("immutable id"),
+                &ContentHash::of(b"ASMA-1"),
+                now,
+            )
+            .expect("the binding confirms");
+    });
+}
+
+/// Point a fresh world at one mock Jira server.
+async fn world_with_jira(server: &MockServer, project_id: ProjectId) -> (World, tempfile::TempDir) {
+    let config_root = tempfile::tempdir().expect("a Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("the Jira configuration serializes"),
+    )
+    .expect("the Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("the Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    (world, config_root)
+}
+
+#[tokio::test]
+async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connector() {
+    let server = MockServer::start().await;
+    let reads = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(RenamedIssueJira {
+            key: "MOVED-9",
+            id: "901",
+            reads: Arc::clone(&reads),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    // Jira resolves the superseded key to the issue that now owns it, and the
+    // immutable id says it is the same issue. The binding follows the rename
+    // without the Kontor subject moving.
+    let report = world.daemon.reconcile_jira_once().await;
+    assert!(reads.load(Ordering::SeqCst) > 0, "the connector was asked");
+    assert_eq!(report.renamed, 1, "{report:?}");
+
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .resolve_confirmed_jira_key(project_id, "MOVED-9")
+            .expect("the new key resolves");
+        assert_eq!(
+            settled.subject,
+            kontor_store::JiraBindingSubject::Epic(epic_id)
+        );
+        assert!(
+            matches!(
+                store.resolve_confirmed_jira_key(project_id, "ASMA-1"),
+                Err(kontor_core::repository::RepositoryError::NotFound { .. })
+            ),
+            "the superseded key stops resolving"
+        );
+    });
+
+    // Replaying the pass is a no-op: the key already agrees with Jira.
+    let replay = world.daemon.reconcile_jira_once().await;
+    assert_eq!(
+        replay.renamed, 0,
+        "an already-followed rename is not redone"
+    );
+}
+
+#[tokio::test]
+async fn the_resident_reconciler_refuses_a_key_that_now_answers_for_another_issue() {
+    let server = MockServer::start().await;
+    let reads = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(RenamedIssueJira {
+            key: "MOVED-9",
+            id: "999",
+            reads: Arc::clone(&reads),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    // Same key, different immutable issue. That is a different Jira issue
+    // wearing a familiar key, and nothing may be rebound onto it.
+    let report = world.daemon.reconcile_jira_once().await;
+    assert!(reads.load(Ordering::SeqCst) > 0, "the connector was asked");
+    assert_eq!(report.renamed, 0, "an anti-rebind is never a rename");
+    assert!(report.blocked >= 1, "the refusal is reported: {report:?}");
+
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .resolve_confirmed_jira_key(project_id, "ASMA-1")
+                .expect("the original binding is untouched")
+                .subject,
+            kontor_store::JiraBindingSubject::Epic(epic_id)
+        );
+        assert!(matches!(
+            store.resolve_confirmed_jira_key(project_id, "MOVED-9"),
+            Err(kontor_core::repository::RepositoryError::NotFound { .. })
+        ));
+    });
+}

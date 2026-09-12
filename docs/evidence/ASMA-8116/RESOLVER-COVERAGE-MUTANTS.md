@@ -44,3 +44,12 @@ so only the ledger's own uniqueness can refuse a second subject claiming it.
 `BINDING-VALIDATION-MUTANT.md` records the shared cross-subject guard being
 disabled and killed by
 `activation_requires_every_confirmed_binding_and_survives_readback`.
+
+## Gate-1 repair mutations
+
+| # | Mutation | Test | Result |
+| --- | --- | --- | --- |
+| M4 | Cross-ledger check removed from `establish_immutable_issue_id` | `a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger` | **killed** |
+| M5 | Return value resolved after commit again | `a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller` | **survived** — not timing-reachable; see `GATE-1-REPAIR-REPORT.md` |
+| M6 | Canonical key-change trigger reverted to the two-row agreement | `two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename` | **killed** |
+| M7 | Rename pass unwired from `reconcile_jira_once` | `the_resident_reconciler_follows_a_same_issue_rename_through_the_connector` | **killed** |

@@ -85,6 +85,7 @@ impl Respond for ExistingLinkedTask {
         };
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8050",
+            "id": "908050",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": issue_type, "hierarchyLevel": 0, "subtask": false},
@@ -793,6 +794,7 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
         .and(path("/rest/api/3/issue/ASMA-1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-1",
+            "id": "901",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Epic", "hierarchyLevel": 1},
@@ -895,6 +897,7 @@ async fn task_create_includes_project_configured_required_fields() {
         .and(path("/rest/api/3/issue/ASMA-8100"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8100",
+            "id": "908100",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Task", "hierarchyLevel": 0, "subtask": false},
@@ -1023,6 +1026,9 @@ async fn explicit_link_confirms_level_zero_without_claiming_type_or_content() {
         .await
         .expect("the exact existing Jira identity is confirmed");
     assert_eq!(confirmed.issue_key.as_str(), "ASMA-8050");
+    // The immutable identity travels with the accepted readback. Without it the
+    // key alone cannot later distinguish a rename from a rebind.
+    assert_eq!(confirmed.issue_id.as_str(), "908050");
     let mut recovery_plan = plan.clone();
     recovery_plan.require_marker = true;
     assert!(
@@ -1075,6 +1081,7 @@ async fn recovery_preserves_a_body_authored_since_creation() {
         .and(path("/rest/api/3/issue/ASMA-8101"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": "ASMA-8101",
+            "id": "908101",
             "fields": {
                 "project": {"key": "ASMA"},
                 "issuetype": {"name": "Epic", "hierarchyLevel": 1},
@@ -1148,6 +1155,7 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
     let server = MockServer::start().await;
     let exact = serde_json::json!({
         "key": "ASMA-8050",
+        "id": "908050",
         "fields": {
             "project": {"key": "ASMA"},
             "issuetype": {"name": "Task", "hierarchyLevel": 0, "subtask": false},
@@ -1629,4 +1637,125 @@ fn strict_configuration_rejects_inline_credentials() {
         JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
             .expect_err("inline credentials are refused");
     assert!(!error.to_string().contains("secret"));
+}
+
+/// Build a connector pointed at one mock server.
+async fn connector_for(
+    server: &MockServer,
+    root: &std::path::Path,
+    project_id: ProjectId,
+) -> JiraConnectors {
+    std::fs::write(
+        root.join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    JiraConnectors::read_with_keychain(root, Arc::new(FixtureKeychain::default()))
+        .expect("configuration loads")
+}
+
+/// The plan every immutable-id case below reads back against.
+fn immutable_id_plan() -> JiraIssuePlan {
+    JiraIssuePlan {
+        kind: JiraIssueKind::Task,
+        requested_key: Some(ExternalId::parse("ASMA-8060").expect("issue key")),
+        marker: ExternalId::parse("kontor-task-immutable-id").expect("marker"),
+        require_marker: false,
+        summary: "Immutable identity fixture".to_owned(),
+        description: "Immutable identity fixture body".to_owned(),
+        parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent key")),
+    }
+}
+
+/// One accepted issue body, with the top-level identity spelled by the caller.
+fn issue_body(identity: serde_json::Value) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "key": "ASMA-8060",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Task", "hierarchyLevel": 0, "subtask": false},
+            "parent": {"key": "ASMA-8049"},
+            "summary": "Immutable identity fixture",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Immutable identity fixture body"}]
+            }]},
+            "labels": []
+        }
+    });
+    if !identity.is_null() {
+        body["id"] = identity;
+    }
+    body
+}
+
+#[tokio::test]
+async fn an_accepted_readback_carries_the_exact_immutable_issue_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8060"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(issue_body(serde_json::json!("9008060"))),
+        )
+        .mount(&server)
+        .await;
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    let connector = connector_for(&server, root.path(), project_id).await;
+
+    let confirmed = connector
+        .for_project(project_id)
+        .expect("project is configured")
+        .materialize(&immutable_id_plan())
+        .await
+        .expect("the readback is accepted");
+
+    assert_eq!(confirmed.issue_key.as_str(), "ASMA-8060");
+    assert_eq!(
+        confirmed.issue_id.as_str(),
+        "9008060",
+        "the exact id Jira reported is what is retained, not a value derived from the key"
+    );
+}
+
+#[tokio::test]
+async fn a_readback_without_a_usable_top_level_id_is_refused() {
+    // Jira returns the top-level id on every issue GET regardless of the
+    // `fields` filter, so a response without a usable one is malformed rather
+    // than merely unsupported. Accepting it would record a binding whose
+    // identity was never observed.
+    for (label, identity) in [
+        ("absent", serde_json::Value::Null),
+        ("not a string", serde_json::json!(8060)),
+        ("empty", serde_json::json!("")),
+        ("whitespace", serde_json::json!("  ")),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/ASMA-8060"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(issue_body(identity)))
+            .mount(&server)
+            .await;
+        let root = tempfile::tempdir().expect("a state root");
+        let project_id = ProjectId::generate();
+        let connector = connector_for(&server, root.path(), project_id).await;
+
+        let refusal = connector
+            .for_project(project_id)
+            .expect("project is configured")
+            .materialize(&immutable_id_plan())
+            .await;
+        assert!(
+            refusal.is_err(),
+            "a readback whose immutable id is {label} must be refused: {refusal:?}"
+        );
+    }
 }

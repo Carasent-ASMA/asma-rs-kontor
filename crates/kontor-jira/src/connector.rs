@@ -176,6 +176,18 @@ pub struct JiraIssuePlan {
     pub parent_key: Option<ExternalId>,
 }
 
+/// One issue's identity as Jira currently reports it.
+///
+/// The key is whatever Jira answers with *now*, which is not necessarily the
+/// key that was asked for; the id is the same for the life of the issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JiraIssueIdentity {
+    /// The canonical key Jira reports today.
+    pub issue_key: ExternalId,
+    /// The immutable REST issue id.
+    pub issue_id: ExternalId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JiraIssueReadback {
     pub issue_key: ExternalId,
@@ -716,6 +728,39 @@ impl JiraConnector {
             ));
         }
         external_at(matched[0], &["id"])
+    }
+
+    /// Read one issue's current canonical key and immutable id, nothing else.
+    ///
+    /// Jira resolves a superseded key to the issue that now owns it, so asking
+    /// by the key Kontor last confirmed is how a rename is discovered at all.
+    /// Deliberately lighter than [`Self::materialize`]: this makes no claim
+    /// about summary, description, parent or type, because a rename is a change
+    /// of name and asserting unrelated content here would refuse renames for
+    /// reasons that have nothing to do with identity.
+    ///
+    /// # Errors
+    /// Transport failures, and [`JiraError`] when the response carries no
+    /// usable top-level `id` or `key`.
+    pub async fn observe_identity(&self, key: &ExternalId) -> Result<JiraIssueIdentity, JiraError> {
+        let encoded =
+            url::form_urlencoded::byte_serialize(key.as_str().as_bytes()).collect::<String>();
+        let value = self
+            .request(
+                Method::GET,
+                &format!("rest/api/3/issue/{encoded}?fields=project"),
+                None,
+            )
+            .await?;
+        if text_at(&value, &["fields", "project", "key"])? != self.project_key.as_str() {
+            return Err(JiraError::MaterializationConflict {
+                kind: MaterializationConflict::ProjectMismatch,
+            });
+        }
+        Ok(JiraIssueIdentity {
+            issue_key: external_at(&value, &["key"])?,
+            issue_id: external_at(&value, &["id"])?,
+        })
     }
 
     async fn readback_issue(

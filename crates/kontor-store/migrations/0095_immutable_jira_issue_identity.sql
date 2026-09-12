@@ -63,25 +63,63 @@ END;
 -- link ledger to already name the new key, which it does only inside the
 -- confirming transaction. A direct SQL edit of this table alone satisfies
 -- neither and is refused.
+-- Durable, exact authority for one rename. The repository writes a row here
+-- inside the same transaction that performs the rename, naming the immutable
+-- issue the readback proved and the key it proved it under.
+--
+-- This exists because the mutable key rows cannot authorize each other. An
+-- earlier shape admitted a canonical key change whenever `jira_links` already
+-- carried the new key, which a caller could satisfy simply by updating that
+-- row first: two ordinary updates then forged the "proof". Authority has to be
+-- a thing that is recorded, not a coincidence between two rows either of which
+-- the same caller just wrote.
+CREATE TABLE jira_rename_authorizations (
+    project_id         TEXT NOT NULL,
+    link_id            TEXT NOT NULL,
+    external_issue_id  TEXT NOT NULL CHECK (length(external_issue_id) BETWEEN 1 AND 64),
+    external_issue_key TEXT NOT NULL CHECK (length(external_issue_key) BETWEEN 1 AND 256),
+    authorized_at      TEXT NOT NULL,
+    PRIMARY KEY (project_id, link_id, external_issue_key),
+    FOREIGN KEY (project_id, link_id)
+        REFERENCES jira_links (project_id, id) ON DELETE RESTRICT
+) STRICT;
+
+-- Append-only. A rename authority that could be edited or withdrawn after the
+-- fact would not be evidence of anything.
+CREATE TRIGGER jira_rename_authorizations_immutable
+BEFORE UPDATE ON jira_rename_authorizations
+BEGIN
+    SELECT RAISE(ABORT, 'a Jira rename authorization is immutable');
+END;
+
+CREATE TRIGGER jira_rename_authorizations_permanent
+BEFORE DELETE ON jira_rename_authorizations
+BEGIN
+    SELECT RAISE(ABORT, 'a Jira rename authorization is permanent');
+END;
+
+-- A key change is admitted only as the tail of an authorized same-issue rename.
+-- It requires an authority row for exactly this link and exactly this new key,
+-- whose immutable issue id is the one the confirmation ledger already holds. A
+-- legacy row with no id satisfies nothing here and stays fail-closed, and no
+-- sequence of updates to the mutable key rows alone can produce the authority.
 CREATE TRIGGER canonical_jira_task_links_key_change_requires_proof
 BEFORE UPDATE OF external_issue_key ON canonical_jira_task_links
 WHEN NEW.external_issue_key <> OLD.external_issue_key
- AND (
-     NOT EXISTS (
-         SELECT 1 FROM jira_task_binding_confirmations AS confirmation
-         WHERE confirmation.project_id = NEW.project_id
-           AND confirmation.link_id = NEW.link_id
-           AND confirmation.external_issue_id IS NOT NULL
-     )
-     OR NOT EXISTS (
-         SELECT 1 FROM jira_links AS link
-         WHERE link.project_id = NEW.project_id
-           AND link.id = NEW.link_id
-           AND link.external_issue_key = NEW.external_issue_key
-     )
+ AND NOT EXISTS (
+     SELECT 1
+     FROM jira_rename_authorizations AS authority
+     JOIN jira_task_binding_confirmations AS confirmation
+       ON confirmation.project_id = authority.project_id
+      AND confirmation.link_id = authority.link_id
+     WHERE authority.project_id = NEW.project_id
+       AND authority.link_id = NEW.link_id
+       AND authority.external_issue_key = NEW.external_issue_key
+       AND confirmation.external_issue_id IS NOT NULL
+       AND confirmation.external_issue_id = authority.external_issue_id
  )
 BEGIN
-    SELECT RAISE(ABORT, 'a canonical Jira task link key changes only on proven immutable issue identity');
+    SELECT RAISE(ABORT, 'a canonical Jira task link key changes only on recorded same-issue rename authority');
 END;
 
 PRAGMA user_version = 95;
