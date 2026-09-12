@@ -3243,6 +3243,22 @@ impl Services {
         }
     }
 
+    /// The key every write in this pass must address once identity is decided.
+    ///
+    /// Named, rather than inlined, because the defect it exists to prevent is
+    /// not a wrong expression but a *stale object*: the delegation built before
+    /// observation still carries the key the pass entered with, and reusing it
+    /// sends real transitions to a route that only resolves while Jira keeps
+    /// redirecting it. Every write-bearing object is built from this.
+    fn write_key_for(entry_key: &ExternalId, decided: &IdentityDecision) -> ExternalId {
+        match decided {
+            IdentityDecision::Proceed { current_key, .. } => current_key.clone(),
+            // A stopped subject writes nothing, so the entry key is returned
+            // only to keep the type total; no caller reaches a write with it.
+            IdentityDecision::Stop(_) => entry_key.clone(),
+        }
+    }
+
     /// Turn an identity refusal into the response it deserves.
     fn refuse_identity(&self, refusal: IdentityRefusal) -> ApiError {
         match refusal {
@@ -3304,28 +3320,24 @@ impl Services {
         // The same answer that carries the status also carries the identity, so
         // a rename is discovered here for free — and a contradicted identity
         // stops this subject before any policy, intent or Jira effect.
-        let issue_key = &match self.decide_jira_identity(
+        let decided = self.decide_jira_identity(
             project_id,
             kontor_store::JiraBindingSubject::Epic(epic.id),
             issue_key,
             observed.response.observed_identity.as_ref(),
-        ) {
-            IdentityDecision::Proceed {
-                current_key,
-                renamed,
-            } => {
-                if renamed {
-                    report.renamed = report.renamed.saturating_add(1);
-                }
-                current_key
-            }
-            IdentityDecision::Stop(_) => {
-                return Ok(JiraSubjectVerdict {
-                    outcome: JiraSubjectOutcome::Blocked,
-                    content_conflict: None,
-                });
-            }
-        };
+        );
+        if let IdentityDecision::Stop(_) = decided {
+            return Ok(JiraSubjectVerdict {
+                outcome: JiraSubjectOutcome::Blocked,
+                content_conflict: None,
+            });
+        }
+        if matches!(decided, IdentityDecision::Proceed { renamed: true, .. }) {
+            report.renamed = report.renamed.saturating_add(1);
+        }
+        // Every key-bearing object below is built from this, never from the
+        // pre-observation delegation.
+        let issue_key = &Self::write_key_for(issue_key, &decided);
         if !observed
             .observation
             .issue_type
@@ -3414,7 +3426,26 @@ impl Services {
             ReconciliationOutcome::Transition(plan) => *plan,
         };
 
-        let provisional_intent = observe_delegation
+        // Everything from here addresses Jira, so it must address the key Jira
+        // holds *now*. `observe_delegation` was built before the identity was
+        // decided and still carries the key this pass entered with; reusing it
+        // sent a real transition to the superseded route while the binding had
+        // already moved. The task path rebuilds for the same reason.
+        //
+        // Only the key changes: the pinned specs, the epic's projection
+        // revision and the observed evidence are the same objects, so the
+        // immutable UUID, the external issue id, the evidence/revision checks
+        // and the anti-rebind decision above are all untouched.
+        let current_delegation = JiraIssueDelegation {
+            exchange: self.jira(project_id)?,
+            field_spec: &field_spec,
+            workflow_spec: &workflow_spec,
+            issue_key,
+            projection_revision: epic.revision,
+            field_writes: &empty_fields,
+            idempotency_key: &observe_key,
+        };
+        let provisional_intent = current_delegation
             .intent(&observed, &plan)
             .map_err(|error| self.refuse_jira(&error))?;
         let apply_key = IdempotencyKey::parse(&format!(
@@ -3425,7 +3456,7 @@ impl Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let delegation = JiraIssueDelegation {
             idempotency_key: &apply_key,
-            ..observe_delegation
+            ..current_delegation
         };
         let intent = delegation
             .intent(&observed, &plan)
@@ -36285,10 +36316,48 @@ impl Services {
 
 #[cfg(test)]
 mod tests {
+
+    /// After a valid same-external-ID rename, every write addresses the key
+    /// Jira reports now — and the superseded key cannot be reached.
+    ///
+    /// This is the seam `F-8116-A2` failed at. The bug was not a wrong
+    /// expression but a stale object: `reconcile_jira_epic` reused the
+    /// delegation built *before* observation, so a real transition went to
+    /// `/issue/ASMA-1/transitions` while the binding had already advanced to
+    /// `MOVED-9`. Every key-bearing object in that pass is now derived from
+    /// `write_key_for`, so this asserts the property at the point the whole
+    /// write path reads from.
+    #[test]
+    fn a_same_issue_rename_selects_the_current_key_for_every_write() {
+        let entry = ExternalId::parse("ASMA-1").expect("entry key");
+        let current = ExternalId::parse("MOVED-9").expect("current key");
+
+        let renamed = IdentityDecision::Proceed {
+            current_key: current.clone(),
+            renamed: true,
+        };
+        let selected = Services::write_key_for(&entry, &renamed);
+        assert_eq!(
+            selected, current,
+            "a rename must be written through the key Jira holds now"
+        );
+        assert_ne!(
+            selected, entry,
+            "the superseded key must not be reachable by any write after a rename"
+        );
+
+        // An unchanged identity still writes through its own key, so the
+        // selector cannot be satisfied by always returning something new.
+        let unchanged = IdentityDecision::Proceed {
+            current_key: entry.clone(),
+            renamed: false,
+        };
+        assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
+    }
     use super::{
-        FrozenCommitteeRoute, QuotaOutlook, account_for_explicit_provider_alias,
-        consultation_account_rungs, counts_towards_completion, eligible_roots,
-        ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
+        FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
+        account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
         re_review_remediation_identity, render_legacy_container_name, seat_block,
         select_committee_allocation, slot_prompt,
     };

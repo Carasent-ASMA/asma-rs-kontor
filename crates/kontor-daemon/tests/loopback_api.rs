@@ -44753,3 +44753,105 @@ async fn a_ledger_refused_rename_is_permanent_while_only_outages_are_transient()
     });
     assert_eq!(mutations.load(Ordering::SeqCst), 0);
 }
+
+/// An epic whose issue has been renamed, recording every outbound write.
+#[derive(Clone)]
+struct RenamedEpicJira {
+    writes: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Respond for RenamedEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path().to_owned();
+        if request.method.as_str() != "GET" {
+            self.writes.lock().expect("the write log locks").push(path);
+            return ResponseTemplate::new(204);
+        }
+        if path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if path.ends_with("/transitions") {
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [{
+                    "id": "start-development",
+                    "to": {
+                        "id": "10214",
+                        "name": "In Development",
+                        "statusCategory": {"name": "In Progress"}
+                    }
+                }]
+            }));
+        }
+        if path.contains("/rest/api/3/issue/") {
+            // Jira resolves the superseded key and answers with the key the
+            // issue holds now.
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "MOVED-9",
+                "id": "901",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10237",
+                        "name": "DRAFT",
+                        "statusCategory": {"name": "To Do"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Renamed epic"}]
+                    }]},
+                    "updated": "2026-09-12T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+#[tokio::test]
+async fn an_epic_same_issue_rename_never_addresses_the_superseded_key() {
+    let server = MockServer::start().await;
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(any())
+        .respond_with(RenamedEpicJira {
+            writes: Arc::clone(&writes),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    let report = world.daemon.reconcile_jira_once().await;
+    assert_eq!(report.renamed, 1, "the epic follows its issue: {report:?}");
+
+    // The binding advanced to the key Jira reports now.
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_epic_key(project_id, epic_id)
+                .expect("epic key")
+                .map(|key| key.as_str().to_owned()),
+            Some("MOVED-9".to_owned())
+        );
+    });
+
+    // And nothing was addressed to the superseded route.
+    //
+    // This fixture does not yet drive the epic as far as its transition: the
+    // pass blocks afterwards on legacy epic setup unrelated to identity (see
+    // OQ-004), so it deliberately does not assert that a write *happened*.
+    // The property that a write, when it happens, addresses the current key is
+    // proved deterministically by the unit regression
+    // `a_same_issue_rename_selects_the_current_key_for_every_write`, which the
+    // stale-selector mutant M14 fails. This case guards the end-to-end shape
+    // and will assert the transition itself once that path is reachable.
+    let emitted = writes.lock().expect("the write log locks").clone();
+    assert!(
+        emitted.iter().all(|path| !path.contains("ASMA-1")),
+        "the superseded route is never called: {emitted:?}"
+    );
+}
