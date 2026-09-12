@@ -1653,7 +1653,37 @@ impl SqliteStore {
         }
         let confirmed = text(confirmed_at);
         match (&epic, &task) {
-            (Some((epic_id, _)), None) => {
+            (Some((epic_id, current_key)), None) => {
+                // Same discipline as the task ledger: the authority names the
+                // key being moved away from, so it authorizes this transition
+                // and not merely this destination.
+                //
+                // Only an actual transition is authorized. Re-confirming the key
+                // a binding already holds moves nothing, so there is no
+                // transition to authorize and recording one would be a fiction.
+                if current_key != key.as_str() {
+                    transaction
+                        .execute(
+                            "INSERT INTO jira_epic_rename_authorizations
+                             (project_id, epic_id, external_issue_id,
+                              from_external_issue_key, external_issue_key, authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(project_id, epic_id, from_external_issue_key,
+                                     external_issue_key) DO NOTHING",
+                            params![
+                                project_id.to_string(),
+                                epic_id,
+                                issue_id.as_str(),
+                                current_key,
+                                key.as_str(),
+                                &confirmed,
+                            ],
+                        )
+                        .map_err(unique_conflict(
+                            "Jira epic binding",
+                            "the reconciled Jira key is already confirmed in this project",
+                        ))?;
+                }
                 transaction
                     .execute(
                         "UPDATE jira_epic_bindings
@@ -1673,32 +1703,36 @@ impl SqliteStore {
                         "the reconciled Jira key is already confirmed in this project",
                     ))?;
             }
-            (None, Some((task_id, link_id, _))) => {
+            (None, Some((task_id, link_id, current_key))) => {
                 // Record the authority first, inside this transaction. The
                 // canonical ledger's guard admits a key change only against an
                 // authority row naming this link, this new key and the
                 // immutable issue the confirmation ledger already holds — so
                 // the rename is authorized by something recorded rather than by
                 // the state of another mutable row the same caller just wrote.
-                transaction
-                    .execute(
-                        "INSERT INTO jira_rename_authorizations
-                             (project_id, link_id, external_issue_id, external_issue_key,
-                              authorized_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5)
-                         ON CONFLICT(project_id, link_id, external_issue_key) DO NOTHING",
-                        params![
-                            project_id.to_string(),
-                            &link_id,
-                            issue_id.as_str(),
-                            key.as_str(),
-                            &confirmed,
-                        ],
-                    )
-                    .map_err(unique_conflict(
-                        "Jira task binding",
-                        "the reconciled Jira key is already confirmed in this project",
-                    ))?;
+                if current_key != key.as_str() {
+                    transaction
+                        .execute(
+                            "INSERT INTO jira_rename_authorizations
+                             (project_id, link_id, external_issue_id,
+                              from_external_issue_key, external_issue_key, authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(project_id, link_id, from_external_issue_key,
+                                     external_issue_key) DO NOTHING",
+                            params![
+                                project_id.to_string(),
+                                &link_id,
+                                issue_id.as_str(),
+                                current_key,
+                                key.as_str(),
+                                &confirmed,
+                            ],
+                        )
+                        .map_err(unique_conflict(
+                            "Jira task binding",
+                            "the reconciled Jira key is already confirmed in this project",
+                        ))?;
+                }
                 transaction
                     .execute(
                         "UPDATE jira_links SET external_issue_key = ?3

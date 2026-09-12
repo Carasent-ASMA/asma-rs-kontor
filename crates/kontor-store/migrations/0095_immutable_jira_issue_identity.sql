@@ -74,12 +74,19 @@ END;
 -- a thing that is recorded, not a coincidence between two rows either of which
 -- the same caller just wrote.
 CREATE TABLE jira_rename_authorizations (
-    project_id         TEXT NOT NULL,
-    link_id            TEXT NOT NULL,
-    external_issue_id  TEXT NOT NULL CHECK (length(external_issue_id) BETWEEN 1 AND 64),
-    external_issue_key TEXT NOT NULL CHECK (length(external_issue_key) BETWEEN 1 AND 256),
-    authorized_at      TEXT NOT NULL,
-    PRIMARY KEY (project_id, link_id, external_issue_key),
+    project_id              TEXT NOT NULL,
+    link_id                 TEXT NOT NULL,
+    external_issue_id       TEXT NOT NULL CHECK (length(external_issue_id) BETWEEN 1 AND 64),
+    -- The key the binding held when this authority was recorded. Naming the
+    -- predecessor is what makes an authority describe one *transition* rather
+    -- than one destination: a row authorizing A->B says nothing about a link
+    -- that now sits at C, so an old destination cannot be replayed once the
+    -- binding has moved past it.
+    from_external_issue_key TEXT NOT NULL CHECK (length(from_external_issue_key) BETWEEN 1 AND 256),
+    external_issue_key      TEXT NOT NULL CHECK (length(external_issue_key) BETWEEN 1 AND 256),
+    authorized_at           TEXT NOT NULL,
+    CHECK (from_external_issue_key <> external_issue_key),
+    PRIMARY KEY (project_id, link_id, from_external_issue_key, external_issue_key),
     FOREIGN KEY (project_id, link_id)
         REFERENCES jira_links (project_id, id) ON DELETE RESTRICT
 ) STRICT;
@@ -114,12 +121,61 @@ WHEN NEW.external_issue_key <> OLD.external_issue_key
       AND confirmation.link_id = authority.link_id
      WHERE authority.project_id = NEW.project_id
        AND authority.link_id = NEW.link_id
+       -- Exact to the transition being made *now*: the authority must name the
+       -- key this row currently holds as its predecessor. After a legitimate
+       -- A->B->C the A->B row no longer matches anything, so no earlier
+       -- destination can be restored without fresh readback authorizing C->B.
+       AND authority.from_external_issue_key = OLD.external_issue_key
        AND authority.external_issue_key = NEW.external_issue_key
        AND confirmation.external_issue_id IS NOT NULL
        AND confirmation.external_issue_id = authority.external_issue_id
  )
 BEGIN
     SELECT RAISE(ABORT, 'a canonical Jira task link key changes only on recorded same-issue rename authority');
+END;
+
+-- The epic ledger needs the same thing for the same reason. Its key column had
+-- no guard at all, so a raw update could rename an epic binding to anything;
+-- symmetry here is not tidiness, it is the difference between one ledger being
+-- protected and the pair being protected.
+CREATE TABLE jira_epic_rename_authorizations (
+    project_id              TEXT NOT NULL,
+    epic_id                 TEXT NOT NULL,
+    external_issue_id       TEXT NOT NULL CHECK (length(external_issue_id) BETWEEN 1 AND 64),
+    from_external_issue_key TEXT NOT NULL CHECK (length(from_external_issue_key) BETWEEN 1 AND 256),
+    external_issue_key      TEXT NOT NULL CHECK (length(external_issue_key) BETWEEN 1 AND 256),
+    authorized_at           TEXT NOT NULL,
+    CHECK (from_external_issue_key <> external_issue_key),
+    PRIMARY KEY (project_id, epic_id, from_external_issue_key, external_issue_key)
+) STRICT;
+
+CREATE TRIGGER jira_epic_rename_authorizations_immutable
+BEFORE UPDATE ON jira_epic_rename_authorizations
+BEGIN
+    SELECT RAISE(ABORT, 'a Jira epic rename authorization is immutable');
+END;
+
+CREATE TRIGGER jira_epic_rename_authorizations_permanent
+BEFORE DELETE ON jira_epic_rename_authorizations
+BEGIN
+    SELECT RAISE(ABORT, 'a Jira epic rename authorization is permanent');
+END;
+
+CREATE TRIGGER jira_epic_bindings_key_change_requires_proof
+BEFORE UPDATE OF external_issue_key ON jira_epic_bindings
+WHEN NEW.external_issue_key <> OLD.external_issue_key
+ AND NOT EXISTS (
+     SELECT 1
+     FROM jira_epic_rename_authorizations AS authority
+     WHERE authority.project_id = NEW.project_id
+       AND authority.epic_id = NEW.epic_id
+       AND authority.from_external_issue_key = OLD.external_issue_key
+       AND authority.external_issue_key = NEW.external_issue_key
+       AND NEW.external_issue_id IS NOT NULL
+       AND authority.external_issue_id = NEW.external_issue_id
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'a confirmed Jira epic key changes only on recorded same-issue rename authority');
 END;
 
 PRAGMA user_version = 95;

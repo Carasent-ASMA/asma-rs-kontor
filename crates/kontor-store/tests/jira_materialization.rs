@@ -346,6 +346,9 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
     drop(store);
     let connection = rusqlite::Connection::open(&path).expect("corrupt fixture opens");
     connection
+        .execute_batch("DROP TRIGGER jira_epic_bindings_key_change_requires_proof;")
+        .expect("the guard is removed for the fixture");
+    connection
         .execute(
             "UPDATE jira_epic_bindings SET external_issue_key = 'ASMA-2'
              WHERE project_id = ?1 AND epic_id = ?2",
@@ -2124,6 +2127,12 @@ fn an_ambiguous_cross_ledger_key_is_a_typed_conflict_rather_than_a_backend_error
     // migrated or hand-edited database is the case where an ambiguous read
     // would otherwise escape as a bare `rusqlite` row error.
     let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    // The supported path refuses an unauthorized epic key change, which is the
+    // point of the guard; reaching the corrupt state this test exists to answer
+    // for therefore means removing it in the fixture first.
+    connection
+        .execute_batch("DROP TRIGGER jira_epic_bindings_key_change_requires_proof;")
+        .expect("the guard is removed for the fixture");
     connection
         .execute(
             "UPDATE jira_epic_bindings SET external_issue_key = 'ASMA-2'
@@ -2721,7 +2730,8 @@ fn a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it() {
     let connection = rusqlite::Connection::open(&path).expect("database opens directly");
     connection
         .execute_batch(
-            "CREATE TRIGGER test_competing_writer
+            "DROP TRIGGER jira_epic_bindings_key_change_requires_proof;
+             CREATE TRIGGER test_competing_writer
              AFTER UPDATE OF external_issue_key ON jira_epic_bindings
              WHEN NEW.external_issue_key = 'RACE-1'
              BEGIN
@@ -2757,5 +2767,135 @@ fn a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it() {
             .map(|key| key.as_str().to_owned()),
         Some("RACE-2".to_owned()),
         "the competing writer really did move the row"
+    );
+}
+
+#[test]
+fn a_stale_task_rename_authority_cannot_restore_an_earlier_destination() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let (link_id, _batch) = confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+
+    // Two legitimate renames of one issue: ASMA-2 -> HISTORIC-2 -> CURRENT-2.
+    for destination in ["HISTORIC-2", "CURRENT-2"] {
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-2"),
+                &external(destination),
+                &ContentHash::of(destination.as_bytes()),
+                now,
+            )
+            .unwrap_or_else(|error| panic!("the rename to {destination} is authorized: {error:?}"));
+    }
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("task key")
+            .map(|key| key.as_str().to_owned()),
+        Some("CURRENT-2".to_owned())
+    );
+
+    // The first rename's authority is still on record — it is evidence, and
+    // evidence is not deleted. What it must not be is reusable: it authorized
+    // ASMA-2 -> HISTORIC-2, and this binding is no longer at ASMA-2. Rolling
+    // back to an earlier destination needs fresh readback authorizing
+    // CURRENT-2 -> HISTORIC-2, which nothing has recorded.
+    let mut connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    let rollback = connection
+        .transaction()
+        .expect("the rollback transaction starts");
+    rollback
+        .execute(
+            "UPDATE jira_links SET external_issue_key = 'HISTORIC-2'
+             WHERE project_id = ?1 AND id = ?2",
+            rusqlite::params![project_id.to_string(), link_id.to_string()],
+        )
+        .expect("the mutable link row is writable on its own");
+    let refused = rollback.execute(
+        "UPDATE canonical_jira_task_links SET external_issue_key = 'HISTORIC-2'
+         WHERE project_id = ?1 AND task_id = ?2",
+        rusqlite::params![project_id.to_string(), task_id.to_string()],
+    );
+    assert!(
+        refused.is_err(),
+        "a spent authority must not roll the canonical key back to an earlier destination"
+    );
+    drop(rollback);
+    drop(connection);
+
+    assert_eq!(
+        store
+            .confirmed_jira_task_key(project_id, task_id)
+            .expect("task key")
+            .map(|key| key.as_str().to_owned()),
+        Some("CURRENT-2".to_owned()),
+        "the refused rollback left the binding where the last proven rename put it"
+    );
+    // Forward motion still works, so the guard is exact rather than absolute.
+    let forward = store
+        .reconcile_confirmed_jira_key(
+            project_id,
+            &issue_id("ASMA-2"),
+            &external("NEXT-2"),
+            &ContentHash::of(b"next"),
+            now,
+        )
+        .expect("a freshly proven rename is still admitted");
+    assert_eq!(forward.jira_key.as_str(), "NEXT-2");
+}
+
+#[test]
+fn a_stale_epic_rename_authority_cannot_restore_an_earlier_destination() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+
+    for destination in ["HISTORIC-1", "CURRENT-1"] {
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-1"),
+                &external(destination),
+                &ContentHash::of(destination.as_bytes()),
+                now,
+            )
+            .unwrap_or_else(|error| panic!("the rename to {destination} is authorized: {error:?}"));
+    }
+
+    // The epic key column had no guard at all before this ticket: a raw update
+    // could rename a confirmed binding to anything. It is now bound to the same
+    // transition-exact authority as the task ledger.
+    let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    for (label, destination) in [
+        ("an earlier destination", "HISTORIC-1"),
+        ("a key nobody ever authorized", "INVENTED-1"),
+    ] {
+        let refused = connection.execute(
+            "UPDATE jira_epic_bindings SET external_issue_key = ?3
+             WHERE project_id = ?1 AND epic_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string(), destination],
+        );
+        assert!(
+            refused.is_err(),
+            "direct SQL must not move a confirmed epic binding to {label}"
+        );
+    }
+    drop(connection);
+
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("epic key")
+            .map(|key| key.as_str().to_owned()),
+        Some("CURRENT-1".to_owned())
     );
 }

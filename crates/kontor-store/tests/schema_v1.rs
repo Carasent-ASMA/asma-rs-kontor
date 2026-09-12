@@ -106,6 +106,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "asma_epic_activations",
     "jira_epic_bindings",
     "jira_links",
+    "jira_epic_rename_authorizations",
     "jira_rename_authorizations",
     "jira_materialization_batches",
     "jira_materialization_items",

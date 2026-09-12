@@ -56,3 +56,15 @@ disabled and killed by
 
 All seven mutations are killed against the current head. Every one was applied
 alone, the named test run, and the source restored byte-for-byte.
+
+## Gate-2 repair mutations
+
+| # | Mutation | Test | Result |
+| --- | --- | --- | --- |
+| M8 | Epic identity refusal made non-terminal | `the_resident_reconciler_refuses_a_key_that_now_answers_for_another_issue` | **killed** |
+| M9 | Task identity refusal made non-terminal | `the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue` | **killed** |
+| M10 | Rename authority unbound from the predecessor key | `a_stale_task_rename_authority_cannot_restore_an_earlier_destination` | **killed** |
+
+M8 and M9 each survived one earlier assertion shape; see
+`GATE-2-REPAIR-REPORT.md` for what each survival exposed about the test.
+

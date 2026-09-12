@@ -453,6 +453,8 @@ struct PreparedDescription {
 
 /// The complete, externally observed plan one reconcile response names.
 struct PreparedTicketPlan {
+    /// Whether preparing this plan reconciled a same-issue Jira rename.
+    identity_renamed: bool,
     links: Vec<kontor_core::id::TicketLinkId>,
     diff: Vec<TicketFieldDiffDto>,
     content_conflicts: Vec<TicketContentConflictDto>,
@@ -498,6 +500,23 @@ enum JiraSubjectOutcome {
 
 /// What one automatic epic pass concluded, about status and about content.
 ///
+/// Two verdicts rather than one, because they are independent: an epic can be
+/// exactly where it belongs and still show its readers a placeholder.
+/// What an observed Jira identity permits for one subject this cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IdentityDecision {
+    /// Identity is proven. Continue under `current_key`.
+    Proceed {
+        /// The key Jira reports now, which a rename may have changed.
+        current_key: ExternalId,
+        /// Whether this pass reconciled a rename.
+        renamed: bool,
+    },
+    /// Identity is unproven, contradicted, or could not be reconciled. No
+    /// policy, no intent and no external effect may follow for this subject.
+    Stop,
+}
+
 /// Two verdicts rather than one, because they are independent: an epic can be
 /// exactly where it belongs and still show its readers a placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3112,39 +3131,56 @@ impl Services {
         })
     }
 
-    /// Follow a same-issue rename using identity the boundary already read.
+    /// Decide what the observed identity permits for this subject.
     ///
-    /// Costs no request of its own. The resident loop is bounded on how often
-    /// it may touch Jira, so discovering a rename must reuse the answer the
-    /// status observation already produced rather than ask a second time.
+    /// Costs no request of its own: the identity rides the answer the status
+    /// observation already produced, and the resident loop is bounded on how
+    /// often it may touch Jira.
     ///
-    /// The immutable id decides what a differing key means: the same id is one
-    /// issue renamed and reconciles in place, a different id is a different
-    /// issue answering to a familiar key and is refused. A binding confirmed
-    /// before the id was retained cannot prove sameness and is left alone.
-    fn follow_same_issue_rename(
+    /// The decision is returned rather than merely counted, because a refusal
+    /// has to stop the caller. Recording "blocked" and then continuing into
+    /// policy, intent and a connector apply would transition the very issue the
+    /// identity check just proved was a different one.
+    ///
+    /// Fail-closed in every uncertain case: a different immutable id, a binding
+    /// whose id was never retained, an answer carrying no identity, or a failed
+    /// reconciliation all stop the subject for this cycle. Only a proven
+    /// identity continues, and it continues under the key Jira reports *now*.
+    fn decide_jira_identity(
         &self,
         project_id: ProjectId,
+        subject: kontor_store::JiraBindingSubject,
         confirmed_key: &ExternalId,
-        stored_issue_id: Option<&ExternalId>,
         observed: Option<&kontor_jira::jira::JiraIssueIdentity>,
-        report: &mut JiraReconcileReport,
-    ) {
-        let (Some(stored_issue_id), Some(observed)) = (stored_issue_id, observed) else {
-            return;
+    ) -> IdentityDecision {
+        let Some(observed) = observed else {
+            return IdentityDecision::Stop;
         };
-        if observed.issue_id != *stored_issue_id {
-            // The key now answers for another issue. Never rebind.
-            report.blocked = report.blocked.saturating_add(1);
-            return;
+        let Ok(state) = self.state() else {
+            return IdentityDecision::Stop;
+        };
+        let stored_issue_id = state
+            .with_store(|store| store.confirmed_jira_identities(project_id))
+            .ok()
+            .and_then(|identities| {
+                identities.into_iter().find_map(|(candidate, _, issue_id)| {
+                    (candidate == subject).then_some(issue_id).flatten()
+                })
+            });
+        let Some(stored_issue_id) = stored_issue_id else {
+            // Confirmed before the immutable id was retained. Nothing here can
+            // prove this is still the same issue, so nothing proceeds on it.
+            return IdentityDecision::Stop;
+        };
+        if observed.issue_id != stored_issue_id {
+            return IdentityDecision::Stop;
         }
         if observed.issue_key == *confirmed_key {
-            return;
+            return IdentityDecision::Proceed {
+                current_key: confirmed_key.clone(),
+                renamed: false,
+            };
         }
-        let Ok(state) = self.state() else {
-            report.blocked = report.blocked.saturating_add(1);
-            return;
-        };
         let Ok(document) = CanonicalDocument::from_serializable(&serde_json::json!({
             "schema_version": 1,
             "mode": "rename",
@@ -3152,22 +3188,26 @@ impl Services {
             "issue_id": observed.issue_id.as_str(),
             "key": observed.issue_key.as_str(),
         })) else {
-            report.blocked = report.blocked.saturating_add(1);
-            return;
+            return IdentityDecision::Stop;
         };
         let readback_hash = document.hash().clone();
-        let outcome = state.with_store(|store| {
+        let reconciled = state.with_store(|store| {
             store.reconcile_confirmed_jira_key(
                 project_id,
-                stored_issue_id,
+                &stored_issue_id,
                 &observed.issue_key,
                 &readback_hash,
                 kontor_api::now(),
             )
         });
-        match outcome {
-            Ok(_) => report.renamed = report.renamed.saturating_add(1),
-            Err(_) => report.blocked = report.blocked.saturating_add(1),
+        match reconciled {
+            // Continue under the key Jira reports now, never the superseded one
+            // the request was made under.
+            Ok(_) => IdentityDecision::Proceed {
+                current_key: observed.issue_key.clone(),
+                renamed: true,
+            },
+            Err(_) => IdentityDecision::Stop,
         }
     }
 
@@ -3203,29 +3243,30 @@ impl Services {
             .await
             .map_err(|error| self.refuse_jira(&error))?;
         // The same answer that carries the status also carries the identity, so
-        // a rename is discovered here for free.
-        let stored_issue_id = self
-            .state()
-            .ok()
-            .and_then(|state| {
-                state
-                    .with_store(|store| store.confirmed_jira_identities(project_id))
-                    .ok()
-            })
-            .and_then(|identities| {
-                identities.into_iter().find_map(|(subject, _, issue_id)| {
-                    (subject == kontor_store::JiraBindingSubject::Epic(epic.id))
-                        .then_some(issue_id)
-                        .flatten()
-                })
-            });
-        self.follow_same_issue_rename(
+        // a rename is discovered here for free — and a contradicted identity
+        // stops this subject before any policy, intent or Jira effect.
+        let issue_key = &match self.decide_jira_identity(
             project_id,
+            kontor_store::JiraBindingSubject::Epic(epic.id),
             issue_key,
-            stored_issue_id.as_ref(),
             observed.response.observed_identity.as_ref(),
-            report,
-        );
+        ) {
+            IdentityDecision::Proceed {
+                current_key,
+                renamed,
+            } => {
+                if renamed {
+                    report.renamed = report.renamed.saturating_add(1);
+                }
+                current_key
+            }
+            IdentityDecision::Stop => {
+                return Ok(JiraSubjectVerdict {
+                    outcome: JiraSubjectOutcome::Blocked,
+                    content_conflict: None,
+                });
+            }
+        };
         if !observed
             .observation
             .issue_type
@@ -3524,6 +3565,7 @@ impl Services {
                 "links": [],
             }))?;
             return Ok(PreparedTicketPlan {
+                identity_renamed: false,
                 links: Vec::new(),
                 diff: Vec::new(),
                 content_conflicts: Vec::new(),
@@ -3541,6 +3583,9 @@ impl Services {
         let (field_spec, workflow_spec) = self.jira_specs(&workflow)?;
         let jira = self.jira(project_id)?;
         let mut diff = Vec::new();
+        // Set when the identity gate reconciles a rename while preparing, so the
+        // resident pass can report it without asking Jira a second time.
+        let mut identity_renamed = false;
         let mut content_conflicts = Vec::new();
         let mut tickets = Vec::new();
         for link in links {
@@ -3576,6 +3621,27 @@ impl Services {
                 .observe()
                 .await
                 .map_err(|error| self.refuse_jira(&error))?;
+            // Identity is decided before any policy runs on this link. A task
+            // whose key now answers for a different issue must reach neither a
+            // conflict record nor an intent nor a connector apply, and a task
+            // whose key moved on the same issue must be reconciled before the
+            // plan is built so the plan is about the issue Jira actually holds.
+            match self.decide_jira_identity(
+                project_id,
+                kontor_store::JiraBindingSubject::Task(task_id),
+                &link.external_issue_key,
+                observed.response.observed_identity.as_ref(),
+            ) {
+                IdentityDecision::Proceed { renamed, .. } => {
+                    identity_renamed = identity_renamed || renamed;
+                }
+                IdentityDecision::Stop => {
+                    return Err(self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the Jira issue behind this task could not be identified as the confirmed one",
+                    ));
+                }
+            }
             let initial = delegation.plan(&observed);
             let outcome = if let ReconciliationOutcome::Conflict(kind) = initial {
                 let authorized = state
@@ -3680,6 +3746,7 @@ impl Services {
             })).collect::<Vec<_>>(),
         }))?;
         Ok(PreparedTicketPlan {
+            identity_renamed,
             links: tickets.iter().map(|ticket| ticket.link.id).collect(),
             diff,
             content_conflicts,
@@ -30060,10 +30127,16 @@ impl Services {
                 {
                     Ok(plan) => plan,
                     Err(_) => {
+                        // A refused identity arrives here too, which is the
+                        // point: the subject is counted as blocked and reaches
+                        // no conflict record, no intent and no Jira effect.
                         report.blocked = report.blocked.saturating_add(1);
                         continue;
                     }
                 };
+                if plan.identity_renamed {
+                    report.renamed = report.renamed.saturating_add(1);
+                }
                 if plan.tickets.iter().any(|ticket| ticket.conflict.is_some()) {
                     if let Err(error) = self.record_ticket_conflicts(project.project_id, &plan) {
                         tracing::warn!(
