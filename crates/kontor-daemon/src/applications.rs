@@ -529,6 +529,10 @@ enum IdentityDecision {
 enum IdentityRefusal {
     /// The key now answers for a different immutable Jira issue.
     DifferentIssue,
+    /// The ledger refused the reconciliation on a durable rule — an ambiguous
+    /// binding, a contested key, a spent authority. Permanent until that state
+    /// changes, and never something to retry into.
+    RenameRefused,
     /// The binding predates immutable identity, or the answer carried none, so
     /// sameness cannot be proven either way.
     UnprovenIdentity,
@@ -3178,14 +3182,18 @@ impl Services {
         let Ok(state) = self.state() else {
             return IdentityDecision::Stop(IdentityRefusal::Transient);
         };
-        let stored_issue_id = state
-            .with_store(|store| store.confirmed_jira_identities(project_id))
-            .ok()
-            .and_then(|identities| {
-                identities.into_iter().find_map(|(candidate, _, issue_id)| {
-                    (candidate == subject).then_some(issue_id).flatten()
-                })
-            });
+        // A failed lookup is not the same fact as a binding without an identity.
+        // Swallowing the error with `.ok()` reported a repository outage as
+        // "this binding cannot prove itself" — permanent advice about a
+        // transient condition.
+        let identities = match state.with_store(|store| store.confirmed_jira_identities(project_id))
+        {
+            Ok(identities) => identities,
+            Err(_) => return IdentityDecision::Stop(IdentityRefusal::Transient),
+        };
+        let stored_issue_id = identities.into_iter().find_map(|(candidate, _, issue_id)| {
+            (candidate == subject).then_some(issue_id).flatten()
+        });
         let Some(stored_issue_id) = stored_issue_id else {
             // Confirmed before the immutable id was retained. Nothing here can
             // prove this is still the same issue, so nothing proceeds on it.
@@ -3226,7 +3234,12 @@ impl Services {
                 current_key: observed.issue_key.clone(),
                 renamed: true,
             },
-            Err(_) => IdentityDecision::Stop(IdentityRefusal::Transient),
+            // A ledger refusal is a durable rule speaking, not an outage. Only a
+            // backend failure is retryable, and only it is reported that way.
+            Err(RepositoryError::Backend { .. }) => {
+                IdentityDecision::Stop(IdentityRefusal::Transient)
+            }
+            Err(_) => IdentityDecision::Stop(IdentityRefusal::RenameRefused),
         }
     }
 
@@ -3241,6 +3254,10 @@ impl Services {
             IdentityRefusal::DifferentIssue => self.deny(
                 ApiErrorCode::StaleBinding,
                 "the Jira key now answers for a different immutable issue than the confirmed binding",
+            ),
+            IdentityRefusal::RenameRefused => self.deny(
+                ApiErrorCode::StaleBinding,
+                "the confirmed binding refused this same-issue rename",
             ),
             IdentityRefusal::UnprovenIdentity => self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -3735,7 +3752,12 @@ impl Services {
             if let Some(kind) = content_conflict {
                 content_conflicts.push(TicketContentConflictDto {
                     link_id: link.id.to_string(),
-                    external_issue_key: link.external_issue_key.as_str().to_owned(),
+                    // The projection's key, not the link row's: after a
+                    // same-issue rename the link still names the key this pass
+                    // asked under, and reporting a conflict against a
+                    // superseded identifier sends a reader to an issue key that
+                    // only resolves while Jira keeps redirecting it.
+                    external_issue_key: projection.external_issue_key.as_str().to_owned(),
                     kind: kind.as_str().to_owned(),
                     observed_text: observed
                         .observation

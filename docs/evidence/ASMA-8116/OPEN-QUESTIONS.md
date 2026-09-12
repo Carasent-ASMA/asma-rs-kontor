@@ -173,3 +173,22 @@ Closing that requires three decisions this seat does not hold:
 - **Required to settle:** the approved plan's specification for the three new
   tokens (names, allow-list change, migration for seeded templates) and the
   legacy-consumer boundary.
+
+## OQ-005 — high-verification round-4 handoff state — open
+
+- **Attaches to:** ASMA-8116 / `high-verification-report`, candidate `527decf`,
+  verifier AgentRun `01a09541-637c-7883-ad90-6c8e0d51ebee`, and the
+  `high-verification-gate` ledger.
+- **Ambiguity:** the handoff says verification finished and its artifacts are
+  recorded, while the durable task ledger has no fourth verifier settlement,
+  no fourth gate evaluation, and no artifact locator; the repository likewise
+  has no round-4 report. The verifier runtime activity ends after identifying
+  an unguarded `rename_sequence` rewind that may reactivate spent rename
+  authority, followed by a provider refusal before a verdict was recorded.
+- **Options observed:** recover and record the verifier's final report; treat
+  the runtime activity as a rejected-verification finding; or independently
+  audit `527decf` while withholding any audit approval until the missing
+  verification artifact and gate state are reconciled.
+- **Assumption being carried:** the third option. The audit may reproduce and
+  classify the reported bypass, but it must not represent round 4 as approved
+  or complete without the missing durable evidence.

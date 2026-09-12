@@ -78,3 +78,16 @@ M8 and M9 each survived one earlier assertion shape; see
 Both were re-seeded after the fixtures were given the statuses and routes of the
 workflow that governs each subject kind, so the kill now observes the promised
 write boundary rather than an incidental later refusal.
+
+## Round-4 repair mutations
+
+| # | Mutation | Test | Result |
+| --- | --- | --- | --- |
+| M11 | Task sequence-rewind guard removed | `a_rewound_rename_sequence_cannot_reactivate_spent_task_authority` | **killed** |
+| M12 | Every reconciliation error classified transient | `a_ledger_refused_rename_is_permanent_while_only_outages_are_transient` | **killed** |
+| M13 | Conflict key taken from the superseded link row | `a_same_issue_rename_reports_its_content_conflict_against_the_current_key` | **killed** |
+
+M12's first target was semantically inert — it aimed at a path whose refusal
+never reaches the reconciliation-error arm — and M13's first assertion ran after
+the ledger had already moved, so neither could discriminate. Both were replaced
+rather than claimed; see `GATE-4-REPAIR-REPORT.md`.

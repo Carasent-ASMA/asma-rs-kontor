@@ -197,4 +197,27 @@ BEGIN
     SELECT RAISE(ABORT, 'a confirmed Jira epic key changes only on recorded same-issue rename authority');
 END;
 
+-- The occurrence counter is only proof if it cannot be wound back. Requiring
+-- the key-change guards to see an advancing sequence is not enough on its own:
+-- a separate update that lowers the sequence would make a spent authority match
+-- again, which is exactly the A->B->C->A reactivation these ledgers exist to
+-- prevent. Storage itself refuses the rewind, so no caller and no repair script
+-- can reach that state.
+--
+-- Advancing is unrestricted, so a restore, a migration or a future repair may
+-- still move a binding forward; only going backwards is refused.
+CREATE TRIGGER jira_epic_binding_rename_sequence_monotonic
+BEFORE UPDATE OF rename_sequence ON jira_epic_bindings
+WHEN NEW.rename_sequence < OLD.rename_sequence
+BEGIN
+    SELECT RAISE(ABORT, 'a confirmed Jira epic binding rename sequence never goes backwards');
+END;
+
+CREATE TRIGGER jira_task_binding_rename_sequence_monotonic
+BEFORE UPDATE OF rename_sequence ON jira_task_binding_confirmations
+WHEN NEW.rename_sequence < OLD.rename_sequence
+BEGIN
+    SELECT RAISE(ABORT, 'a confirmed Jira task binding rename sequence never goes backwards');
+END;
+
 PRAGMA user_version = 95;

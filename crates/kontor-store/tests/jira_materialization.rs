@@ -3023,3 +3023,120 @@ fn an_epic_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence(
         Some("ASMA-1".to_owned())
     );
 }
+
+#[test]
+fn a_rewound_rename_sequence_cannot_reactivate_spent_task_authority() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    let (link_id, _batch) = confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+    for destination in ["HISTORIC-2", "CURRENT-2", "ASMA-2"] {
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-2"),
+                &external(destination),
+                &ContentHash::of(destination.as_bytes()),
+                now,
+            )
+            .expect("each rename is authorized");
+    }
+
+    // The occurrence counter is the whole proof. Winding it back would make the
+    // first A->B authority match again, so storage refuses the rewind itself
+    // rather than trusting every future writer to advance it honestly.
+    let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    let rewind = connection.execute(
+        "UPDATE jira_task_binding_confirmations SET rename_sequence = 0
+         WHERE project_id = ?1 AND link_id = ?2",
+        rusqlite::params![project_id.to_string(), link_id.to_string()],
+    );
+    assert!(
+        rewind.is_err(),
+        "a task rename sequence must never be wound back"
+    );
+    // Advancing is still permitted, so a restore or repair can move forward.
+    connection
+        .execute(
+            "UPDATE jira_task_binding_confirmations SET rename_sequence = rename_sequence + 5
+             WHERE project_id = ?1 AND link_id = ?2",
+            rusqlite::params![project_id.to_string(), link_id.to_string()],
+        )
+        .expect("advancing the sequence stays supported");
+    drop(connection);
+
+    // And with no rewind available, the spent authority stays spent.
+    let mut connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    let replay = connection.transaction().expect("the replay starts");
+    replay
+        .execute(
+            "UPDATE jira_links SET external_issue_key = 'HISTORIC-2'
+             WHERE project_id = ?1 AND id = ?2",
+            rusqlite::params![project_id.to_string(), link_id.to_string()],
+        )
+        .expect("the mutable link row is writable on its own");
+    assert!(
+        replay
+            .execute(
+                "UPDATE canonical_jira_task_links SET external_issue_key = 'HISTORIC-2'
+                 WHERE project_id = ?1 AND task_id = ?2",
+                rusqlite::params![project_id.to_string(), task_id.to_string()],
+            )
+            .is_err(),
+        "a spent authority stays spent when its occurrence cannot be rewound"
+    );
+}
+
+#[test]
+fn a_rewound_rename_sequence_cannot_reactivate_spent_epic_authority() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+    for destination in ["HISTORIC-1", "CURRENT-1", "ASMA-1"] {
+        store
+            .reconcile_confirmed_jira_key(
+                project_id,
+                &issue_id("ASMA-1"),
+                &external(destination),
+                &ContentHash::of(destination.as_bytes()),
+                now,
+            )
+            .expect("each rename is authorized");
+    }
+
+    let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    assert!(
+        connection
+            .execute(
+                "UPDATE jira_epic_bindings SET rename_sequence = 0
+                 WHERE project_id = ?1 AND epic_id = ?2",
+                rusqlite::params![project_id.to_string(), epic_id.to_string()],
+            )
+            .is_err(),
+        "an epic rename sequence must never be wound back"
+    );
+    connection
+        .execute(
+            "UPDATE jira_epic_bindings SET rename_sequence = rename_sequence + 5
+             WHERE project_id = ?1 AND epic_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+        )
+        .expect("advancing the sequence stays supported");
+    assert!(
+        connection
+            .execute(
+                "UPDATE jira_epic_bindings SET external_issue_key = 'HISTORIC-1'
+                 WHERE project_id = ?1 AND epic_id = ?2",
+                rusqlite::params![project_id.to_string(), epic_id.to_string()],
+            )
+            .is_err(),
+        "a spent epic authority stays spent"
+    );
+}

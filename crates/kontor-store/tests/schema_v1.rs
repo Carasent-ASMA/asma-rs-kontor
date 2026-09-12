@@ -5494,6 +5494,8 @@ fn v95_adds_immutable_jira_identity_without_losing_or_inventing_a_single_v94_row
         "canonical_jira_task_links_permanent",
         "jira_epic_bindings_immutable_issue",
         "jira_epic_binding_issue_id_immutable",
+        "jira_epic_binding_rename_sequence_monotonic",
+        "jira_task_binding_rename_sequence_monotonic",
         "jira_rename_authorizations",
         "jira_task_binding_confirmations_immutable_issue",
         "jira_task_binding_issue_id_immutable",

@@ -44066,6 +44066,7 @@ async fn the_resident_reconciler_refuses_a_key_that_now_answers_for_another_issu
 async fn seed_confirmed_task_binding(
     world: &World,
     project_id: ProjectId,
+    blocked: bool,
 ) -> (MiniProjectId, TaskId) {
     // The project id is fixed before the world exists, because the Jira
     // connector configuration binds to it.
@@ -44128,7 +44129,15 @@ async fn seed_confirmed_task_binding(
                 mini_project_id: Some(epic_id),
                 title: name("Renamed task subject"),
                 module: None,
-                state: kontor_core::state::TaskState::Blocked,
+                // Blocked makes the workflow plan a transition, which is what a
+                // write-boundary assertion needs. A converged task instead lets
+                // the plan succeed and report only its content conflict, which
+                // is what the conflict-key assertion needs.
+                state: if blocked {
+                    kontor_core::state::TaskState::Blocked
+                } else {
+                    kontor_core::state::TaskState::Ready
+                },
                 created_at: now,
             })
             .expect("the task is created");
@@ -44240,7 +44249,7 @@ async fn the_resident_reconciler_follows_a_same_issue_task_rename() {
 
     let project_id = ProjectId::generate();
     let (world, _config) = world_with_jira(&server, project_id).await;
-    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id).await;
+    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id, true).await;
 
     let report = world.daemon.reconcile_jira_once().await;
     assert!(reads.load(Ordering::SeqCst) > 0, "the connector was asked");
@@ -44287,7 +44296,7 @@ async fn the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue(
 
     let project_id = ProjectId::generate();
     let (world, _config) = world_with_jira(&server, project_id).await;
-    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id).await;
+    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id, true).await;
 
     let report = world.daemon.reconcile_jira_once().await;
     assert!(reads.load(Ordering::SeqCst) > 0, "the connector was asked");
@@ -44480,7 +44489,7 @@ async fn a_task_rename_between_preview_and_apply_emits_the_current_key() {
 
     let project_id = ProjectId::generate();
     let (world, _config) = world_with_jira(&server, project_id).await;
-    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id).await;
+    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id, true).await;
 
     // First read: the issue still answers to the key Kontor confirmed.
     let plan = Call::post(
@@ -44574,4 +44583,173 @@ async fn a_task_rename_between_preview_and_apply_emits_the_current_key() {
             "the effect names the current key: {emitted:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_same_issue_rename_reports_its_content_conflict_against_the_current_key() {
+    let server = MockServer::start().await;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mutations = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(RenamedIssueJira {
+            key: "MOVED-1",
+            id: "901",
+            issue_type: "Task",
+            hierarchy_level: 0,
+            reads: Arc::clone(&reads),
+            mutations: Arc::clone(&mutations),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    // Converged, so the plan succeeds and the only thing it has to report is
+    // the content conflict whose key is under test.
+    let (_epic_id, task_id) = seed_confirmed_task_binding(&world, project_id, false).await;
+
+    // This is the first pass, so it is the pass that performs the rename. The
+    // link row it started from still names the key Kontor confirmed, and a
+    // conflict built from that row would send a reader to a superseded key.
+    // Asserting here, rather than after the ledger has moved, is what lets the
+    // assertion tell the two sources apart at all.
+    let reads_before = reads.load(Ordering::SeqCst);
+    let planned = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("conflict-key-plan")
+    .send(&world)
+    .await;
+    assert_eq!(planned.status, 200, "{}", planned.body);
+    let renaming_reads = reads.load(Ordering::SeqCst) - reads_before;
+
+    let conflicts = planned.json()["content_conflicts"]
+        .as_array()
+        .expect("conflicts")
+        .clone();
+    assert!(
+        !conflicts.is_empty(),
+        "this fixture's body is unreadable, so a conflict is expected: {}",
+        planned.body
+    );
+    for conflict in &conflicts {
+        assert_eq!(
+            conflict["external_issue_key"], "MOVED-1",
+            "a content conflict names the key Jira holds now: {}",
+            planned.body
+        );
+    }
+
+    // The rename really did happen in this pass.
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_task_key(project_id, task_id)
+                .expect("task key")
+                .map(|key| key.as_str().to_owned()),
+            Some("MOVED-1".to_owned())
+        );
+    });
+
+    // And it cost no extra Jira read: a pass that follows an identity asks
+    // exactly as often as one that has nothing left to reconcile.
+    let steady_before = reads.load(Ordering::SeqCst);
+    let steady = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("conflict-key-steady")
+    .send(&world)
+    .await;
+    assert_eq!(steady.status, 200, "{}", steady.body);
+    assert_eq!(
+        reads.load(Ordering::SeqCst) - steady_before,
+        renaming_reads,
+        "following an identity must not add a Jira read"
+    );
+}
+
+#[tokio::test]
+async fn a_ledger_refused_rename_is_permanent_while_only_outages_are_transient() {
+    let server = MockServer::start().await;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mutations = Arc::new(AtomicUsize::new(0));
+    Mock::given(any())
+        .respond_with(RenamedIssueJira {
+            key: "MOVED-1",
+            id: "901",
+            issue_type: "Task",
+            hierarchy_level: 0,
+            reads: Arc::clone(&reads),
+            mutations: Arc::clone(&mutations),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    let (epic_id, task_id) = seed_confirmed_task_binding(&world, project_id, false).await;
+
+    // Give the destination key to somebody else, so the ledger refuses the
+    // rename on a durable rule rather than failing to perform it. One confirmed
+    // Jira issue may name only one subject, and that refusal is permanent until
+    // the conflicting binding changes.
+    let connection = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the world's database opens directly");
+    connection
+        .execute(
+            "INSERT INTO jira_epic_bindings
+                 (project_id, epic_id, external_issue_key, external_issue_id,
+                  readback_hash, confirmed_at, rename_sequence)
+             VALUES (?1, ?2, 'MOVED-1', '902', ?3, '2026-09-12T10:00:00Z', 0)",
+            rusqlite::params![project_id.to_string(), epic_id.to_string(), "b".repeat(64)],
+        )
+        .expect("the contested destination is planted");
+    drop(connection);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("refused-rename-plan")
+    .send(&world)
+    .await;
+
+    // A durable rule said no. Reporting that as an availability outage would
+    // invite the retry loop that can never succeed, and would hide a real
+    // contradiction behind a transient-looking code.
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(
+        refused.json()["code"],
+        "stale_binding",
+        "a ledger refusal is permanent, not an outage: {}",
+        refused.body
+    );
+    assert_ne!(
+        refused.json()["code"],
+        "unavailable",
+        "only a connector or repository failure is transient: {}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("refused this same-issue rename"),
+        "the refusal names the rule that refused it: {}",
+        refused.body
+    );
+
+    // Nothing moved, and nothing was written to Jira.
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_task_key(project_id, task_id)
+                .expect("task key")
+                .map(|key| key.as_str().to_owned()),
+            Some("ASMA-1".to_owned())
+        );
+    });
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
 }
