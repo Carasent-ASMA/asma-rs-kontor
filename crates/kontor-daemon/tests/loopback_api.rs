@@ -43742,12 +43742,36 @@ struct RenamedIssueJira {
 
 impl Respond for RenamedIssueJira {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        if request.method.as_str() == "GET" && request.url.path().contains("/rest/api/3/issue/") {
+        let path = request.url.path();
+        if request.method.as_str() != "GET" {
+            return ResponseTemplate::new(500);
+        }
+        if path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if path.ends_with("/transitions") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": []}));
+        }
+        if path.contains("/rest/api/3/issue/") {
+            // One read serves both purposes. The key Jira answers with is the
+            // current one, which is not necessarily the key that was asked for.
             self.reads.fetch_add(1, Ordering::SeqCst);
             return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "key": self.key,
                 "id": self.id,
-                "fields": {"project": {"key": "ASMA"}}
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10231",
+                        "name": "On hold",
+                        "statusCategory": {"name": "In Progress"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "updated": "2026-09-12T10:00:00.000+0000"
+                }
             }));
         }
         ResponseTemplate::new(404)
@@ -43815,6 +43839,27 @@ async fn seed_confirmed_epic_binding(world: &World, project_id: ProjectId, epic_
             )
             .expect("the binding confirms");
     });
+    world.daemon.state().with_store(|store| {
+        let spec = kontor_jira::jira::SpecCatalog::bundled()
+            .expect("the Jira catalog loads")
+            .workflow_specs()
+            .iter()
+            .find(|compiled| {
+                compiled.spec().issue_type.as_str() == "epic"
+                    && compiled.spec().work_profile.is_none()
+            })
+            .expect("the generic epic workflow exists")
+            .spec()
+            .clone();
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        store
+            .install_external_workflow_spec(project_id, revision, &spec)
+            .expect("the exact epic workflow is installed");
+    });
 }
 
 /// Point a fresh world at one mock Jira server.
@@ -43866,7 +43911,8 @@ async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connect
     // immutable id says it is the same issue. The binding follows the rename
     // without the Kontor subject moving.
     let report = world.daemon.reconcile_jira_once().await;
-    assert!(reads.load(Ordering::SeqCst) > 0, "the connector was asked");
+    let reads_for_one_pass = reads.load(Ordering::SeqCst);
+    assert!(reads_for_one_pass > 0, "the connector was asked");
     assert_eq!(report.renamed, 1, "{report:?}");
 
     world.daemon.state().with_store(|store| {
@@ -43887,10 +43933,22 @@ async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connect
     });
 
     // Replaying the pass is a no-op: the key already agrees with Jira.
+    let before_replay = reads.load(Ordering::SeqCst);
     let replay = world.daemon.reconcile_jira_once().await;
     assert_eq!(
         replay.renamed, 0,
         "an already-followed rename is not redone"
+    );
+
+    // The zero-extra-read invariant, stated rather than assumed. Following a
+    // rename reuses the answer the status observation already produced, so a
+    // pass that reconciles an identity costs exactly what a pass that does not.
+    // The resident loop is bounded on this; an identity check that asked Jira
+    // again would double the cost of every pass.
+    let replay_reads = reads.load(Ordering::SeqCst) - before_replay;
+    assert_eq!(
+        replay_reads, reads_for_one_pass,
+        "following a rename must not cost an extra Jira read"
     );
 }
 

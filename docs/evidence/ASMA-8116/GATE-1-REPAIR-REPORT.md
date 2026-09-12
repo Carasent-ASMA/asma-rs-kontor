@@ -16,52 +16,54 @@ Verifier report: `HIGH-VERIFICATION-REPORT.md` (commit `0a400ec`, preserved)
 | F-8116-V5 no v94→v95 preservation gate | **closed** | `v95_adds_immutable_jira_identity_without_losing_or_inventing_a_single_v94_row` builds the real v94 shape, runs the actual `0095`, and asserts row preservation, NULL identities, project-scoped uniqueness, id immutability, trigger installation/replacement, integrity and reopen |
 | F-8116-V6 committed rename reported as failure | **fixed structurally; mutant not killable** — see below | the answer is now built inside the committing transaction; `a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller` retains the invariant under sustained contention |
 
-## Two honest qualifications
+## Continuation round: V3 completed with zero extra reads, V6 deterministically proven
 
-### F-8116-V6: the fix is structural, the mutation is not killable here
+### F-8116-V3 — the extra Jira read is gone
 
-`reconcile_confirmed_jira_key` no longer resolves after committing; it derives
-subject, key, evidence and revision inside the transaction that wrote them, so
-the window the verifier identified cannot open. The retained test asserts every
-committing caller is told its own key, and treats `NotFound` as a failure —
-which is the exact shape the old code produced.
+The first repair wired reconciliation through a second request
+(`observe_identity`), which cost one GET per confirmed subject per pass and
+turned two bounded-read gates red. That approach is withdrawn and the method
+removed. Identity now rides the read the boundary already performs:
 
-Re-applying the old post-commit read (mutation M5) does **not** fail that test,
-across 40 rounds × 2 writers × 3 attempts. SQLite serializes writers, so the
-window between one caller's commit and its own read is microseconds while a
-competing writer needs milliseconds to acquire the lock and finish. The defect
-was real by inspection and the fix removes it by construction; the timing is
-simply not reachable from a test in this harness. This is recorded rather than
-presented as a kill.
+- `LiveIssue` captures the identity from the `?fields=*all` answer `live()`
+  already fetches.
+- `JiraResponse` gained `observed_identity`, kept deliberately distinct from
+  `issue_key`. The latter is **echoed from the request**, so it still reads
+  `ASMA-1` after Jira has renamed that issue; comparing the two is what
+  distinguishes a rename from a steady state. Inferring one from the other was
+  the trap.
+- `reconcile_jira_epic` compares the stored immutable id with the observed one
+  and calls `follow_same_issue_rename`, which reconciles a same-id key change
+  and refuses a different-id answer. No request of its own.
 
-### F-8116-V3: the wiring costs one extra Jira read per confirmed subject per pass
+Both previously red gates are green again, unmodified:
+`automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_epic_without_effects`
+and `resident_jira_conflict_replay_waits_for_the_bounded_backstop`. Neither
+assertion was relaxed. The invariant is now asserted directly rather than left
+implicit: `the_resident_reconciler_follows_a_same_issue_rename_through_the_connector`
+measures the reads of a renaming pass and of a steady-state pass and requires
+them equal.
 
-The rename pass asks the connector for each confirmed subject's current identity.
-That is one GET per subject per reconciliation pass, and two existing gates
-correctly detect it:
+Two observe-path connector fixtures then had to supply a top-level `id`, for the
+same fail-closed reason as F-8116-V4: a readback without an observable identity
+is malformed, and `live()` now says so.
 
-- `automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_epic_without_effects`
-  — `issue_reads` 2, expected 1.
-- `resident_jira_conflict_replay_waits_for_the_bounded_backstop`
-  — `issue_reads` 6, expected 4.
+### F-8116-V6 — the mutant is killed deterministically
 
-Those assertions protect a real invariant: the resident loop must not hammer
-Jira, and an unchanged durable conflict must wait for the bounded backstop.
-**They were not relaxed.** Loosening them to make this branch green would trade
-a verified property for a green tick.
+The production construction is unchanged: the answer is still derived inside the
+committing transaction. What changed is the proof.
 
-The correct fix is to reuse the read the resident loop already performs rather
-than issuing a second one: `reconcile_jira_epic` already calls `observe()`, whose
-`Observed` carries the whole raw connector answer. It cannot be used as-is
-because `JiraResponse::issue_key` is echoed from the *request*, not read from the
-response body, and `JiraResponse` carries no immutable id at all. Threading the
-observed key and id through the observation payload — in `kontor-jira`'s response
-types and both reconcile paths — makes the identity check free and removes the
-extra read.
+`a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it`
+installs a trigger **in the fixture only** that rewrites the key immediately
+after the reconciling update commits it. That reproduces, without timing, the
+one thing the post-commit window makes true: the key the caller committed is not
+the key the table holds when a later read happens. Nothing in production is
+relaxed to arrange it.
 
-That work is identified but not performed here, so this repair round leaves two
-red daemon gates. It is reported rather than hidden, and no test was weakened to
-conceal it.
+Re-applying the old post-commit reread now fails the test on every attempt
+(3/3), where the earlier contention-based test could not kill it in 40 rounds ×
+2 writers × 3 attempts. The previous round's report recorded that survival
+rather than claiming a kill; this round replaces it with a real one.
 
 ## Preserved, not reinterpreted
 

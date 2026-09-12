@@ -769,6 +769,19 @@ pub struct WireFailure {
     pub detail: String,
 }
 
+/// One issue's identity as Jira currently reports it.
+///
+/// The key is whatever Jira answers with *now*, which is not necessarily the
+/// key that was asked under; the id is the same for the life of the issue.
+/// Keeping both means a caller never has to infer one from the other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JiraIssueIdentity {
+    /// The canonical key Jira reports today.
+    pub issue_key: ExternalId,
+    /// The immutable REST issue id.
+    pub issue_id: ExternalId,
+}
+
 /// One schema-versioned machine response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JiraResponse {
@@ -779,8 +792,19 @@ pub struct JiraResponse {
     /// The operation that actually ran. An apply without authority runs as a
     /// dry run and says so here.
     pub effective_operation: JiraOperation,
-    /// The external issue key.
+    /// The external issue key **the request asked under**.
+    ///
+    /// Deliberately not the same thing as [`Self::observed_identity`]: this is
+    /// echoed from the request, so it still says `ASMA-1` after Jira has
+    /// renamed that issue. Comparing the two is what distinguishes a rename
+    /// from a steady state.
     pub issue_key: ExternalId,
+    /// The identity the boundary actually observed when it read the issue.
+    ///
+    /// Carried on the answer the boundary already produced, so a caller learns
+    /// the current key and the immutable id without a second request.
+    #[serde(default)]
+    pub observed_identity: Option<JiraIssueIdentity>,
     /// The idempotency key the request carried.
     pub idempotency_key: IdempotencyKey,
     /// The intent digest the request carried.

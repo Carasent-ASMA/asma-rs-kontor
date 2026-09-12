@@ -50,6 +50,9 @@ disabled and killed by
 | # | Mutation | Test | Result |
 | --- | --- | --- | --- |
 | M4 | Cross-ledger check removed from `establish_immutable_issue_id` | `a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger` | **killed** |
-| M5 | Return value resolved after commit again | `a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller` | **survived** — not timing-reachable; see `GATE-1-REPAIR-REPORT.md` |
+| M5 | Return value resolved after commit again | `a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it` | **killed**, 3/3 deterministic (a fixture-only trigger replaces the unschedulable timing window; the earlier contention test could not kill it and was recorded as survived) |
 | M6 | Canonical key-change trigger reverted to the two-row agreement | `two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename` | **killed** |
-| M7 | Rename pass unwired from `reconcile_jira_once` | `the_resident_reconciler_follows_a_same_issue_rename_through_the_connector` | **killed** |
+| M7 | `follow_same_issue_rename` unwired from `reconcile_jira_epic` | `the_resident_reconciler_follows_a_same_issue_rename_through_the_connector` | **killed** |
+
+All seven mutations are killed against the current head. Every one was applied
+alone, the named test run, and the source restored byte-for-byte.

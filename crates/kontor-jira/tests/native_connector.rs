@@ -146,6 +146,8 @@ fn wire_response(
     confirmation: Option<WireObservation>,
 ) -> JiraResponse {
     JiraResponse {
+        // A hand-built wire answer observed nothing of its own.
+        observed_identity: None,
         schema_version: SCHEMA_VERSION,
         operation,
         effective_operation: operation,
@@ -1296,6 +1298,8 @@ async fn native_observe_reads_issue_transitions_and_principal() {
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-9"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-9",
+            "id": "9009",
             "fields": {
                 "project": {"key": "ASMA"},
                 "status": {"id": "3", "name": "In Progress", "statusCategory": {"name": "In Progress"}},
@@ -1395,6 +1399,8 @@ async fn native_observe_carries_the_issue_body() {
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-9"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-9",
+            "id": "9009",
             "fields": {
                 "project": {"key": "ASMA"},
                 "status": {"id": "3", "name": "In Progress", "statusCategory": {"name": "In Progress"}},

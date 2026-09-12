@@ -2698,3 +2698,64 @@ fn a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller() {
         }
     }
 }
+
+#[test]
+fn a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("store opens");
+    let (project_id, epic_id, task_id, now) = seed_graph(&store);
+    confirm_epic_and_task(
+        &store, project_id, epic_id, task_id, now, "ASMA-1", "ASMA-2",
+    );
+
+    // Stand in for the competing writer, deterministically. A real race puts
+    // another rename between this caller's commit and a read taken after it —
+    // a window of microseconds that no test can schedule. This trigger makes
+    // the same thing true of the durable row without depending on timing: the
+    // key this caller committed is not the key the table holds afterwards.
+    //
+    // Nothing in production is relaxed to arrange it. The trigger lives only in
+    // this fixture, and the property under test is exactly the one the window
+    // threatens: a caller must be told about its own write.
+    let connection = rusqlite::Connection::open(&path).expect("database opens directly");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER test_competing_writer
+             AFTER UPDATE OF external_issue_key ON jira_epic_bindings
+             WHEN NEW.external_issue_key = 'RACE-1'
+             BEGIN
+                 UPDATE jira_epic_bindings SET external_issue_key = 'RACE-2'
+                 WHERE project_id = NEW.project_id AND epic_id = NEW.epic_id;
+             END;",
+        )
+        .expect("the competing writer is installed");
+    drop(connection);
+
+    let settled = store
+        .reconcile_confirmed_jira_key(
+            project_id,
+            &issue_id("ASMA-1"),
+            &external("RACE-1"),
+            &ContentHash::of(b"raced-rename"),
+            now,
+        )
+        .expect("a committed rename is never reported as a failure");
+
+    // The answer describes this caller's own write, derived inside the
+    // transaction that made it. Reading it back afterwards would find `RACE-2`
+    // and report `NotFound` for a rename that in fact succeeded.
+    assert_eq!(settled.jira_key.as_str(), "RACE-1");
+    assert_eq!(settled.subject, JiraBindingSubject::Epic(epic_id));
+
+    // And the durable row really did move on, so the fixture proved what it
+    // claims rather than quietly agreeing with the caller.
+    assert_eq!(
+        store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("epic key")
+            .map(|key| key.as_str().to_owned()),
+        Some("RACE-2".to_owned()),
+        "the competing writer really did move the row"
+    );
+}

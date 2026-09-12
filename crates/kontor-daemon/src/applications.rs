@@ -3112,12 +3112,72 @@ impl Services {
         })
     }
 
+    /// Follow a same-issue rename using identity the boundary already read.
+    ///
+    /// Costs no request of its own. The resident loop is bounded on how often
+    /// it may touch Jira, so discovering a rename must reuse the answer the
+    /// status observation already produced rather than ask a second time.
+    ///
+    /// The immutable id decides what a differing key means: the same id is one
+    /// issue renamed and reconciles in place, a different id is a different
+    /// issue answering to a familiar key and is refused. A binding confirmed
+    /// before the id was retained cannot prove sameness and is left alone.
+    fn follow_same_issue_rename(
+        &self,
+        project_id: ProjectId,
+        confirmed_key: &ExternalId,
+        stored_issue_id: Option<&ExternalId>,
+        observed: Option<&kontor_jira::jira::JiraIssueIdentity>,
+        report: &mut JiraReconcileReport,
+    ) {
+        let (Some(stored_issue_id), Some(observed)) = (stored_issue_id, observed) else {
+            return;
+        };
+        if observed.issue_id != *stored_issue_id {
+            // The key now answers for another issue. Never rebind.
+            report.blocked = report.blocked.saturating_add(1);
+            return;
+        }
+        if observed.issue_key == *confirmed_key {
+            return;
+        }
+        let Ok(state) = self.state() else {
+            report.blocked = report.blocked.saturating_add(1);
+            return;
+        };
+        let Ok(document) = CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "mode": "rename",
+            "project": project_id.to_string(),
+            "issue_id": observed.issue_id.as_str(),
+            "key": observed.issue_key.as_str(),
+        })) else {
+            report.blocked = report.blocked.saturating_add(1);
+            return;
+        };
+        let readback_hash = document.hash().clone();
+        let outcome = state.with_store(|store| {
+            store.reconcile_confirmed_jira_key(
+                project_id,
+                stored_issue_id,
+                &observed.issue_key,
+                &readback_hash,
+                kontor_api::now(),
+            )
+        });
+        match outcome {
+            Ok(_) => report.renamed = report.renamed.saturating_add(1),
+            Err(_) => report.blocked = report.blocked.saturating_add(1),
+        }
+    }
+
     /// Converge one confirmed Jira epic from epic-scoped facts only.
     async fn reconcile_jira_epic(
         &self,
         project_id: ProjectId,
         epic: &MiniProject,
         issue_key: &ExternalId,
+        report: &mut JiraReconcileReport,
     ) -> Result<JiraSubjectVerdict, ApiError> {
         let state = self.state()?;
         let (field_spec, workflow_spec) = self.jira_epic_specs(project_id)?;
@@ -3142,6 +3202,30 @@ impl Services {
             .observe()
             .await
             .map_err(|error| self.refuse_jira(&error))?;
+        // The same answer that carries the status also carries the identity, so
+        // a rename is discovered here for free.
+        let stored_issue_id = self
+            .state()
+            .ok()
+            .and_then(|state| {
+                state
+                    .with_store(|store| store.confirmed_jira_identities(project_id))
+                    .ok()
+            })
+            .and_then(|identities| {
+                identities.into_iter().find_map(|(subject, _, issue_id)| {
+                    (subject == kontor_store::JiraBindingSubject::Epic(epic.id))
+                        .then_some(issue_id)
+                        .flatten()
+                })
+            });
+        self.follow_same_issue_rename(
+            project_id,
+            issue_key,
+            stored_issue_id.as_ref(),
+            observed.response.observed_identity.as_ref(),
+            report,
+        );
         if !observed
             .observation
             .issue_type
@@ -29834,87 +29918,6 @@ impl ApplicationOperations for Services {
 }
 
 impl Services {
-    /// Reconcile confirmed bindings whose Jira key moved under them.
-    ///
-    /// Jira resolves a superseded key to the issue that now owns it, so asking
-    /// by the key Kontor last confirmed is what surfaces a rename at all. The
-    /// immutable id decides what the answer means: the same id under a new key
-    /// is one issue renamed and reconciles in place, while a different id is a
-    /// different issue wearing a familiar key and is refused.
-    ///
-    /// A binding confirmed before the id was retained cannot prove sameness and
-    /// is skipped rather than guessed at.
-    async fn reconcile_confirmed_jira_keys(
-        &self,
-        project_id: ProjectId,
-        report: &mut JiraReconcileReport,
-    ) {
-        let Ok(state) = self.state() else {
-            report.blocked = report.blocked.saturating_add(1);
-            return;
-        };
-        let Ok(connector) = self.jira(project_id) else {
-            // Not a natively connected project; nothing to observe.
-            return;
-        };
-        let identities = match state.with_store(|store| store.confirmed_jira_identities(project_id))
-        {
-            Ok(identities) => identities,
-            Err(_) => {
-                report.blocked = report.blocked.saturating_add(1);
-                return;
-            }
-        };
-        for (subject, confirmed_key, issue_id) in identities {
-            // Fail-closed: a migrated binding has nothing to prove sameness with.
-            let Some(issue_id) = issue_id else {
-                continue;
-            };
-            let observed = match connector.observe_identity(&confirmed_key).await {
-                Ok(observed) => observed,
-                Err(_) => {
-                    report.blocked = report.blocked.saturating_add(1);
-                    continue;
-                }
-            };
-            if observed.issue_id != issue_id {
-                // The key now answers for a different issue. Never rebind.
-                report.blocked = report.blocked.saturating_add(1);
-                continue;
-            }
-            if observed.issue_key == confirmed_key {
-                continue;
-            }
-            let Ok(document) = CanonicalDocument::from_serializable(&serde_json::json!({
-                "schema_version": 1,
-                "mode": "rename",
-                "project": project_id.to_string(),
-                "issue_id": observed.issue_id.as_str(),
-                "key": observed.issue_key.as_str(),
-            })) else {
-                report.blocked = report.blocked.saturating_add(1);
-                continue;
-            };
-            let readback_hash = document.hash().clone();
-            let outcome = state.with_store(|store| {
-                store.reconcile_confirmed_jira_key(
-                    project_id,
-                    &issue_id,
-                    &observed.issue_key,
-                    &readback_hash,
-                    kontor_api::now(),
-                )
-            });
-            match outcome {
-                Ok(_) => {
-                    let _ = subject;
-                    report.renamed = report.renamed.saturating_add(1);
-                }
-                Err(_) => report.blocked = report.blocked.saturating_add(1),
-            }
-        }
-    }
-
     /// Reconcile every Jira-bound subject once from durable Kontor truth.
     ///
     /// This is the controller seam used by both the startup pass and the
@@ -29938,10 +29941,6 @@ impl Services {
         };
 
         for project in projects {
-            // Identity first. Reconciling status against a key the issue no
-            // longer answers to would plan effects for the wrong subject.
-            self.reconcile_confirmed_jira_keys(project.project_id, &mut report)
-                .await;
             let epics = match state.with_store(|store| store.list_mini_projects(project.project_id))
             {
                 Ok(epics) => epics,
@@ -29963,7 +29962,7 @@ impl Services {
                 };
                 report.epic_subjects = report.epic_subjects.saturating_add(1);
                 match self
-                    .reconcile_jira_epic(project.project_id, epic, &issue_key)
+                    .reconcile_jira_epic(project.project_id, epic, &issue_key, &mut report)
                     .await
                 {
                     Ok(verdict) => {
