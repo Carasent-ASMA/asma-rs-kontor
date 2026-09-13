@@ -220,7 +220,7 @@ impl RecordedPaseo {
         }
     }
 
-    /// The identity a pinned 0.3.1 daemon pushes after the hello.
+    /// The identity a pinned 0.8.0 daemon pushes after the hello.
     #[must_use]
     pub fn baseline_identity() -> PaseoServerInfo {
         PaseoServerInfo {

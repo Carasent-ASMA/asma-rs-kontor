@@ -1,7 +1,7 @@
 {
   "requestId": "req-fixture",
   "serverId": "srv_kontor_fixture",
-  "version": "0.3.1",
+  "version": "0.8.0",
   "pid": 21362,
   "nodePath": "synthetic nodePath",
   "startedAt": "2026-08-10T09:00:00.000Z",

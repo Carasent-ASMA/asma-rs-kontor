@@ -48,6 +48,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 |----------|-------|
 | [`../README.md`](../README.md) | What Kontor is and is not, what is built and what is deliberately not, build and run |
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | Principles, authority boundaries, consistency model, completion machinery, tool registry, security and extension rules |
+| [`../docs/RECOMMENDED-TEAMS-AND-SEATS.md`](../docs/RECOMMENDED-TEAMS-AND-SEATS.md) | Branch-local recommendation; approved `large` target is explicitly unimplemented |
 | [`../docs/CONFIGURATION.md`](../docs/CONFIGURATION.md) | Where configuration lives, seat supervision, seat MCP surface and serve profiles |
 | [`../docs/NATIVE_NAMING.md`](../docs/NATIVE_NAMING.md) | Current pinned-definition naming contract and legacy-import correction |
 | [Canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) | Current revision-stamped schema, registry, merge and deployment distinctions |
@@ -67,7 +68,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 ## Related authoritative documentation
 
 - [AI Orchestration documentation index](../../../_docs/ai-orchestration/index.md) — product principles, architecture, plans, operational reports and historical decisions governing Kontor.
-- [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality; read before proposing any Kontor change.
+- [Kontor governing principles](../../../_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, reuse boundaries, mission-control UI and last-resort human escalation; read before proposing any Kontor change.
 - [Kontor control-plane architecture](../../../_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md) — the authoritative platform-wide *how*.
 - [Kontor codes and terms](../../../_docs/ai-orchestration/reference/2026-08-16-13-02-reference-kontor-codes-and-terms.md) — canonical Jira identities, epic backlog namespaces, derived item codes and topology naming revisions.
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-local architecture overview.

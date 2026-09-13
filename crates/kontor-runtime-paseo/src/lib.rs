@@ -20,7 +20,7 @@
 //!
 //! # Layout
 //!
-//! * [`wire`] — the Paseo 0.3.1 CLI and session-protocol model, plus the one
+//! * [`wire`] — the Paseo 0.8.0 CLI and session-protocol model, plus the one
 //!   place a native timeline entry becomes a `SessionEvent`. Pure.
 //! * [`client`] — the transport seam, the argv builder, the hello/session
 //!   framing and request correlation, and the

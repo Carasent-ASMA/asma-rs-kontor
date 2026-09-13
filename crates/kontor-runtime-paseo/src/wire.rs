@@ -1,4 +1,4 @@
-//! The Paseo 0.3.1 wire model: session frames, CLI JSON, and the one place a
+//! The Paseo 0.8.0 wire model: session frames, CLI JSON, and the one place a
 //! native timeline entry becomes a [`SessionEvent`].
 //!
 //! Two surfaces, deliberately typed apart:
@@ -7,7 +7,7 @@
 //!   [`PaseoTimelinePage`]) are the authoritative readback, and every binding,
 //!   launch, resume and adoption decision is made from these.
 //! * **CLI JSON** ([`PaseoCliWorkspaceCreated`], [`PaseoCliAgentStarted`]) is
-//!   what `paseo … --json` prints. It is *thin on purpose* — 0.3.1's
+//!   what `paseo … --json` prints. It is *thin on purpose* — 0.8.0's
 //!   `workspace create --json` prints five display columns and no project id,
 //!   and `agent run --json` prints an id, a status, a provider, a cwd and a
 //!   title, with no workspace, no labels and no parent. Typing it thin is what
@@ -18,22 +18,28 @@
 //! cases — a collapsed projection, a declared gap, an epoch change, an unknown
 //! item — are decided by a fixture rather than by a daemon's mood.
 //!
-//! # What 0.3.1 changed, and what that costs
+//! # What the recorded release fixes, and what that costs
 //!
 //! * The WebSocket protocol number and the application version are independent
 //!   pins ([`PASEO_WS_PROTOCOL_VERSION`], [`PASEO_APP_VERSION`]).
 //! * An agent snapshot carries **no** `projectId` and **no** `parentAgentId`
 //!   field. Placement in a project is proved through the agent's workspace, and
-//!   native parentage is only ever the [`label::PARENT_AGENT`] label. Kontor
-//!   launches top-level agents into an already-attested workspace, so any such
-//!   label on a Kontor seat is foreign ownership and must be refused.
-//! * A workspace carries **no labels at all**. Kontor keeps native bindings in
-//!   its own durable store and leaves the title human-readable.
+//!   native parentage is only ever the [`label::PARENT_AGENT`] label. The
+//!   directory *entry* now joins a `project` sibling beside its `agent`, which
+//!   the directory model deliberately does not read: the snapshot is the
+//!   authority. Kontor launches top-level agents into an already-attested
+//!   workspace, so any such label on a Kontor seat is foreign ownership and
+//!   must be refused.
+//! * A workspace snapshot carries no labels that Kontor reads. 0.8.0's schema
+//!   admits an optional `labels` array decorated by Paseo's own label service,
+//!   but Kontor keeps native bindings in its durable store and leaves the title
+//!   human-readable, so those labels are neither a correlation nor a placement
+//!   proof.
 //! * The lifecycle enum is `initializing | idle | running | error | closed`;
 //!   retirement is the `archivedAt` stamp rather than a status.
 //! * A timeline entry spans `seqStart..=seqEnd` over explicit
-//!   `sourceSeqRanges`, and the page — not the stream — declares `reset`,
-//!   `staleCursor` and `gap`.
+//!   `sourceSeqRanges` and may now stamp an optional `turnId`; the page — not
+//!   the stream — declares `reset`, `staleCursor` and `gap`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -64,20 +70,23 @@ pub const PASEO_WS_PROTOCOL_VERSION: u64 = 1;
 /// [`crate::adapter::PaseoAdapter`] then refuses to attest a single one of them.
 /// Paseo `0.4.0` did exactly that, and nothing about the wire had changed.
 ///
-/// It stays at the release the fixtures are recorded from, because that is the
-/// oldest daemon this adapter is *proven* against — raising it would strand a
-/// daemon known to work. A newer one is driven at full capability until
-/// something it actually removed proves otherwise, which is `REQUIRED_FEATURES`'
-/// job: that check is per-feature and per-connection, so a genuine removal still
-/// degrades correctly without a version ever being named.
-pub const PASEO_APP_VERSION: &str = "0.3.1";
+/// It tracks the release the fixtures are recorded from, because that is the
+/// oldest daemon this adapter is *proven* against. `0.8.0` is that release: the
+/// recordings in `tests/fixtures/paseo-0.8.0` and the live conformance suite
+/// were taken from it, and the fleet it serves is qualified on it. Builds older
+/// than the floor stay observable — a project can still be discovered and read
+/// back — but nothing is driven on them. A newer one is driven at full
+/// capability until something it actually removed proves otherwise, which is
+/// `REQUIRED_FEATURES`' job: that check is per-feature and per-connection, so a
+/// genuine removal still degrades correctly without a version ever being named.
+pub const PASEO_APP_VERSION: &str = "0.8.0";
 
 /// The first Paseo release carrying the correlated project-rename envelope.
 ///
-/// Paseo 0.4.0 implements `project.rename.request` but its server-info feature
-/// object does not advertise `projectRename`. Keep the general protocol floor
-/// at the recorded 0.3.1 fixture baseline while recognizing this one optional
-/// operation at the release that introduced it. An explicit future feature
+/// Paseo 0.4.0 implemented `project.rename.request` without advertising
+/// `projectRename` in its server-info feature object. This is the release that
+/// introduced the operation, not the supported floor: the floor is [`PASEO_APP_VERSION`].
+/// Every supported build is therefore at or above it, and an explicit feature
 /// flag remains authoritative too.
 pub const PASEO_PROJECT_RENAME_VERSION: &str = "0.4.0";
 
@@ -173,7 +182,7 @@ pub mod label {
     /// Native Paseo parentage, when Paseo launched the agent under another
     /// native agent.
     ///
-    /// Paseo's own key, and the only place 0.3.1 records parentage at all. It
+    /// Paseo's own key, and the only place the snapshot records parentage at all. It
     /// is deliberately absent from [`ALL`]: Kontor owns the logical seat and
     /// launches it top-level into the exact attested workspace. A value here
     /// therefore identifies foreign native ownership rather than a label for
@@ -251,16 +260,18 @@ pub enum PaseoFeature {
     SelectiveAgentTimeline,
     /// A project's display name can be changed through a supported operation.
     ///
-    /// Paseo 0.3.1 does **not** advertise this. The bundled client contains an
-    /// internal rename method, and this adapter never calls it: writing another
-    /// owner's internal state to improve a display string is the trade nothing
-    /// justifies. Name drift is reported as
+    /// The supported baseline does **not** advertise this flag; the correlated
+    /// envelope arrived at [`PASEO_PROJECT_RENAME_VERSION`], so the
+    /// connection's release grants it. This adapter renames through that
+    /// envelope and never writes Paseo's internal state. Where the connection
+    /// cannot carry the operation, name drift is reported as
     /// [`crate::adapter::PaseoProjectOutcome::ReadyWithRenamePending`] instead.
     ProjectRename,
     /// A session's context can be compacted through a supported operation.
     ///
-    /// Also absent in 0.3.1, and also never simulated with a reload or a
-    /// replacement.
+    /// No Paseo build advertises this: a timeline may announce provider-driven
+    /// *compaction rows*, but there is no request that compacts a session, and
+    /// it is never simulated with a reload or a replacement.
     Compaction,
     /// The daemon applies typed per-agent `providerOptions` to the provider
     /// session, and reports on the agent snapshot whether it did.
@@ -305,7 +316,7 @@ pub const REQUIRED_FEATURES: &[PaseoFeature] = &[
 /// What the daemon says about itself, pushed as `status/server_info` right
 /// after the hello.
 ///
-/// Not a request. 0.3.1 volunteers this exactly once per accepted connection,
+/// Not a request. Paseo volunteers this exactly once per accepted connection,
 /// so it is connection identity: the adapter holds the pushed copy and refuses
 /// to drive anything until it has one that agrees with the pins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,14 +332,15 @@ pub struct PaseoServerInfo {
     pub hostname: Option<String>,
     /// Semantic permissions attached to this daemon session.
     ///
-    /// Paseo added this optional field after the 0.3.1 compatibility floor.
-    /// `None` therefore means a legacy daemon that made no permission claim;
+    /// Paseo added this optional field after the 0.3.1 capture; the supported
+    /// 0.8.0 baseline pushes it on connect. `None` therefore means a daemon
+    /// that made no permission claim;
     /// `Some(empty)` is an explicit denial and must not be collapsed into it.
     #[serde(default)]
     pub permissions: Option<BTreeSet<String>>,
     /// The advertised feature flags, verbatim.
     ///
-    /// An object of booleans in 0.3.1, so "advertised" means *present and
+    /// An object of booleans, so "advertised" means *present and
     /// true*: a daemon that reports `projectList: false` has answered the
     /// question, and reading mere presence as support would drive it anyway.
     #[serde(default)]
@@ -713,7 +725,7 @@ where
 
 /// What Paseo says an agent is doing.
 ///
-/// The whole 0.3.1 lifecycle enum. Retirement is *not* in it — an archived
+/// The whole lifecycle enum. Retirement is *not* in it — an archived
 /// agent is one with an `archivedAt` stamp, whatever its status says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -825,7 +837,7 @@ pub struct PaseoAgent {
     pub labels: BTreeMap<String, String>,
     /// What Paseo says it is doing.
     pub status: PaseoAgentStatus,
-    /// When it was retired, if it was. The only retirement evidence 0.3.1 has.
+    /// When it was retired, if it was. The only retirement evidence a snapshot carries.
     #[serde(default, rename = "archivedAt")]
     pub archived_at: Option<String>,
     /// Paseo's own attention hint, e.g. `finished`.
@@ -839,8 +851,7 @@ pub struct PaseoAgent {
     pub persistence: Option<PaseoPersistence>,
     /// Every permission request this session is waiting on.
     ///
-    /// 0.3.1's canonical timeline carries no permission items at all, so this
-    /// list *is* the permission ledger's evidence: a request that is here is
+    /// This list is the permission ledger's evidence: a request that is here is
     /// open, and one that has left is resolved.
     #[serde(default, rename = "pendingPermissions")]
     pub pending_permissions: Vec<PaseoPendingPermission>,
@@ -866,7 +877,7 @@ impl PaseoAgent {
 
     /// The orchestrator this agent was launched under, as Paseo recorded it.
     ///
-    /// A label rather than a field, because 0.3.1's agent snapshot has no
+    /// A label rather than a field, because the agent snapshot has no
     /// `parentAgentId`. The 0.2.5 adapter checked the raw field *and* the
     /// planted label and called the seat proven only when both agreed; that
     /// second, independent half no longer exists on this wire, and pretending
@@ -1049,7 +1060,7 @@ pub struct PaseoPermissionResolution {
 /// The frame that answers an `agent_permission_response`.
 ///
 /// Correlated by the *permission request id* rather than by a separate
-/// correlation id, because that is the only id 0.3.1 carries on both halves.
+/// correlation id, because that is the only id Paseo carries on both halves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoPermissionResolved {
     /// The agent whose session raised the request.
@@ -1130,7 +1141,7 @@ pub struct PaseoCliArchived {
 
 /// `paseo agent stop --json`.
 ///
-/// A count and the ids, because 0.3.1's stop is a bulk operation whose single-id
+/// A count and the ids, because Paseo's stop is a bulk operation whose single-id
 /// form is one row of the same answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoCliStopped {
@@ -1189,7 +1200,7 @@ impl PaseoDirection {
     }
 }
 
-/// A position in one agent's content, as 0.3.1 spells it.
+/// A position in one agent's content, as Paseo spells it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoTimelineCursor {
     /// The raw epoch, which Paseo spells as a UUID.
@@ -1271,7 +1282,7 @@ impl PaseoTimelineEntry {
     /// Whether this entry is exactly one native sequence, built from exactly
     /// that sequence.
     ///
-    /// The 0.3.1 shape of "is this canonical?". A `projected` read folds a whole
+    /// The wire shape of "is this canonical?". A `projected` read folds a whole
     /// tool lifecycle into one entry spanning two sequences, and the source
     /// ranges say so — so the check is on the ranges rather than on the
     /// projection field the daemon echoed back, which is only a claim about
@@ -1453,16 +1464,19 @@ pub fn parse_wire_timestamp(subject: &'static str, text: &str) -> DomainResult<T
 /// dropped. Dropping would silently renumber the caller's view of a session,
 /// which is the one thing the continuity guard cannot detect for itself.
 ///
-/// There is no permission mapping, and that is not an omission: 0.3.1's
-/// canonical timeline carries no permission items. That lifecycle arrives on
-/// the stream and in [`PaseoAgent::pending_permissions`], and
-/// [`classify_stream_event`] is where it is read.
+/// The permission lifecycle is read from [`PaseoAgent::pending_permissions`]
+/// and from [`classify_stream_event`], which is where a live request arrives.
+/// A canonical page may also carry a permission item — 0.8.0's item union
+/// admits `permission_requested` and `permission_resolved` — and it classifies
+/// to the same kind rather than degrading to an untyped log.
 #[must_use]
 pub fn classify_item(item_type: &str) -> SessionEventKind {
     match item_type {
         "user_message" | "assistant_message" => SessionEventKind::Message,
         "tool_call" => SessionEventKind::ToolCall,
         "compaction" => SessionEventKind::StateChange,
+        "permission_requested" => SessionEventKind::PermissionRequest,
+        "permission_resolved" => SessionEventKind::PermissionResolved,
         _ => SessionEventKind::Log,
     }
 }
@@ -1540,7 +1554,7 @@ pub fn normalize_entry(entry: &PaseoTimelineEntry, epoch: u64) -> RuntimeResult<
             sequence: entry.seq_start,
         },
         subject,
-        // 0.3.1 gives a timeline entry no id of its own; its identity is its
+        // A timeline entry has no id of its own; its identity is its
         // position. Minting one here would be a Kontor id wearing a native
         // name.
         native_event_id: None,
@@ -1673,6 +1687,22 @@ mod tests {
     }
 
     #[test]
+    fn a_permission_item_on_a_canonical_page_classifies_rather_than_logging() {
+        // 0.8.0's item union admits the permission lifecycle, so a page that
+        // carries one reads as a permission event; the ledger stays the
+        // snapshot's `pendingPermissions` and the unsolicited stream.
+        for (item_type, kind) in [
+            ("permission_requested", SessionEventKind::PermissionRequest),
+            ("permission_resolved", SessionEventKind::PermissionResolved),
+            ("compaction", SessionEventKind::StateChange),
+        ] {
+            let event =
+                normalize_entry(&entry(2, item_type), 1).expect("one sequence is one event");
+            assert_eq!(event.kind, kind, "{item_type}");
+        }
+    }
+
+    #[test]
     fn only_the_client_message_id_addresses_a_kontor_message() {
         // Paseo echoes the caller's own id as `clientMessageId`; `messageId` is
         // the provider's. Reading the wrong one would make every send look
@@ -1740,7 +1770,10 @@ mod tests {
         };
         assert!(!agent.is_archived());
         agent.archived_at = Some("2026-08-10T09:00:00.000Z".to_owned());
-        assert!(agent.is_archived(), "0.3.1 has no `archived` status");
+        assert!(
+            agent.is_archived(),
+            "the lifecycle enum has no `archived` status"
+        );
         assert_eq!(agent.parent_agent_id(), Some("agt_orchestrator"));
     }
 
@@ -1836,21 +1869,25 @@ mod tests {
         };
 
         assert!(at(PASEO_APP_VERSION).is_supported_baseline());
-        // The regression this floor was introduced for: 0.4.0 is newer than the
-        // recorded baseline, and an equality pin degraded the whole fleet on it.
-        assert!(at("0.4.0").is_supported_baseline());
-        assert!(at("0.4.1").is_supported_baseline());
+        // The regression this floor was introduced for: a release newer than
+        // the recorded baseline is driven, because an equality pin degraded the
+        // whole fleet on every app upgrade.
+        assert!(at("0.8.1").is_supported_baseline());
+        assert!(at("0.10.0").is_supported_baseline());
         assert!(at("1.0.0").is_supported_baseline());
-        assert!(!at(PASEO_APP_VERSION).supports_project_rename());
+        // Project rename arrived before the floor, so every supported build
+        // carries it even when the optional feature flag is omitted.
+        assert!(at(PASEO_APP_VERSION).supports_project_rename());
         assert!(at("0.4.0").supports_project_rename());
         assert!(at("0.4.1").supports_project_rename());
         assert!(at("1.0.0").supports_project_rename());
         assert!(!at("0.4.0-beta.2").supports_project_rename());
         assert!(!at("not-a-version").supports_project_rename());
         assert!(
-            !at("0.3.0").is_supported_baseline(),
+            !at("0.7.9").is_supported_baseline(),
             "a release below the recorded baseline is observed, never driven"
         );
+        assert!(!at("0.3.1").is_supported_baseline());
         assert!(!at("0.2.9").is_supported_baseline());
     }
 
@@ -1866,9 +1903,11 @@ mod tests {
     #[test]
     fn a_pre_release_does_not_clear_the_release_it_is_named_for() {
         assert!(!version_at_least("0.4.0-beta.2", "0.4.0"));
-        // ...but it does clear everything that release supersedes, which is why
-        // a 0.4.0 beta is still driven against a 0.3.1 floor.
-        assert!(version_at_least("0.4.0-beta.2", PASEO_APP_VERSION));
+        // ...but a pre-release still clears everything the release it is named
+        // for supersedes, and nothing at or above its own release.
+        assert!(!version_at_least("0.4.0-beta.2", PASEO_APP_VERSION));
+        assert!(!version_at_least("0.8.0-beta.1", PASEO_APP_VERSION));
+        assert!(version_at_least("0.8.1-beta.1", PASEO_APP_VERSION));
         assert!(version_at_least("0.4.1-beta.1", "0.4.0"));
     }
 

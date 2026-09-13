@@ -12,7 +12,7 @@
 //! * a fault can be injected *after* the fixture-side effect committed, which is
 //!   the one ordering that matters for confirmation-unknown.
 //!
-//! # The 0.3.1 socket
+//! # The session socket
 //!
 //! [`PaseoLiveTransport`] speaks the live session protocol at
 //! `ws://127.0.0.1:6767/ws`:
@@ -25,8 +25,9 @@
 //! 3. wrap every request as `{"type":"session","message":{…}}`, and accept an
 //!    answer only when its `requestId` *and* its response type are the exact
 //!    pair the request declared;
-//! 4. route `agent_stream` frames by `payload.agentId` into a bounded per-agent
-//!    queue, because they are never anybody's answer.
+//! 4. route `agent_stream` and `agent.timeline.replacement` frames by exact
+//!    `payload.agentId` into a bounded per-agent queue, because they are never
+//!    anybody's answer.
 //!
 //! One reader task owns the socket's read half and demultiplexes; writes are
 //! serialized behind the connection lock. A reconnect throws away pending
@@ -366,7 +367,7 @@ impl std::fmt::Debug for PaseoCommand {
 impl PaseoCommand {
     /// `paseo --version --json`.
     ///
-    /// 0.3.1 prints the bare version string for this one, not JSON, so its
+    /// Paseo prints the bare version string for this one, not JSON, so its
     /// answer is read as text. See [`PaseoOutput::version`].
     #[must_use]
     pub fn version() -> Self {
@@ -408,7 +409,7 @@ impl PaseoCommand {
     /// Paseo pick one, and a directory with no workspace id would place the
     /// agent wherever that path currently resolves.
     ///
-    /// The prompt is the trailing **positional** argument, which is 0.3.1's
+    /// The prompt is the trailing **positional** argument, which is Paseo's
     /// shape (`paseo agent run [options] <prompt>`); there is no `--prompt`.
     ///
     /// `--provider` is mandatory on this release.
@@ -487,7 +488,7 @@ impl PaseoCommand {
 
     /// `paseo agent update {id} --label …` — the adoption write, and nothing else.
     ///
-    /// Note there is no `--mode` here: 0.3.1's `agent update` takes a name, a
+    /// Note there is no `--mode` here: Paseo's `agent update` takes a name, a
     /// thinking option and labels, and nothing that changes authority. A seat's
     /// autonomy is therefore fixed at launch, which is the honest shape — it is
     /// part of what the launch was admitted as, not a dial to turn afterwards.
@@ -762,21 +763,21 @@ impl PaseoOutput {
     /// * [`RuntimeError::CallerAgentNotFound`] — Paseo's validated missing-
     ///   caller refusal.
     /// * [`RuntimeError::Transport`] — every other non-zero exit.
-    /// * [`RuntimeError::Domain`] — output that is not the pinned 0.3.1 shape,
+    /// * [`RuntimeError::Domain`] — output that is not the pinned 0.8.0 shape,
     ///   which includes output that is not JSON at all.
     pub fn parse<T: serde::de::DeserializeOwned>(&self, subject: &'static str) -> RuntimeResult<T> {
         self.succeeded()?;
         serde_json::from_str(self.json_body()).map_err(|_| {
             RuntimeError::Domain(DomainError::invalid(
                 subject,
-                "is not the Paseo 0.3.1 JSON this adapter is pinned to",
+                "is not the Paseo 0.8.0 JSON this adapter is pinned to",
             ))
         })
     }
 
     /// The JSON document inside `--json` output.
     ///
-    /// 0.3.1 writes operator chatter to **stdout** ahead of the payload — a
+    /// The CLI can write operator chatter to **stdout** ahead of the payload — a
     /// launch prints `Using workspace wks_…` before its object — so the stream
     /// is "a notice, then JSON" rather than JSON. Parsing from the first opening
     /// brace is the smallest thing that reads the document Paseo meant to send
@@ -789,7 +790,7 @@ impl PaseoOutput {
 
     /// The bare version string `paseo --version --json` prints.
     ///
-    /// Text rather than JSON, because that is what 0.3.1 actually writes: the
+    /// Text rather than JSON, because that is what the CLI actually writes: the
     /// root `--version` flag short-circuits the formatter.
     ///
     /// # Errors
@@ -929,8 +930,8 @@ impl PaseoRpc {
             "project.add.response",
             request_id,
             // `cwd`, and only `cwd`. The 0.2.5 spelling was `path` with a
-            // `name`, and 0.3.1 accepts neither: a live probe against the
-            // qualified daemon answered `path` with "Unknown request, try
+            // `name`, and the 0.3.1 probe found it accepts neither: the qualified
+            // daemon answered `path` with "Unknown request, try
             // upgrading the daemon", because the inbound schema is
             // `{type, cwd, requestId}` and a message that misses it never
             // reaches a handler. There is no name field at all — the daemon
@@ -957,7 +958,7 @@ impl PaseoRpc {
 
     /// `fetch_workspaces_request`, narrowed to one project and one bounded page.
     ///
-    /// 0.3.1 has no fetch-one-workspace request; the authoritative readback of a
+    /// Paseo has no fetch-one-workspace request; the authoritative readback of a
     /// single workspace is this list plus an exact-id select, which is why the
     /// filter and the page bound are not optional here.
     #[must_use]
@@ -1498,7 +1499,7 @@ impl PaseoFrame {
     /// # Errors
     /// * [`RuntimeError::Transport`] — the frame answers another request, is
     ///   another kind of answer, or the daemon refused.
-    /// * [`RuntimeError::Domain`] — the payload is not the pinned 0.3.1 shape.
+    /// * [`RuntimeError::Domain`] — the payload is not the pinned 0.8.0 shape.
     pub fn resolve<T: serde::de::DeserializeOwned>(
         &self,
         request: &PaseoRpc,
@@ -1525,7 +1526,7 @@ impl PaseoFrame {
         serde_json::from_value(payload.clone()).map_err(|_| {
             RuntimeError::Domain(DomainError::invalid(
                 subject,
-                "is not the Paseo 0.3.1 frame this adapter is pinned to",
+                "is not the Paseo 0.8.0 frame this adapter is pinned to",
             ))
         })
     }
@@ -1541,7 +1542,7 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
     /// The identity the daemon pushed when this connection was established.
     ///
     /// A push rather than a request, so the adapter asks the transport for the
-    /// copy it gated on instead of inventing a `server_info` request 0.3.1 does
+    /// copy it gated on instead of inventing a `server_info` request Paseo does
     /// not have.
     ///
     /// # Errors
@@ -1618,10 +1619,10 @@ impl Multiplex {
     /// Route one decoded outbound frame, or drop it.
     ///
     /// Three outcomes and no fourth: it answers a pending request, it is an
-    /// `agent_stream` for some agent, or it is neither and nothing here is
-    /// interested. A frame that is "close enough" to an answer is dropped, not
-    /// delivered — the wrong-type check lives in [`PaseoFrame::resolve`] and it
-    /// can only work if this side never guesses.
+    /// unsolicited timeline frame for some agent, or it is neither and nothing
+    /// here is interested. A frame that is "close enough" to an answer is
+    /// dropped, not delivered — the wrong-type check lives in
+    /// [`PaseoFrame::resolve`] and it can only work if this side never guesses.
     fn route(&self, message: &serde_json::Value) {
         let Some(response_type) = message.get("type").and_then(serde_json::Value::as_str) else {
             return;
@@ -1699,7 +1700,7 @@ impl Drop for LiveConnection {
     }
 }
 
-/// The live transport: a real Paseo executable, and the real 0.3.1 session
+/// The live transport: a real Paseo executable, and the real session
 /// socket.
 ///
 /// # What runs
@@ -1892,12 +1893,12 @@ impl PaseoLiveTransport {
             return serde_json::from_value(payload.clone()).map_err(|_| {
                 RuntimeError::Domain(DomainError::invalid(
                     "PaseoServerInfo",
-                    "is not the Paseo 0.3.1 frame this adapter is pinned to",
+                    "is not the Paseo 0.8.0 frame this adapter is pinned to",
                 ))
             });
         }
         // A daemon that closed the socket instead of announcing itself is the
-        // shape a protocol-version rejection takes: 0.3.1 closes with
+        // shape a protocol-version rejection takes: the daemon closes with
         // `Incompatible protocol version` and says nothing else.
         Err(RuntimeError::Transport {
             rule: "runtime closed the connection without announcing itself",
@@ -1920,7 +1921,7 @@ fn decode_session_frame(message: &Message) -> Option<serde_json::Value> {
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
     match parsed.get("type").and_then(serde_json::Value::as_str)? {
         "session" => parsed.get("message").cloned(),
-        // `pong` is the only other outer envelope 0.3.1 sends, and nothing here
+        // `pong` is the only other outer envelope the daemon sends, and nothing here
         // asks for one.
         _ => None,
     }
@@ -2137,7 +2138,7 @@ mod tests {
 
     #[test]
     fn a_prompt_is_the_trailing_positional_argument() {
-        // 0.3.1 spells it `paseo agent run [options] <prompt>`. Sending
+        // Paseo spells it `paseo agent run [options] <prompt>`. Sending
         // `--prompt` would be an unknown flag, and a prompt that starts with a
         // dash is why `--` precedes it.
         let command = PaseoCommand::agent_run(
@@ -2886,10 +2887,10 @@ mod tests {
         );
         assert!(refused.version().is_err());
         assert_eq!(
-            PaseoOutput::new(0, "0.3.1\n".to_owned())
+            PaseoOutput::new(0, "0.8.0\n".to_owned())
                 .version()
                 .expect("a bare version string"),
-            "0.3.1"
+            "0.8.0"
         );
     }
 
@@ -3150,7 +3151,7 @@ mod tests {
 
     #[test]
     fn a_leading_operator_notice_does_not_stop_the_json_being_read() {
-        // 0.3.1 prints `Using workspace wks_…` on stdout before a launch's JSON,
+        // The CLI prints `Using workspace wks_…` on stdout before a launch's JSON,
         // so a whole-stream parse fails against the very build this adapter is
         // pinned to.
         let noisy = PaseoOutput::new(

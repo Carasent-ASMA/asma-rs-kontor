@@ -294,7 +294,7 @@ pub struct PaseoSetting {
     /// the moment it is deserialized and is redacted in `Debug`; it reaches the
     /// transport and nothing else.
     pub host_target: String,
-    /// The Paseo 0.3.1 session WebSocket endpoint.
+    /// The Paseo session WebSocket endpoint.
     pub endpoint: String,
     /// The stable client id used to resume this plane's socket session.
     pub client_id: String,

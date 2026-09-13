@@ -452,6 +452,9 @@ does not spin on unchanged conflicts or failed Jira effects. See the
 configuration guide's [Jira reconciliation](docs/CONFIGURATION.md#jira-reconciliation)
 section.
 
+GitHub remains the repository, pull-request, check and release system. Kontor
+uses those facts as delivery evidence; it does not become a source host.
+
 AgentsRoom is being replaced per project, per subject. Write authority for a
 project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a
 project created in Kontor is native and writable immediately, while a project

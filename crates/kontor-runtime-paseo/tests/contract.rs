@@ -1,4 +1,4 @@
-//! The Paseo 0.3.1 adapter, judged against sanitized recordings of the live
+//! The Paseo 0.8.0 adapter, judged against sanitized recordings of the live
 //! daemon and the shared capability-aware contract.
 //!
 //! Two kinds of test live here, and the split is deliberate. The shared
@@ -89,7 +89,7 @@ use kontor_runtime_paseo::wire::{MAX_FRAME_BYTES, label};
 
 macro_rules! fixture {
     ($name:literal) => {
-        include_str!(concat!("fixtures/paseo-0.3.1/", $name))
+        include_str!(concat!("fixtures/paseo-0.8.0/", $name))
     };
 }
 
@@ -177,7 +177,7 @@ const CWD: &str = "/w/epic/task-11";
 const EPOCH_RAW: &str = "8f2b1c34-0000-4000-8000-000000000001";
 
 fn v(raw: &str) -> serde_json::Value {
-    // The 0.3.1 recordings predate the typed MiniProjectId on execution scope
+    // The recordings predate the typed MiniProjectId on execution scope
     // and used a human placeholder in labels. Keep the recordings immutable
     // while upgrading that one synthetic value to the canonical id this
     // contract now exercises.
@@ -243,7 +243,7 @@ fn name(text: &str) -> ExternalName {
 }
 
 fn project_name() -> ExternalName {
-    // Match the immutable Paseo 0.3.1 project-list recording so legacy
+    // Match the immutable Paseo 0.8.0 project-list recording so legacy
     // contracts bind that project instead of exercising project creation.
     // Caller-rendered bullet naming is covered independently at the request
     // boundary and must not be smuggled into this correlation fixture.
@@ -423,7 +423,7 @@ fn standard_context_policy() -> kontor_core::spec::ContextPolicySnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// 0.3.1 content builders
+// 0.8.0 content builders
 // ---------------------------------------------------------------------------
 
 /// One canonical entry, in the shape `fetch_agent_timeline_response` carries.
@@ -598,7 +598,7 @@ fn daemon() -> RecordedPaseo {
         .answering(&PaseoCommand::agent_reload(AGENT_ID), CLI_AGENT_RELOADED)
         .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
-        // 0.3.1 has one workspace request, so the census before a create and
+        // Paseo has one workspace request, so the census before a create and
         // the readback after it are the same route answering twice — first an
         // empty project, then the workspace the create put in it. A single
         // standing answer would make "was one created?" unaskable.
@@ -4356,7 +4356,7 @@ async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
     let (_, binding) = launched().await;
     let recorded = daemon();
     recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_ARCHIVED_ONLY));
-    // Paseo 0.3.1's fetch-one response can omit the archive stamp even though
+    // Paseo's fetch-one response can omit the archive stamp even though
     // its include-archived directory returns it. The archive-aware directory
     // must win for terminal inspection.
     recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
@@ -4825,7 +4825,7 @@ async fn security_declared_permissions_without_workspace_read_expose_nothing() {
 
 #[tokio::test]
 async fn continuity_a_wrong_parent_refuses_the_launch() {
-    // 0.3.1 records parentage in exactly one place — the
+    // The agent snapshot records parentage in exactly one place — the
     // `paseo.parent-agent-id` label — so there is one half to check here, not
     // the two the 0.2.5 wire allowed. The 0.2.5 adapter compared the label
     // against an independent `parentAgentId` field; that field does not exist on
@@ -5270,7 +5270,7 @@ async fn timeline_a_native_gap_breaks_the_page() {
         .daemon
         .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_GAP));
 
-    // 0.3.1 declares the hole on the response itself, so the refusal happens
+    // Paseo declares the hole on the response itself, so the refusal happens
     // one step earlier than it did on the 0.2.5 wire: the page never becomes
     // events at all, because paging over a gap the daemon just admitted to is
     // the thing the flag exists to prevent.
@@ -5293,7 +5293,7 @@ async fn timeline_a_native_gap_breaks_the_page() {
 
 #[tokio::test]
 async fn timeline_a_declared_break_forces_a_canonical_refetch() {
-    // 0.3.1 puts `gap`, `reset` and `staleCursor` on the timeline *response*
+    // Paseo puts `gap`, `reset` and `staleCursor` on the timeline *response*
     // rather than on the stream, so this is where a hole is admitted to and
     // where delivery has to stop. Each one ends the read and demands a
     // canonical refetch; none of them says anything about the run.
@@ -5642,10 +5642,9 @@ async fn timeline_a_cursor_from_another_session_is_refused() {
 
 #[tokio::test]
 async fn timeline_a_permission_observed_on_a_readback_stays_pending() {
-    // 0.3.1's canonical timeline has no permission items, so a raised request
-    // is a row in the agent snapshot. Observing it is what makes answering it
-    // possible at all: a permission the adapter never saw raised cannot be
-    // answered.
+    // A raised request is a row in the agent snapshot's `pendingPermissions`,
+    // and observing it is what makes answering it possible at all: a permission
+    // the adapter never saw raised cannot be answered.
     let (plane, binding) = with_permission().await;
     let checkpoint = plane.adapter.checkpoint();
     assert_eq!(
@@ -6137,9 +6136,8 @@ async fn message_restart_replays_the_original_ack_without_a_second_send() {
 
 /// A plane whose seat has one permission request open.
 ///
-/// 0.3.1's canonical timeline carries no permission items at all, so an open
-/// request is a row in the agent snapshot's `pendingPermissions` and reading
-/// *the agent* — not the transcript — is what makes it known. The seat also
+/// An open request is a row in the agent snapshot's `pendingPermissions`, so
+/// reading *the agent* — not the transcript — is what makes it known. The seat also
 /// starts with two entries of content, because the acknowledgement a resolution
 /// produces is stamped at the session's last read position and a session nobody
 /// has read has none.
@@ -6204,7 +6202,7 @@ async fn permission_response_is_session_bound_and_idempotent() {
     assert_eq!(first.decision, PermissionDecision::Allow);
     assert_eq!(
         first.position.sequence, 2,
-        "0.3.1 records no resolution in the transcript, so the acknowledgement \
+        "no resolution appears in the transcript, so the acknowledgement \
          is stamped at the session's last read position rather than at an \
          invented one"
     );
@@ -6810,7 +6808,7 @@ async fn placement_a_labelled_agent_outside_the_workspace_blocks_the_slot() {
 
 #[tokio::test]
 async fn security_a_daemon_off_the_pinned_baseline_is_observed_not_driven() {
-    // Every DTO, argv and label spelling here was recorded against 0.3.1, so a
+    // Every DTO, argv and label spelling here was recorded against 0.8.0, so a
     // build *older* than that was never proven to speak them and Grade A is
     // exactly the claim that it was. A newer build is a different question and
     // is driven — see `security_a_newer_daemon_is_driven_at_full_capability`,
@@ -7331,7 +7329,7 @@ async fn compaction_is_reported_unsupported_and_never_simulated() {
 }
 
 // ---------------------------------------------------------------------------
-// transport_ — the 0.3.1 socket's own fail-closed rules
+// transport_ — the session socket's own fail-closed rules
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -7538,11 +7536,11 @@ async fn the_current_daemon_advertises_no_context_or_compaction_capability() {
 
     assert!(
         !declared.supports(RuntimeCapability::ContextPolicy),
-        "Paseo 0.3.1 exposes no per-seat context configuration"
+        "Paseo exposes no per-seat context configuration"
     );
     assert!(
         !declared.supports(RuntimeCapability::Compact),
-        "Paseo 0.3.1 exposes no compaction operation"
+        "Paseo exposes no compaction operation"
     );
     // Unknown bounds stay unknown: no number is invented on the daemon's behalf.
     assert_eq!(declared.limits.context_window.safe_ceiling_tokens, None);
@@ -9154,15 +9152,19 @@ async fn a_fresh_native_root_is_canonicalized_before_binding() {
     assert!(adapter.container_binding(node(NODE_B)).is_some());
 }
 
-/// A daemon without the project-rename contract is refused before `project.add`.
-/// Otherwise Kontor would knowingly create a UUID-titled project it cannot
-/// correct through a supported surface.
+/// A daemon that cannot guarantee the project-rename contract never gets a
+/// `project.add`. On the supported 0.8.0 baseline the correlated rename is
+/// implied by the floor plus `workspace.manage`; a build that cannot carry it
+/// is below the floor, where native-root preparation is withheld entirely — so
+/// the refusal lands on `PrepareProject` before any project is created.
 #[tokio::test]
 async fn a_fresh_native_root_requires_project_rename_before_creation() {
+    let mut pre_rename = v(SERVER_INFO);
+    pre_rename["version"] = serde_json::json!("0.3.9");
     let recorded = Arc::new(
         RecordedPaseo::new()
             .answering(&PaseoCommand::version(), VERSION)
-            .announcing(&v(SERVER_INFO))
+            .announcing(&pre_rename)
             .answering_rpc("project.add.request", v(PROJECT_ADDED)),
     );
     let adapter = PaseoAdapter::new(
@@ -9197,7 +9199,7 @@ async fn a_fresh_native_root_requires_project_rename_before_creation() {
     assert_eq!(
         error,
         RuntimeError::UnsupportedCapability {
-            capability: RuntimeCapability::RetitleContainer
+            capability: RuntimeCapability::PrepareProject
         }
     );
     assert_eq!(recorded.count("rpc project.add.request"), 0);
@@ -9849,20 +9851,23 @@ async fn a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry() {
     );
 }
 
-/// A plane with no route to the daemon's MCP facade cannot rename, and says so
-/// before touching anything.
+/// A plane with no route to the daemon's MCP facade cannot rename a native
+/// child container, and says so rather than failing vaguely.
 ///
-/// Neither surface the rest of this adapter speaks has a rename verb: the CLI has
-/// `workspace create` and `workspace archive`, and the session socket has the
-/// `fetch_*`, `project.*` and `send_agent_message` envelopes. Archiving and
-/// recreating would destroy the native id every binding resolves by, and writing
-/// the daemon's own state is an undocumented surface. So a plane without the
-/// facade answers `unsupported_capability` and leaves the container alone.
+/// The protocol carries `project.rename.request` for the epic root, but no
+/// workspace rename verb: a child container travels over the daemon's MCP
+/// facade. A facade-less plane therefore answers `unsupported_capability` for a
+/// child binding — after reading the container back, because the plan is the
+/// same one an apply would use — and leaves it alone.
 #[tokio::test]
 async fn a_plane_with_no_facade_route_refuses_to_retitle_and_reaches_nothing() {
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
-        .announcing(&v(SERVER_INFO));
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc(
+            "fetch_workspaces_request",
+            v(WORKSPACE_LIST_NODE_STALE_TITLE),
+        );
     let plane = Plane::fresh(recorded);
 
     for refused in [
@@ -9896,14 +9901,17 @@ async fn a_plane_with_no_facade_route_refuses_to_retitle_and_reaches_nothing() {
     );
 }
 
-/// An ESW binding names a native Paseo project, not a workspace/session. Paseo
-/// 0.4 exposes no project rename operation, so Kontor must report the missing
-/// capability without trying the workspace retitle surface.
+/// An ESW binding names a native Paseo project, not a workspace/session. A
+/// build without the correlated project rename (before 0.4.0) must report the
+/// missing capability, and must not fall back to the workspace-facade route
+/// that exists for child containers.
 #[tokio::test]
 async fn a_native_project_retitle_refuses_without_treating_the_project_as_a_workspace() {
+    let mut pre_rename = v(SERVER_INFO);
+    pre_rename["version"] = serde_json::json!("0.3.9");
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
-        .announcing(&v(SERVER_INFO));
+        .announcing(&pre_rename);
     let facade = std::sync::Arc::new(RecordedMcp::new());
     let plane = Plane::with_facade(recorded, std::sync::Arc::clone(&facade));
     let request = RetitleContainerRequest {
@@ -10000,64 +10008,99 @@ async fn a_native_project_retitle_uses_project_rename_and_preserves_identity() {
     assert_eq!(plane.daemon.count("rpc project.add.request"), 0);
 }
 
-/// The capability is declared from the route, so a caller can tell before asking.
+/// The capability is declared from what the plane can actually reach, so a
+/// caller can tell before asking: a supported daemon with `workspace.manage`
+/// carries the correlated project rename, a read-only one does not, and a
+/// pre-0.4.0 build has no operation to declare.
 #[tokio::test]
-async fn the_retitle_capability_is_declared_only_with_a_facade_route() {
-    let recorded = RecordedPaseo::new()
+async fn the_retitle_capability_follows_the_permission_and_the_rename_floor() {
+    let supported = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .announcing(&v(SERVER_INFO));
-    let without = Plane::fresh(recorded);
     assert!(
-        !without
+        Plane::fresh(supported)
             .adapter
             .discover_capabilities()
             .await
             .expect("the plane answers its capabilities")
             .supports(RuntimeCapability::RetitleContainer),
-        "a plane with no rename route must not advertise one"
+        "a supported plane carries the native project rename without a facade"
     );
 
-    let recorded = RecordedPaseo::new()
+    let mut read_only = v(SERVER_INFO);
+    read_only["permissions"] = serde_json::json!(["workspace.read"]);
+    let restricted = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
-        .announcing(&v(SERVER_INFO));
-    let with = Plane::with_facade(recorded, RecordedMcp::new());
+        .announcing(&read_only);
     assert!(
-        with.adapter
+        !Plane::fresh(restricted)
+            .adapter
             .discover_capabilities()
             .await
-            .expect("the plane answers its capabilities")
+            .expect("a read-only plane still answers")
             .supports(RuntimeCapability::RetitleContainer),
-        "a plane that can reach the facade must declare what it can do"
+        "without workspace.manage the rename is not authorized"
+    );
+
+    let mut pre_rename = v(SERVER_INFO);
+    pre_rename["version"] = serde_json::json!("0.3.9");
+    let before_the_operation = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&pre_rename);
+    assert!(
+        !Plane::fresh(before_the_operation)
+            .adapter
+            .discover_capabilities()
+            .await
+            .expect("a pre-rename plane is still observable")
+            .supports(RuntimeCapability::RetitleContainer),
+        "a build before 0.4.0 has no rename envelope to reach"
     );
 }
 
-/// The live 0.4.0 hello omits `projectRename` even though its daemon bundle
-/// handles the correlated request. The operation is therefore declared from
-/// the introduction release, without widening support to the 0.3.1 fixture.
+/// `project.rename.request` has been on the wire since 0.4.0, but neither
+/// 0.8.0 nor a newer build advertises the optional `projectRename` server-info
+/// flag. The supported floor grants the operation for every build the adapter
+/// drives; a build below it is observed rather than driven, yet the rename
+/// stays declared because it sets a title and reads it back, so no placement
+/// decision can ride on it.
 #[tokio::test]
-async fn paseo_040_declares_project_retitle_without_the_missing_feature_flag() {
-    let newer = RecordedPaseo::new()
-        .answering(&PaseoCommand::version(), VERSION)
-        .announcing(&v(SERVER_INFO_NEWER_VERSION));
-    assert!(
-        Plane::fresh(newer)
-            .adapter
-            .discover_capabilities()
-            .await
-            .expect("the 0.4.0 plane answers its capabilities")
-            .supports(RuntimeCapability::RetitleContainer)
-    );
+async fn project_retitle_is_granted_by_the_floor_without_the_missing_feature_flag() {
+    for identity in [SERVER_INFO, SERVER_INFO_NEWER_VERSION] {
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(identity));
+        assert!(
+            Plane::fresh(recorded)
+                .adapter
+                .discover_capabilities()
+                .await
+                .expect("the plane answers its capabilities")
+                .supports(RuntimeCapability::RetitleContainer),
+            "a supported build carries the rename the flag omits"
+        );
+    }
 
-    let baseline = RecordedPaseo::new()
+    let below = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
-        .announcing(&v(SERVER_INFO));
+        .announcing(&v(SERVER_INFO_OTHER_VERSION));
+    let declared = Plane::fresh(below)
+        .adapter
+        .discover_capabilities()
+        .await
+        .expect("the below-floor plane is still observable");
+    assert_eq!(
+        declared.trust_grade,
+        TrustGrade::C,
+        "a build below the floor is observed, never driven"
+    );
     assert!(
-        !Plane::fresh(baseline)
-            .adapter
-            .discover_capabilities()
-            .await
-            .expect("the 0.3.1 plane answers its capabilities")
-            .supports(RuntimeCapability::RetitleContainer)
+        declared.supports(RuntimeCapability::RetitleContainer),
+        "the rename arrived before the floor and is declared at every grade"
+    );
+    assert!(
+        !declared.supports(RuntimeCapability::Launch),
+        "placement does not ride on a build below the floor"
     );
 }
 

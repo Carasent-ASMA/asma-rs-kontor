@@ -28,7 +28,7 @@ uuid = { workspace = true }
 # zeroizing wrapper inside the transport and never crosses back out.
 secrecy = { workspace = true }
 
-# The Paseo 0.3.1 session socket. `connect` only: the qualified endpoint is
+# The Paseo session socket. `connect` only: the qualified endpoint is
 # plaintext loopback, so no TLS feature is enabled and no trust-anchor crate
 # (`webpki-roots`) enters this adapter's graph. Hand-rolled framing to avoid the
 # dependency gate is rejected outright (ALT-006).

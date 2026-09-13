@@ -1,4 +1,4 @@
-//! An opt-in conformance check against a real, disposable Paseo 0.3.1 daemon.
+//! An opt-in conformance check against a real, disposable Paseo 0.8.0 daemon.
 //!
 //! Ignored by default, and it skips with a precise reason when its environment
 //! is absent — because the alternative is worse than no coverage: a live test
@@ -76,7 +76,7 @@ macro_rules! live {
 /// The hello is accepted, the daemon pushes its identity, and that identity is
 /// the pinned application version advertising every required feature.
 ///
-/// This is the gate the whole adapter stands on: protocol 1 and app 0.3.1 are
+/// This is the gate the whole adapter stands on: protocol 1 and app 0.8.0 are
 /// separate pins, and a daemon that fails either is observed rather than driven.
 #[tokio::test]
 #[ignore = "requires a live Paseo daemon; see the module docs"]
@@ -104,8 +104,9 @@ async fn live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity() {
     );
     assert!(
         identity.supports_project_rename(),
-        "Paseo 0.4.0 implements the correlated project rename even though its \
-         server-info feature object omits projectRename"
+        "the correlated project rename arrived before the supported floor, so \
+         every driven build carries it even though the server-info feature \
+         object omits projectRename"
     );
     assert!(
         !identity.supports(PaseoFeature::Compaction),
@@ -134,7 +135,7 @@ async fn live_a_correlated_session_read_round_trips() {
     assert_eq!(frame.response_type, request.response_type);
     let listed: PaseoProjectList = frame
         .resolve(&request, "PaseoProjectList")
-        .expect("the answer is the pinned 0.3.1 shape");
+        .expect("the answer is the pinned 0.8.0 shape");
     println!("live Paseo holds {} projects", listed.projects.len());
 
     // The same frame must not satisfy a different question. This is the
@@ -169,7 +170,7 @@ async fn live_the_status_readback_agrees_with_the_pushed_identity() {
         .expect("the daemon answers a status request");
     let status: kontor_runtime_paseo::wire::PaseoDaemonStatus = frame
         .resolve(&request, "PaseoDaemonStatus")
-        .expect("the answer is the pinned 0.3.1 shape");
+        .expect("the answer is the pinned 0.8.0 shape");
 
     assert!(
         status
@@ -208,7 +209,7 @@ async fn live_cli_reports_the_supported_baseline() {
 
 /// An unknown agent id is a refusal rather than an empty session.
 ///
-/// The live shape of the fail-closed rule: 0.3.1 answers `fetch_agent_request`
+/// The live shape of the fail-closed rule: 0.8.0 answers `fetch_agent_request`
 /// for an id it does not hold with `agent: null` and an error string, and
 /// reading that as "a session with no content" is how a binding gets made
 /// against nothing.
@@ -226,7 +227,7 @@ async fn live_an_unknown_agent_is_refused_rather_than_answered_empty() {
         .expect("the daemon answers");
     let answer: kontor_runtime_paseo::wire::PaseoAgentAnswer = frame
         .resolve(&request, "PaseoAgentAnswer")
-        .expect("the answer is the pinned 0.3.1 shape");
+        .expect("the answer is the pinned 0.8.0 shape");
     assert!(
         answer.agent.is_none(),
         "the daemon holds no such agent, and said so"
@@ -237,11 +238,12 @@ async fn live_an_unknown_agent_is_refused_rather_than_answered_empty() {
 /// OP-02 checkpoint 4: adoption, child placement and archive against the real
 /// daemon, proving the run creates no project.
 ///
-/// Paseo 0.3.1 can create a project and cannot delete one, so a "disposable
-/// epic" made by creation would be permanent residue and the project-id set
-/// could never come back equal. The disposable unit is therefore the *child*
-/// container, which `workspace archive` can remove, and the epic root is
-/// **adopted** — which is the path OP-02 wants exercised anyway.
+/// The adapter's placement path is adoption, so the epic root is read back
+/// rather than registered. The protocol carries a `project.remove` envelope,
+/// but this adapter does not drive project deletion, so a project made by
+/// creation here would be residue the run does not clean up. The disposable
+/// unit is therefore the *child* container, which `workspace archive` can
+/// remove.
 ///
 /// The assertion is the point: the project-id set before and after must be
 /// identical. Any inequality means this run registered a project, which is the

@@ -1,5 +1,7 @@
 # Configuration
 
+> **Checkout disposition — 2026-09-05:** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, schema/tool counts, merged OP-21 supervision and OP-22 convergence, use the [revision-stamped inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Release-documentation corrections are isolated from this checkout’s runtime changes.
+
 Kontor separates invariants from deployment behavior. Rust enforces safety
 properties such as one non-terminal session per role slot and uncertainty not
 being completion. Durations, prompts, skills, profiles, committees, completion,

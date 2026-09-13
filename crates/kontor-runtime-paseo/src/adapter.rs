@@ -23,23 +23,24 @@
 //!   because the CLI's JSON omits exactly the fields the placement rules are
 //!   about.
 //!
-//! # What Paseo 0.3.1 cannot do
+//! # What Paseo cannot do
 //!
 //! No supported compaction and no per-run coding
 //! account. None is filled in with a guess: the first two are typed adapter
 //! outcomes, and the third is declared unsupported so an account-pinned run is
 //! refused before dispatch.
 //!
-//! Three more absences are 0.3.1's own and are handled here rather than papered
-//! over:
+//! Three more absences are the wire's own and are handled here rather than
+//! papered over:
 //!
 //! * workspace titles are human-readable aliases; durable Kontor bindings hold
 //!   the native identities used after first discovery;
 //! * an agent snapshot has no `projectId`, so "is this agent in the epic
 //!   project?" is answered through its workspace, which does carry one;
-//! * the canonical timeline carries no permission items, so a permission's fate
-//!   is read from [`crate::wire::PaseoAgent::pending_permissions`] and from the
-//!   unsolicited stream rather than from history.
+//! * a permission's fate is read from
+//!   [`crate::wire::PaseoAgent::pending_permissions`] and from the unsolicited
+//!   stream; a permission item on a canonical page classifies to the same event
+//!   kind, but the snapshot is the ledger.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -114,11 +115,11 @@ use crate::wire::{
     PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
 };
 
-/// Everything Paseo 0.3.1 can prove at trust grade A.
+/// Everything Paseo can prove at trust grade A.
 const SUPPORTED: &[RuntimeCapability] = &[
     RuntimeCapability::Discovery,
     RuntimeCapability::PrepareWorkspace,
-    // 0.3.1's `project.add` registers a project from a directory and the
+    // Paseo's `project.add` registers a project from a directory and the
     // project list reads it back by exact id, which is what a native root
     // needs: something to create and something to prove afterwards.
     RuntimeCapability::PrepareProject,
@@ -183,8 +184,8 @@ pub struct PaseoExecutionScope {
     pub seat_display_roles: BTreeMap<RoleSlotId, (ExternalName, Option<ExternalName>)>,
     /// The repository root the **epic's project** is registered from.
     ///
-    /// Distinct from [`Self::canonical_worktree_cwd`], and 0.3.1 is why. Its
-    /// `project.add.request` takes a `cwd` and nothing else: the daemon runs
+    /// Distinct from [`Self::canonical_worktree_cwd`], and the daemon's
+    /// `project.add.request` is why: it takes a `cwd` and nothing else: the daemon runs
     /// `findOrCreateProjectForDirectory` and names the project after that
     /// directory. Registering the *task worktree* would therefore mint one
     /// project per task — the exact opposite of one epic, one project, many task
@@ -400,11 +401,13 @@ pub enum PaseoProjectOutcome {
     },
     /// The project exists and its display name has drifted.
     ///
-    /// Paseo 0.3.1 advertises no `projectRename`, and the bundled client's
-    /// internal rename is not a supported operation. So the drift is reported
-    /// and persisted rather than repaired: writing another owner's internal
-    /// state can corrupt the identity everything else here is keyed on, and
-    /// creating a better-named second project would split the epic in two.
+    /// The drift is reported rather than silently repaired here: a rename is a
+    /// separate authorized operation, and `retitle_container` carries it
+    /// through the correlated project-rename envelope when the connection
+    /// supports the operation. Writing Paseo's internal state directly is never
+    /// the route — it can corrupt the identity everything else here is keyed
+    /// on — and creating a better-named second project would split the epic in
+    /// two.
     ReadyWithRenamePending {
         /// The binding, which is usable exactly as it is.
         binding: PaseoProjectBinding,
@@ -439,7 +442,7 @@ impl PaseoProjectOutcome {
 /// other one answer a question it was not asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaseoCompaction {
-    /// The inspected 0.3.1 surface exposes no compaction operation at all.
+    /// The inspected surface exposes no compaction operation at all.
     ///
     /// Not "it failed": there is nothing to call. A reload restarts a process
     /// and a replacement starts a different session; neither compacts anything,
@@ -647,7 +650,7 @@ impl EpochRegistry {
 
     /// The raw epoch a Kontor one was allocated for.
     ///
-    /// The inverse lookup exists because 0.3.1 cursors are `{epoch, seq}` pairs
+    /// The inverse lookup exists because Paseo cursors are `{epoch, seq}` pairs
     /// in Paseo's own spelling: reading strictly after a stored position means
     /// naming the raw epoch again, and a Kontor `u64` cannot be turned back into
     /// a UUID by anything but this map.
@@ -1285,7 +1288,7 @@ impl PaseoAdapter {
 
     /// The daemon identity this connection was gated on.
     ///
-    /// 0.3.1 pushes `status/server_info` once per accepted connection instead of
+    /// Paseo pushes `status/server_info` once per accepted connection instead of
     /// answering a `server_info` request, so the transport holds it and this
     /// reads that copy. It is still a claim about the daemon Kontor is driving
     /// *now*: a reconnect re-gates, and an ungated transport refuses here rather
@@ -1421,7 +1424,7 @@ impl PaseoAdapter {
 
     /// The authoritative readback of one workspace, by exact id.
     ///
-    /// 0.3.1 has no fetch-one-workspace request, so this is the project's
+    /// Paseo has no fetch-one-workspace request, so this is the project's
     /// directory plus an exact-id select. The select is exact on purpose: a
     /// prefix or a name match would resolve to whichever workspace sorted first.
     async fn fetch_workspace_in(
@@ -1504,7 +1507,7 @@ impl PaseoAdapter {
     /// Every agent this plane's epic project holds, placed through its
     /// workspaces.
     ///
-    /// A 0.3.1 agent snapshot has no `projectId`, and the directory's own
+    /// An agent snapshot has no `projectId`, and the directory's own
     /// project filter keys on `projectKey` — the Git remote, which the live
     /// daemon shares between several projects, and which this adapter refuses to
     /// bind an epic by (ALT-003). So the project census is: every workspace in
@@ -1540,7 +1543,7 @@ impl PaseoAdapter {
     /// branches on a validated view, which matters because the branch is what
     /// decides whether a process is restarted.
     ///
-    /// 0.3.1 resolves `agentId` by full id, unique prefix *or* exact title, and
+    /// Paseo resolves `agentId` by full id, unique prefix *or* exact title, and
     /// answers an unknown one with `agent: null` and an error string. Both are
     /// refusals here, but they are not the same refusal: a null agent means the
     /// exact persisted binding is stale, while a prefix that resolved to
@@ -2047,7 +2050,7 @@ impl PaseoAdapter {
     /// because Paseo can move an agent between one turn and the next and the
     /// labels would follow it unchanged.
     ///
-    /// The project half is not checked here and cannot be: a 0.3.1 agent
+    /// The project half is not checked here and cannot be: an agent
     /// snapshot has no `projectId`. It is proved one level up, by the workspace
     /// this agent must be in being verified as the bound project's — which is
     /// why every caller of this pairs it with
@@ -2175,7 +2178,7 @@ impl PaseoAdapter {
     /// follow an explicit archive intent, since nothing else archives an agent.
     #[must_use]
     pub fn normalize_agent(agent: &PaseoAgent) -> (ObservedRunState, RuntimeContact) {
-        // Retirement is a stamp rather than a status in 0.3.1, and it outranks
+        // Retirement is a stamp rather than a status, and it outranks
         // whatever the lifecycle says: an archived agent may still report
         // `idle`, and reading that as a live seat would resume a retired one.
         if agent.is_archived() {
@@ -3039,7 +3042,7 @@ impl PaseoAdapter {
     /// One canonical page for `agent_id`, strictly after `cursor`.
     ///
     /// A page that declares `reset`, `staleCursor` or `gap` is a break rather
-    /// than a page: 0.3.1 puts those flags on the *response*, so this is the one
+    /// than a page: Paseo puts those flags on the *response*, so this is the one
     /// place they have to be read, and reading its entries anyway would page
     /// over the hole the daemon just declared. Same for the daemon's own
     /// `error`: a page that failed is not an empty transcript.
@@ -3115,11 +3118,10 @@ impl PaseoAdapter {
 
     /// Normalize a page's entries.
     ///
-    /// No permission bookkeeping happens here, and that is 0.3.1's doing rather
-    /// than an omission: its canonical timeline has no permission items at all.
-    /// The lifecycle is read from [`PaseoAdapter::observe_permissions`] — a
-    /// fresh agent readback — and from the unsolicited stream, which are the two
-    /// places this wire records it.
+    /// No permission bookkeeping happens here, and that is deliberate: the
+    /// ledger is reconciled from the snapshot's `pendingPermissions`
+    /// ([`PaseoAdapter::observe_permissions`]) and from the unsolicited stream,
+    /// which are the two places this wire records the lifecycle.
     fn normalize_page(
         &self,
         page: &PaseoTimelinePage,
@@ -3136,9 +3138,9 @@ impl PaseoAdapter {
     /// `pendingPermissions` is a complete list, so it settles both halves at
     /// once: a request that is present is open, and one this adapter believed
     /// open that is *absent* has been answered — by the operator in Paseo's UI,
-    /// by a provider timeout, or by Kontor itself. Absence is the only
-    /// resolution evidence 0.3.1 offers, and it is enough for the rule that
-    /// matters: never answer a request a second time.
+    /// by a provider timeout, or by Kontor itself. Absence from that list is the
+    /// resolution evidence this readback offers, and it is enough for the rule
+    /// that matters: never answer a request a second time.
     fn observe_permissions(&self, binding_id: RuntimeBindingId, agent: &PaseoAgent) {
         let live: BTreeSet<String> = agent
             .pending_permissions
@@ -3529,7 +3531,7 @@ impl PaseoAdapter {
     /// The capability set to judge an operation by, read fresh.
     ///
     /// The gate is the identity the daemon *pushed* on the connection this
-    /// adapter is about to use. 0.3.1 volunteers `status/server_info` right
+    /// adapter is about to use. Paseo volunteers `status/server_info` right
     /// after the hello and answers no `server_info` request, so there is nothing
     /// to ask: the transport holds what it gated on, and a connection it could
     /// not gate is a transport error rather than a low grade.
@@ -3538,7 +3540,7 @@ impl PaseoAdapter {
     /// on is observed rather than driven — the shared preflight then refuses
     /// each undeclared operation before it can produce an effect. So is one off
     /// the pinned application version. Every DTO, argv and label spelling here
-    /// was recorded against Paseo 0.3.1, and a feature list is not a version: a
+    /// was recorded against Paseo 0.8.0, and a feature list is not a version: a
     /// daemon can advertise all five required features and still have renamed a
     /// field this adapter reads a placement rule out of. Grade A says "believe
     /// these readbacks", and that claim is only underwritten for the version
@@ -6774,7 +6776,7 @@ impl RuntimeAdapter for PaseoAdapter {
             Ok(frame) => {
                 let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
                 // Paseo must echo this exact agent and say it took the message.
-                // 0.3.1's acknowledgement does not carry the caller's message id
+                // The acknowledgement does not carry the caller's message id
                 // back — that echo lands on the resulting user message as
                 // `clientMessageId` — so the id half is settled below, by the
                 // canonical read, and never by this frame.
@@ -6854,7 +6856,7 @@ impl RuntimeAdapter for PaseoAdapter {
         let command = PaseoCommand::agent_stop(&native_id);
         let output = self.transport.run(&command).await?;
         let ack: PaseoCliStopped = output.parse("PaseoCliStopped")?;
-        // 0.3.1's stop is a bulk operation: it reports every agent it
+        // Paseo's stop is a bulk operation: it reports every agent it
         // interrupted. Exactly this one, and no other, is the only shape that
         // acknowledges *this* cancel — an empty list is a no-op on an idle agent
         // and a longer one means the command reached somebody else's session
@@ -7513,7 +7515,7 @@ impl RuntimeAdapter for PaseoAdapter {
             self.observe_permissions(binding.binding_id(), &agent);
         }
         // A cursor this adapter cannot spell in Paseo's own terms is a refusal
-        // rather than a read from the start: 0.3.1 addresses a position by raw
+        // rather than a read from the start: Paseo addresses a position by raw
         // epoch, and a raw epoch the registry never mapped names a numbering
         // this session was not read in.
         let cursor = match anchor {
@@ -7728,7 +7730,7 @@ impl RuntimeAdapter for PaseoAdapter {
             .map_err(|_| {
                 RuntimeError::Domain(DomainError::invalid(
                     "PaseoStreamFrame",
-                    "is not the Paseo 0.3.1 frame this adapter is pinned to",
+                    "is not the Paseo 0.8.0 frame this adapter is pinned to",
                 ))
             })?;
             // The transport routes by agent, so this is the second, independent
@@ -7851,7 +7853,7 @@ impl RuntimeAdapter for PaseoAdapter {
         }
 
         let native_id = binding.identity().native_id.as_str().to_owned();
-        // The correlation id *is* the permission request id: 0.3.1 answers an
+        // The correlation id *is* the permission request id: Paseo answers an
         // `agent_permission_response` with an `agent_permission_resolved` whose
         // `requestId` is the permission's, and there is no second id on either
         // half to correlate by.
@@ -7894,7 +7896,7 @@ impl RuntimeAdapter for PaseoAdapter {
 
     /// Report, honestly, that this daemon cannot compact a seat's context.
     ///
-    /// The Paseo 0.3.1 protocol exposes no per-seat context configuration and no
+    /// The Paseo protocol exposes no per-seat context configuration and no
     /// compaction operation, so `PaseoAdapter::capabilities` advertises
     /// neither [`RuntimeCapability::ContextPolicy`] nor
     /// [`RuntimeCapability::Compact`], and this method emits **no RPC at all**.
@@ -8124,10 +8126,9 @@ impl PaseoAdapter {
 
     /// Settle one permission answer against a fresh agent readback.
     ///
-    /// Not against canonical history, because 0.3.1's canonical timeline has no
-    /// permission items at all: `pendingPermissions` on the agent snapshot is
-    /// where an open request lives, so a request that is *gone* from that list
-    /// is the resolution evidence this wire offers.
+    /// Not against canonical history: `pendingPermissions` on the agent snapshot
+    /// is where an open request lives, so a request that is *gone* from that
+    /// list is the resolution evidence this wire offers.
     ///
     /// The position recorded is the session's current end rather than the
     /// resolution's own, because the resolution has no position in a transcript

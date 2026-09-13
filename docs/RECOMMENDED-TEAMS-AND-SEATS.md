@@ -42,7 +42,7 @@ written only in this vocabulary.
 | Dimension | What it measures | How it is established |
 |---|---|---|
 | **Reasoning class** | Depth on novel, multi-constraint problems: `frontier` (best available judgment), `strong` (reliable on hard but bounded work), `mid` (competent on well-specified work), `floor` (cheap breadth, low trust) | Public benchmarks are a *screen*, never an admission: class is confirmed by seat-class trial (§6) |
-| **Context class** | Usable window under real seat load | Deterministic classes per the seat context/compaction policy — `lean` (128K) / `standard` (256K) / `large` (400K) / `deep` (512K) / `extended` (720K) / `native` (explicit escape hatch only); measured, not vendor-quoted. Per-seat recommendations: §2.6 |
+| **Context class** | Usable window under real seat load | Deterministic classes per the seat context/compaction policy — `lean` (128K) / `standard` (256K) / `large` (400K, approved but not an accepted API value) / `deep` (512K) / `extended` (720K) / `native` (explicit escape hatch only); measured, not vendor-quoted. Per-seat recommendations: §2.6 |
 | **Vision** | Can it *judge pixels* — screenshots, layout, contrast, state | **Attested only**: a vendor "multimodal" claim or a null capability flag is not vision; a calibration receipt with real screenshot judgments is |
 | **Tool/agentic reliability** | Long tool chains, edit discipline, no drift, no fabricated tool results | Trial tickets with transcript audit |
 | **Verdict trust** | The audit-class trait: false-pass rate on seeded defects; does it assert clean sweeps that are not clean | Calibration with deliberately seeded defects (mutation-style); a model that misses a seeded P0, or asserts a false negative sweep, may work but may not judge |
@@ -225,21 +225,18 @@ it judges the task hard.
 | Research mechanism / Analyst | `deep` | `extended` | Large source sets, only when the work profile declares them |
 | QA Bot (mechanism) | `lean` | `standard` | Snapshot evidence in, verdict out |
 
-**Where `large` (400K) fits.** No seat defaults to it, deliberately: it is the
-explicit pricing-boundary / provider-tier selection *between* `standard` and
-`deep`. An operator (or work profile) picks it in two situations: a
-`standard→deep` seat whose evidence bundle keeps overflowing 256K but whose
-provider prices the next tier punitively — `large` buys the headroom without
-paying the deep tier; or a model whose **measured** usable window sits near
-400K, which can hold a `deep`-default seat only at `large` with that ceiling
-recorded on the seat as a documented override, never silently.
+**Approved future `large` target (400K).** This class is not implemented in
+`ContextWindowClass` at released source `082b63ad` (2026-09-05). It remains an
+approved pricing/provider-tier requirement between `standard` and `deep`, but
+must not be published or submitted as an executable profile value. The current
+API accepts `lean`, `standard`, `deep`, `extended` and `native` only.
 
-When scoring a candidate model (§6), its *measured* usable window must cover
-the seat's **max automatic class**, not just the default — otherwise the seat
-cannot legally grow into its own ceiling under load. A window landing between
-classes maps **down** to the class it fully covers (a ~400K model is a `large`
-model, not a `deep` one); rounding up is how a seat ends up compacting in the
-middle of the work it was sized for.
+For a model whose measured safe ceiling lies between class targets, apply the
+living policy's required/best-effort clamp and refusal rules; do not invent an
+accepted `large` value or automatic promotion. Context growth follows the
+snapshotted policy and authorized overrides, not a model's own difficulty estimate.
+See the [implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) and the living context policy
+for implemented versus approved scope.
 
 ## 3. Recommended teams — what each team is for
 
