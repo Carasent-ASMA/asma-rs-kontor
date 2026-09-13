@@ -43746,6 +43746,12 @@ struct RenamedIssueJira {
     hierarchy_level: i64,
     reads: Arc<AtomicUsize>,
     mutations: Arc<AtomicUsize>,
+    /// Whether the issue shows a readable body.
+    ///
+    /// A case about the *content conflict* needs an unreadable one; a case that
+    /// has to reach the write boundary needs a readable one, because an
+    /// unreadable body stops the pass before it.
+    readable_body: bool,
 }
 
 impl Respond for RenamedIssueJira {
@@ -43760,16 +43766,33 @@ impl Respond for RenamedIssueJira {
                 .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
         }
         if path.ends_with("/transitions") {
-            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "transitions": [{
+            // The route has to be the one the *governing* workflow targets for
+            // this subject kind. An epic and a task are pinned to different
+            // bundled specifications, and offering a route the pinned one does
+            // not target is a plan conflict — which stops the pass before the
+            // write boundary and makes a no-effect assertion pass for the wrong
+            // reason.
+            let route = if self.hierarchy_level == 1 {
+                serde_json::json!({
+                    "id": "to-be-groomed",
+                    "to": {
+                        "id": "10236",
+                        "name": "TO BE GROOMED",
+                        "statusCategory": {"name": "To Do"}
+                    }
+                })
+            } else {
+                serde_json::json!({
                     "id": "hold",
                     "to": {
                         "id": "10231",
                         "name": "On hold",
                         "statusCategory": {"name": "In Progress"}
                     }
-                }]
-            }));
+                })
+            };
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": [route]}));
         }
         if path.contains("/rest/api/3/issue/") {
             // One read serves both purposes. The key Jira answers with is the
@@ -43804,6 +43827,14 @@ impl Respond for RenamedIssueJira {
                         "subtask": false
                     },
                     "assignee": null,
+                    "description": if self.readable_body {
+                        serde_json::json!({"type":"doc","version":1,"content":[{
+                            "type":"paragraph",
+                            "content":[{"type":"text","text":"Renamed subject"}]
+                        }]})
+                    } else {
+                        serde_json::Value::Null
+                    },
                     "updated": "2026-09-12T10:00:00.000+0000"
                 }
             }));
@@ -43936,6 +43967,7 @@ async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connect
             hierarchy_level: 1,
             reads: Arc::clone(&reads),
             mutations: Arc::clone(&mutations),
+            readable_body: true,
         })
         .mount(&server)
         .await;
@@ -43944,6 +43976,17 @@ async fn the_resident_reconciler_follows_a_same_issue_rename_through_the_connect
     let epic_id = MiniProjectId::generate();
     let (world, _config) = world_with_jira(&server, project_id).await;
     seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+    // Placement needs an explicit legacy code for this pass to reach its write
+    // boundary — and reaching it is now load-bearing, because the binding
+    // advances only once the dry run has re-proved the immutable issue at the
+    // canonical key. A pass that stops short must leave the binding alone.
+    world.daemon.state().with_store(|store| {
+        let code = kontor_core::backlog_identity::EpicBacklogCode::parse("AUTO")
+            .expect("an explicit legacy backlog code");
+        store
+            .assign_epic_backlog_code(project_id, epic_id, Some(&code), at("2026-09-12T10:00:00Z"))
+            .expect("the epic receives its explicit legacy code");
+    });
 
     // Jira resolves the superseded key to the issue that now owns it, and the
     // immutable id says it is the same issue. The binding follows the rename
@@ -44004,6 +44047,7 @@ async fn the_resident_reconciler_refuses_a_key_that_now_answers_for_another_issu
             hierarchy_level: 1,
             reads: Arc::clone(&reads),
             mutations: Arc::clone(&mutations),
+            readable_body: true,
         })
         .mount(&server)
         .await;
@@ -44244,6 +44288,7 @@ async fn the_resident_reconciler_follows_a_same_issue_task_rename() {
             hierarchy_level: 0,
             reads: Arc::clone(&reads),
             mutations: Arc::clone(&mutations),
+            readable_body: true,
         })
         .mount(&server)
         .await;
@@ -44291,6 +44336,7 @@ async fn the_resident_reconciler_gives_no_effect_to_a_task_key_that_moved_issue(
             hierarchy_level: 0,
             reads: Arc::clone(&reads),
             mutations: Arc::clone(&mutations),
+            readable_body: true,
         })
         .mount(&server)
         .await;
@@ -44599,6 +44645,7 @@ async fn a_same_issue_rename_reports_its_content_conflict_against_the_current_ke
             hierarchy_level: 0,
             reads: Arc::clone(&reads),
             mutations: Arc::clone(&mutations),
+            readable_body: false,
         })
         .mount(&server)
         .await;
@@ -44686,6 +44733,7 @@ async fn a_ledger_refused_rename_is_permanent_while_only_outages_are_transient()
             hierarchy_level: 0,
             reads: Arc::clone(&reads),
             mutations: Arc::clone(&mutations),
+            readable_body: true,
         })
         .mount(&server)
         .await;
@@ -44981,4 +45029,130 @@ fn epic_rename_occurrence(world: &World, project_id: ProjectId, epic_id: MiniPro
             |row| row.get(0),
         )
         .expect("the occurrence reads")
+}
+
+/// Proves one immutable issue on the alias read and a different one at the
+/// write boundary, with every protected field byte-identical.
+///
+/// This is the shape a digest cannot catch: both reads answer for key
+/// `MOVED-9`, with the same status, assignee, update token and body, so the
+/// observation hash compares equal. Only the immutable id differs — `901` on
+/// the read that proved the rename, `999` on the read the write is validated
+/// against.
+#[derive(Clone)]
+struct RebindingEpicJira {
+    issue_reads: Arc<AtomicUsize>,
+    writes: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Respond for RebindingEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path().to_owned();
+        if request.method.as_str() != "GET" {
+            self.writes.lock().expect("the write log locks").push(path);
+            return ResponseTemplate::new(204);
+        }
+        if path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if path.ends_with("/transitions") {
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [{
+                    "id": "to-be-groomed",
+                    "to": {
+                        "id": "10236",
+                        "name": "TO BE GROOMED",
+                        "statusCategory": {"name": "To Do"}
+                    }
+                }]
+            }));
+        }
+        if path.contains("/rest/api/3/issue/") {
+            let first = self.issue_reads.fetch_add(1, Ordering::SeqCst) == 0;
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "MOVED-9",
+                "id": if first { "901" } else { "999" },
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10237",
+                        "name": "DRAFT",
+                        "statusCategory": {"name": "To Do"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Renamed epic"}]
+                    }]},
+                    "updated": "2026-09-12T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+#[tokio::test]
+async fn a_write_boundary_rebind_is_refused_before_any_effect_or_binding_advance() {
+    let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(any())
+        .respond_with(RebindingEpicJira {
+            issue_reads: Arc::clone(&issue_reads),
+            writes: Arc::clone(&writes),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+    world.daemon.state().with_store(|store| {
+        let code = kontor_core::backlog_identity::EpicBacklogCode::parse("AUTO")
+            .expect("an explicit legacy backlog code");
+        store
+            .assign_epic_backlog_code(project_id, epic_id, Some(&code), at("2026-09-12T10:00:00Z"))
+            .expect("the epic receives its explicit legacy code");
+    });
+    let occurrence_before = epic_rename_occurrence(&world, project_id, epic_id);
+
+    let report = world.daemon.reconcile_jira_once().await;
+
+    // The alias read proved `901` and the pass got as far as the write
+    // boundary, where the canonical-key read answered for `999`. Every
+    // protected field matched, so the digest agreed the whole way; only the
+    // immutable id caught it.
+    assert!(
+        issue_reads.load(Ordering::SeqCst) >= 2,
+        "the pass must reach the write boundary for this to prove anything"
+    );
+    assert!(
+        writes.lock().expect("the write log locks").is_empty(),
+        "no transition may be posted once the issue at the key is a different one"
+    );
+
+    // And the binding never moved: the proof is required *before* the advance,
+    // not merely before the effect.
+    assert_eq!(
+        report.renamed, 0,
+        "a refused rebind is never a rename: {report:?}"
+    );
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_epic_key(project_id, epic_id)
+                .expect("epic key")
+                .map(|key| key.as_str().to_owned()),
+            Some("ASMA-1".to_owned()),
+            "the old binding is unchanged"
+        );
+    });
+    assert_eq!(
+        epic_rename_occurrence(&world, project_id, epic_id),
+        occurrence_before,
+        "a refused rebind must not spend a rename occurrence"
+    );
 }

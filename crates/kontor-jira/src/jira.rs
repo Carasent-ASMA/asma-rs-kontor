@@ -579,6 +579,15 @@ pub struct ExpectedObservation {
     pub update_token: Option<ExternalId>,
     /// Digest of the observation the plan was computed from.
     pub observation_hash: Option<ContentHash>,
+    /// The immutable Jira issue id the plan was *proved* against.
+    ///
+    /// Carried beside the digest rather than inside it, deliberately: the digest
+    /// is an existing contract and older evidence must keep comparing equal.
+    /// It is also the one thing the digest cannot express — two different
+    /// issues can present byte-identical protected fields, so a hash match says
+    /// "nothing a human could move has changed", not "this is the same issue".
+    #[serde(default)]
+    pub issue_id: Option<ExternalId>,
 }
 
 /// The transition an apply asks for, plus the destination it was selected for.
@@ -1093,6 +1102,11 @@ impl JiraIssueDelegation<'_> {
                 assignee_account_id: observed.observation.assignee_account_id.clone(),
                 update_token: observed.observation.update_token.clone(),
                 observation_hash: Some(observed.observation.observation_hash.clone()),
+                issue_id: observed
+                    .response
+                    .observed_identity
+                    .as_ref()
+                    .map(|identity| identity.issue_id.clone()),
             }),
             field_writes: self.field_writes.to_vec(),
             // No status move and no ownership change: this writes a body.
@@ -1253,6 +1267,11 @@ impl JiraIssueDelegation<'_> {
                 assignee_account_id: observed.observation.assignee_account_id.clone(),
                 update_token: observed.observation.update_token.clone(),
                 observation_hash: Some(observed.observation.observation_hash.clone()),
+                issue_id: observed
+                    .response
+                    .observed_identity
+                    .as_ref()
+                    .map(|identity| identity.issue_id.clone()),
             }),
             field_writes: self.field_writes.to_vec(),
             destination: Some(plan.destination().clone()),
@@ -1806,6 +1825,11 @@ impl TicketDelegation<'_> {
                 assignee_account_id: observed.observation.assignee_account_id.clone(),
                 update_token: observed.observation.external_version.clone(),
                 observation_hash: Some(observed.observation.payload_hash.clone()),
+                issue_id: observed
+                    .response
+                    .observed_identity
+                    .as_ref()
+                    .map(|identity| identity.issue_id.clone()),
             }),
             field_writes: compile_field_writes(self.projection, self.field_spec)?,
             // The destination this request declares travels with the transition

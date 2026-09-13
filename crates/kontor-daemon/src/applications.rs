@@ -3179,6 +3179,9 @@ impl Services {
         subject: kontor_store::JiraBindingSubject,
         confirmed_key: &ExternalId,
         observed: Option<&kontor_jira::jira::JiraIssueIdentity>,
+        // Whether this caller advances the binding here, or defers it until the
+        // write boundary has re-proved the identity at the canonical key.
+        advance_now: bool,
     ) -> IdentityDecision {
         let Some(observed) = observed else {
             return IdentityDecision::Stop(IdentityRefusal::UnprovenIdentity);
@@ -3223,6 +3226,18 @@ impl Services {
             return IdentityDecision::Stop(IdentityRefusal::Transient);
         };
         let readback_hash = document.hash().clone();
+        if !advance_now {
+            // The alias read proved this issue, but only against *that* read.
+            // A caller that is about to re-read the canonical key at its write
+            // boundary defers the advance until that second answer has proved
+            // the same immutable issue, so a rebind cannot leave the binding
+            // moved behind a refused write.
+            return IdentityDecision::Proceed {
+                current_key: observed.issue_key.clone(),
+                issue_id: stored_issue_id,
+                renamed: true,
+            };
+        }
         let reconciled = state.with_store(|store| {
             store.reconcile_confirmed_jira_key(
                 project_id,
@@ -3263,6 +3278,36 @@ impl Services {
             // only to keep the type total; no caller reaches a write with it.
             IdentityDecision::Stop(_) => entry_key.clone(),
         }
+    }
+
+    /// Advance a deferred same-issue rename, after the write boundary agreed.
+    fn commit_same_issue_rename(
+        &self,
+        project_id: ProjectId,
+        issue_id: &ExternalId,
+        current_key: &ExternalId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let document = CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "mode": "rename",
+            "project": project_id.to_string(),
+            "issue_id": issue_id.as_str(),
+            "key": current_key.as_str(),
+        }))
+        .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| {
+                store.reconcile_confirmed_jira_key(
+                    project_id,
+                    issue_id,
+                    current_key,
+                    document.hash(),
+                    kontor_api::now(),
+                )
+            })
+            .map(|_| ())
+            .map_err(|error| self.refuse(&error))
     }
 
     /// Turn an identity refusal into the response it deserves.
@@ -3331,6 +3376,8 @@ impl Services {
             kontor_store::JiraBindingSubject::Epic(epic.id),
             issue_key,
             observed.response.observed_identity.as_ref(),
+            // Deferred: this path re-reads the canonical key at its dry run.
+            false,
         );
         if let IdentityDecision::Stop(_) = decided {
             return Ok(JiraSubjectVerdict {
@@ -3338,9 +3385,9 @@ impl Services {
                 content_conflict: None,
             });
         }
-        if matches!(decided, IdentityDecision::Proceed { renamed: true, .. }) {
-            report.renamed = report.renamed.saturating_add(1);
-        }
+        // The rename is not counted yet, and not committed yet: the alias read
+        // proved this issue only against that read. The dry run below re-reads
+        // the canonical key, and only once it agrees does the binding advance.
         // Every key-bearing object below is built from this, never from the
         // pre-observation delegation.
         let issue_key = &Self::write_key_for(issue_key, &decided);
@@ -3483,6 +3530,20 @@ impl Services {
                 ApiErrorCode::Unavailable,
                 "the Jira boundary did not validate the epic transition",
             ));
+        }
+        // The write boundary re-read the canonical key and agreed it is the
+        // same immutable issue — the connector refuses the dry run otherwise,
+        // comparing the proved id it carries against the id that read returned.
+        // Only now may the binding advance, so a rebind can never leave the
+        // ledger moved behind a refused write.
+        if let IdentityDecision::Proceed {
+            current_key,
+            issue_id,
+            renamed: true,
+        } = &decided
+        {
+            self.commit_same_issue_rename(project_id, issue_id, current_key)?;
+            report.renamed = report.renamed.saturating_add(1);
         }
         let authority = state
             .with_store(|store| {
@@ -3737,6 +3798,7 @@ impl Services {
                 kontor_store::JiraBindingSubject::Task(task_id),
                 &link.external_issue_key,
                 observed.response.observed_identity.as_ref(),
+                true,
             ) {
                 IdentityDecision::Proceed {
                     current_key,

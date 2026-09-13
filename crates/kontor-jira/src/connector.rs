@@ -470,6 +470,27 @@ impl JiraConnector {
         let Some(expected) = request.expected.as_ref() else {
             return Ok(());
         };
+        // Identity first, and separately from the digest. The digest answers
+        // "has anything a human could move changed?"; it cannot answer "is this
+        // still the same issue", because two different issues can present
+        // byte-identical protected fields. An alias read can prove one issue
+        // while the write-boundary read of the canonical key answers for
+        // another, and the digest would compare equal the whole way to the
+        // POST.
+        //
+        // This is an exact comparison of the id the plan was proved against
+        // with the id this very read returned. Nothing is inferred from either
+        // value, and the digest contract is untouched.
+        if expected
+            .issue_id
+            .as_ref()
+            .is_some_and(|proved| *proved != live.identity.issue_id)
+        {
+            return Err(JiraError::refused(
+                "apply",
+                "the issue at this key is not the immutable Jira issue the plan was proved against",
+            ));
+        }
         if expected.status_id != live.observation.status_id
             || expected.assignee_account_id != live.observation.assignee_account_id
             || expected.update_token != live.observation.update_token
