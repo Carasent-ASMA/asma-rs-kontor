@@ -11493,7 +11493,7 @@
               "string",
               "null"
             ],
-            "description": "Kontor-owned immutable namespace for this epic. Omission allocates the\nfirst deterministic project-scoped code from the epic title."
+            "description": "Optional legacy Kontor namespace. Omission creates no new namespace and\npreserves one already recorded for compatibility."
           },
           "execution_scope": {
             "oneOf": [
@@ -15550,6 +15550,7 @@
           "snapshot_cursor",
           "project_id",
           "epic_id",
+          "jira_binding",
           "name",
           "revision",
           "tasks",
@@ -15585,6 +15586,10 @@
                 "description": "The durable runtime-facing identity, once declared."
               }
             ]
+          },
+          "jira_binding": {
+            "$ref": "#/components/schemas/JiraBindingDto",
+            "description": "Its Jira identity and connector proof, or the explicit draft state."
           },
           "name": {
             "type": "string",
@@ -15650,6 +15655,7 @@
         "required": [
           "task_id",
           "title",
+          "jira_binding",
           "state",
           "revision",
           "depends_on",
@@ -15686,6 +15692,10 @@
               "$ref": "#/components/schemas/GateProjectionDto"
             },
             "description": "Every gate the pinned profile declares, in declaration order."
+          },
+          "jira_binding": {
+            "$ref": "#/components/schemas/JiraBindingDto",
+            "description": "Its Jira identity and connector proof, or the explicit draft state."
           },
           "links": {
             "type": "array",
@@ -16631,6 +16641,58 @@
         },
         "additionalProperties": false
       },
+      "JiraBindingDto": {
+        "type": "object",
+        "description": "Confirmed Jira identity evidence, or an explicit awaiting state.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "confirmed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When connector readback confirmed it."
+          },
+          "jira_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact confirmed Jira key."
+          },
+          "readback_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of the connector readback that confirmed it."
+          },
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bound epic or task revision.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/JiraBindingStatusDto",
+            "description": "The binding lifecycle state."
+          }
+        }
+      },
+      "JiraBindingStatusDto": {
+        "type": "string",
+        "description": "Whether a Jira identity is still a draft or has connector proof.",
+        "enum": [
+          "awaiting_jira_binding",
+          "confirmed"
+        ]
+      },
       "JiraMaterializationAppliedDto": {
         "type": "object",
         "description": "A confirmed Jira materialization and ASMA activation receipt.",
@@ -17544,7 +17606,6 @@
         "required": [
           "realm_id",
           "project_id",
-          "epic_backlog_code",
           "applied",
           "work_profile",
           "tasks"
@@ -17555,8 +17616,11 @@
             "description": "Whether apply would create the epic or find it unchanged."
           },
           "epic_backlog_code": {
-            "type": "string",
-            "description": "Kontor-owned immutable namespace apply would preserve or allocate."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Legacy Kontor namespace apply would preserve or explicitly add."
           },
           "epic_id": {
             "type": [
@@ -21981,6 +22045,7 @@
               "title",
               "state",
               "revision",
+              "jira_binding",
               "gates",
               "applied",
               "updated_at"
@@ -22000,6 +22065,10 @@
               "gates": {
                 "type": "object",
                 "description": "The gate states, keyed by gate."
+              },
+              "jira_binding": {
+                "$ref": "#/components/schemas/JiraBindingDto",
+                "description": "Its Jira identity and connector proof, or the explicit draft state."
               },
               "project_id": {
                 "type": "string",
@@ -22224,6 +22293,7 @@
           "title",
           "state",
           "revision",
+          "jira_binding",
           "gates",
           "applied",
           "updated_at"
@@ -22243,6 +22313,10 @@
           "gates": {
             "type": "object",
             "description": "The gate states, keyed by gate."
+          },
+          "jira_binding": {
+            "$ref": "#/components/schemas/JiraBindingDto",
+            "description": "Its Jira identity and connector proof, or the explicit draft state."
           },
           "project_id": {
             "type": "string",

@@ -17,9 +17,10 @@
 //! is never persisted — see `kontor-store`'s control-metadata allowlist.
 
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, EventCursor, ExternalId,
-    ExternalName, GateKey, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId, RuntimeKindKey,
-    SchemaVersion, SpecVersion, TaskId, TeamRunId, TeamTemplateId, Timestamp, WorkProfileKey,
+    AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, ContentHash, EventCursor,
+    ExternalId, ExternalName, GateKey, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId,
+    RuntimeKindKey, SchemaVersion, SpecVersion, TaskId, TeamRunId, TeamTemplateId, Timestamp,
+    WorkProfileKey,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt, CommandReceiptState};
 use kontor_core::repository::{
@@ -34,10 +35,61 @@ use kontor_runtime::request::PermissionDecision;
 use kontor_runtime::timeline::{
     EventSubject, HistoryCursor, HistoryPage, SessionEvent, SessionEventKind, TimelinePosition,
 };
+use kontor_store::JiraBindingState;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::state::BarrierState;
+
+/// Whether a Jira identity is still a draft or has connector proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JiraBindingStatusDto {
+    /// No connector-confirmed binding exists yet.
+    AwaitingJiraBinding,
+    /// Connector readback confirmed one exact binding.
+    Confirmed,
+}
+
+/// Confirmed Jira identity evidence, or an explicit awaiting state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct JiraBindingDto {
+    /// The binding lifecycle state.
+    pub state: JiraBindingStatusDto,
+    /// The exact confirmed Jira key.
+    #[schema(value_type = Option<String>)]
+    pub jira_key: Option<ExternalId>,
+    /// Hash of the connector readback that confirmed it.
+    #[schema(value_type = Option<String>)]
+    pub readback_hash: Option<ContentHash>,
+    /// When connector readback confirmed it.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub confirmed_at: Option<Timestamp>,
+    /// The bound epic or task revision.
+    #[schema(value_type = Option<u64>)]
+    pub revision: Option<AggregateRevision>,
+}
+
+impl From<JiraBindingState> for JiraBindingDto {
+    fn from(state: JiraBindingState) -> Self {
+        match state {
+            JiraBindingState::AwaitingJiraBinding => Self {
+                state: JiraBindingStatusDto::AwaitingJiraBinding,
+                jira_key: None,
+                readback_hash: None,
+                confirmed_at: None,
+                revision: None,
+            },
+            JiraBindingState::Confirmed(binding) => Self {
+                state: JiraBindingStatusDto::Confirmed,
+                jira_key: Some(binding.jira_key),
+                readback_hash: Some(binding.readback_hash),
+                confirmed_at: Some(binding.confirmed_at),
+                revision: Some(binding.revision),
+            },
+        }
+    }
+}
 
 /// Liveness, identity and how far startup has got.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -454,6 +506,8 @@ pub struct TaskDto {
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
+    /// Its Jira identity and connector proof, or the explicit draft state.
+    pub jira_binding: JiraBindingDto,
     /// The phase the active workflow is in.
     #[schema(value_type = Option<String>)]
     pub current_phase: Option<PhaseKey>,

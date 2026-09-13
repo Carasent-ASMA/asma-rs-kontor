@@ -493,6 +493,8 @@ impl Modify for RealmBearer {
         crate::dto::EventDto,
         crate::dto::GapDto,
         crate::dto::HealthDto,
+        crate::dto::JiraBindingDto,
+        crate::dto::JiraBindingStatusDto,
         crate::dto::MessageAckDto,
         crate::dto::MessageRequest,
         crate::dto::PermissionAckDto,

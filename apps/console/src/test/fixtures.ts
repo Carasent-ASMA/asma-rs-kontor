@@ -78,6 +78,7 @@ export function task(overrides: Partial<Task> = {}): Task {
     revision: 5,
     current_phase: 'p-a1',
     gates: {} as Task['gates'],
+    jira_binding: { state: 'awaiting_jira_binding' },
     applied: {},
     updated_at: '2026-08-10T09:00:00Z',
     ...overrides,

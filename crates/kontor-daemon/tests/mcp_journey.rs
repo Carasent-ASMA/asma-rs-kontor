@@ -380,6 +380,7 @@ fn confirm_jira_identity(world: &World, project: &str, epic: &str, task_jira_key
                 .confirm_jira_materialization_item(
                     &item,
                     &key,
+                    &jira_issue_id(key.as_str()),
                     &ContentHash::of(format!("{key}-readback").as_bytes()),
                     now,
                 )
@@ -1030,4 +1031,14 @@ async fn an_observer_seat_reads_the_realm_and_cannot_change_it() {
         reads,
         "a refused write must not reach the daemon at all"
     );
+}
+
+/// A stable immutable Jira issue id derived from a key.
+///
+/// Real Jira ids are opaque and unrelated to the key. Deriving one here only
+/// keeps distinct keys in a fixture on distinct identities, and keeps the id a
+/// mock returns equal to the id a direct store call records for the same key.
+fn jira_issue_id(key: &str) -> ExternalId {
+    let digits: String = key.chars().filter(char::is_ascii_digit).collect();
+    ExternalId::parse(&format!("90{digits}")).expect("an immutable Jira issue id")
 }

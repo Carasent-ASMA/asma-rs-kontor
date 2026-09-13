@@ -16,8 +16,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::jira::{
-    FieldWrite, JiraExchange, JiraOperation, JiraOutcome, JiraRequest, JiraResponse,
-    WireAssignment, WireConfirmation, WireEffects, WireFieldValue, WireObservation, WireTransition,
+    FieldWrite, JiraExchange, JiraIssueIdentity, JiraOperation, JiraOutcome, JiraRequest,
+    JiraResponse, WireAssignment, WireConfirmation, WireEffects, WireFieldValue, WireObservation,
+    WireTransition,
 };
 use crate::{JiraError, MaterializationConflict, UnavailableReason, WireTimestamp};
 
@@ -179,6 +180,14 @@ pub struct JiraIssuePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JiraIssueReadback {
     pub issue_key: ExternalId,
+    /// Jira's immutable REST top-level issue id, observed in the same readback
+    /// that proved the key.
+    ///
+    /// The canonical key moves with the issue whenever it changes project; this
+    /// does not. It is the only observed value that tells a key change on one
+    /// issue apart from a rebind onto a different one, which the readback hash
+    /// cannot do because the key is itself part of the hashed document.
+    pub issue_id: ExternalId,
     pub readback_hash: ContentHash,
 }
 
@@ -388,9 +397,23 @@ impl JiraConnector {
             optional_external_at(&issue, &["fields", "assignee", "accountId"])?;
         let assignee_display = optional_name_at(&issue, &["fields", "assignee", "displayName"])?;
         let update_token = optional_external_at(&issue, &["fields", "updated"])?;
+        // Evidence describes what was *observed*, not what was asked for. Jira
+        // resolves a superseded key to the issue that now owns it, so a read
+        // addressed to an alias answers for the canonical key; hashing the
+        // requested alias instead made that same answer unusable at the address
+        // it just proved, and a later read of the canonical key produced an
+        // otherwise identical hash that compared unequal.
+        //
+        // Every mutable field the caller protects against a human move is still
+        // inside this document, so the protection is unchanged: only the alias
+        // drift is removed.
+        let identity = JiraIssueIdentity {
+            issue_key: external_at(&issue, &["key"])?,
+            issue_id: external_at(&issue, &["id"])?,
+        };
         let observation_hash = CanonicalDocument::from_serializable(&json!({
             "schema_version": 1,
-            "key": issue_key.as_str(),
+            "key": identity.issue_key.as_str(),
             "project": project,
             "fields": issue.get("fields").cloned().unwrap_or(Value::Null),
         }))?
@@ -436,6 +459,10 @@ impl JiraConnector {
             live_transitions,
             principal_account_id,
             fields,
+            // Read from the answer already in hand. Observing identity must
+            // never cost a second request, because the resident reconciler is
+            // bounded on exactly this.
+            identity,
         })
     }
 
@@ -443,6 +470,27 @@ impl JiraConnector {
         let Some(expected) = request.expected.as_ref() else {
             return Ok(());
         };
+        // Identity first, and separately from the digest. The digest answers
+        // "has anything a human could move changed?"; it cannot answer "is this
+        // still the same issue", because two different issues can present
+        // byte-identical protected fields. An alias read can prove one issue
+        // while the write-boundary read of the canonical key answers for
+        // another, and the digest would compare equal the whole way to the
+        // POST.
+        //
+        // This is an exact comparison of the id the plan was proved against
+        // with the id this very read returned. Nothing is inferred from either
+        // value, and the digest contract is untouched.
+        if expected
+            .issue_id
+            .as_ref()
+            .is_some_and(|proved| *proved != live.identity.issue_id)
+        {
+            return Err(JiraError::refused(
+                "apply",
+                "the issue at this key is not the immutable Jira issue the plan was proved against",
+            ));
+        }
         if expected.status_id != live.observation.status_id
             || expected.assignee_account_id != live.observation.assignee_account_id
             || expected.update_token != live.observation.update_token
@@ -854,8 +902,15 @@ impl JiraConnector {
         let readback_hash = CanonicalDocument::from_serializable(&readback)?
             .hash()
             .clone();
+        // Read after every conflict check, so a response that is going to be
+        // refused is still refused for its own exact reason. Jira returns the
+        // top-level id on every issue GET regardless of the `fields` filter, so
+        // a response without one is malformed rather than merely unsupported,
+        // and an accepted readback never carries an unproven identity.
+        let issue_id = external_at(&value, &["id"])?;
         Ok(JiraIssueReadback {
             issue_key: key.clone(),
+            issue_id,
             readback_hash,
         })
     }
@@ -921,6 +976,7 @@ impl JiraExchange for JiraConnector {
             operation: request.operation,
             effective_operation,
             issue_key: request.issue_key.clone(),
+            observed_identity: Some(before.identity),
             idempotency_key: request.idempotency_key.clone(),
             intent_hash: request.intent_hash.clone(),
             requested_at,
@@ -950,6 +1006,12 @@ struct LiveIssue {
     live_transitions: Vec<WireTransition>,
     principal_account_id: Option<ExternalId>,
     fields: Map<String, Value>,
+    /// The identity Jira reported for this issue in the very same read.
+    ///
+    /// Distinct from the key the request asked under: Jira resolves a
+    /// superseded key to the issue that now owns it, so these differ exactly
+    /// when the issue has been renamed.
+    identity: JiraIssueIdentity,
 }
 
 fn validate_create_fields(fields: &JiraCreateFields) -> Result<(), JiraError> {
