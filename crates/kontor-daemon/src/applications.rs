@@ -29985,9 +29985,7 @@ impl ApplicationOperations for Services {
         let recorded_successor_id = recorded_successor.map(|successor| successor.id);
         let slot_members: Vec<_> = members
             .iter()
-            .filter(|run| {
-                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
-            })
+            .filter(|run| recorded_successor_id != Some(run.id))
             .cloned()
             .collect();
 

@@ -28942,6 +28942,119 @@ async fn an_admin_reroutes_a_never_bound_seat_whose_handoff_recorded_no_target()
     );
 }
 
+/// Replacing one slot must hydrate the whole retained roster. An abandoned
+/// never-bound attempt in another slot is still part of that roster when its
+/// live successor names it as an audit parent. Dropping the parent before
+/// hydration makes the unrelated replacement fail because the successor looks
+/// rootless.
+#[tokio::test]
+async fn replacing_one_slot_preserves_an_abandoned_parent_in_another_slot() {
+    let (seeded, abandoned_id, abandoned_revision) =
+        abandoned_before_its_handoff("replace-with-recovered-sibling").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+
+    let recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Recovery verifier",
+            "harness": "fake.runtime",
+            "credential_alias": "recovery-verifier",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("replace-with-recovered-sibling-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(recovery_account.status, 200, "{}", recovery_account.body);
+
+    hand_off_to_the_unbound_slot(&seeded, "replace-with-recovered-sibling-handoff").await;
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{abandoned_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("replace-with-recovered-sibling-reroute")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let recovered_id = AgentRunId::parse(
+        recovered.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the recovered successor id"),
+    )
+    .expect("a canonical recovered successor id");
+
+    let sibling = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k4")
+        .expect("the sibling slot is seated")["agent_run_id"]
+        .as_str()
+        .expect("the sibling run id")
+        .to_owned();
+    finish_natively(world, &sibling).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{sibling}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("replace-with-recovered-sibling-settle")
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+
+    let sibling_id = AgentRunId::parse(&sibling).expect("a canonical sibling run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, sibling_id)
+            .expect("the sibling reads")
+            .expect("the sibling remains")
+    });
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{sibling}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": "omega-k4",
+            "expected_predecessor_revision": before.revision.get(),
+            "expected_task_revision": alpha_revision(world, project, epic).await,
+            "binding_generation": before
+                .binding
+                .as_ref()
+                .expect("the sibling was bound")
+                .identity
+                .generation
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("replace-with-recovered-sibling-replace")
+    .send(world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+
+    let still_recovered = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, recovered_id)
+            .expect("the recovered run reads")
+            .expect("the recovered run remains")
+    });
+    assert_eq!(
+        still_recovered.parent_agent_run_id,
+        Some(abandoned_id),
+        "the unrelated replacement preserves the recovered slot's audit parent"
+    );
+}
+
 /// Two undelivered targetless handoffs are two decisions, and neither of them
 /// says which one an Admin is recovering. Widening the authority to "some row
 /// exists" would let one reroute answer a handoff it was never authorized by,
