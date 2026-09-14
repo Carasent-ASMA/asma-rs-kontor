@@ -45156,3 +45156,151 @@ async fn a_write_boundary_rebind_is_refused_before_any_effect_or_binding_advance
         "a refused rebind must not spend a rename occurrence"
     );
 }
+
+/// A renamed epic whose policy outcome writes nothing.
+///
+/// `status_id` chooses the outcome: the milestone target converges, anything
+/// else with no offered route is a typed policy conflict. Either way the pass
+/// performs no external effect, which is exactly the case where a proved rename
+/// used to be dropped.
+#[derive(Clone)]
+struct NonWritingEpicJira {
+    status_id: &'static str,
+    status_name: &'static str,
+    issue_reads: Arc<AtomicUsize>,
+    writes: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Respond for NonWritingEpicJira {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let path = request.url.path().to_owned();
+        if request.method.as_str() != "GET" {
+            self.writes.lock().expect("the write log locks").push(path);
+            return ResponseTemplate::new(204);
+        }
+        if path.ends_with("/rest/api/3/myself") {
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"accountId": "acct-kontor"}));
+        }
+        if path.ends_with("/transitions") {
+            // No route on offer. A converged epic needs none, and a
+            // non-converged one becomes a typed policy conflict.
+            return ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"transitions": []}));
+        }
+        if path.contains("/rest/api/3/issue/") {
+            self.issue_reads.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "MOVED-9",
+                "id": "901",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": self.status_id,
+                        "name": self.status_name,
+                        "statusCategory": {"name": "In Progress"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Renamed epic"}]
+                    }]},
+                    "updated": "2026-09-14T10:00:00.000+0000"
+                }
+            }));
+        }
+        ResponseTemplate::new(404)
+    }
+}
+
+/// Drive one non-writing epic pass and assert the proved rename carries forward.
+async fn assert_non_writing_exit_advances_the_rename(
+    status_id: &'static str,
+    status_name: &'static str,
+) {
+    let server = MockServer::start().await;
+    let issue_reads = Arc::new(AtomicUsize::new(0));
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(any())
+        .respond_with(NonWritingEpicJira {
+            status_id,
+            status_name,
+            issue_reads: Arc::clone(&issue_reads),
+            writes: Arc::clone(&writes),
+        })
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+    // An explicit legacy code, so a stalled placement (OQ-004) cannot be
+    // mistaken for the behaviour under test.
+    world.daemon.state().with_store(|store| {
+        let code = kontor_core::backlog_identity::EpicBacklogCode::parse("AUTO")
+            .expect("an explicit legacy backlog code");
+        store
+            .assign_epic_backlog_code(project_id, epic_id, Some(&code), at("2026-09-14T10:00:00Z"))
+            .expect("the epic receives its explicit legacy code");
+    });
+    let occurrence_before = epic_rename_occurrence(&world, project_id, epic_id);
+
+    let report = world.daemon.reconcile_jira_once().await;
+
+    // Nothing was written — this is the non-writing exit under test.
+    assert!(
+        writes.lock().expect("the write log locks").is_empty(),
+        "this exit performs no external effect"
+    );
+    // The rename still carried forward, exactly once.
+    assert_eq!(
+        report.renamed, 1,
+        "a proved rename advances even when the pass writes nothing: {report:?}"
+    );
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .confirmed_jira_epic_key(project_id, epic_id)
+                .expect("epic key")
+                .map(|key| key.as_str().to_owned()),
+            Some("MOVED-9".to_owned()),
+            "the durable key is the one Jira answers to"
+        );
+    });
+    assert_eq!(
+        epic_rename_occurrence(&world, project_id, epic_id),
+        occurrence_before + 1,
+        "exactly one rename occurrence is spent"
+    );
+
+    // A replay finds the key already current and advances nothing further.
+    let replay = world.daemon.reconcile_jira_once().await;
+    assert_eq!(
+        replay.renamed, 0,
+        "the replay does not rename again: {replay:?}"
+    );
+    assert_eq!(
+        epic_rename_occurrence(&world, project_id, epic_id),
+        occurrence_before + 1,
+        "the replay spends no further occurrence"
+    );
+    assert!(
+        writes.lock().expect("the write log locks").is_empty(),
+        "and still writes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_converged_epic_pass_still_carries_a_proved_rename_forward() {
+    // `In Development` is what the bundled epic workflow targets for an active
+    // epic, so the pass converges and returns before any transition.
+    assert_non_writing_exit_advances_the_rename("10214", "In Development").await;
+}
+
+#[tokio::test]
+async fn a_policy_blocked_epic_pass_still_carries_a_proved_rename_forward() {
+    // Off-target with no route on offer: a typed policy conflict, recorded and
+    // returned before any transition.
+    assert_non_writing_exit_advances_the_rename("10229", "Code review").await;
+}

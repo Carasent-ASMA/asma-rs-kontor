@@ -3280,6 +3280,36 @@ impl Services {
         }
     }
 
+    /// Advance a deferred same-issue rename on a terminal outcome that writes
+    /// nothing.
+    ///
+    /// Deferring the advance exists to keep a rebind from moving the ledger
+    /// behind a refused write. A pass that performs no write has no such risk
+    /// and no later boundary to wait for: its proof is the alias observation
+    /// that already answered. Returning without committing would leave the
+    /// binding on a key Jira no longer answers to, and the next resident pass
+    /// would start from the same obsolete alias for ever.
+    ///
+    /// Costs no identity read: the decision already carries the proved id and
+    /// the key Jira reported.
+    fn advance_proved_rename(
+        &self,
+        project_id: ProjectId,
+        decided: &IdentityDecision,
+        report: &mut JiraReconcileReport,
+    ) -> Result<(), ApiError> {
+        if let IdentityDecision::Proceed {
+            current_key,
+            issue_id,
+            renamed: true,
+        } = decided
+        {
+            self.commit_same_issue_rename(project_id, issue_id, current_key)?;
+            report.renamed = report.renamed.saturating_add(1);
+        }
+        Ok(())
+    }
+
     /// Advance a deferred same-issue rename, after the write boundary agreed.
     fn commit_same_issue_rename(
         &self,
@@ -3456,6 +3486,12 @@ impl Services {
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;
+                // Converged writes nothing, so there is no write boundary to
+                // wait for and the alias proof is the whole proof. Returning
+                // without advancing would strand the binding on a key Jira no
+                // longer answers to, and every later pass would re-derive the
+                // same rename from the same obsolete alias.
+                self.advance_proved_rename(project_id, &decided, report)?;
                 return Ok(JiraSubjectVerdict {
                     outcome: JiraSubjectOutcome::Converged,
                     content_conflict,
@@ -3487,6 +3523,11 @@ impl Services {
                 if inserted {
                     state.signals().appended();
                 }
+                // A typed policy conflict is a durable fact about status, not a
+                // reason to keep an obsolete key: this exit writes nothing
+                // either, and the conflict itself was recorded against the
+                // current key.
+                self.advance_proved_rename(project_id, &decided, report)?;
                 return Ok(JiraSubjectVerdict {
                     outcome: JiraSubjectOutcome::Blocked,
                     content_conflict,
@@ -3536,15 +3577,7 @@ impl Services {
         // comparing the proved id it carries against the id that read returned.
         // Only now may the binding advance, so a rebind can never leave the
         // ledger moved behind a refused write.
-        if let IdentityDecision::Proceed {
-            current_key,
-            issue_id,
-            renamed: true,
-        } = &decided
-        {
-            self.commit_same_issue_rename(project_id, issue_id, current_key)?;
-            report.renamed = report.renamed.saturating_add(1);
-        }
+        self.advance_proved_rename(project_id, &decided, report)?;
         let authority = state
             .with_store(|store| {
                 store.insert_epic_transition_intent(
