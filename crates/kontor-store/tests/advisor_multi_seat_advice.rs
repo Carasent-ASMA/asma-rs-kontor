@@ -1,7 +1,9 @@
 //! Schema v78: one Advisor Session Workspace holds one *or more* independently
 //! reporting seats, so advice is keyed by the seat that gave it.
 
-use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
+use kontor_core::consultation::{
+    ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
+};
 use kontor_core::id::{
     AdvisorRunId, AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalId,
     ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RoleCode, RoleKey, RoleSlotId,
@@ -175,6 +177,7 @@ fn world() -> World {
         profile_version: SpecVersion::FIRST,
         definition_hash: profile.hash().clone(),
         semantic_identity_hash: None,
+        subject: Some(ConsultationSubject::Epic),
         question_hash: ContentHash::of(question.as_str().as_bytes()),
         question,
         context,

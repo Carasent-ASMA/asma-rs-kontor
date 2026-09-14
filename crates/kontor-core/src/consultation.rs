@@ -347,6 +347,73 @@ crate::closed_enum! {
     }
 }
 
+/// The exact thing one consultation was asked about.
+///
+/// A consultation is invoked either about the epic as a whole or about one
+/// ticket belonging to it, and its ASW/CSW container renders that subject's
+/// confirmed Jira key. The subject is frozen with the rest of the run's
+/// semantic input at invocation: neither the seat that called it nor the epic
+/// that contains it may stand in for it later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "task_id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ConsultationSubject {
+    /// The containing epic itself is the subject.
+    Epic,
+    /// One exact ticket belonging to that epic is the subject.
+    Task(TaskId),
+}
+
+impl ConsultationSubject {
+    /// The subject one invocation names: an explicit ticket, or the epic.
+    #[must_use]
+    pub fn from_requested_task(task_id: Option<TaskId>) -> Self {
+        task_id.map_or(Self::Epic, Self::Task)
+    }
+
+    /// The advised ticket, when the subject is one.
+    #[must_use]
+    pub fn task_id(self) -> Option<TaskId> {
+        match self {
+            Self::Epic => None,
+            Self::Task(task_id) => Some(task_id),
+        }
+    }
+
+    /// The stable spelling stored beside the run.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Epic => "epic",
+            Self::Task(_) => "task",
+        }
+    }
+
+    /// Rebuild one stored subject from its exact persisted columns.
+    ///
+    /// # Errors
+    /// Refuses any pairing the schema does not allow: a `task` subject with no
+    /// ticket, an `epic` subject carrying one, or an unknown spelling. A
+    /// wholly absent pair is not an error here — it is a run invoked before
+    /// the subject was recorded, and callers decide what an unrecorded subject
+    /// means rather than having one invented for them.
+    pub fn from_stored(kind: Option<&str>, task_id: Option<TaskId>) -> DomainResult<Option<Self>> {
+        match (kind, task_id) {
+            (None, None) => Ok(None),
+            (Some("epic"), None) => Ok(Some(Self::Epic)),
+            (Some("task"), Some(task_id)) => Ok(Some(Self::Task(task_id))),
+            _ => Err(DomainError::invalid(
+                "ConsultationSubject",
+                "a stored subject must be an epic without a ticket or a task with one",
+            )),
+        }
+    }
+}
+
 crate::closed_enum! {
     /// What one Committee seat is for.
     CommitteeRole, "CommitteeRole" {

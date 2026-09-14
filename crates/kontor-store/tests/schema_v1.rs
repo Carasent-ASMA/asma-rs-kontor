@@ -545,8 +545,12 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // (ASMA-8123). v95 retains Jira's immutable REST issue id beside the
     // mutable key in both confirmation ledgers, so a key change on one issue
     // is distinguishable from a rebind onto another; pre-v95 rows keep a NULL
-    // id rather than a synthesized one (ASMA-8116).
-    assert_eq!(SCHEMA_VERSION, 95);
+    // id rather than a synthesized one (ASMA-8116). v96 records the epic or
+    // ticket one consultation was asked
+    // about, frozen beside its run because the node's task belongs to the
+    // delivery workspace, and leaves a pre-v96 run's subject visibly
+    // unrecorded.
+    assert_eq!(SCHEMA_VERSION, 96);
 }
 
 #[test]

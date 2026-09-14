@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
+use crate::backlog_identity::ConfirmedJiraKey;
 use crate::id::ExternalName;
 use crate::{DomainError, DomainResult};
 
@@ -144,6 +145,12 @@ crate::closed_enum! {
         TaskItemCode => "TASK_ITEM_CODE",
         /// Subject-selected epic or task item code for a consultation.
         ScopeItemCode => "SCOPE_ITEM_CODE",
+        /// Exact confirmed Jira key of the owning epic.
+        EpicJiraKey => "EPIC_JIRA_KEY",
+        /// Exact confirmed Jira key of the owning task.
+        TaskJiraKey => "TASK_JIRA_KEY",
+        /// Subject-selected epic or task confirmed Jira key.
+        ScopeJiraKey => "SCOPE_JIRA_KEY",
         /// Explicit bounded consultation topic.
         Topic => "TOPIC",
         /// Exact registered local professional role code.
@@ -329,6 +336,27 @@ impl NativeNameValues {
         self.with(NativeNameToken::ScopeItemCode, value)
     }
 
+    /// Add the epic's exact `EPIC_JIRA_KEY`.
+    ///
+    /// The value is a parsed confirmed binding, never a string a caller
+    /// assembled from a title, a number or an item code.
+    #[must_use]
+    pub fn with_epic_jira_key(self, value: &ConfirmedJiraKey) -> Self {
+        self.with(NativeNameToken::EpicJiraKey, value.as_str())
+    }
+
+    /// Add the task's exact `TASK_JIRA_KEY`.
+    #[must_use]
+    pub fn with_task_jira_key(self, value: &ConfirmedJiraKey) -> Self {
+        self.with(NativeNameToken::TaskJiraKey, value.as_str())
+    }
+
+    /// Add the selected subject's exact `SCOPE_JIRA_KEY`.
+    #[must_use]
+    pub fn with_scope_jira_key(self, value: &ConfirmedJiraKey) -> Self {
+        self.with(NativeNameToken::ScopeJiraKey, value.as_str())
+    }
+
     /// Add `TOPIC`.
     #[must_use]
     pub fn with_topic(self, value: impl Into<String>) -> Self {
@@ -398,6 +426,15 @@ impl NativeNameValues {
                 }
                 NativeNameToken::ScopeItemCode => {
                     DomainError::invalid("NativeNameTemplate", "missing SCOPE_ITEM_CODE")
+                }
+                NativeNameToken::EpicJiraKey => {
+                    DomainError::invalid("NativeNameTemplate", "missing EPIC_JIRA_KEY")
+                }
+                NativeNameToken::TaskJiraKey => {
+                    DomainError::invalid("NativeNameTemplate", "missing TASK_JIRA_KEY")
+                }
+                NativeNameToken::ScopeJiraKey => {
+                    DomainError::invalid("NativeNameTemplate", "missing SCOPE_JIRA_KEY")
                 }
                 NativeNameToken::Topic => {
                     DomainError::invalid("NativeNameTemplate", "missing TOPIC")

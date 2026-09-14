@@ -1,5 +1,7 @@
 //! Typed native-name rendering contract (ASMA-7967).
 
+use kontor_core::backlog_identity::ConfirmedJiraKey;
+use kontor_core::id::ExternalId;
 use kontor_core::naming::{
     AiShortName, NameSeparator, NativeNameSegment, NativeNameTemplate, NativeNameToken,
     NativeNameValues,
@@ -133,6 +135,9 @@ fn every_missing_token_fails_closed_and_names_the_missing_contract() {
         (NativeNameToken::KontorBacklogCode, "KONTOR_BACKLOG_CODE"),
         (NativeNameToken::ItemCode, "ITEM_CODE"),
         (NativeNameToken::AiShortName, "AI_SHORT_NAME"),
+        (NativeNameToken::EpicJiraKey, "EPIC_JIRA_KEY"),
+        (NativeNameToken::TaskJiraKey, "TASK_JIRA_KEY"),
+        (NativeNameToken::ScopeJiraKey, "SCOPE_JIRA_KEY"),
     ] {
         let error = tokens(&[token])
             .render(&separator, &NativeNameValues::new())
@@ -166,4 +171,96 @@ fn ai_short_names_are_trimmed_two_keyword_values_and_preserve_unicode_bytes() {
         );
     }
     assert!(AiShortName::parse(&format!("Q {}", "x".repeat(64))).is_err());
+}
+
+#[test]
+fn every_token_keeps_its_exact_serialized_spelling() {
+    // The whole closed vocabulary, pinned by value. An old token that silently
+    // changed spelling would break every pinned revision that renders from it,
+    // and a new token that shipped under an unintended spelling would be
+    // published into immutable documents before anyone noticed.
+    let expected = [
+        (NativeNameToken::Prefix, "PREFIX"),
+        (NativeNameToken::EpicItemCode, "EPIC_ITEM_CODE"),
+        (NativeNameToken::TaskItemCode, "TASK_ITEM_CODE"),
+        (NativeNameToken::ScopeItemCode, "SCOPE_ITEM_CODE"),
+        (NativeNameToken::EpicJiraKey, "EPIC_JIRA_KEY"),
+        (NativeNameToken::TaskJiraKey, "TASK_JIRA_KEY"),
+        (NativeNameToken::ScopeJiraKey, "SCOPE_JIRA_KEY"),
+        (NativeNameToken::Topic, "TOPIC"),
+        (NativeNameToken::RoleCode, "ROLE_CODE"),
+        (NativeNameToken::SlotDisplayName, "SLOT_DISPLAY_NAME"),
+        (NativeNameToken::AreaCode, "AREA_CODE"),
+        (NativeNameToken::JiraCode, "JIRA_CODE"),
+        (NativeNameToken::KontorBacklogCode, "KONTOR_BACKLOG_CODE"),
+        (NativeNameToken::ItemCode, "ITEM_CODE"),
+        (NativeNameToken::AiShortName, "AI_SHORT_NAME"),
+    ];
+    assert_eq!(
+        expected.len(),
+        NativeNameToken::ALL.len(),
+        "a token was added or removed without pinning its spelling here"
+    );
+    for (token, spelling) in expected {
+        assert_eq!(token.as_str(), spelling);
+        assert_eq!(
+            NativeNameToken::parse(spelling).expect("the spelling parses"),
+            token
+        );
+    }
+}
+
+#[test]
+fn a_confirmed_jira_key_is_admitted_only_in_its_canonical_spelling() {
+    let key = ConfirmedJiraKey::parse(&ExternalId::parse("ASMA-8117").expect("an external id"))
+        .expect("a canonical confirmed key");
+    assert_eq!(key.as_str(), "ASMA-8117");
+    assert_eq!(key.number(), "8117");
+
+    // Nothing derived from a title, a bare number, a legacy item code, a UUID
+    // or a separator glyph may pass for a confirmed binding.
+    for rejected in [
+        "ASMA-08117",
+        "ASMA-0",
+        "ASMA-X",
+        "8117",
+        "-8117",
+        "asma-8117",
+        "ASMA•8117",
+        "ASMA-8117•",
+        "01a07722-c376-77f2-bee9-609793e172de",
+    ] {
+        let external = ExternalId::parse(rejected).expect("a structurally valid external id");
+        assert!(
+            ConfirmedJiraKey::parse(&external).is_err(),
+            "`{rejected}` must not be admitted as a confirmed Jira key"
+        );
+    }
+
+    // The ASMA-8050 confirmed-key contract admits a hyphen inside the project
+    // key, so `KOP-8117-1` splits into project `KOP-8117` and suffix `1`.
+    // ASMA-8117 renders that contract's exact output and deliberately does not
+    // tighten it: a live epic already bound to such a key must keep rendering.
+    // OQ-8117-02 records the question for the resolver scope that owns it.
+    let hyphenated = ExternalId::parse("KOP-8117-1").expect("a structurally valid external id");
+    let admitted = ConfirmedJiraKey::parse(&hyphenated).expect("the historical contract admits it");
+    assert_eq!(admitted.as_str(), "KOP-8117-1");
+    assert_eq!(admitted.number(), "1");
+}
+
+#[test]
+fn a_jira_key_token_renders_its_exact_confirmed_bytes() {
+    let key = ConfirmedJiraKey::parse(&ExternalId::parse("ASMA-8117").expect("an external id"))
+        .expect("a canonical confirmed key");
+    let rendered = tokens(&[NativeNameToken::TaskJiraKey])
+        .render(
+            &NameSeparator::default(),
+            &NativeNameValues::new().with_task_jira_key(&key),
+        )
+        .expect("the confirmed key renders");
+    assert_eq!(
+        rendered.as_str(),
+        "ASMA-8117",
+        "a rendered key is the confirmed binding itself, never a projection of it"
+    );
 }
