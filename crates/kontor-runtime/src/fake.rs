@@ -34,12 +34,12 @@ use crate::adapter::{
     ConsultationPermissionAck, ConsultationPermissionInspectRequest,
     ConsultationPermissionInspection, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
-    HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatInspectRequest, HostedSeatInspection, HostedSeatLaunchRequest,
-    HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatNativeState,
-    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    PersistentSeatInspection, PersistentSeatNativeState, RetitleSeatOutcome, RetitleSeatRequest,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    CorrelationChallengeAck, CorrelationChallengeBoundary, HostedSeatClaimOutcome,
+    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatNativeState, HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome,
+    MessageAck, PermissionAck, PersistentSeatInspection, PersistentSeatNativeState,
+    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -58,9 +58,10 @@ use crate::observation::{
 };
 use crate::refusal::{RefusalProvenance, TransientRefusal};
 use crate::request::{
-    AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
-    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest, capability_document,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
+    CorrelationChallengeRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
+    LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+    capability_document,
 };
 use crate::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
@@ -326,6 +327,12 @@ pub enum AdapterCall {
     Resume(RuntimeBindingId),
     /// A message was delivered.
     Send(RuntimeBindingId, MessageId),
+    /// A correlation challenge boundary was read.
+    CorrelationChallengeBoundary(RuntimeBindingId),
+    /// A correlation challenge was reconciled or delivered.
+    CorrelationChallengeSend(RuntimeBindingId, MessageId, bool),
+    /// A correlation challenge completion was proved.
+    CorrelationChallengeCompletion(RuntimeBindingId, MessageId),
     /// A cancellation was requested.
     Cancel(RuntimeBindingId),
     /// A session was permanently retired for replacement.
@@ -1354,6 +1361,69 @@ impl ScriptedFakeRuntime {
         Ok((message_position, response_position))
     }
 
+    /// Record the exact response text a server-generated correlation challenge
+    /// asks for. The corresponding user message is emitted without a native
+    /// client id by [`RuntimeAdapter::send_correlation_challenge`], reproducing
+    /// Paseo 0.8.0 while keeping the test's correlation server-owned.
+    pub fn observe_correlation_challenge_completion(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        response: &str,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the correlation challenge",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            response,
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok(position)
+    }
+
+    /// Record one identity-poor canonical user message.
+    ///
+    /// This deliberately carries no [`MessageId`]. It lets the daemon contract
+    /// reproduce both ambiguous historical Paseo 0.8.0 content and a duplicate
+    /// exact challenge body without giving either occurrence invented proof.
+    pub fn observe_uncorrelated_user_message(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        body: &str,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the uncorrelated message",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            body,
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok(position)
+    }
+
     /// Append one canonical non-content status event after a completed turn.
     ///
     /// Native runtimes may report the transition to waiting after emitting the
@@ -1964,6 +2034,18 @@ fn payload(kind: SessionEventKind, sequence: u64, body: &str) -> RuntimeResult<C
         "sequence": sequence,
         "body": body,
     }))?)
+}
+
+fn payload_body_is(event: &SessionEvent, expected: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(event.payload.json())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|body| body == expected)
 }
 
 fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<SessionEvent>> {
@@ -3290,6 +3372,223 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             });
         }
         Ok(acknowledgement)
+    }
+
+    async fn correlation_challenge_boundary(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<CorrelationChallengeBoundary> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        state.calls.push(AdapterCall::CorrelationChallengeBoundary(
+            binding.binding_id(),
+        ));
+        let session = state.session(binding)?;
+        Ok(CorrelationChallengeBoundary {
+            position: session.content.last().map_or_else(
+                || TimelinePosition::start_of(session.epoch),
+                |event| event.position,
+            ),
+            native_epoch: ExternalId::parse(&format!("fake-epoch-{}", session.epoch))?,
+        })
+    }
+
+    async fn send_correlation_challenge(
+        &self,
+        request: &CorrelationChallengeRequest,
+    ) -> RuntimeResult<CorrelationChallengeAck> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::SendMessage,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::MessageBytes(request.body.as_str().len() as u64)),
+                context_policy: None,
+            },
+        )?;
+        state.session(&request.binding)?;
+        if !state.placements.contains(&request.binding.binding_id()) {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        }
+        state.calls.push(AdapterCall::CorrelationChallengeSend(
+            request.binding.binding_id(),
+            request.message_id,
+            request.may_dispatch,
+        ));
+        let lose_ack = request.may_dispatch && std::mem::take(&mut state.lose_next_send_ack);
+        let binding_id = request.binding.binding_id();
+        let body_hash = request.body_hash();
+        let session = state.session(&request.binding)?;
+        if request.native_epoch.as_str() != format!("fake-epoch-{}", session.epoch)
+            || request.after.epoch != session.epoch
+            || request.after.sequence
+                > session
+                    .content
+                    .last()
+                    .map_or(0, |event| event.position.sequence)
+        {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        let matches = session
+            .content
+            .iter()
+            .filter(|event| {
+                event.position.sequence > request.after.sequence
+                    && event.kind == SessionEventKind::Message
+                    && payload_body_is(event, request.body.as_str())
+            })
+            .map(|event| event.position)
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge appears more than once",
+            });
+        }
+        let position = if let Some(position) = matches.first().copied() {
+            position
+        } else if request.may_dispatch {
+            // Deliberately omit EventSubject::Message: the challenge contract
+            // proves the Paseo 0.8.0 case where native history loses that echo.
+            session.append(
+                SessionEventKind::Message,
+                EventSubject::None,
+                request.body.as_str(),
+                request.sent_at,
+            )?
+        } else {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the durably claimed correlation challenge is not yet present; retry may reconcile but must not resend",
+            });
+        };
+        let acknowledgement = MessageAck {
+            message_id: request.message_id,
+            binding_id,
+            position,
+            accepted_at: request.sent_at,
+        };
+        if lose_ack {
+            return Err(RuntimeError::Transport {
+                rule: "the correlation challenge landed but its acknowledgement was lost",
+            });
+        }
+        session
+            .messages
+            .record(request.message_id, body_hash, acknowledgement.clone());
+        Ok(CorrelationChallengeAck {
+            message: acknowledgement,
+            native_epoch: request.native_epoch.clone(),
+        })
+    }
+
+    async fn prove_correlation_challenge_completion(
+        &self,
+        request: &CorrelationChallengeCompletionRequest,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(64)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::CorrelationChallengeCompletion(
+                request.binding.binding_id(),
+                request.message_id,
+            ));
+        let session = state.session(&request.binding)?;
+        if request.native_epoch.as_str() != format!("fake-epoch-{}", session.epoch) {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        if request.after.epoch != request.message_position.epoch
+            || request.after.sequence >= request.message_position.sequence
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let challenge_body_positions = session
+            .content
+            .iter()
+            .filter(|event| {
+                event.position.epoch == request.message_position.epoch
+                    && event.position.sequence > request.after.sequence
+                    && event.kind == SessionEventKind::Message
+                    && payload_body_is(event, request.body.as_str())
+            })
+            .map(|event| event.position)
+            .collect::<Vec<_>>();
+        let response_matches = session
+            .content
+            .iter()
+            .filter(|event| {
+                event.position.epoch == request.message_position.epoch
+                    && event.position.sequence > request.message_position.sequence
+                    && event.kind == SessionEventKind::Message
+                    && event.subject == EventSubject::None
+                    && payload_body_is(event, request.expected_response.as_str())
+            })
+            .map(|event| event.position)
+            .collect::<Vec<_>>();
+        let last_content = session
+            .content
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    event.kind,
+                    SessionEventKind::StateChange | SessionEventKind::Log
+                )
+            })
+            .map(|event| event.position)
+            .last();
+        if challenge_body_positions.len() > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge body appears more than once after its boundary",
+            });
+        }
+        if challenge_body_positions.first().copied() != Some(request.message_position)
+            || response_matches.len() != 1
+            || last_content != response_matches.first().copied()
+            || session.state != ObservedRunState::WaitingInput
+        {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact server correlation challenge has no unique terminal confirmation",
+            });
+        }
+        Ok(response_matches[0])
     }
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {

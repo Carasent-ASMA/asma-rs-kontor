@@ -5618,6 +5618,11 @@ pub struct SettleTurnRequest {
     /// settlement.
     #[serde(default)]
     pub runtime_proof: Option<TurnRuntimeProofRequest>,
+    /// A server-generated challenge MessageId, mutually exclusive with
+    /// `runtime_proof`. Kontor loads the message coordinate from its durable
+    /// challenge and selects the terminal response server-side.
+    #[serde(default)]
+    pub correlation_challenge_message_id: Option<String>,
     /// The artifacts the turn produced.
     #[serde(default)]
     pub artifacts: Vec<String>,
@@ -5642,6 +5647,96 @@ pub struct TurnRuntimeProofRequest {
     pub message_position: TurnTimelinePositionDto,
     /// Canonical position of the provider's terminal response.
     pub response_position: TurnTimelinePositionDto,
+}
+
+/// Read-only request for a new server-owned correlation challenge.
+///
+/// Historical message and response coordinates are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TurnCorrelationChallengePreviewRequest {
+    /// Exact role slot held by the addressed run.
+    pub role_slot: String,
+    /// Task revision the recovery evidence describes.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// Agent-run revision the recovery evidence describes.
+    #[schema(value_type = u64)]
+    pub expected_run_revision: AggregateRevision,
+    /// Exact artifact whose unchanged bytes the native must confirm.
+    pub artifact: String,
+    /// Current approved memory revision carrying the operational-gap evidence.
+    pub evidence_revision_id: String,
+    /// Hash of that exact immutable memory document.
+    #[schema(value_type = String)]
+    pub evidence_content_hash: ContentHash,
+    /// Approved report checksum embedded in that document.
+    #[schema(value_type = String)]
+    pub report_checksum: ContentHash,
+}
+
+/// Apply request bound to one exact no-write challenge preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TurnCorrelationChallengeApplyRequest {
+    /// The request whose server-owned boundary was previewed.
+    pub challenge: TurnCorrelationChallengePreviewRequest,
+    /// Hash returned by the preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Exact no-write plan for creating one future correlation point.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TurnCorrelationChallengePreviewDto {
+    /// Realm that verified the plan.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Exact project/task/team/run/binding identities retained by the plan.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Existing task retained by the plan.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Existing team-run identity retained by the plan.
+    pub team_run_id: String,
+    /// Existing agent-run identity retained by the plan.
+    pub agent_run_id: String,
+    /// Exact active topology SeatBinding retained by the plan.
+    pub seat_binding_id: String,
+    /// Exact issued runtime binding retained by the plan.
+    pub runtime_binding_id: String,
+    /// Native session identity retained by the plan.
+    pub native_id: String,
+    /// Verified artifact and approved evidence.
+    pub artifact: String,
+    /// Approved immutable evidence revision.
+    pub evidence_revision_id: String,
+    /// Hash of the exact approved evidence content.
+    pub evidence_content_hash: String,
+    /// Approved operational-gap report checksum.
+    pub report_checksum: String,
+    /// Canonical tail observed without writing to the runtime.
+    pub boundary: TurnTimelinePositionDto,
+    /// Hash binding every identity, revision, evidence fact and boundary.
+    pub preview_hash: String,
+    /// Always false: ambiguous historical turns are not backfilled.
+    pub historical_backfill_supported: bool,
+}
+
+/// Durable result of applying a server-owned correlation challenge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TurnCorrelationChallengeDto {
+    /// The no-write plan this application consumed.
+    pub preview: TurnCorrelationChallengePreviewDto,
+    /// Unpredictable server MessageId frozen before native contact.
+    pub message_id: String,
+    /// `prepared`, `dispatching`, `acknowledged`, or `settled`.
+    pub state: String,
+    /// Exact canonical position found by the adapter, once acknowledged.
+    pub message_position: Option<TurnTimelinePositionDto>,
+    /// Whether this call created the durable challenge intent.
+    pub applied: AppliedDto,
 }
 
 /// What the Admin-only late-handoff reconciliation is asked for.
@@ -7380,6 +7475,24 @@ pub trait ApplicationOperations: Send + Sync {
         agent_run_id: AgentRunId,
         request: &SettleTurnRequest,
     ) -> Result<SettledTurnDto, ApiError>;
+
+    /// Verify an exact binding and approved gap report, then read a fresh
+    /// canonical boundary without dispatching anything.
+    async fn preview_turn_correlation_challenge(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &TurnCorrelationChallengePreviewRequest,
+    ) -> Result<TurnCorrelationChallengePreviewDto, ApiError>;
+
+    /// Persist, claim and reconcile/deliver one fresh server-owned challenge.
+    async fn apply_turn_correlation_challenge(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+        request: &TurnCorrelationChallengeApplyRequest,
+    ) -> Result<TurnCorrelationChallengeDto, ApiError>;
 
     /// Record a bounded handoff after runtime cancellation without reopening.
     async fn attest_late_handoff(
@@ -11355,6 +11468,76 @@ pub async fn settle_turn(
         state
             .applications()
             .settle_turn(&key, caller.0, project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview one new server-owned correlation challenge without runtime effects.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The exact persistent seat run")
+    ),
+    request_body = TurnCorrelationChallengePreviewRequest,
+    responses(
+        (status = 200, body = TurnCorrelationChallengePreviewDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The identity, revision, binding, evidence, or native tail moved")
+    )
+)]
+pub async fn preview_turn_correlation_challenge(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    Json(request): Json<TurnCorrelationChallengePreviewRequest>,
+) -> Result<Json<TurnCorrelationChallengePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_turn_correlation_challenge(project_id, agent_run_id, &request)
+            .await?,
+    ))
+}
+
+/// Persist and deliver or reconcile one exact server-owned challenge.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("agent_run_id" = String, Path, description = "The exact persistent seat run"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = TurnCorrelationChallengeApplyRequest,
+    responses(
+        (status = 200, body = TurnCorrelationChallengeDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "The preview moved or the key names another challenge"),
+        (status = 503, description = "Delivery is uncertain; replay may reconcile but never resend")
+    )
+)]
+pub async fn apply_turn_correlation_challenge(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, agent_run_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<TurnCorrelationChallengeApplyRequest>,
+) -> Result<Json<TurnCorrelationChallengeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let agent_run_id = parse_id(&state, AgentRunId::parse(&agent_run_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_turn_correlation_challenge(&key, project_id, agent_run_id, &request)
             .await?,
     ))
 }

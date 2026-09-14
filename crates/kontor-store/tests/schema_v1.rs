@@ -213,6 +213,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "topology_nodes",
     "topology_spec_canonicalization_receipts",
     "topology_specs",
+    "turn_correlation_challenges",
     "turn_dispatches",
     "work_calendars",
     "work_profiles",
@@ -549,8 +550,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // ticket one consultation was asked
     // about, frozen beside its run because the node's task belongs to the
     // delivery workspace, and leaves a pre-v96 run's subject visibly
-    // unrecorded.
-    assert_eq!(SCHEMA_VERSION, 96);
+    // unrecorded. v97 adds the immutable future-turn correlation challenge;
+    // no historical runtime position can enter that ledger.
+    assert_eq!(SCHEMA_VERSION, 97);
 }
 
 #[test]

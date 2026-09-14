@@ -385,6 +385,45 @@ const TURN_RUNTIME_PROOF: &[FieldSpec] = &[
     ),
 ];
 
+/// Evidence and revision fences for one server-owned future correlation point.
+const TURN_CORRELATION_CHALLENGE: &[FieldSpec] = &[
+    field(
+        "role_slot",
+        ArgType::OpenKey,
+        "The existing role slot whose exact binding receives the challenge.",
+    ),
+    field(
+        "expected_task_revision",
+        ArgType::Revision,
+        "The task revision named by the approved recovery evidence.",
+    ),
+    field(
+        "expected_run_revision",
+        ArgType::Revision,
+        "The existing agent-run revision named by the approved recovery evidence.",
+    ),
+    field(
+        "artifact",
+        ArgType::OpenKey,
+        "The one high-scope artifact whose unchanged state must be confirmed.",
+    ),
+    field(
+        "evidence_revision_id",
+        ArgType::ExternalId,
+        "The current approved immutable memory revision.",
+    ),
+    field(
+        "evidence_content_hash",
+        ArgType::Text,
+        "The lowercase SHA-256 digest of that exact memory revision.",
+    ),
+    field(
+        "report_checksum",
+        ArgType::Text,
+        "The approved operational-gap checksum embedded in the evidence.",
+    ),
+];
+
 /// The durable runtime-facing identity optionally declared by an epic apply.
 const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
     field(
@@ -1969,6 +2008,105 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Records no verdict and chooses no phase.",
     },
     ToolSpec {
+        name: "kontor_turn_correlation_challenge_preview",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The existing bound agent run; it is never replaced.",
+            ),
+            req(
+                "role_slot",
+                Place::Body,
+                ArgType::OpenKey,
+                "The existing role slot whose exact binding would receive the challenge.",
+            ),
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The task revision named by the approved recovery evidence.",
+            ),
+            req(
+                "expected_run_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The agent-run revision named by the approved recovery evidence.",
+            ),
+            req(
+                "artifact",
+                Place::Body,
+                ArgType::OpenKey,
+                "The one high-scope artifact whose unchanged state must be confirmed.",
+            ),
+            req(
+                "evidence_revision_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "The current approved immutable memory revision.",
+            ),
+            req(
+                "evidence_content_hash",
+                Place::Body,
+                ArgType::Text,
+                "The lowercase SHA-256 digest of that exact memory revision.",
+            ),
+            req(
+                "report_checksum",
+                Place::Body,
+                ArgType::Text,
+                "The approved operational-gap checksum embedded in the evidence.",
+            ),
+        ],
+        about: "Preview one future server-generated correlation point on the exact existing binding; never backfills historical positions or sends a message.",
+    },
+    ToolSpec {
+        name: "kontor_turn_correlation_challenge_apply",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The existing bound agent run; it is never replaced.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "challenge",
+                Place::Body,
+                ArgType::Object(TURN_CORRELATION_CHALLENGE),
+                "The exact evidence and identity request that was previewed.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The server-owned preview hash, including the canonical tail boundary.",
+            ),
+        ],
+        about: "Persist and dispatch at most one future server-generated correlation challenge on the exact existing binding; retries only reconcile.",
+    },
+    ToolSpec {
         name: "kontor_turn_settle",
         tier: CallerTier::Operator,
         method: Method::Post,
@@ -2014,6 +2152,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Object(TURN_RUNTIME_PROOF),
                 "Exact current runtime message and terminal response positions. Absence is refused by the daemon.",
+            ),
+            opt(
+                "correlation_challenge_message_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "A server-generated challenge MessageId; mutually exclusive with runtime_proof. The daemon derives every canonical position.",
             ),
             IDEMPOTENCY,
         ],
@@ -6503,6 +6647,47 @@ mod tests {
             0,
             "a client that could name an outcome could decide how a run ended"
         );
+    }
+
+    #[test]
+    fn turn_correlation_recovery_is_an_exact_operator_preview_apply_pair() {
+        let preview = ToolSpec::find("kontor_turn_correlation_challenge_preview")
+            .expect("the challenge preview is registered");
+        let apply = ToolSpec::find("kontor_turn_correlation_challenge_apply")
+            .expect("the challenge apply is registered");
+        assert_eq!(preview.tier, CallerTier::Operator);
+        assert_eq!(preview.kind, OpKind::Read);
+        assert_eq!(apply.tier, CallerTier::Operator);
+        assert_eq!(apply.kind, OpKind::Write);
+        assert_eq!(
+            preview.path,
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview"
+        );
+        assert_eq!(
+            apply.path,
+            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply"
+        );
+        assert!(preview.args.iter().all(|argument| {
+            argument.name != "idempotency_key" && argument.name != "message_position"
+        }));
+        let challenge = apply
+            .args
+            .iter()
+            .find(|argument| argument.name == "challenge")
+            .expect("apply carries the previewed challenge");
+        assert_eq!(challenge.ty, ArgType::Object(TURN_CORRELATION_CHALLENGE));
+        assert!(
+            TURN_CORRELATION_CHALLENGE
+                .iter()
+                .all(|field| field.name != "message_position"),
+            "no caller-selected historical position is exposed"
+        );
+        let settle = ToolSpec::find("kontor_turn_settle").expect("turn settlement is registered");
+        assert!(settle.args.iter().any(|argument| {
+            argument.name == "correlation_challenge_message_id"
+                && argument.place == Place::Body
+                && !argument.required
+        }));
     }
 
     #[test]
