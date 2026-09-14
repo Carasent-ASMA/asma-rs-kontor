@@ -21334,6 +21334,9 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
         ContentHash::parse("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
             .expect("the approved historical report hash");
     let report_checksum =
+        ContentHash::parse("0a425a0c42dfe904411e5ca417e7c04df31991e0e8047798245f84ea2704fa4a")
+            .expect("the current approved report hash");
+    let correction_report_checksum =
         ContentHash::parse("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
             .expect("the approved identity-correction report hash");
     let evidence = CanonicalDocument::from_value(&serde_json::json!({
@@ -21374,7 +21377,7 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
                 "agent_run_id": before.id.to_string(),
                 "agent_run_revision": before.revision.get()
             },
-            "report_sha256": report_checksum.as_str()
+            "report_sha256": correction_report_checksum.as_str()
         },
         "closeout_recovery_20260914": {
             "asma_8118": {"artifact": "high-scope-record"}
@@ -21782,7 +21785,7 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
                 "agent_run_id": after.id.to_string(),
                 "agent_run_revision": after.revision.get()
             },
-            "report_sha256": report_checksum.as_str()
+            "report_sha256": correction_report_checksum.as_str()
         },
         "closeout_recovery_20260914": {
             "asma_8118": {"artifact": "high-scope-record"}
