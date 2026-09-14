@@ -987,6 +987,71 @@ mod tests {
     }
 
     #[test]
+    fn correlation_challenge_preview_and_apply_route_exactly_once_through_the_generic_client() {
+        let evidence_hash = "a".repeat(64);
+        let report_checksum = "b".repeat(64);
+        let challenge = serde_json::json!({
+            "role_slot": "swe",
+            "expected_task_revision": 2,
+            "expected_run_revision": 6,
+            "artifact": "high-scope-record",
+            "evidence_revision_id": UUID,
+            "evidence_content_hash": evidence_hash,
+            "report_checksum": report_checksum
+        });
+        let preview = build(
+            spec("kontor_turn_correlation_challenge_preview"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "agent_run_id": UUID,
+                "role_slot": challenge["role_slot"],
+                "expected_task_revision": challenge["expected_task_revision"],
+                "expected_run_revision": challenge["expected_run_revision"],
+                "artifact": challenge["artifact"],
+                "evidence_revision_id": challenge["evidence_revision_id"],
+                "evidence_content_hash": challenge["evidence_content_hash"],
+                "report_checksum": challenge["report_checksum"]
+            }),
+        )
+        .expect("the read-only preview builds");
+        assert_eq!(
+            preview.path,
+            format!("/v1/projects/{UUID}/agent-runs/{UUID}/turn-correlation:challenge-preview")
+        );
+        assert!(preview.idempotency_key.is_none());
+        assert!(
+            preview
+                .body
+                .as_ref()
+                .is_some_and(|body| body.get("message_position").is_none())
+        );
+
+        let apply = build(
+            spec("kontor_turn_correlation_challenge_apply"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "agent_run_id": UUID,
+                "idempotency_key": "challenge-apply-once",
+                "challenge": challenge,
+                "preview_hash": "c".repeat(64)
+            }),
+        )
+        .expect("the preview-bound apply builds");
+        assert_eq!(
+            apply.path,
+            format!("/v1/projects/{UUID}/agent-runs/{UUID}/turn-correlation:challenge-apply")
+        );
+        assert_eq!(
+            apply.idempotency_key.as_deref(),
+            Some("challenge-apply-once")
+        );
+        assert_eq!(
+            apply.body.as_ref().and_then(|body| body.get("challenge")),
+            Some(&challenge)
+        );
+    }
+
+    #[test]
     fn a_streamed_read_bounds_itself_from_its_arguments_and_defaults_otherwise() {
         assert_eq!(budget_from(&serde_json::json!({})), FrameBudget::default());
         let bounded = budget_from(&serde_json::json!({ "max_frames": 5, "idle_ms": 250 }));

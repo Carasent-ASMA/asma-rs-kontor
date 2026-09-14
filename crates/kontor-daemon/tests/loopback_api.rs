@@ -21262,6 +21262,727 @@ fn observe_post_turn_status(world: &World, project: &str, agent_run: &str) {
 }
 
 #[tokio::test]
+async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-correlation").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("run id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("role slot").to_owned();
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let agent_run_id = AgentRunId::parse(&agent_run).expect("agent run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = before.binding.clone().expect("the run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the binding is held");
+    // Two content positions with no MessageId reproduce the only fact Kontor
+    // can safely conclude from the historical Paseo 0.8.0 transcript:
+    // correlation is ambiguous. Neither position is caller-selectable through
+    // the new challenge API.
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "uncorrelated historical one", kontor_api::now())
+        .expect("the first uncorrelated position exists");
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "uncorrelated historical two", kontor_api::now())
+        .expect("the second uncorrelated position exists");
+    let task_id = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, before.team_run_id)
+            .expect("team reads")
+            .expect("team exists")
+            .task_id
+    });
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let role_slot_id = RoleSlotId::parse(&role_slot).expect("role slot");
+    let topology_seat = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("task topology reads")
+            .expect("task topology exists");
+        let mut matching = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("task seats read")
+            .into_iter()
+            .filter(|seat| {
+                seat.lifecycle == TopologyLifecycle::Active
+                    && seat.task_id == Some(task_id)
+                    && seat.team_run_id == Some(before.team_run_id)
+                    && seat.role_slot_id == role_slot_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "the run has one exact topology seat");
+        matching.remove(0)
+    });
+    let historical_report_checksum =
+        ContentHash::parse("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
+            .expect("the approved historical report hash");
+    let report_checksum =
+        ContentHash::parse("0a425a0c42dfe904411e5ca417e7c04df31991e0e8047798245f84ea2704fa4a")
+            .expect("the current approved report hash");
+    let correction_report_checksum =
+        ContentHash::parse("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
+            .expect("the approved identity-correction report hash");
+    let evidence = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "type": "operational_gap",
+        "project_id": project,
+        "report_sha256": report_checksum.as_str(),
+        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
+            "report_sha256": historical_report_checksum.as_str(),
+            "blocker": {
+                "code": "runtime_proof_unavailable",
+                "settlement_attempted": false
+            },
+            "readback": {
+                "task": {"id": task_id.to_string(), "revision": task.revision.get()},
+                "team_run_id": before.team_run_id.to_string(),
+                "agent_run": {"id": agent_run, "revision": before.revision.get()},
+                "seat_binding_id": binding.id.to_string(),
+                "native_id": binding.identity.native_id.as_str()
+            },
+            "canonical_timeline": {
+                "epoch": 2,
+                "end_sequence": 385,
+                "next": null,
+                "paseo_version": "0.8.0",
+                "user_message_sequences": [1, 144],
+                "correlation_fields": {
+                    "message_id": "null for every event",
+                    "native_event_id": "null for every event"
+                }
+            }
+        },
+        "asma_8118_binding_identity_correction_20260914": {
+            "exact_identity": {
+                "topology_seat_binding_id": topology_seat.id.to_string(),
+                "runtime_binding_id": binding.id.to_string(),
+                "runtime_binding_generation": binding.identity.generation,
+                "agent_run_id": before.id.to_string(),
+                "agent_run_revision": before.revision.get()
+            },
+            "report_sha256": correction_report_checksum.as_str()
+        },
+        "closeout_recovery_20260914": {
+            "asma_8118": {"artifact": "high-scope-record"}
+        }
+    }))
+    .expect("the evidence canonicalizes");
+    let proposal = world.daemon.state().with_store(|store| {
+        let provenance = kontor_store::memory::MemoryProvenance {
+            source: "operator".to_owned(),
+            source_id: None,
+            legacy_last_write_wins: false,
+            history_unavailable: false,
+        };
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project_id,
+                "turn-correlation-gap",
+                0,
+                &evidence,
+                &provenance,
+                "test-author",
+            )
+            .expect("the gap is proposed");
+        store
+            .approve_memory_revision(
+                project_id,
+                "turn-correlation-gap",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )
+            .expect("the gap is approved");
+        proposal
+    });
+
+    // A caller-invented historical MessageId and positions remain ordinary
+    // proof and fail because the canonical event carries no subject identity.
+    let turns_before = world.daemon.state().with_store(|store| {
+        store
+            .list_settled_turns(project_id, task_id)
+            .expect("turns read")
+            .len()
+    });
+    let fabricated = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task.revision.get(),
+            "runtime_proof": {
+                "message_id": kontor_runtime::request::MessageId::generate().to_string(),
+                "message_position": {"epoch": 1, "sequence": 1},
+                "response_position": {"epoch": 1, "sequence": 3}
+            },
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-fabricated-history")
+    .send(&world)
+    .await;
+    assert_eq!(fabricated.status, 409, "{}", fabricated.body);
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_settled_turns(project_id, task_id)
+            .expect("turns read")
+            .len()),
+        turns_before,
+        "ambiguous history cannot create a role-turn receipt"
+    );
+
+    let challenge_request = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task.revision.get(),
+        "expected_run_revision": before.revision.get(),
+        "artifact": "high-scope-record",
+        "evidence_revision_id": proposal.revision_id,
+        "evidence_content_hash": proposal.document.hash().as_str(),
+        "report_checksum": report_checksum.as_str()
+    });
+    let challenge_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-preview");
+    for (item_id, changes) in [
+        (
+            "turn-correlation-gap-runtime-as-seat",
+            vec![(
+                "/asma_8118_binding_identity_correction_20260914/exact_identity/topology_seat_binding_id",
+                serde_json::json!(binding.id.to_string()),
+            )],
+        ),
+        (
+            "turn-correlation-gap-seat-as-runtime",
+            vec![(
+                "/asma_8118_binding_identity_correction_20260914/exact_identity/runtime_binding_id",
+                serde_json::json!(topology_seat.id.to_string()),
+            )],
+        ),
+        (
+            "turn-correlation-gap-abbreviated-null-strings",
+            vec![
+                (
+                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/message_id",
+                    serde_json::json!("null"),
+                ),
+                (
+                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/native_event_id",
+                    serde_json::json!("null"),
+                ),
+            ],
+        ),
+    ] {
+        let mut swapped: serde_json::Value =
+            serde_json::from_str(evidence.json()).expect("the evidence JSON reads");
+        for (pointer, wrong_value) in changes {
+            *swapped
+                .pointer_mut(pointer)
+                .expect("the evidence field exists") = wrong_value;
+        }
+        let swapped = CanonicalDocument::from_value(&swapped).expect("the swap canonicalizes");
+        let swapped_proposal = world.daemon.state().with_store(|store| {
+            let provenance = kontor_store::memory::MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: None,
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            };
+            let (proposal, _) = store
+                .propose_memory_revision(
+                    project_id,
+                    item_id,
+                    0,
+                    &swapped,
+                    &provenance,
+                    "test-author",
+                )
+                .expect("the mismatched gap is proposed");
+            store
+                .approve_memory_revision(
+                    project_id,
+                    item_id,
+                    &proposal.revision_id,
+                    1,
+                    "test-reviewer",
+                )
+                .expect("the mismatched gap is approved");
+            proposal
+        });
+        let refused = Call::post(
+            &challenge_uri,
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": task.revision.get(),
+                "expected_run_revision": before.revision.get(),
+                "artifact": "high-scope-record",
+                "evidence_revision_id": swapped_proposal.revision_id,
+                "evidence_content_hash": swapped_proposal.document.hash().as_str(),
+                "report_checksum": report_checksum.as_str()
+            }),
+        )
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+        assert_eq!(
+            refused.status, 409,
+            "a mislabeled identity or abbreviated correlation field must refuse: {}",
+            refused.body
+        );
+    }
+    let calls_before_preview = world.fake.calls().len();
+    let preview = Call::post(&challenge_uri, &challenge_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["historical_backfill_supported"], false);
+    assert_eq!(
+        preview.json()["seat_binding_id"],
+        topology_seat.id.to_string()
+    );
+    assert_eq!(preview.json()["runtime_binding_id"], binding.id.to_string());
+    assert_eq!(
+        preview.json()["native_id"],
+        binding.identity.native_id.as_str()
+    );
+    assert!(
+        world.fake.calls()[calls_before_preview..]
+            .iter()
+            .all(|call| !matches!(call, AdapterCall::CorrelationChallengeSend(..))),
+        "preview performs no native send"
+    );
+
+    let apply_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-apply");
+    let apply_body = serde_json::json!({
+        "challenge": challenge_request,
+        "preview_hash": preview.json()["preview_hash"]
+    });
+    // Lose the first acknowledgement after the fake has committed the exact
+    // message. The durable row is now `dispatching`: replay may search after
+    // its boundary, but the CAS can never grant a second first send.
+    world.fake.lose_next_send_ack();
+    let uncertain = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(uncertain.status, 503, "{}", uncertain.body);
+    let after_uncertain = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge")
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    assert_eq!(
+        after_uncertain.state,
+        kontor_store::TurnCorrelationState::Dispatching
+    );
+    let message_id = after_uncertain.message_id.as_str().to_owned();
+    let sends_after_first = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+        .count();
+    assert_eq!(
+        sends_after_first, 1,
+        "exactly one first-dispatch claim wins"
+    );
+
+    let bypass_preview = Call::post(&challenge_uri, &challenge_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(bypass_preview.status, 200, "{}", bypass_preview.body);
+    let bypass = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "challenge": challenge_request,
+            "preview_hash": bypass_preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-challenge-bypass-key")
+    .send(&world)
+    .await;
+    assert_eq!(bypass.status, 409, "{}", bypass.body);
+    assert!(
+        world.daemon.state().with_store(|store| store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge-bypass-key")
+            .expect("the bypass key reads")
+            .is_none()),
+        "the partial unique index leaves no second durable challenge"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+            .count(),
+        sends_after_first,
+        "a fresh idempotency key cannot send a second active challenge"
+    );
+
+    let reconciled = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(reconciled.status, 200, "{}", reconciled.body);
+    assert_eq!(reconciled.json()["state"], "acknowledged");
+    assert_eq!(reconciled.json()["message_id"], message_id);
+    assert_eq!(reconciled.json()["applied"], "unchanged");
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+            .count(),
+        sends_after_first,
+        "a lost acknowledgement is reconciled without another first send"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, false)))
+            .count(),
+        1,
+        "the uncertain replay is explicitly reconciliation-only"
+    );
+
+    let calls_after_acknowledgement = world.fake.calls().len();
+    let replayed = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["message_id"], message_id);
+    assert_eq!(world.fake.calls().len(), calls_after_acknowledgement);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge")
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    world
+        .fake
+        .observe_correlation_challenge_completion(
+            &held,
+            stored.expected_response.as_str(),
+            kontor_api::now(),
+        )
+        .expect("the exact confirmation lands");
+    let settle_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task.revision.get(),
+        "correlation_challenge_message_id": message_id,
+        "artifacts": ["high-scope-record"]
+    });
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &settle_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "created");
+    let consumed = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(project_id, &ExternalId::parse(&message_id).expect("id"))
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    assert_eq!(consumed.state, kontor_store::TurnCorrelationState::Settled);
+    assert_eq!(
+        consumed
+            .settled_turn_id
+            .expect("the turn is linked")
+            .to_string(),
+        settled.json()["turn_id"].as_str().expect("turn id")
+    );
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("run reads")
+            .expect("run exists")
+    });
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.team_run_id, before.team_run_id);
+    assert_eq!(after.role, before.role);
+    assert_eq!(after.binding, before.binding);
+    assert!(after.terminal.is_none());
+
+    // Prepare a second, independently server-owned challenge at the now-current
+    // run revision. Moving the task after acknowledgement must invalidate that
+    // challenge even when the caller supplies the task's new revision.
+    let current_task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let stale_evidence = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "type": "operational_gap",
+        "project_id": project,
+        "report_sha256": report_checksum.as_str(),
+        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
+            "report_sha256": historical_report_checksum.as_str(),
+            "blocker": {
+                "code": "runtime_proof_unavailable",
+                "settlement_attempted": false
+            },
+            "readback": {
+                "task": {"id": task_id.to_string(), "revision": current_task.revision.get()},
+                "team_run_id": after.team_run_id.to_string(),
+                "agent_run": {"id": after.id.to_string(), "revision": after.revision.get()},
+                "seat_binding_id": binding.id.to_string(),
+                "native_id": binding.identity.native_id.as_str()
+            },
+            "canonical_timeline": {
+                "epoch": 2,
+                "end_sequence": 385,
+                "next": null,
+                "paseo_version": "0.8.0",
+                "user_message_sequences": [1, 144],
+                "correlation_fields": {
+                    "message_id": "null for every event",
+                    "native_event_id": "null for every event"
+                }
+            }
+        },
+        "asma_8118_binding_identity_correction_20260914": {
+            "exact_identity": {
+                "topology_seat_binding_id": topology_seat.id.to_string(),
+                "runtime_binding_id": binding.id.to_string(),
+                "runtime_binding_generation": binding.identity.generation,
+                "agent_run_id": after.id.to_string(),
+                "agent_run_revision": after.revision.get()
+            },
+            "report_sha256": correction_report_checksum.as_str()
+        },
+        "closeout_recovery_20260914": {
+            "asma_8118": {"artifact": "high-scope-record"}
+        }
+    }))
+    .expect("the stale-task evidence canonicalizes");
+    let stale_proposal = world.daemon.state().with_store(|store| {
+        let provenance = kontor_store::memory::MemoryProvenance {
+            source: "operator".to_owned(),
+            source_id: None,
+            legacy_last_write_wins: false,
+            history_unavailable: false,
+        };
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project_id,
+                "turn-correlation-stale-task-gap",
+                0,
+                &stale_evidence,
+                &provenance,
+                "test-author",
+            )
+            .expect("the second gap is proposed");
+        store
+            .approve_memory_revision(
+                project_id,
+                "turn-correlation-stale-task-gap",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )
+            .expect("the second gap is approved");
+        proposal
+    });
+    let stale_request = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": current_task.revision.get(),
+        "expected_run_revision": after.revision.get(),
+        "artifact": "high-scope-record",
+        "evidence_revision_id": stale_proposal.revision_id,
+        "evidence_content_hash": stale_proposal.document.hash().as_str(),
+        "report_checksum": report_checksum.as_str()
+    });
+    let stale_preview = Call::post(&challenge_uri, &stale_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(stale_preview.status, 200, "{}", stale_preview.body);
+    let stale_applied = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "challenge": stale_request,
+            "preview_hash": stale_preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-stale-task-challenge")
+    .send(&world)
+    .await;
+    assert_eq!(stale_applied.status, 200, "{}", stale_applied.body);
+    let stale_message_id = stale_applied.json()["message_id"]
+        .as_str()
+        .expect("the second challenge id")
+        .to_owned();
+    let stale_challenge = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(
+                project_id,
+                &ExternalId::parse(&stale_message_id).expect("challenge id"),
+            )
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, stale_challenge.body.as_str(), kontor_api::now())
+        .expect("a second exact identity-poor challenge body is reproduced");
+    let stale_response_position = world
+        .fake
+        .observe_correlation_challenge_completion(
+            &held,
+            stale_challenge.expected_response.as_str(),
+            kontor_api::now(),
+        )
+        .expect("the second exact confirmation lands");
+    let duplicate_body_settlement = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": current_task.revision.get(),
+            "correlation_challenge_message_id": stale_message_id,
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-duplicate-body-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        duplicate_body_settlement.status, 409,
+        "{}",
+        duplicate_body_settlement.body
+    );
+    assert_eq!(duplicate_body_settlement.code(), "idempotency_conflict");
+
+    let moved = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+        &serde_json::json!({
+            "action": "block",
+            "task_id": task_id,
+            "expected_revision": current_task.revision.get(),
+            "reason": "prove the acknowledged challenge is revision fenced"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-move-task")
+    .send(&world)
+    .await;
+    assert_eq!(moved.status, 200, "{}", moved.body);
+    let moved_revision = AggregateRevision::parse(
+        moved.json()["revision"]
+            .as_u64()
+            .expect("the moved task revision"),
+    )
+    .expect("a positive revision");
+
+    let stale_settlement = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": moved_revision.get(),
+            "correlation_challenge_message_id": stale_message_id,
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-stale-task-settle")
+    .send(&world)
+    .await;
+    assert_eq!(stale_settlement.status, 409, "{}", stale_settlement.body);
+
+    // Defence in depth: bypass the daemon method and ask the store to insert a
+    // role turn at the moved revision. The v97 trigger independently requires
+    // the challenge's frozen task revision and rejects the row atomically.
+    let store_refusal = world.daemon.state().with_store(|store| {
+        store
+            .settle_role_turn(&kontor_store::NewRoleTurn {
+                id: kontor_core::id::RoleTurnId::generate(),
+                project_id,
+                task_id,
+                team_run_id: after.team_run_id,
+                agent_run_id: after.id,
+                role_slot_id: RoleSlotId::parse(&role_slot).expect("role slot"),
+                idempotency_key: "turn-correlation-store-stale-task".to_owned(),
+                task_revision: moved_revision,
+                binding_generation: binding.identity.generation,
+                runtime_proof: Some(kontor_store::RoleTurnRuntimeProof {
+                    message_id: stale_message_id.clone(),
+                    timeline_epoch: stale_challenge.message_epoch.expect("message epoch"),
+                    message_sequence: stale_challenge.message_sequence.expect("message sequence"),
+                    response_sequence: stale_response_position.sequence,
+                    runtime_observation_cursor: kontor_core::id::EventCursor::parse(1)
+                        .expect("positive cursor"),
+                }),
+                authority_tier: "operator",
+                account_profile: after.account_profile_id,
+                artifacts: [
+                    kontor_core::id::ArtifactKey::parse("high-scope-record").expect("artifact")
+                ]
+                .into_iter()
+                .collect(),
+                evidence_hash: ContentHash::of(b"store task-revision trigger regression"),
+                settled_at: kontor_api::now(),
+            })
+            .expect_err("storage independently rejects a moved-task challenge")
+    });
+    assert!(
+        store_refusal.to_string().contains("constraint refused"),
+        "the v97 challenge constraint is the refusing fence: {store_refusal}"
+    );
+    let still_acknowledged = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(
+                project_id,
+                &ExternalId::parse(&stale_message_id).expect("challenge id"),
+            )
+            .expect("challenge reads")
+            .expect("challenge remains")
+    });
+    assert_eq!(
+        still_acknowledged.state,
+        kontor_store::TurnCorrelationState::Acknowledged,
+        "the rejected moved-task insert neither settles nor rewrites the challenge"
+    );
+}
+
+#[tokio::test]
 async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
