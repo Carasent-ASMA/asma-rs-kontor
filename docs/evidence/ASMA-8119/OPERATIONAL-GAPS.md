@@ -74,8 +74,11 @@ TeamRun, AgentRun, SeatBinding, topology, or native-runtime evidence.
   `01a09509-5f19-7060-84cf-62d994bc6217` revision 6. The historical addendum
   retains report SHA
   `3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8`;
-  the root and identity-correction SHA are
+  the identity-correction SHA remains
   `0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c`.
+  Later additive report revisions advance only the root SHA (revision 23 was
+  `0a425a0c42dfe904411e5ca417e7c04df31991e0e8047798245f84ea2704fa4a`),
+  so the current root and historical nested receipt must not be equated.
 - Bounded effect: historical backfill is refused. No settlement was attempted,
   no message was sent, and no runtime or control-plane state changed. The
   source-only candidate can establish only a new server-generated,

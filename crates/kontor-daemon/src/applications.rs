@@ -15801,6 +15801,8 @@ impl Services {
                 == Some(binding.identity.native_id.as_str())
             && text_at(&format!("{addendum}/report_sha256"))
                 == Some("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
+            // The root follows the current additive report revision. The
+            // nested correction keeps the immutable hash of revision 21.
             && text_at("/report_sha256") == Some(request.report_checksum.as_str())
             && text_at(&format!("{correction}/report_sha256"))
                 == Some("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
