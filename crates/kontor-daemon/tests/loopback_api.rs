@@ -1269,6 +1269,11 @@ impl Respond for MultiHopEpicJira {
 /// answered reads, because the whole failure is that a write never happened and
 /// a read never noticed. This one keeps the description, applies a `PUT` to it
 /// and serves what it now holds, so a test can assert what a reader would see.
+///
+/// It reports the immutable id [`jira_issue_id`] derives from its key, which is
+/// the same value a confirmed binding records. Identity resolution reads an
+/// issue back by that id, so a fixture without one cannot be answered at all,
+/// and one reporting a different id looks like a renamed issue.
 #[derive(Clone)]
 struct DescriptionJira {
     key: &'static str,
@@ -1364,7 +1369,14 @@ impl Respond for DescriptionJira {
             return ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"transitions": []}));
         }
-        if !path.contains(&format!("/rest/api/3/issue/{}", self.key)) {
+        // Addressable by the current key *and* by the immutable id, because
+        // identity resolution reads an issue back by whichever it holds.
+        if !path.contains(&format!("/rest/api/3/issue/{}", self.key))
+            && !path.contains(&format!(
+                "/rest/api/3/issue/{}",
+                jira_issue_id(self.key).as_str()
+            ))
+        {
             return ResponseTemplate::new(404);
         }
         if request.method.as_str() == "PUT" {
@@ -1398,6 +1410,10 @@ impl Respond for DescriptionJira {
         let held = self.body.lock().expect("the body is not poisoned").clone();
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": self.key,
+            // The immutable REST id, derived exactly as a confirmed binding
+            // derives it. Without one the connector cannot answer at all; with
+            // a different one the key looks like it was renamed.
+            "id": jira_issue_id(self.key).as_str(),
             "fields": {
                 "project": {"key": "ASMA"},
                 "status": {
@@ -29442,7 +29458,23 @@ async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
         ),
         &serde_json::json!({
             "role_slot": "omega-k1",
-            "expected_task_revision": 1,
+            // Read, not assumed. The task really has progressed by this point,
+            // so a literal revision only held while that progress happened to
+            // stop at one. The settlement still has to present the revision it
+            // read, which is what the guard below exercises.
+            "expected_task_revision": recovered.world.daemon.state().with_store(|store| {
+                let task_id = store
+                    .get_team_run(project_id, team_run_id)
+                    .expect("the team run is readable")
+                    .expect("the team run exists")
+                    .task_id;
+                store
+                    .get_task(project_id, task_id)
+                    .expect("the task is readable")
+                    .expect("the task exists")
+                    .revision
+                    .get()
+            }),
             "runtime_proof": observe_current_turn(
                 &recovered.world,
                 &recovered.project,
@@ -47304,10 +47336,19 @@ async fn reconcile_plan_refuses_to_call_a_placeholder_body_converged() {
     .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic_id = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
     let task_id = applied.json()["tasks"][0]["task_id"]
         .as_str()
         .expect("a task id")
         .to_owned();
+    // A declaratively applied link carries a key and no immutable identity, and
+    // nothing may act on a binding that cannot prove one. Confirm it the way a
+    // materialization would, so this test exercises the placeholder-body rule
+    // rather than stopping at the identity precondition.
+    confirm_test_epic_identity(&world, &project_id.to_string(), &epic_id);
     let installed =
         install_jira_workflow(&world, &project_id.to_string(), "placeholder-body-workflow").await;
     assert_eq!(installed.status, 200, "{}", installed.body);
