@@ -31,6 +31,11 @@ Integration history, all on the same branch:
    change was renumbered 0094 -> **0095**, `PRAGMA user_version = 95`,
    `SCHEMA_VERSION = 95`, with a v95 sentence added to the `schema_v1`
    narrative.
+4. Rebased onto `6355b85027caea030d037bed4cf538c20ddea0e4`
+   (ASMA-8116 / PR #215), which published
+   `0095_immutable_jira_issue_identity.sql`; this change was renumbered
+   0095 -> **0096**, `PRAGMA user_version = 96`, and `SCHEMA_VERSION = 96`.
+   The two appended loopback test blocks were both preserved.
 
 The four conflicts in step 3 were all resolved additively rather than by
 preferring a side: the migration registry (both migrations kept), the
@@ -77,7 +82,7 @@ would collide with that ticket's own TSW. That invariant is preserved
 unchanged, and a first attempt to reuse the column was reverted when it
 violated it.
 
-Migration `0095_consultation_subject.sql` records the subject beside the run:
+Migration `0096_consultation_subject.sql` records the subject beside the run:
 
 - `subject_kind` — `'epic'`, `'task'`, or `NULL`;
 - `subject_task_id` — the exact advised ticket when the kind is `'task'`;
@@ -235,7 +240,7 @@ Against the contract's six required checks:
 | 5 — missing confirmed binding refuses before every mutation; old-token case green | `loopback_api`, `team_definition_render_contract` | PASS |
 | 6 — MUT-002 | below | KILLED |
 
-The migration's own guards: `schema_v1` pins `SCHEMA_VERSION` at 95 with its
+The migration's own guards: `schema_v1` pins `SCHEMA_VERSION` at 96 with its
 narrative; `the_database_refuses_every_impossible_subject_pairing` proves the
 column constraint rejects all six impossible pairings and admits exactly the
 three legal ones; and `the_settled_topic_correction_may_not_also_move_the_subject`
