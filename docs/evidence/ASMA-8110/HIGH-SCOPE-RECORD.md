@@ -547,7 +547,10 @@ The terminal archive-qualified target is candidate
 `18923bd0387f8bc88c1d5ed3bb878c478b3e189f`, tree
 `e6f7b3713b998fa08bacd83c9eb1847313c19612`, still integrated with master
 `f78d041e80042417e0d9a059449eb85737571797` at schema 96. The added quota
-regression proves the old call site fails red as `400 invalid_request`, subject
+regression freezes a durable succession attempt and exercises retirement,
+launch, whole-TeamRun hydration, and readback through `successors:recover`; it
+does not repeat the earlier fresh-observation and headroom planning walk. It
+proves the old launch call site fails red as `400 invalid_request`, subject
 `TeamRunSlots`, and the corrected path passes while retaining the other slot's
 recovery chain. Gate 9 exited 0 with 2479 Rust tests and 300 console tests; its
 complete log digest is

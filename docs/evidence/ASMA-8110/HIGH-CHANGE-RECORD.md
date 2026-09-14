@@ -711,8 +711,12 @@ hydrated.
 
 The new
 `succeeding_one_slot_preserves_an_abandoned_parent_in_another_slot` regression
-uses quota evidence and an account-pinned sibling seat. With only the production
-hunk reverted it fails at the supported succession route with `400` and
+freezes the durable `SuccessionAttempt` directly in the store, pins the sibling
+seat's account, and drives the supported `successors:recover` saga through
+retirement, launch, whole-TeamRun hydration, and readback. It deliberately does
+not retest `recover_quota_seat`'s earlier fresh-observation, provenance-matching,
+or headroom-walk planning; the defect is in the later launch step's roster. With
+only the production hunk reverted it fails at that succession route with `400` and
 `subject: "TeamRunSlots"`; with the fix restored it passes. It also proves that
 the successor was created in the quota-exhausted slot while the recovered
 successor in the other slot still points to its abandoned parent. The ordinary
@@ -758,3 +762,9 @@ No gate was waived or skipped. The nine ignored Rust tests predate this
 candidate; neither new regression is ignored. The current candidate has not
 been pushed, published, or merged. Independent verification and audit must
 evaluate this SHA and the evidence-only commit above it.
+
+The generic archive script logs that it exported `HEAD` but does not print the
+commit or tree SHA. The Gate 9 binding is therefore established by the invoking
+seat's recorded HEAD, the new test identities present in the log, the exact test
+count delta, and this separately committed evidence; improving the generic log
+format is deferred as OQ-B and is not part of this candidate.
