@@ -32894,11 +32894,15 @@ impl Services {
                 )
             })?;
         let recorded_successor_id = recorded_successor.map(|run| run.id);
+        // The roster handed to hydration must stay complete. An abandoned
+        // unbound run in another slot is still that slot's root while a live
+        // successor names it as its audit parent, and dropping it here makes
+        // the successor rootless -- refusing a succession this slot authorized.
+        // `TeamRunSlots::hydrate` is the single authority that keeps referenced
+        // abandoned parents and discards unreferenced ones.
         let slot_members: Vec<_> = members
             .iter()
-            .filter(|run| {
-                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
-            })
+            .filter(|run| recorded_successor_id != Some(run.id))
             .cloned()
             .collect();
         let bindings: Vec<_> = members

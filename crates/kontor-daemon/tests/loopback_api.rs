@@ -29055,6 +29055,260 @@ async fn replacing_one_slot_preserves_an_abandoned_parent_in_another_slot() {
     );
 }
 
+/// The retained-roster rule governs quota succession as well. Succeeding a seat
+/// hydrates the *whole* team run, so the verify slot's recovered successor —
+/// whose only root is an abandoned never-bound attempt — is part of the roster
+/// that an unrelated implementation succession must hydrate. Dropping that
+/// parent leaves the successor rootless and refuses a succession the quota
+/// evidence authorized, stranding the seat on an exhausted account.
+#[tokio::test]
+async fn succeeding_one_slot_preserves_an_abandoned_parent_in_another_slot() {
+    let (seeded, abandoned_id, abandoned_revision) =
+        abandoned_before_its_handoff("succeed-with-recovered-sibling").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+
+    // The exact alias the never-bound reroute resolves, and nothing else.
+    let recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Recovery verifier",
+            "harness": "fake.runtime",
+            "credential_alias": "recovery-verifier",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(recovery_account.status, 200, "{}", recovery_account.body);
+
+    // The relief account the succession moves onto. It declares no alias of its
+    // own, so it neither competes with the reroute's exact resolution nor
+    // inherits the lead account's spent allowance.
+    let relief = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Relief",
+            "harness": "fake.runtime",
+            "credential_alias": "relief",
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-relief-account")
+    .send(world)
+    .await;
+    assert_eq!(relief.status, 200, "{}", relief.body);
+    let relief_id = AccountProfileId::parse(
+        relief.json()["account_profile_id"]
+            .as_str()
+            .expect("the relief account id"),
+    )
+    .expect("a canonical relief account id");
+
+    // (1) The verify slot reaches the shape this regression is about: an
+    //     operator-abandoned unbound attempt that a live successor still names
+    //     as its audit parent.
+    hand_off_to_the_unbound_slot(&seeded, "succeed-with-recovered-sibling-handoff").await;
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{abandoned_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-reroute")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let recovered_id = AgentRunId::parse(
+        recovered.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the recovered successor id"),
+    )
+    .expect("a canonical recovered successor id");
+
+    // (2) A separate slot spends its own allowance. Nothing about that fact
+    //     touches the verify slot's lineage.
+    let sibling_id = AgentRunId::parse(
+        seats
+            .iter()
+            .find(|seat| seat["role_slot"] == "omega-k4")
+            .expect("the sibling slot is seated")["agent_run_id"]
+            .as_str()
+            .expect("the sibling run id"),
+    )
+    .expect("a canonical sibling run id");
+    // This pack seats without an account pin, and quota succession is
+    // account-attributed by construction. Pin the seeded lead account so the
+    // seat owns exactly the allowance the refusal below spends.
+    let exhausted = AccountProfileId::parse(&seeded.account).expect("the seeded lead account");
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.pin_agent_run_account(project_id, sibling_id, exhausted))
+        .expect("the seat owns the account it runs on");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, sibling_id)
+            .expect("the sibling reads")
+            .expect("the sibling remains")
+    });
+    let binding = before
+        .binding
+        .as_ref()
+        .expect("the sibling was bound")
+        .clone();
+    assert_ne!(
+        exhausted, relief_id,
+        "the succession has somewhere to move to"
+    );
+    let provider = world
+        .fake
+        .launched_model(sibling_id)
+        .expect("the sibling route")
+        .provider
+        .0;
+    let resets_at = kontor_api::now() + jiff::SignedDuration::from_secs(3_600);
+    let sibling = record_runtime_quota_refusal(
+        world, project_id, sibling_id, &binding, exhausted, &provider, resets_at,
+    )
+    .await
+    .0;
+
+    // (3) Freeze the durable attempt the way `recover_quota_seat` freezes it.
+    //     The planning walk is not what this regression is about; the roster the
+    //     launch step hydrates is.
+    let (task, team, quota) = world.daemon.state().with_store(|store| {
+        let team = store
+            .get_team_run(project_id, sibling.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists");
+        let task = store
+            .get_task(project_id, team.task_id)
+            .expect("the task reads")
+            .expect("the task exists");
+        let quota = store
+            .list_provider_quota_states(project_id)
+            .expect("the quota rows read")
+            .into_iter()
+            .find(|row| row.account_profile_id == exhausted && row.provider == provider)
+            .expect("the exact quota row the refusal wrote");
+        (task, team, quota)
+    });
+    let key = IdempotencyKey::parse("succeed-with-recovered-sibling-attempt")
+        .expect("an idempotency key");
+    let created_at = kontor_api::now();
+    assert!(created_at < resets_at, "the allowance is still spent");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_succession_attempt(&NewSuccessionAttempt {
+                id: kontor_core::id::SuccessionAttemptId::generate(),
+                project_id,
+                task_id: task.id,
+                team_run_id: team.id,
+                role: sibling.role.clone(),
+                predecessor_agent_run_id: sibling.id,
+                predecessor_runtime_binding_id: binding.id,
+                predecessor_native_identity: binding.identity.clone(),
+                expected_task_revision: task.revision,
+                expected_team_revision: team.revision,
+                expected_predecessor_revision: sibling.revision,
+                runtime_observation_cursor: sibling
+                    .projection
+                    .last_cursor
+                    .expect("the blocked cursor"),
+                quota_provenance_id: quota.provenance_id.expect("the runtime provenance"),
+                quota_state_revision: quota.revision,
+                quota_evidence_hash: quota.evidence_hash.clone(),
+                quota_provider: quota.provider.clone(),
+                successor_model_rung: Some(ModelRung {
+                    provider: ProviderRef("test".to_owned()),
+                    model: ModelRef("test".to_owned()),
+                    effort: None,
+                }),
+                successor_account_profile_id: Some(relief_id),
+                idempotency_key: key.clone(),
+                intent_hash: ContentHash::of(b"succeed-with-recovered-sibling-intent"),
+                deferred_until: None,
+                created_at,
+            })
+            .expect("the planned attempt is frozen while the quota row blocks")
+    });
+
+    // (4) The supported route: the saga retires the predecessor and launches
+    //     the successor, hydrating the team run on the way through.
+    let succeeded = Call::post_raw(
+        format!("/v1/projects/{project}/agent-runs/{sibling_id}/successors:recover"),
+        "",
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-attempt")
+    .send(world)
+    .await;
+    assert_eq!(succeeded.status, 200, "{}", succeeded.body);
+
+    // The succession really happened: the implementation slot holds a bound
+    // successor of the retired seat, on the account it was moved to.
+    let successor = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .list_agent_runs_for_team_run(project_id, team.id)
+                .expect("the roster reads")
+                .into_iter()
+                .filter_map(|row| {
+                    store
+                        .get_agent_run(project_id, row.agent_run_id)
+                        .expect("the run reads")
+                })
+                .find(|run| run.parent_agent_run_id == Some(sibling_id))
+        })
+        .expect("the succeeded slot holds a successor of the retired seat");
+    assert_eq!(successor.role.as_str(), "omega-k4");
+    assert!(successor.binding.is_some(), "the successor is bound");
+    assert_eq!(
+        successor.account_profile_id,
+        Some(relief_id),
+        "the succession moved off the exhausted account"
+    );
+
+    // The point: the unrelated slot's recovery lineage is intact. Its successor
+    // still names the abandoned parent, and that parent is still a row.
+    let still_recovered = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, recovered_id)
+            .expect("the recovered run reads")
+            .expect("the recovered run remains")
+    });
+    assert_eq!(
+        still_recovered.parent_agent_run_id,
+        Some(abandoned_id),
+        "the unrelated succession preserves the recovered slot's audit parent"
+    );
+    let parent = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, abandoned_id)
+            .expect("the abandoned parent reads")
+    });
+    assert!(
+        parent.is_some(),
+        "the abandoned parent the successor names is still a row"
+    );
+}
+
 /// Two undelivered targetless handoffs are two decisions, and neither of them
 /// says which one an Admin is recovering. Widening the authority to "some row
 /// exists" would let one reroute answer a handoff it was never authorized by,
