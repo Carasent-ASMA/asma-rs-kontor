@@ -5,7 +5,7 @@ Artifact: `high-scope-record`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-scope`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: implementation contract amended after rejected high verification
+Status: implementation contract amended for identity-preserving replacement and succession
 
 ## Decision and frozen baseline
 
@@ -49,14 +49,30 @@ AgentRun, seat, native-session, workspace, and `cwd` identity remains fixed.
 
 ## Schema generation
 
-This work's route migration is **`0090_gate_rejection_routes.sql`**. It was
-scoped as 0089/89, but master claimed v89 for ASMA-8101 publication
-attestations before this landed, so the route migration renumbered behind it
-and first shipped at schema 90. The protected realm currently reads back at 90
-with `task_gate_rejection_routes` present. The frozen integration candidate
-also contains ASMA-8114's later migrations 0091/0092, so its
-`SCHEMA_VERSION` and the next protected delivery readback are **92**; this
-does not renumber or rewrite this work's 0090 migration.
+This work's route migration is, and remains, **`0090_gate_rejection_routes.sql`**.
+It was scoped as 0089/89, but master claimed v89 for ASMA-8101 publication
+attestations before this landed, so the route migration renumbered behind it and
+first shipped at schema 90.
+
+Two numbers are in play and must not be conflated:
+
+- **the route migration** is `0090`. It is immutable and is never renumbered
+  again, whatever master adds after it;
+- **the terminal schema generation** is whatever the integrated candidate builds
+  to, and it moves every time master lands a migration.
+
+The candidate integrates master at `f78d041`, which carries `0091`
+(ASMA-8114 consultation semantic identity), `0092` (settled consultation topic
+corrections), `0093` (consultation session releases), `0094` (Jira description
+projection), `0095` (ASMA-8116 immutable Jira issue identity) and `0096`
+(ASMA-8117 consultation subject). Its `SCHEMA_VERSION` is therefore **96**, and
+that is what the protected delivery readback must require.
+
+A binary built from this candidate upgrades a realm through `0096`, so any
+readback pinned to an earlier generation cannot succeed. The generation below is
+stated as of this candidate; if master lands further migrations before delivery,
+the readback is re-pinned to the integrated terminal generation at that time and
+`0090` still identifies this work's route migration.
 
 ## Required behavior
 
@@ -415,8 +431,9 @@ the scope or implementation seat—performs this sequence:
    TeamRun, reopen a task, or issue a recovery command. Restart against the same
    state root.
 6. Run SQLite `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require
-   `ok`, zero foreign-key rows, schema version 92, and migrations 0090, 0091,
-   and 0092 exactly once.
+   `ok`, zero foreign-key rows, schema version 96, and migrations 0090 through
+   0096 each exactly once. `0090` is this work's route migration; `0091`-`0096`
+   are the integrated generations it now sits behind.
 7. Read the realm, topology, ASMA-8100, its workflow, source receipt, gate
    history, and route ledger back. Require exact identity equality with step 4,
    `done@5`, `final-review@5`, the later passed evaluation unchanged, and no
@@ -485,3 +502,55 @@ and the verifier's OQ-8110-03 is resolved by retiring the live ASMA-8100
 recovery while retaining generic qualification. A future request to recover a
 terminal or later-advanced task requires new scope and must not reinterpret this
 contract.
+
+## Operator continuation addendum: existing TeamRun recovery
+
+The 2026-09-13/14 operator continuation explicitly authorizes supported
+settlement or archive-and-replacement of unusable seats in TeamRun
+`01a07398-b8d2-7363-8dcc-e92c061deffa`, recovery of its dead TSW container, and
+routing of fresh implementation, verification and audit turns. This is an
+identity-preserving continuation of the existing run; it does not authorize a
+new TeamRun, duplicate topology, a gate waiver, or a live ASMA-8100 recovery.
+The protected ASMA-8100 receipt remains historical and unconsumed.
+
+The first supported implementation-slot replacement after terminal settlement
+revealed a production defect inside this document's existing
+`crates/kontor-daemon/src/applications.rs` and `loopback_api.rs` ownership. An
+abandoned unbound parent in the verify slot was discarded before its recovered
+successor could be hydrated, making replacement of a separate implementation
+slot fail with `400 invalid TeamRunSlots`. The refusal wrote no state.
+
+The bounded correction keeps the full recovery lineage until
+`TeamRunSlots::hydrate` applies the already-defined rule: retain abandoned
+parents referenced by a successor and discard abandoned runs that are not part
+of a recovery chain. The new cross-slot regression proves a recovered successor
+retains its parent while an unrelated terminal slot is replaced. It changes no
+slot identity rule, scheduler route, topology, gate verdict, Jira projection, or
+ASMA-8100 state.
+
+The first archive-qualified recovery target was candidate
+`dc6cb3718671d1ef421797be88301c9dda64b7b1`, tree
+`2a6902787555cc3b42e6a456c6e6d8f71bcbc0ff`, integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 8 exited 0; its
+complete log digest is
+`522aded4a78d63bf0aff770df89520dcdbad2bc17abb6f2848d8e31edbf426b7`.
+Independent inspection then found the same premature filter at
+`launch_succession_successor`, where quota succession also hydrates the whole
+TeamRun. That finding is inside the same `applications.rs` and `loopback_api.rs`
+ownership and the same identity-preserving recovery rule. OQ-A is resolved by
+correcting it in this task; leaving a supported route known-broken on the live
+TeamRun is not accepted. OQ-B, whether the generic archive script should print
+commit/tree identities, is a separate tooling improvement and does not widen
+this delivery.
+
+The terminal archive-qualified target is candidate
+`18923bd0387f8bc88c1d5ed3bb878c478b3e189f`, tree
+`e6f7b3713b998fa08bacd83c9eb1847313c19612`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. The added quota
+regression proves the old call site fails red as `400 invalid_request`, subject
+`TeamRunSlots`, and the corrected path passes while retaining the other slot's
+recovery chain. Gate 9 exited 0 with 2479 Rust tests and 300 console tests; its
+complete log digest is
+`5eb052058249b07362877140784c742e2886f70dbe9455341cf3ed2257b48c46`.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
