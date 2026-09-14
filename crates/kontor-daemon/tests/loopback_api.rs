@@ -13670,6 +13670,470 @@ async fn a_rejection_fence_resolves_its_roles_against_the_run_the_route_froze() 
     );
 }
 
+/// A pack built for the one shape the fence has to tell apart. Its rejection
+/// target is *not* the entry phase, so the edge leading into it names a logical
+/// role — and its team deliberately separates the two identities that name
+/// collides with. The concrete slot `implement` carries the logical role
+/// `fleet-implementer`, while a decoy slot *spelled* `fleet-implementer`
+/// carries `fleet-reviewer` instead. A fence that compared slot addresses to
+/// role names would read both of those backwards.
+const FLEET_PACK: &str = include_str!("../../kontor-profiles/tests/fixtures/custom-pack-f.json");
+
+/// A seated fleet task sitting at `high-verification` with every earlier phase
+/// authored, ready for its gate to pass or reject.
+struct FleetWorld {
+    seed: Bootstrapped,
+    runs: Vec<String>,
+}
+
+/// Seat the fleet team and author `high-scope`, `high-implementation` and
+/// `high-verification` in order, leaving the workflow on the gated phase.
+async fn fleet_at_verification(world: &World, slug: &'static str) -> FleetWorld {
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let pack: serde_json::Value = serde_json::from_str(FLEET_PACK).expect("the fleet pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({ "pack": pack }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-register"))
+    .send(world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    register_test_delivery_slots(
+        world,
+        &project,
+        &[
+            ("scope", "SA"),
+            ("implement", "SWE"),
+            ("review", "AUD"),
+            ("fleet-implementer", "UAT"),
+        ],
+    );
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Fleet lead", "harness": "fake.runtime",
+            "credential_alias": "fleet-lead", "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(world)
+    .await;
+    let account = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Fleet epic",
+            "fleet-cat",
+            serde_json::json!([{"title": "Fleet task"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-epic-apply"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("a revision");
+    confirm_test_epic_identity(world, &project, &epic);
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": account, "reason": "Run the fleet task"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-arm"))
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({ "plan_hash": plan_hash }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-start"))
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let task = projection.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    let task_revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a task revision");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let team_run_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
+        .expect("the team runs read")
+        .into_iter()
+        .next_back()
+        .map(|(id, _)| id)
+        .expect("the admission created a team run");
+    let runs: Vec<String> = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats read")
+        .into_iter()
+        .filter(|row| row.native_id.is_some())
+        .map(|row| row.agent_run_id.to_string())
+        .collect();
+    let seed = Bootstrapped {
+        project,
+        epic,
+        task,
+        task_revision,
+        account,
+    };
+    assert_eq!(
+        runs.len(),
+        4,
+        "every declared fleet slot is seated, decoy included"
+    );
+
+    // Author each phase in order. Every settlement carries exactly the artifact
+    // its own phase declares, so the workflow walks to the gated phase on
+    // evidence rather than on a claim.
+    for (slot, artifact, phase) in [
+        ("scope", "high-scope-record", "high-implementation"),
+        ("implement", "high-change", "high-verification"),
+        ("review", "high-verification-report", "high-verification"),
+    ] {
+        let run = run_with_role(world, &runs, slot).await;
+        let settled = settle_turn(
+            world,
+            &seed,
+            &run,
+            slot,
+            serde_json::json!([artifact]),
+            &format!("{slug}-author-{slot}"),
+        )
+        .await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert_eq!(
+            workflow_position(world, &seed).0,
+            phase,
+            "authoring {slot} leaves the workflow on {phase}"
+        );
+    }
+    FleetWorld { seed, runs }
+}
+
+/// The route row this fleet task's active workflow carries.
+fn fleet_route(world: &World, seed: &Bootstrapped) -> kontor_core::repository::GateRejectionRoute {
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let workflow = active_workflow(world, seed).id;
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, workflow))
+        .expect("the routes read")
+        .into_iter()
+        .next()
+        .expect("the rejection routed")
+}
+
+/// Reject the fleet task's verification gate through the ordinary path.
+async fn reject_the_fleet_gate(world: &World, seed: &Bootstrapped, key: &str) -> (String, u64) {
+    let (uri, revision, gate) = gate_record_target(world, seed).await;
+    assert_eq!(gate, "fleet-verification-gate");
+    let gate_spec = active_workflow(world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key.to_owned())
+    .send(world)
+    .await;
+    assert_eq!(rejected.status, 200, "{}", rejected.body);
+    (gate, revision)
+}
+
+/// F-8110-R9. The rejection target is a phase with an inbound edge, so the
+/// fence names the logical role that edge hands the rework to. A settled turn
+/// records the *slot* it was taken in, and this template maps slot `implement`
+/// onto role `fleet-implementer` — two different strings for the same seat.
+/// Comparing them directly leaves the fence standing forever on rework that
+/// satisfies every condition it states, which is the incident this reproduces:
+/// reject, author a fresh `high-change`, pass the gate, and reconciliation must
+/// carry the workflow past `high-implementation` without rewriting anything.
+#[tokio::test]
+async fn a_fresh_high_change_turn_releases_a_non_entry_fence_through_its_logical_role() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-fence").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-fence-reject").await;
+    let (phase, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(
+        phase, "high-implementation",
+        "the gate routes the work back to a phase that is not the entry phase"
+    );
+    let route = fleet_route(&world, seed);
+    assert_eq!(route.rejection_target.as_str(), "high-implementation");
+    let preserved_run = route.team_run_id;
+
+    // The artifacts the reviewer just rejected are still durable, and must not
+    // walk the workflow straight back out of the phase it was returned to.
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, seed),
+            (phase.clone(), routed_revision),
+            "pre-rejection evidence does not release the fence"
+        );
+    }
+
+    // The fresh rework: the seat whose slot carries the handed-to logical role,
+    // on the route's own TeamRun, carrying the phase's required artifact.
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-fence-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (after_rework, revision_after_rework) = workflow_position(&world, seed);
+    assert_eq!(
+        after_rework, "high-verification",
+        "a fresh high-change settlement by the handed-to role releases the fence"
+    );
+    assert!(revision_after_rework > routed_revision);
+
+    // The turn that released it belonged to the route's own preserved run, and
+    // it was found by its logical role rather than by its slot spelling.
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let released_by = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project, task_id))
+        .expect("the settled turns read")
+        .into_iter()
+        .rfind(|turn| turn.role_slot_id.as_role_key().as_str() == "implement")
+        .expect("the rework turn is durable");
+    assert_eq!(released_by.team_run_id, preserved_run);
+    assert_ne!(
+        released_by.role_slot_id.as_role_key().as_str(),
+        "fleet-implementer",
+        "the releasing slot is spelled differently from the role it carries"
+    );
+
+    // The gate now passes on the re-authored evidence, and reconciliation keeps
+    // the workflow past the rejection target instead of replaying the route.
+    let before = rejection_census(&world);
+    let (uri, revision, gate) = gate_record_target(&world, seed).await;
+    let gate_spec = active_workflow(&world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let passed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fleet-fence-pass")
+    .send(&world)
+    .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_ne!(
+            workflow_position(&world, seed).0,
+            "high-implementation",
+            "the released workflow does not fall back to the rejection target"
+        );
+    }
+
+    // Nothing was replayed or rewritten to get here: the route row is the same
+    // immutable record, and reconciliation wrote no new rows.
+    let after = fleet_route(&world, seed);
+    assert_eq!(after.team_run_id, preserved_run);
+    assert_eq!(after.routed_at, route.routed_at);
+    assert_eq!(after.to_revision, route.to_revision);
+    assert_eq!(after.rejection_receipt_id, route.rejection_receipt_id);
+    let census_after = rejection_census(&world);
+    assert_eq!(
+        census_after
+            .iter()
+            .find(|(table, _)| *table == "task_gate_rejection_routes"),
+        before
+            .iter()
+            .find(|(table, _)| *table == "task_gate_rejection_routes"),
+        "reconciliation records no second route"
+    );
+    assert_eq!(
+        census_after
+            .iter()
+            .find(|(table, _)| *table == "role_turns"),
+        before.iter().find(|(table, _)| *table == "role_turns"),
+        "reconciliation settles no turn of its own"
+    );
+}
+
+/// The decoy: a slot whose *address* is spelled exactly like the logical role
+/// the edge requires, but which carries a different role. Resolving the slot
+/// through the frozen template is what tells these apart; a fence that trusted
+/// the spelling would hand the release to the wrong seat entirely.
+#[tokio::test]
+async fn a_slot_spelled_like_the_required_role_cannot_release_the_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-decoy").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-decoy-reject").await;
+    let (phase, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(phase, "high-implementation");
+    let route = fleet_route(&world, seed);
+
+    // The decoy seat is on the route's own TeamRun, settles strictly after the
+    // route, and carries exactly the artifact the rejection target requires.
+    // Every condition but the one that matters is satisfied.
+    let decoy = run_with_role(&world, runs, "fleet-implementer").await;
+    let decoy_turn = settle_turn(
+        &world,
+        seed,
+        &decoy,
+        "fleet-implementer",
+        serde_json::json!(["high-change"]),
+        "fleet-decoy-turn",
+    )
+    .await;
+    assert_eq!(decoy_turn.status, 200, "{}", decoy_turn.body);
+    let settled = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_settled_turns(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                TaskId::parse(&seed.task).expect("a task id"),
+            )
+        })
+        .expect("the settled turns read")
+        .into_iter()
+        .rfind(|turn| turn.role_slot_id.as_role_key().as_str() == "fleet-implementer")
+        .expect("the decoy turn is durable");
+    assert_eq!(
+        settled.team_run_id, route.team_run_id,
+        "the decoy is on the route's own preserved run"
+    );
+    assert!(
+        settled.settled_at > route.routed_at,
+        "and strictly after it"
+    );
+    assert!(
+        settled
+            .artifacts
+            .contains(&kontor_core::id::ArtifactKey::parse("high-change").expect("an artifact")),
+        "and carries the required artifact"
+    );
+
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, seed),
+            (phase.clone(), routed_revision),
+            "a slot spelled like the required role does not carry that role"
+        );
+    }
+
+    // The seat that does carry the role releases it, which is what proves the
+    // fence was closed on identity rather than on something incidental.
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-decoy-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    assert_ne!(
+        workflow_position(&world, seed).0,
+        "high-implementation",
+        "the seat carrying the handed-to logical role releases the fence"
+    );
+}
+
 /// A gate request cites evidence; it does not create that evidence.
 #[tokio::test]
 async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {
