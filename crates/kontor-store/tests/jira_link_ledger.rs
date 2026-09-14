@@ -81,7 +81,8 @@ fn strip_v81(connection: &Connection) {
         .execute_batch(
             "DROP INDEX ux_status_conflicts_one_open_kind;
              DROP TRIGGER canonical_jira_task_links_permanent;
-             DROP TRIGGER canonical_jira_task_links_immutable;
+             DROP TRIGGER canonical_jira_task_links_key_change_requires_proof;
+             DROP TRIGGER canonical_jira_task_links_identity_immutable;
              DROP TRIGGER jira_links_require_canonical_jira_update;
              DROP TRIGGER jira_links_require_canonical_jira_insert;
              DROP TABLE canonical_jira_task_links;

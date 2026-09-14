@@ -106,6 +106,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "asma_epic_activations",
     "jira_epic_bindings",
     "jira_links",
+    "jira_epic_rename_authorizations",
+    "jira_rename_authorizations",
     "jira_materialization_batches",
     "jira_materialization_items",
     // Schema v74 (ASMA-8050): exact immutable recovery receipts for an
@@ -540,8 +542,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v94 makes an observed Jira body part of the immutable observation and
     // keeps every description Kontor published, so a divergence can be
     // attributed to Kontor's own stale projection rather than to a human edit
-    // (ASMA-8123).
-    assert_eq!(SCHEMA_VERSION, 94);
+    // (ASMA-8123). v95 retains Jira's immutable REST issue id beside the
+    // mutable key in both confirmation ledgers, so a key change on one issue
+    // is distinguishable from a rebind onto another; pre-v95 rows keep a NULL
+    // id rather than a synthesized one (ASMA-8116).
+    assert_eq!(SCHEMA_VERSION, 95);
 }
 
 #[test]
@@ -5297,4 +5302,266 @@ fn v49_backfills_a_confirmed_receipt_without_tripping_the_immutability_trigger()
         error.to_string().contains("identity is immutable"),
         "the v47 trigger must be reinstated: {error}"
     );
+}
+
+const MIGRATION_0095: &str = include_str!("../migrations/0095_immutable_jira_issue_identity.sql");
+
+/// The v94 shape of everything `0095` touches, populated with confirmed rows.
+///
+/// Hand-built rather than reduced from a current store on purpose: the point of
+/// this gate is the `ALTER TABLE`, and a table that already has the column
+/// cannot prove the column was added without loss.
+fn v94_jira_binding_fixture(path: &std::path::Path) -> Connection {
+    let connection = Connection::open(path).expect("the v94 fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("foreign keys enable");
+    connection
+        .execute_batch(
+            "CREATE TABLE jira_epic_bindings (
+                 project_id TEXT NOT NULL,
+                 epic_id TEXT NOT NULL,
+                 external_issue_key TEXT NOT NULL,
+                 readback_hash TEXT NOT NULL CHECK (length(readback_hash) = 64),
+                 confirmed_at TEXT NOT NULL,
+                 PRIMARY KEY (project_id, epic_id),
+                 UNIQUE (project_id, external_issue_key)
+             ) STRICT;
+             CREATE TABLE jira_task_binding_confirmations (
+                 project_id TEXT NOT NULL,
+                 link_id TEXT NOT NULL,
+                 readback_hash TEXT NOT NULL CHECK (length(readback_hash) = 64),
+                 confirmed_at TEXT NOT NULL,
+                 PRIMARY KEY (project_id, link_id)
+             ) STRICT;
+             CREATE TABLE jira_links (
+                 id TEXT NOT NULL PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 task_id TEXT NOT NULL,
+                 connector TEXT NOT NULL,
+                 external_issue_key TEXT NOT NULL,
+                 revision INTEGER NOT NULL,
+                 created_at TEXT NOT NULL,
+                 UNIQUE (project_id, id)
+             ) STRICT;
+             CREATE TABLE canonical_jira_task_links (
+                 project_id TEXT NOT NULL,
+                 task_id TEXT NOT NULL,
+                 external_issue_key TEXT NOT NULL,
+                 link_id TEXT NOT NULL,
+                 PRIMARY KEY (project_id, task_id),
+                 UNIQUE (project_id, external_issue_key),
+                 UNIQUE (project_id, link_id),
+                 FOREIGN KEY (project_id, link_id)
+                     REFERENCES jira_links (project_id, id) ON DELETE RESTRICT
+             ) STRICT;
+             CREATE TRIGGER canonical_jira_task_links_immutable
+             BEFORE UPDATE ON canonical_jira_task_links
+             BEGIN SELECT RAISE(ABORT, 'canonical Jira task links are immutable'); END;
+             CREATE TRIGGER canonical_jira_task_links_permanent
+             BEFORE DELETE ON canonical_jira_task_links
+             BEGIN SELECT RAISE(ABORT, 'canonical Jira task links are permanent'); END;
+             PRAGMA user_version = 94;",
+        )
+        .expect("the v94 shape is created");
+
+    let hash = "a".repeat(64);
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO jira_epic_bindings
+                 (project_id, epic_id, external_issue_key, readback_hash, confirmed_at)
+             VALUES ('p1', 'e1', 'ASMA-1', '{hash}', '2026-08-01T10:00:00Z'),
+                    ('p1', 'e2', 'ASMA-2', '{hash}', '2026-08-01T11:00:00Z'),
+                    ('p2', 'e3', 'ASMA-1', '{hash}', '2026-08-01T12:00:00Z');
+             INSERT INTO jira_links
+                 (id, project_id, task_id, connector, external_issue_key, revision, created_at)
+             VALUES ('l1', 'p1', 't1', 'connector.jira', 'ASMA-3', 1, '2026-08-01T10:00:00Z'),
+                    ('l2', 'p1', 't2', 'connector.jira', 'ASMA-4', 1, '2026-08-01T10:00:00Z');
+             INSERT INTO canonical_jira_task_links
+                 (project_id, task_id, external_issue_key, link_id)
+             VALUES ('p1', 't1', 'ASMA-3', 'l1'),
+                    ('p1', 't2', 'ASMA-4', 'l2');
+             INSERT INTO jira_task_binding_confirmations
+                 (project_id, link_id, readback_hash, confirmed_at)
+             VALUES ('p1', 'l1', '{hash}', '2026-08-01T10:00:00Z'),
+                    ('p1', 'l2', '{hash}', '2026-08-01T11:00:00Z');"
+        ))
+        .expect("the v94 rows are planted");
+    connection
+}
+
+#[test]
+fn v95_adds_immutable_jira_identity_without_losing_or_inventing_a_single_v94_row() {
+    let directory = temp();
+    let path = directory.path().join("v94.db");
+    let connection = v94_jira_binding_fixture(&path);
+
+    // Exactly what was there before the migration, so "preserved" can mean
+    // something stronger than "the right number of rows".
+    let before: Vec<String> = read_rows(
+        &connection,
+        "SELECT project_id || '|' || epic_id || '|' || external_issue_key || '|' || confirmed_at
+         FROM jira_epic_bindings ORDER BY project_id, epic_id",
+    );
+    assert_eq!(before.len(), 3);
+
+    connection
+        .execute_batch(MIGRATION_0095)
+        .expect("the real v95 migration applies over populated v94 ledgers");
+
+    // 1. Every row survives, unchanged.
+    let after: Vec<String> = read_rows(
+        &connection,
+        "SELECT project_id || '|' || epic_id || '|' || external_issue_key || '|' || confirmed_at
+         FROM jira_epic_bindings ORDER BY project_id, epic_id",
+    );
+    assert_eq!(after, before, "the migration rewrote an epic binding");
+    assert_eq!(
+        read_rows(
+            &connection,
+            "SELECT project_id || '|' || link_id || '|' || confirmed_at
+             FROM jira_task_binding_confirmations ORDER BY project_id, link_id"
+        )
+        .len(),
+        2
+    );
+
+    // 2. No identity is invented. Every migrated row is fail-closed until a
+    //    supported readback establishes its id.
+    for table in ["jira_epic_bindings", "jira_task_binding_confirmations"] {
+        let unidentified: i64 = connection
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE external_issue_id IS NOT NULL"),
+                [],
+                |row| row.get(0),
+            )
+            .expect("the new column is readable");
+        assert_eq!(
+            unidentified, 0,
+            "{table} must carry no synthesized immutable id"
+        );
+    }
+
+    // 3. The column is genuinely nullable-unique: two migrated rows may both
+    //    hold NULL, but two subjects may not share one established id.
+    connection
+        .execute(
+            "UPDATE jira_epic_bindings SET external_issue_id = '9001'
+             WHERE project_id = 'p1' AND epic_id = 'e1'",
+            [],
+        )
+        .expect("an id may be established on a migrated row");
+    assert!(
+        connection
+            .execute(
+                "UPDATE jira_epic_bindings SET external_issue_id = '9001'
+                 WHERE project_id = 'p1' AND epic_id = 'e2'",
+                [],
+            )
+            .is_err(),
+        "one immutable issue may not name two subjects in a project"
+    );
+    // A different project is a different namespace.
+    connection
+        .execute(
+            "UPDATE jira_epic_bindings SET external_issue_id = '9001'
+             WHERE project_id = 'p2' AND epic_id = 'e3'",
+            [],
+        )
+        .expect("the unique index is project-scoped");
+    // An established id is immutable.
+    assert!(
+        connection
+            .execute(
+                "UPDATE jira_epic_bindings SET external_issue_id = '9002'
+                 WHERE project_id = 'p1' AND epic_id = 'e1'",
+                [],
+            )
+            .is_err(),
+        "an established immutable id is never rewritten"
+    );
+
+    // 4. The v81 trigger is narrowed, not merely dropped: identity stays frozen
+    //    and a key change with no recorded authority is still refused.
+    let objects: Vec<String> = read_rows(
+        &connection,
+        "SELECT name FROM sqlite_master WHERE type IN ('trigger','index','table')
+         AND name LIKE '%jira%' ORDER BY name",
+    );
+    for expected in [
+        "canonical_jira_task_links_identity_immutable",
+        "canonical_jira_task_links_key_change_requires_proof",
+        "canonical_jira_task_links_permanent",
+        "jira_epic_bindings_immutable_issue",
+        "jira_epic_binding_issue_id_immutable",
+        "jira_epic_binding_rename_sequence_monotonic",
+        "jira_task_binding_rename_sequence_monotonic",
+        "jira_rename_authorizations",
+        "jira_task_binding_confirmations_immutable_issue",
+        "jira_task_binding_issue_id_immutable",
+    ] {
+        assert!(
+            objects.iter().any(|name| name == expected),
+            "v95 must install {expected}; found {objects:?}"
+        );
+    }
+    assert!(
+        !objects
+            .iter()
+            .any(|name| name == "canonical_jira_task_links_immutable"),
+        "the blanket v81 trigger is replaced, not kept alongside its successor"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE canonical_jira_task_links SET task_id = 't9'
+                 WHERE project_id = 'p1' AND task_id = 't1'",
+                [],
+            )
+            .is_err(),
+        "canonical link identity stays immutable across the migration"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE canonical_jira_task_links SET external_issue_key = 'ASMA-99'
+                 WHERE project_id = 'p1' AND task_id = 't1'",
+                [],
+            )
+            .is_err(),
+        "a migrated row with no immutable id cannot authorize a key change"
+    );
+
+    // 5. The database is coherent and reopenable afterwards.
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("integrity is checkable");
+    assert_eq!(integrity, "ok");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the version is readable");
+    assert_eq!(version, 95);
+    drop(connection);
+
+    let reopened = Connection::open(&path).expect("the migrated file reopens");
+    assert_eq!(
+        read_rows(
+            &reopened,
+            "SELECT project_id || '|' || epic_id FROM jira_epic_bindings
+             ORDER BY project_id, epic_id"
+        )
+        .len(),
+        3,
+        "the migrated rows survive a reopen"
+    );
+}
+
+/// Read one text column into a vector.
+fn read_rows(connection: &Connection, sql: &str) -> Vec<String> {
+    let mut statement = connection.prepare(sql).expect("the query prepares");
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("the query runs")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("every row reads")
 }

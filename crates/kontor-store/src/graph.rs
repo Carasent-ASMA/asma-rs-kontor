@@ -339,7 +339,7 @@ pub struct AppliedEpic {
     /// The goal that carries the epic.
     pub mini_project_id: MiniProjectId,
     /// Kontor's immutable project-scoped epic namespace.
-    pub epic_backlog_code: EpicBacklogCode,
+    pub epic_backlog_code: Option<EpicBacklogCode>,
     /// Whether this call created it.
     pub applied: Applied,
     /// The revision a write must present.
@@ -2158,13 +2158,20 @@ fn evaluate_epic_in(
     store_specifications(transaction, request)?;
 
     let (mini_project, epic_applied) = ensure_mini_project(transaction, request)?;
-    let epic_backlog_code = ensure_epic_backlog_code(
-        transaction,
-        request.project_id,
-        mini_project.id,
-        request.epic_backlog_code,
-        request.applied_at,
-    )?;
+    // A legacy backlog code is allocated only when apply declares one. Omitting
+    // it allocates no namespace: under the Jira-key policy the confirmed key is
+    // the public identifier, and an existing short code is a read-only
+    // historical mapping rather than something a write path may mint.
+    let epic_backlog_code = match request.epic_backlog_code {
+        Some(code) => Some(ensure_epic_backlog_code(
+            transaction,
+            request.project_id,
+            mini_project.id,
+            Some(code),
+            request.applied_at,
+        )?),
+        None => epic_backlog_code_in(transaction, request.project_id, mini_project.id)?,
+    };
     let execution_scope = ensure_epic_execution_scope(
         transaction,
         request.project_id,
@@ -2647,28 +2654,7 @@ fn ensure_epic_backlog_code(
     manual_override: Option<&EpicBacklogCode>,
     assigned_at: Timestamp,
 ) -> RepositoryResult<EpicBacklogCode> {
-    let existing: Option<String> = transaction
-        .query_row(
-            "SELECT effective.code
-             FROM (
-                 SELECT corrected_code AS code, 0 AS precedence
-                 FROM epic_backlog_code_corrections
-                 WHERE project_id = ?1 AND mini_project_id = ?2
-                 UNION ALL
-                 SELECT code, 1 AS precedence
-                 FROM epic_backlog_codes
-                 WHERE project_id = ?1 AND mini_project_id = ?2
-                   AND status = 'active'
-             ) AS effective
-             ORDER BY effective.precedence
-             LIMIT 1",
-            params![project_id.to_string(), mini_project_id.to_string()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(backend)?;
-    if let Some(code) = existing {
-        let code = EpicBacklogCode::parse(code)?;
+    if let Some(code) = epic_backlog_code_in(transaction, project_id, mini_project_id)? {
         if manual_override.is_some_and(|declared| declared != &code) {
             return Err(conflict(
                 "epic backlog code",
@@ -2741,6 +2727,42 @@ fn ensure_epic_backlog_code(
         )
         .map_err(backend)?;
     Ok(code)
+}
+
+fn epic_backlog_code_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    mini_project_id: MiniProjectId,
+) -> RepositoryResult<Option<EpicBacklogCode>> {
+    // A correction outranks the active code and, since ASMA-8110/8123, may
+    // exist without one: correcting a noncanonical legacy code is what
+    // establishes the effective value, so requiring an active base row would
+    // silently drop exactly the rows the correction was recorded for.
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT effective.code
+             FROM (
+                 SELECT corrected_code AS code, 0 AS precedence
+                 FROM epic_backlog_code_corrections
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                 UNION ALL
+                 SELECT code, 1 AS precedence
+                 FROM epic_backlog_codes
+                 WHERE project_id = ?1 AND mini_project_id = ?2
+                   AND status = 'active'
+             ) AS effective
+             ORDER BY effective.precedence
+             LIMIT 1",
+            params![project_id.to_string(), mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    existing
+        .as_deref()
+        .map(EpicBacklogCode::parse)
+        .transpose()
+        .map_err(Into::into)
 }
 
 fn ensure_task(

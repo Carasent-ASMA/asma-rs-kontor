@@ -65,6 +65,7 @@ use utoipa::ToSchema;
 use crate::Caller;
 use crate::auth::CallerCapability;
 use crate::control::{idempotency_key, parse_id};
+use crate::dto::JiraBindingDto;
 use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
 
@@ -4170,8 +4171,8 @@ pub struct ApplyEpicRequest {
     /// The epic's name, which is its identity inside the project.
     #[schema(value_type = String)]
     pub name: ExternalName,
-    /// Kontor-owned immutable namespace for this epic. Omission allocates the
-    /// first deterministic project-scoped code from the epic title.
+    /// Optional legacy Kontor namespace. Omission creates no new namespace and
+    /// preserves one already recorded for compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>)]
     pub epic_backlog_code: Option<EpicBacklogCode>,
@@ -4403,9 +4404,9 @@ pub struct PreviewEpicDto {
     /// The durable epic id when this preview matched an existing epic.
     #[schema(value_type = Option<String>)]
     pub epic_id: Option<MiniProjectId>,
-    /// Kontor-owned immutable namespace apply would preserve or allocate.
-    #[schema(value_type = String)]
-    pub epic_backlog_code: EpicBacklogCode,
+    /// Legacy Kontor namespace apply would preserve or explicitly add.
+    #[schema(value_type = Option<String>)]
+    pub epic_backlog_code: Option<EpicBacklogCode>,
     /// Whether apply would create the epic or find it unchanged.
     pub applied: AppliedDto,
     /// The runtime-facing identity apply would preserve or create.
@@ -4464,6 +4465,8 @@ pub struct EpicTaskProjectionDto {
     /// Durable compact display identity used by native containers and seats.
     #[schema(value_type = Option<String>)]
     pub short_code: Option<ExternalId>,
+    /// Its Jira identity and connector proof, or the explicit draft state.
+    pub jira_binding: JiraBindingDto,
     /// Durable intake-time two-keyword summary.
     #[schema(value_type = Option<String>)]
     pub ai_short_name: Option<AiShortName>,
@@ -4617,6 +4620,8 @@ pub struct EpicProjectionDto {
     /// epics remain operable and readable while they await explicit assignment.
     #[schema(value_type = Option<String>)]
     pub epic_backlog_code: Option<EpicBacklogCode>,
+    /// Its Jira identity and connector proof, or the explicit draft state.
+    pub jira_binding: JiraBindingDto,
     /// Its name.
     #[schema(value_type = String)]
     pub name: ExternalName,

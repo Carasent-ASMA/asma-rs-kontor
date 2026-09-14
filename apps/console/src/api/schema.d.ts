@@ -3656,8 +3656,8 @@ export interface components {
             /** @description The provider-account profile to pin, if any. */
             account_profile_id?: string | null;
             /**
-             * @description Kontor-owned immutable namespace for this epic. Omission allocates the
-             *     first deterministic project-scoped code from the epic title.
+             * @description Optional legacy Kontor namespace. Omission creates no new namespace and
+             *     preserves one already recorded for compatibility.
              */
             epic_backlog_code?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
@@ -5568,6 +5568,8 @@ export interface components {
             /** @description The goal that carries the epic. */
             epic_id: string;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
+            /** @description Its Jira identity and connector proof, or the explicit draft state. */
+            jira_binding: components["schemas"]["JiraBindingDto"];
             /** @description Its name. */
             name: string;
             /** @description The project. */
@@ -5605,6 +5607,8 @@ export interface components {
             depends_on: string[];
             /** @description Every gate the pinned profile declares, in declaration order. */
             gates: components["schemas"]["GateProjectionDto"][];
+            /** @description Its Jira identity and connector proof, or the explicit draft state. */
+            jira_binding: components["schemas"]["JiraBindingDto"];
             /** @description Its external ticket links. */
             links: components["schemas"]["AppliedLinkDto"][];
             /** @description The module it contends for, if any. */
@@ -6104,6 +6108,30 @@ export interface components {
              */
             topic?: string | null;
         };
+        /** @description Confirmed Jira identity evidence, or an explicit awaiting state. */
+        JiraBindingDto: {
+            /**
+             * Format: date-time
+             * @description When connector readback confirmed it.
+             */
+            confirmed_at?: string | null;
+            /** @description The exact confirmed Jira key. */
+            jira_key?: string | null;
+            /** @description Hash of the connector readback that confirmed it. */
+            readback_hash?: string | null;
+            /**
+             * Format: int64
+             * @description The bound epic or task revision.
+             */
+            revision?: number | null;
+            /** @description The binding lifecycle state. */
+            state: components["schemas"]["JiraBindingStatusDto"];
+        };
+        /**
+         * @description Whether a Jira identity is still a draft or has connector proof.
+         * @enum {string}
+         */
+        JiraBindingStatusDto: "awaiting_jira_binding" | "confirmed";
         /** @description A confirmed Jira materialization and ASMA activation receipt. */
         JiraMaterializationAppliedDto: {
             /** @description Whether the whole required binding set is activated. */
@@ -6531,8 +6559,8 @@ export interface components {
         PreviewEpicDto: {
             /** @description Whether apply would create the epic or find it unchanged. */
             applied: components["schemas"]["AppliedDto"];
-            /** @description Kontor-owned immutable namespace apply would preserve or allocate. */
-            epic_backlog_code: string;
+            /** @description Legacy Kontor namespace apply would preserve or explicitly add. */
+            epic_backlog_code?: string | null;
             /** @description The durable epic id when this preview matched an existing epic. */
             epic_id?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
@@ -8654,6 +8682,8 @@ export interface components {
                 current_phase?: string | null;
                 /** @description The gate states, keyed by gate. */
                 gates: Record<string, never>;
+                /** @description Its Jira identity and connector proof, or the explicit draft state. */
+                jira_binding: components["schemas"]["JiraBindingDto"];
                 /** @description The project it belongs to. */
                 project_id: string;
                 /**
@@ -8779,6 +8809,8 @@ export interface components {
             current_phase?: string | null;
             /** @description The gate states, keyed by gate. */
             gates: Record<string, never>;
+            /** @description Its Jira identity and connector proof, or the explicit draft state. */
+            jira_binding: components["schemas"]["JiraBindingDto"];
             /** @description The project it belongs to. */
             project_id: string;
             /**

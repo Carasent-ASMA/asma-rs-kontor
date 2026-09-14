@@ -151,10 +151,13 @@ pub async fn task_snapshot(
                 "no such task exists in this project",
             )
         })?;
+    let jira_binding = state
+        .with_store(|store| store.jira_task_binding_state(project_id, task_id))
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
     Ok(Json(SnapshotDto {
         realm_id: state.realm_id(),
         snapshot_cursor: cursor,
-        value: task_dto(&inspection),
+        value: task_dto(&inspection, jira_binding.into()),
     }))
 }
 
@@ -511,13 +514,14 @@ fn run_dto(state: &ApiState, inspection: &RunInspection) -> RunDto {
 }
 
 /// Build the wire view of one task inspection.
-fn task_dto(inspection: &TaskInspection) -> TaskDto {
+fn task_dto(inspection: &TaskInspection, jira_binding: crate::dto::JiraBindingDto) -> TaskDto {
     TaskDto {
         task_id: inspection.task.id,
         project_id: inspection.task.project_id,
         title: inspection.task.title.clone(),
         state: inspection.task.state,
         revision: inspection.task.revision,
+        jira_binding,
         current_phase: inspection
             .workflow
             .as_ref()

@@ -2,6 +2,7 @@
 
 #![allow(missing_docs)]
 
+use kontor_core::branch::TrackerKey;
 use kontor_core::id::{
     AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, MiniProjectId,
     ProjectId, TaskId, TicketLinkId, Timestamp, format_utc_timestamp, parse_utc_timestamp,
@@ -9,10 +10,10 @@ use kontor_core::id::{
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{NewLocalCommand, RepositoryError, RepositoryResult};
 use kontor_core::ticket::StatusConflictKind;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
-use crate::repository::{backend, conflict, ensure_receipt_authorizes, text};
+use crate::repository::{backend, conflict, ensure_receipt_authorizes, revision_of, text};
 
 /// The honest result of an atomic Jira conflict close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,31 @@ impl SqliteStore {
 pub enum JiraItemKind {
     Epic,
     Task,
+}
+
+/// The Kontor subject named by one confirmed Jira key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JiraBindingSubject {
+    Epic(MiniProjectId),
+    Task(TaskId),
+}
+
+/// One unambiguous confirmed Jira binding and its proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedJiraBinding {
+    pub project_id: ProjectId,
+    pub subject: JiraBindingSubject,
+    pub jira_key: ExternalId,
+    pub readback_hash: ContentHash,
+    pub confirmed_at: Timestamp,
+    pub revision: AggregateRevision,
+}
+
+/// Publicly reportable Jira identity state for an epic or task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JiraBindingState {
+    AwaitingJiraBinding,
+    Confirmed(ConfirmedJiraBinding),
 }
 
 impl JiraItemKind {
@@ -924,13 +950,126 @@ impl SqliteStore {
         }))
     }
 
-    /// Return the externally read-back Jira epic key, never an imported or
-    /// merely requested execution-scope value.
-    pub fn confirmed_jira_epic_key(
+    /// Resolve one exact confirmed Jira key inside a Kontor project.
+    ///
+    /// Missing, malformed, foreign-project, unconfirmed, and ambiguous keys
+    /// are all refused rather than repaired or selected by row order.
+    pub fn resolve_confirmed_jira_key(
+        &self,
+        project_id: ProjectId,
+        key: &str,
+    ) -> RepositoryResult<ConfirmedJiraBinding> {
+        let key = TrackerKey::parse(key).map_err(kontor_core::DomainError::from)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT 'epic', binding.epic_id, NULL, binding.external_issue_key,
+                        binding.readback_hash, binding.confirmed_at, epic.revision
+                 FROM jira_epic_bindings AS binding
+                 JOIN mini_projects AS epic
+                   ON epic.project_id = binding.project_id AND epic.id = binding.epic_id
+                 WHERE binding.project_id = ?1 AND binding.external_issue_key = ?2
+                 UNION ALL
+                 SELECT 'task', task.mini_project_id, ledger.task_id, ledger.external_issue_key,
+                        confirmation.readback_hash, confirmation.confirmed_at, task.revision
+                 FROM canonical_jira_task_links AS ledger
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 JOIN tasks AS task
+                   ON task.project_id = ledger.project_id AND task.id = ledger.task_id
+                 WHERE ledger.project_id = ?1 AND ledger.external_issue_key = ?2",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), key.as_str()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        if rows.len() > 1 {
+            return Err(conflict(
+                "confirmed Jira key",
+                "the key resolves to more than one epic or task in this project",
+            ));
+        }
+        let Some((kind, epic_id, task_id, jira_key, readback_hash, confirmed_at, revision)) =
+            rows.into_iter().next()
+        else {
+            let unconfirmed: bool = self
+                .connection
+                .query_row(
+                    "SELECT EXISTS (
+                         SELECT 1 FROM jira_materialization_items
+                         WHERE project_id = ?1 AND requested_key = ?2 AND status <> 'confirmed'
+                         UNION ALL
+                         SELECT 1 FROM canonical_jira_task_links AS ledger
+                         LEFT JOIN jira_task_binding_confirmations AS confirmation
+                           ON confirmation.project_id = ledger.project_id
+                          AND confirmation.link_id = ledger.link_id
+                         WHERE ledger.project_id = ?1 AND ledger.external_issue_key = ?2
+                           AND confirmation.link_id IS NULL
+                     )",
+                    params![project_id.to_string(), key.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            return if unconfirmed {
+                Err(conflict(
+                    "confirmed Jira key",
+                    "the Jira key exists but its binding is not confirmed",
+                ))
+            } else {
+                Err(RepositoryError::NotFound {
+                    subject: "confirmed Jira key",
+                })
+            };
+        };
+        let subject = match kind.as_str() {
+            "epic" => JiraBindingSubject::Epic(MiniProjectId::parse(epic_id.as_deref().ok_or(
+                RepositoryError::Conflict {
+                    subject: "confirmed Jira binding",
+                    rule: "the epic binding has no epic identity",
+                },
+            )?)?),
+            "task" => JiraBindingSubject::Task(TaskId::parse(task_id.as_deref().ok_or(
+                RepositoryError::Conflict {
+                    subject: "confirmed Jira binding",
+                    rule: "the task binding has no task identity",
+                },
+            )?)?),
+            _ => {
+                return Err(conflict(
+                    "confirmed Jira binding",
+                    "the binding stored an unknown subject kind",
+                ));
+            }
+        };
+        Ok(ConfirmedJiraBinding {
+            project_id,
+            subject,
+            jira_key: ExternalId::parse(&jira_key)?,
+            readback_hash: ContentHash::parse(&readback_hash)?,
+            confirmed_at: parse_utc_timestamp(&confirmed_at)?,
+            revision: revision_of(revision)?,
+        })
+    }
+
+    /// Return one epic's confirmed Jira identity state.
+    pub fn jira_epic_binding_state(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-    ) -> RepositoryResult<Option<ExternalId>> {
+    ) -> RepositoryResult<JiraBindingState> {
         let key: Option<String> = self
             .connection
             .query_row(
@@ -941,7 +1080,63 @@ impl SqliteStore {
             )
             .optional()
             .map_err(backend)?;
-        Ok(key.as_deref().map(ExternalId::parse).transpose()?)
+        let Some(key) = key else {
+            return Ok(JiraBindingState::AwaitingJiraBinding);
+        };
+        let binding = self.resolve_confirmed_jira_key(project_id, &key)?;
+        if binding.subject != JiraBindingSubject::Epic(epic_id) {
+            return Err(conflict(
+                "confirmed Jira epic binding",
+                "the key resolver returned another subject",
+            ));
+        }
+        Ok(JiraBindingState::Confirmed(binding))
+    }
+
+    /// Return one task's confirmed Jira identity state.
+    pub fn jira_task_binding_state(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<JiraBindingState> {
+        let key: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT ledger.external_issue_key
+                 FROM canonical_jira_task_links AS ledger
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1 AND ledger.task_id = ?2",
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(key) = key else {
+            return Ok(JiraBindingState::AwaitingJiraBinding);
+        };
+        let binding = self.resolve_confirmed_jira_key(project_id, &key)?;
+        if binding.subject != JiraBindingSubject::Task(task_id) {
+            return Err(conflict(
+                "confirmed Jira task binding",
+                "the key resolver returned another subject",
+            ));
+        }
+        Ok(JiraBindingState::Confirmed(binding))
+    }
+
+    /// Return the externally read-back Jira epic key, never an imported or
+    /// merely requested execution-scope value.
+    pub fn confirmed_jira_epic_key(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> RepositoryResult<Option<ExternalId>> {
+        Ok(match self.jira_epic_binding_state(project_id, epic_id)? {
+            JiraBindingState::AwaitingJiraBinding => None,
+            JiraBindingState::Confirmed(binding) => Some(binding.jira_key),
+        })
     }
 
     /// Return the one externally read-back Jira task key.
@@ -953,42 +1148,29 @@ impl SqliteStore {
         project_id: ProjectId,
         task_id: TaskId,
     ) -> RepositoryResult<Option<ExternalId>> {
-        let (key, count): (Option<String>, i64) = self
-            .connection
-            .query_row(
-                "SELECT MIN(ledger.external_issue_key), COUNT(*)
-                 FROM canonical_jira_task_links AS ledger
-                 JOIN jira_task_binding_confirmations AS confirmation
-                   ON confirmation.project_id = ledger.project_id
-                  AND confirmation.link_id = ledger.link_id
-                 WHERE ledger.project_id = ?1 AND ledger.task_id = ?2",
-                params![project_id.to_string(), task_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(backend)?;
-        match count {
-            0 => Ok(None),
-            1 => Ok(Some(ExternalId::parse(key.as_deref().ok_or(
-                RepositoryError::Conflict {
-                    subject: "confirmed Jira task binding",
-                    rule: "the unique confirmed binding has no issue key",
-                },
-            )?)?)),
-            _ => Err(RepositoryError::Conflict {
-                subject: "confirmed Jira task binding",
-                rule: "more than one confirmed Jira issue is bound to the task",
-            }),
-        }
+        Ok(match self.jira_task_binding_state(project_id, task_id)? {
+            JiraBindingState::AwaitingJiraBinding => None,
+            JiraBindingState::Confirmed(binding) => Some(binding.jira_key),
+        })
     }
 
     /// Atomically confirm one exact Jira readback and its durable binding.
+    ///
+    /// `issue_id` is Jira's immutable REST issue id, observed in the same
+    /// readback that proved `key`. Storing it is what later lets a rename of
+    /// one issue be told apart from a different issue claiming the same key;
+    /// the readback hash cannot, because the key is part of the hashed
+    /// document. A binding confirmed before that id was retained keeps a NULL
+    /// id: none is invented for it, and this readback establishes it.
     pub fn confirm_jira_materialization_item(
         &self,
         item: &StoredJiraMaterializationItem,
         key: &ExternalId,
+        issue_id: &ExternalId,
         readback_hash: &ContentHash,
         confirmed_at: Timestamp,
     ) -> RepositoryResult<()> {
+        TrackerKey::from_external(key).map_err(kontor_core::DomainError::from)?;
         let transaction = self.begin()?;
         let stored: Option<(String, Option<String>, Option<String>)> = transaction
             .query_row(
@@ -1005,6 +1187,13 @@ impl SqliteStore {
                 if stored_key.as_deref() == Some(key.as_str())
                     && stored_hash.as_deref() == Some(readback_hash.as_str())
                 {
+                    // An exact replay is not a no-op when the binding predates
+                    // immutable identity: this is the supported readback that
+                    // establishes the id and lifts the row out of fail-closed.
+                    // An id that is already present is never overwritten, and
+                    // one belonging to another issue is refused rather than
+                    // silently accepted because the key happened to match.
+                    establish_immutable_issue_id(&transaction, item, key, issue_id)?;
                     transaction.commit().map_err(backend)?;
                     return Ok(());
                 }
@@ -1026,32 +1215,83 @@ impl SqliteStore {
                 });
             }
         }
+        let cross_subject: bool = transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM jira_epic_bindings
+                     WHERE ?3 = 'task' AND project_id = ?1
+                       AND (external_issue_key = ?2 OR external_issue_id = ?4)
+                     UNION ALL
+                     SELECT 1 FROM canonical_jira_task_links AS ledger
+                     JOIN jira_task_binding_confirmations AS confirmation
+                       ON confirmation.project_id = ledger.project_id
+                      AND confirmation.link_id = ledger.link_id
+                     WHERE ?3 = 'epic' AND ledger.project_id = ?1
+                       AND (ledger.external_issue_key = ?2
+                            OR confirmation.external_issue_id = ?4)
+                 )",
+                params![
+                    item.project_id.to_string(),
+                    key.as_str(),
+                    item.item_kind.as_str(),
+                    issue_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if cross_subject {
+            return Err(conflict(
+                "confirmed Jira binding",
+                "the Jira issue is already bound to another subject",
+            ));
+        }
         match item.item_kind {
             JiraItemKind::Epic => {
-                let existing: Option<String> = transaction
+                let existing: Option<(String, Option<String>)> = transaction
                     .query_row(
-                        "SELECT external_issue_key FROM jira_epic_bindings
+                        "SELECT external_issue_key, external_issue_id
+                         FROM jira_epic_bindings
                          WHERE project_id = ?1 AND epic_id = ?2",
                         params![item.project_id.to_string(), item.epic_id.to_string()],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
                     .map_err(backend)?;
-                if existing
-                    .as_deref()
-                    .is_some_and(|stored| stored != key.as_str())
-                {
-                    return Err(RepositoryError::Conflict {
-                        subject: "Jira epic binding",
-                        rule: "the epic already has another confirmed Jira binding",
-                    });
+                if let Some((stored_key, stored_issue_id)) = existing.as_ref() {
+                    // Immutable identity is checked before the key, because it
+                    // is the stronger statement: a different issue is refused
+                    // even when it presents the key this epic is bound to.
+                    if stored_issue_id
+                        .as_deref()
+                        .is_some_and(|stored| stored != issue_id.as_str())
+                    {
+                        return Err(RepositoryError::Conflict {
+                            subject: "Jira epic binding",
+                            rule: "the readback names a different immutable Jira issue than the confirmed binding",
+                        });
+                    }
+                    if stored_key != key.as_str() {
+                        return Err(if stored_issue_id.is_none() {
+                            RepositoryError::Conflict {
+                                subject: "Jira epic binding",
+                                rule: "the confirmed binding predates immutable Jira identity and cannot authorize a key change",
+                            }
+                        } else {
+                            RepositoryError::Conflict {
+                                subject: "Jira epic binding",
+                                rule: "the epic already has another confirmed Jira binding",
+                            }
+                        });
+                    }
                 }
                 let changed = transaction
                     .execute(
                         "INSERT INTO jira_epic_bindings
-                         (project_id, epic_id, external_issue_key, readback_hash, confirmed_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         (project_id, epic_id, external_issue_key, external_issue_id,
+                          readback_hash, confirmed_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                          ON CONFLICT(project_id, epic_id) DO UPDATE SET
+                           external_issue_id = COALESCE(jira_epic_bindings.external_issue_id, excluded.external_issue_id),
                            readback_hash = excluded.readback_hash,
                            confirmed_at = excluded.confirmed_at
                          WHERE jira_epic_bindings.external_issue_key = excluded.external_issue_key",
@@ -1059,6 +1299,7 @@ impl SqliteStore {
                             item.project_id.to_string(),
                             item.epic_id.to_string(),
                             key.as_str(),
+                            issue_id.as_str(),
                             readback_hash.as_str(),
                             format_utc_timestamp(confirmed_at),
                         ],
@@ -1104,10 +1345,38 @@ impl SqliteStore {
                     Some((external_issue_key, link_id)) if external_issue_key == key.as_str() => {
                         link_id
                     }
-                    Some(_) => {
-                        return Err(RepositoryError::Conflict {
-                            subject: "Jira task binding",
-                            rule: "the task already has another Jira binding",
+                    Some((_, existing_link_id)) => {
+                        // The task is bound to a different key. Whether that is
+                        // a rename of the same issue or a different issue
+                        // entirely is decided by the immutable id, never by the
+                        // key. Renaming is not this call's job: confirmation
+                        // establishes a binding, reconciliation moves one.
+                        let stored_issue_id: Option<String> = transaction
+                            .query_row(
+                                "SELECT external_issue_id
+                                 FROM jira_task_binding_confirmations
+                                 WHERE project_id = ?1 AND link_id = ?2",
+                                params![item.project_id.to_string(), existing_link_id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(backend)?
+                            .flatten();
+                        return Err(match stored_issue_id.as_deref() {
+                            None => RepositoryError::Conflict {
+                                subject: "Jira task binding",
+                                rule: "the confirmed binding predates immutable Jira identity and cannot authorize a key change",
+                            },
+                            Some(stored) if stored == issue_id.as_str() => {
+                                RepositoryError::Conflict {
+                                    subject: "Jira task binding",
+                                    rule: "the task's confirmed Jira key changed and must be reconciled rather than reconfirmed",
+                                }
+                            }
+                            Some(_) => RepositoryError::Conflict {
+                                subject: "Jira task binding",
+                                rule: "the readback names a different immutable Jira issue than the confirmed binding",
+                            },
                         });
                     }
                     None if canonical_task_for_key.is_some() => {
@@ -1202,14 +1471,16 @@ impl SqliteStore {
                 transaction
                     .execute(
                         "INSERT INTO jira_task_binding_confirmations
-                         (project_id, link_id, readback_hash, confirmed_at)
-                         VALUES (?1, ?2, ?3, ?4)
+                         (project_id, link_id, external_issue_id, readback_hash, confirmed_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(project_id, link_id) DO UPDATE SET
+                           external_issue_id = COALESCE(jira_task_binding_confirmations.external_issue_id, excluded.external_issue_id),
                            readback_hash = excluded.readback_hash,
                            confirmed_at = excluded.confirmed_at",
                         params![
                             item.project_id.to_string(),
                             effective_link_id,
+                            issue_id.as_str(),
                             readback_hash.as_str(),
                             format_utc_timestamp(confirmed_at),
                         ],
@@ -1233,6 +1504,337 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         transaction.commit().map_err(backend)
+    }
+
+    /// Every confirmed Jira binding in one project, with its immutable id.
+    ///
+    /// The id is `None` for a binding confirmed before it was retained. Such a
+    /// binding is reported so a caller can see it, not so it can be renamed:
+    /// it cannot prove sameness and stays fail-closed.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn confirmed_jira_identities(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<(JiraBindingSubject, ExternalId, Option<ExternalId>)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT 'epic', binding.epic_id, NULL, binding.external_issue_key,
+                        binding.external_issue_id
+                 FROM jira_epic_bindings AS binding
+                 WHERE binding.project_id = ?1
+                 UNION ALL
+                 SELECT 'task', NULL, ledger.task_id, ledger.external_issue_key,
+                        confirmation.external_issue_id
+                 FROM canonical_jira_task_links AS ledger
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1
+                 ORDER BY 1, 4",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        let mut identities = Vec::with_capacity(rows.len());
+        for (kind, epic_id, task_id, key, issue_id) in rows {
+            let subject = match kind.as_str() {
+                "epic" => JiraBindingSubject::Epic(MiniProjectId::parse(
+                    epic_id.as_deref().ok_or(RepositoryError::Conflict {
+                        subject: "confirmed Jira binding",
+                        rule: "the epic binding has no epic identity",
+                    })?,
+                )?),
+                _ => JiraBindingSubject::Task(TaskId::parse(task_id.as_deref().ok_or(
+                    RepositoryError::Conflict {
+                        subject: "confirmed Jira binding",
+                        rule: "the task binding has no task identity",
+                    },
+                )?)?),
+            };
+            identities.push((
+                subject,
+                ExternalId::parse(&key)?,
+                issue_id.as_deref().map(ExternalId::parse).transpose()?,
+            ));
+        }
+        Ok(identities)
+    }
+
+    /// Reconcile a confirmed binding whose Jira key changed on the same issue.
+    ///
+    /// Identity is the immutable issue id, so this is addressed by id and never
+    /// by key. Finding the binding by the *new* key would beg the question the
+    /// call exists to answer. The Kontor subject UUID, the link identity and
+    /// the confirmation row all survive: a rename changes what the issue is
+    /// called, not which issue it is or which subject it names.
+    ///
+    /// # Errors
+    /// Refuses with a typed conflict when no confirmed binding carries the id,
+    /// when the binding predates immutable identity and so cannot prove
+    /// sameness, or when the new key already belongs to a different issue.
+    pub fn reconcile_confirmed_jira_key(
+        &self,
+        project_id: ProjectId,
+        issue_id: &ExternalId,
+        key: &ExternalId,
+        readback_hash: &ContentHash,
+        confirmed_at: Timestamp,
+    ) -> RepositoryResult<ConfirmedJiraBinding> {
+        TrackerKey::from_external(key).map_err(kontor_core::DomainError::from)?;
+        let transaction = self.begin()?;
+        let epic: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT epic_id, external_issue_key FROM jira_epic_bindings
+                 WHERE project_id = ?1 AND external_issue_id = ?2",
+                params![project_id.to_string(), issue_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let task: Option<(String, String, String)> = transaction
+            .query_row(
+                "SELECT ledger.task_id, ledger.link_id, ledger.external_issue_key
+                 FROM canonical_jira_task_links AS ledger
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1 AND confirmation.external_issue_id = ?2",
+                params![project_id.to_string(), issue_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if epic.is_some() && task.is_some() {
+            return Err(conflict(
+                "confirmed Jira binding",
+                "the immutable Jira issue identifies more than one subject in this project",
+            ));
+        }
+        // The new key must be free, or already held by this very binding. A key
+        // held by another subject is refused here with its own reason rather
+        // than left to surface as a bare uniqueness failure.
+        let holder: Option<String> = transaction
+            .query_row(
+                "SELECT 'epic' FROM jira_epic_bindings
+                 WHERE project_id = ?1 AND external_issue_key = ?2
+                   AND (external_issue_id IS NULL OR external_issue_id <> ?3)
+                 UNION ALL
+                 SELECT 'task' FROM canonical_jira_task_links AS ledger
+                 LEFT JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1 AND ledger.external_issue_key = ?2
+                   AND (confirmation.external_issue_id IS NULL
+                        OR confirmation.external_issue_id <> ?3)",
+                params![project_id.to_string(), key.as_str(), issue_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if holder.is_some() {
+            return Err(conflict(
+                "confirmed Jira binding",
+                "the Jira key is already confirmed for another issue in this project",
+            ));
+        }
+        let confirmed = text(confirmed_at);
+        match (&epic, &task) {
+            (Some((epic_id, current_key)), None) => {
+                // Same discipline as the task ledger: the authority names the
+                // key being moved away from, so it authorizes this transition
+                // and not merely this destination.
+                //
+                // Only an actual transition is authorized. Re-confirming the key
+                // a binding already holds moves nothing, so there is no
+                // transition to authorize and recording one would be a fiction.
+                if current_key != key.as_str() {
+                    let occurrence: i64 = transaction
+                        .query_row(
+                            "SELECT rename_sequence FROM jira_epic_bindings
+                             WHERE project_id = ?1 AND epic_id = ?2",
+                            params![project_id.to_string(), epic_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(backend)?;
+                    transaction
+                        .execute(
+                            "INSERT INTO jira_epic_rename_authorizations
+                             (project_id, epic_id, external_issue_id,
+                              from_external_issue_key, external_issue_key,
+                              from_rename_sequence, authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(project_id, epic_id, from_rename_sequence) DO NOTHING",
+                            params![
+                                project_id.to_string(),
+                                epic_id,
+                                issue_id.as_str(),
+                                current_key,
+                                key.as_str(),
+                                occurrence,
+                                &confirmed,
+                            ],
+                        )
+                        .map_err(unique_conflict(
+                            "Jira epic binding",
+                            "the reconciled Jira key is already confirmed in this project",
+                        ))?;
+                }
+                transaction
+                    .execute(
+                        "UPDATE jira_epic_bindings
+                         SET external_issue_key = ?3, readback_hash = ?4, confirmed_at = ?5,
+                             rename_sequence = rename_sequence + 1
+                         WHERE project_id = ?1 AND epic_id = ?2 AND external_issue_id = ?6",
+                        params![
+                            project_id.to_string(),
+                            &epic_id,
+                            key.as_str(),
+                            readback_hash.as_str(),
+                            &confirmed,
+                            issue_id.as_str(),
+                        ],
+                    )
+                    .map_err(unique_conflict(
+                        "Jira epic binding",
+                        "the reconciled Jira key is already confirmed in this project",
+                    ))?;
+            }
+            (None, Some((task_id, link_id, current_key))) => {
+                // Record the authority first, inside this transaction. The
+                // canonical ledger's guard admits a key change only against an
+                // authority row naming this link, this new key and the
+                // immutable issue the confirmation ledger already holds — so
+                // the rename is authorized by something recorded rather than by
+                // the state of another mutable row the same caller just wrote.
+                if current_key != key.as_str() {
+                    let occurrence: i64 = transaction
+                        .query_row(
+                            "SELECT rename_sequence FROM jira_task_binding_confirmations
+                             WHERE project_id = ?1 AND link_id = ?2",
+                            params![project_id.to_string(), &link_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(backend)?;
+                    transaction
+                        .execute(
+                            "INSERT INTO jira_rename_authorizations
+                             (project_id, link_id, external_issue_id,
+                              from_external_issue_key, external_issue_key,
+                              from_rename_sequence, authorized_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(project_id, link_id, from_rename_sequence) DO NOTHING",
+                            params![
+                                project_id.to_string(),
+                                &link_id,
+                                issue_id.as_str(),
+                                current_key,
+                                key.as_str(),
+                                occurrence,
+                                &confirmed,
+                            ],
+                        )
+                        .map_err(unique_conflict(
+                            "Jira task binding",
+                            "the reconciled Jira key is already confirmed in this project",
+                        ))?;
+                }
+                transaction
+                    .execute(
+                        "UPDATE jira_links SET external_issue_key = ?3
+                         WHERE project_id = ?1 AND id = ?2",
+                        params![project_id.to_string(), &link_id, key.as_str()],
+                    )
+                    .map_err(unique_conflict(
+                        "Jira task binding",
+                        "the reconciled Jira key is already confirmed in this project",
+                    ))?;
+                transaction
+                    .execute(
+                        "UPDATE canonical_jira_task_links SET external_issue_key = ?3
+                         WHERE project_id = ?1 AND task_id = ?2",
+                        params![project_id.to_string(), &task_id, key.as_str()],
+                    )
+                    .map_err(unique_conflict(
+                        "Jira task binding",
+                        "the reconciled Jira key is already confirmed in this project",
+                    ))?;
+                transaction
+                    .execute(
+                        "UPDATE jira_task_binding_confirmations
+                         SET readback_hash = ?3, confirmed_at = ?4,
+                             rename_sequence = rename_sequence + 1
+                         WHERE project_id = ?1 AND link_id = ?2 AND external_issue_id = ?5",
+                        params![
+                            project_id.to_string(),
+                            &link_id,
+                            readback_hash.as_str(),
+                            &confirmed,
+                            issue_id.as_str(),
+                        ],
+                    )
+                    .map_err(backend)?;
+            }
+            (None, None) => {
+                return Err(RepositoryError::NotFound {
+                    subject: "confirmed Jira binding for this immutable issue",
+                });
+            }
+            (Some(_), Some(_)) => unreachable!("the cross-ledger case returned above"),
+        }
+        // Read the answer inside the transaction that wrote it. Resolving after
+        // the commit opens a window in which another writer renames the same
+        // immutable issue first, and this caller then reports `NotFound` — or
+        // somebody else's binding — for a write that in fact succeeded.
+        let (subject, revision) = match (&epic, &task) {
+            (Some((epic_id, _)), None) => {
+                let epic_id = MiniProjectId::parse(epic_id)?;
+                let revision: i64 = transaction
+                    .query_row(
+                        "SELECT revision FROM mini_projects
+                         WHERE project_id = ?1 AND id = ?2",
+                        params![project_id.to_string(), epic_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                (JiraBindingSubject::Epic(epic_id), revision)
+            }
+            (None, Some((task_id, _, _))) => {
+                let task_id = TaskId::parse(task_id)?;
+                let revision: i64 = transaction
+                    .query_row(
+                        "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                        params![project_id.to_string(), task_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                (JiraBindingSubject::Task(task_id), revision)
+            }
+            _ => unreachable!("the empty and cross-ledger cases returned above"),
+        };
+        let settled = ConfirmedJiraBinding {
+            project_id,
+            subject,
+            jira_key: key.clone(),
+            readback_hash: readback_hash.clone(),
+            confirmed_at,
+            revision: revision_of(revision)?,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(settled)
     }
 
     /// Confirm the batch only when every planned item is confirmed.
@@ -1391,4 +1993,144 @@ fn read_jira_materialization_items(
         });
     }
     Ok(items)
+}
+
+/// Map a constraint violation to one stable typed conflict.
+///
+/// [`backend`] already refuses to leak SQLite's message, but it can only say
+/// "some constraint refused this". Where the caller knows exactly which rule a
+/// write can trip, that knowledge belongs in the error instead of being
+/// flattened into a generic storage conflict.
+fn unique_conflict(
+    subject: &'static str,
+    rule: &'static str,
+) -> impl Fn(rusqlite::Error) -> RepositoryError {
+    move |error| {
+        if let rusqlite::Error::SqliteFailure(failure, _) = &error
+            && failure.code == rusqlite::ErrorCode::ConstraintViolation
+        {
+            return RepositoryError::Conflict { subject, rule };
+        }
+        backend(error)
+    }
+}
+
+/// Record the immutable Jira issue id of an already-confirmed binding.
+///
+/// Confirmations written before the id was retained hold NULL, which is why
+/// an exact replay still has work to do: this is the supported readback that
+/// establishes one. An id already present is never rewritten, and one naming a
+/// different issue is refused — a key that happens to match is not permission
+/// to overwrite identity.
+fn establish_immutable_issue_id(
+    transaction: &Transaction<'_>,
+    item: &StoredJiraMaterializationItem,
+    key: &ExternalId,
+    issue_id: &ExternalId,
+) -> RepositoryResult<()> {
+    let stored: Option<Option<String>> = match item.item_kind {
+        JiraItemKind::Epic => transaction
+            .query_row(
+                "SELECT external_issue_id FROM jira_epic_bindings
+                 WHERE project_id = ?1 AND epic_id = ?2 AND external_issue_key = ?3",
+                params![
+                    item.project_id.to_string(),
+                    item.epic_id.to_string(),
+                    key.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?,
+        JiraItemKind::Task => transaction
+            .query_row(
+                "SELECT confirmation.external_issue_id
+                 FROM canonical_jira_task_links AS ledger
+                 JOIN jira_task_binding_confirmations AS confirmation
+                   ON confirmation.project_id = ledger.project_id
+                  AND confirmation.link_id = ledger.link_id
+                 WHERE ledger.project_id = ?1 AND ledger.external_issue_key = ?2",
+                params![item.project_id.to_string(), key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?,
+    };
+    // The per-table unique index cannot see the other ledger, and this helper
+    // runs on the exact-replay path that returns before the caller's
+    // cross-subject guard is ever reached. Checking here is what stops one
+    // immutable Jira issue from being committed onto both an epic and a task.
+    let claimed_elsewhere: bool = match item.item_kind {
+        JiraItemKind::Epic => transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM jira_task_binding_confirmations
+                     WHERE project_id = ?1 AND external_issue_id = ?2
+                 )",
+                params![item.project_id.to_string(), issue_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?,
+        JiraItemKind::Task => transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM jira_epic_bindings
+                     WHERE project_id = ?1 AND external_issue_id = ?2
+                 )",
+                params![item.project_id.to_string(), issue_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?,
+    };
+    if claimed_elsewhere {
+        return Err(conflict(
+            "confirmed Jira binding",
+            "the immutable Jira issue is already confirmed for another subject in this project",
+        ));
+    }
+    match stored {
+        // Nothing is confirmed under this key yet, so there is no binding to
+        // establish an id on. The ordinary confirmation path writes it.
+        None => return Ok(()),
+        Some(Some(existing)) => {
+            return if existing == issue_id.as_str() {
+                Ok(())
+            } else {
+                Err(conflict(
+                    "confirmed Jira binding",
+                    "the readback names a different immutable Jira issue than the confirmed binding",
+                ))
+            };
+        }
+        Some(None) => {}
+    }
+    let changed = match item.item_kind {
+        JiraItemKind::Epic => transaction.execute(
+            "UPDATE jira_epic_bindings SET external_issue_id = ?3
+             WHERE project_id = ?1 AND epic_id = ?2 AND external_issue_id IS NULL",
+            params![
+                item.project_id.to_string(),
+                item.epic_id.to_string(),
+                issue_id.as_str()
+            ],
+        ),
+        JiraItemKind::Task => transaction.execute(
+            "UPDATE jira_task_binding_confirmations SET external_issue_id = ?2
+             WHERE external_issue_id IS NULL AND project_id = ?1
+               AND link_id = (SELECT link_id FROM canonical_jira_task_links
+                              WHERE project_id = ?1 AND external_issue_key = ?3)",
+            params![item.project_id.to_string(), issue_id.as_str(), key.as_str()],
+        ),
+    }
+    .map_err(unique_conflict(
+        "confirmed Jira binding",
+        "the immutable Jira issue is already confirmed for another subject in this project",
+    ))?;
+    if changed != 1 {
+        return Err(conflict(
+            "confirmed Jira binding",
+            "the confirmed binding changed while its immutable Jira issue was being established",
+        ));
+    }
+    Ok(())
 }
