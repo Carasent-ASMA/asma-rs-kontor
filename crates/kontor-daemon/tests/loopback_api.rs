@@ -14134,6 +14134,247 @@ async fn a_slot_spelled_like_the_required_role_cannot_release_the_fence() {
     );
 }
 
+/// Row identities a catch-up must leave exactly as it found them.
+fn fence_evidence_census(
+    state_root: &std::path::Path,
+    project: &str,
+) -> Vec<(String, Vec<String>)> {
+    let database = state_root.join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    [
+        (
+            "task_gate_rejection_routes",
+            "SELECT gate_key || '|' || gate_sequence || '|' || rejection_target || '|' \
+             || routed_at || '|' || team_run_id || '|' || to_revision \
+             FROM task_gate_rejection_routes WHERE project_id = ?1 ORDER BY 1",
+        ),
+        (
+            "role_turns",
+            "SELECT id || '|' || role_slot_id || '|' || team_run_id || '|' || artifacts \
+             || '|' || settled_at FROM role_turns WHERE project_id = ?1 ORDER BY 1",
+        ),
+        (
+            "task_gate_evaluations",
+            "SELECT gate_key || '|' || sequence || '|' || verdict || '|' || recorded_at \
+             FROM task_gate_evaluations WHERE project_id = ?1 ORDER BY 1",
+        ),
+    ]
+    .into_iter()
+    .map(|(table, query)| {
+        let mut statement = connection
+            .prepare(query)
+            .unwrap_or_else(|error| panic!("`{table}` is readable: {error}"));
+        let rows: Vec<String> = statement
+            .query_map(rusqlite::params![project], |row| row.get::<_, String>(0))
+            .expect("the rows project")
+            .map(|row| row.expect("a projected row"))
+            .collect();
+        (table.to_owned(), rows)
+    })
+    .collect()
+}
+
+/// Pin an already-advanced workflow back onto the rejection target.
+///
+/// This is how a realm that ran the *earlier* build looks: the route, the
+/// qualifying turn and the passing gate verdict are all durable, and the phase
+/// never moved because the predicate that should have released the fence
+/// compared a slot address to a logical role. Rewinding the one mutable column
+/// reproduces that database rather than simulating it — every other row is the
+/// row the ordinary path actually wrote.
+fn pin_workflow_back_to(world: &World, seed: &Bootstrapped, phase: &str, revision: u64) {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let workflow = active_workflow(world, seed).id.to_string();
+    let moved = connection
+        .execute(
+            "UPDATE task_workflows SET current_phase = ?1, revision = ?2
+             WHERE project_id = ?3 AND id = ?4",
+            rusqlite::params![
+                phase,
+                i64::try_from(revision).expect("a small revision"),
+                seed.project,
+                workflow
+            ],
+        )
+        .expect("the workflow is pinned back");
+    assert_eq!(moved, 1);
+}
+
+/// F-8110-R10. Correcting the fence predicate is not enough on its own. Ordinary
+/// advancement only runs when a caller asks for it — a settled turn, or a gate
+/// record that did not reject — and the realms this correction exists for have
+/// nothing left to ask: their qualifying turn and their passing gate verdict are
+/// already durable. Upgrading the binary under such a realm would leave the
+/// workflow pinned on its rejection target forever, because nothing would ever
+/// reproject it.
+///
+/// So the corrected daemon asks once, at startup, and this proves it: the
+/// durable state here is exactly the stuck shape, the restart is the supported
+/// `Daemon::start` + `reconcile` path, and the advance it produces rewrites no
+/// turn, no gate evaluation and no route.
+#[tokio::test]
+async fn a_restart_converges_a_workflow_left_fenced_by_the_earlier_predicate() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-catchup").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-catchup-reject").await;
+    let (target, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(target, "high-implementation");
+    let route_before = fleet_route(&world, seed);
+
+    // The rework and the verification verdict both land through the ordinary
+    // public path, so every durable row is the row production writes.
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-catchup-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (uri, revision, gate) = gate_record_target(&world, seed).await;
+    let gate_spec = active_workflow(&world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let passed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fleet-catchup-pass")
+    .send(&world)
+    .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+
+    // Now make the realm look like one the earlier build left behind: all of
+    // that evidence durable, and the phase still sitting on the rejection
+    // target because nothing ever released the fence.
+    pin_workflow_back_to(&world, seed, &target, routed_revision);
+    assert_eq!(
+        workflow_position(&world, seed),
+        (target.clone(), routed_revision),
+        "the fixture reproduces a workflow stuck on its rejection target"
+    );
+    let before = fence_evidence_census(world.directory.path(), &seed.project);
+    assert!(
+        before
+            .iter()
+            .any(|(table, rows)| table == "role_turns" && !rows.is_empty()),
+        "the qualifying turn is durable before the restart"
+    );
+    assert!(
+        before
+            .iter()
+            .any(|(table, rows)| table == "task_gate_evaluations" && !rows.is_empty()),
+        "the passing verdict is durable before the restart"
+    );
+
+    // The supported restart: a new process over the same state root, whose
+    // startup reconciliation is the only thing that runs.
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+    assert_eq!(restarted.reconcile().await, BarrierState::Open);
+
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let after_restart = restarted
+        .state()
+        .with_store(|store| store.get_active_task_workflow(project, task_id))
+        .expect("the workflow reads")
+        .expect("the task has an active workflow");
+    assert_ne!(
+        after_restart.current_phase.as_str(),
+        target,
+        "startup reconciliation converges a workflow the earlier predicate left fenced"
+    );
+
+    // Doing it again changes nothing. The catch-up is a projection, so a realm
+    // that has already converged has nothing left for it to do.
+    let settled_phase = after_restart.current_phase.clone();
+    let settled_revision = after_restart.revision;
+    for _ in 0..3 {
+        assert_eq!(restarted.reconcile().await, BarrierState::Open);
+        let again = restarted
+            .state()
+            .with_store(|store| store.get_active_task_workflow(project, task_id))
+            .expect("the workflow reads")
+            .expect("the task has an active workflow");
+        assert_eq!(
+            again.current_phase, settled_phase,
+            "the catch-up is idempotent"
+        );
+        assert_eq!(
+            again.revision, settled_revision,
+            "a converged realm is not advanced again"
+        );
+    }
+
+    // The route itself is still the same immutable record it was before the
+    // restart: history, not something the catch-up reissued.
+    let route_after = restarted
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, after_restart.id))
+        .expect("the routes read")
+        .into_iter()
+        .next()
+        .expect("the route survives as history");
+    assert_eq!(route_after.team_run_id, route_before.team_run_id);
+    assert_eq!(route_after.routed_at, route_before.routed_at);
+    assert_eq!(route_after.to_revision, route_before.to_revision);
+    assert_eq!(
+        route_after.rejection_receipt_id,
+        route_before.rejection_receipt_id
+    );
+    assert_eq!(route_after.rejection_target, route_before.rejection_target);
+
+    // And none of it rewrote the evidence it read. Same rows, same identities.
+    let after = fence_evidence_census(&state_root, &seed.project);
+    assert_eq!(
+        after, before,
+        "the catch-up replays no turn, re-records no verdict and rewrites no route"
+    );
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
 /// A gate request cites evidence; it does not create that evidence.
 #[tokio::test]
 async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {
