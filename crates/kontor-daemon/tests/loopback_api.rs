@@ -46947,3 +46947,73 @@ async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
         "an unnameable consultation must refuse before any native effect",
     );
 }
+
+/// ASMA-8119: a confirmed Jira key addresses exactly the subject its UUID does.
+///
+/// The key is not a second way to *find* a subject — it reaches the same route
+/// and the same operation, and the server decides what it names. So the two
+/// spellings are asserted to return the same document, and every way a key can
+/// be wrong is asserted to refuse before that operation runs.
+#[tokio::test]
+async fn a_confirmed_jira_key_addresses_the_same_subject_as_its_uuid() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    let by_uuid = Call::get(format!("/v1/projects/{project_id}/epics/{epic_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(by_uuid.status, 200, "{}", by_uuid.body);
+
+    let by_key = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(by_key.status, 200, "{}", by_key.body);
+    assert_eq!(
+        by_key.json(),
+        by_uuid.json(),
+        "the confirmed key resolves to the very same epic"
+    );
+
+    // The key names an epic, so it must not satisfy a route that addresses a
+    // task. This is the check the store's resolver deliberately does not make.
+    let wrong_kind = Call::get(format!("/v1/projects/{project_id}/tasks/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        wrong_kind.status.is_client_error() || wrong_kind.status.is_server_error(),
+        "an epic key must not address a task: {} {}",
+        wrong_kind.status,
+        wrong_kind.body
+    );
+
+    // A well-formed key with no confirmed binding in this project is refused.
+    let unknown = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-4242"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        unknown.status.is_client_error() || unknown.status.is_server_error(),
+        "an unbound key is refused: {} {}",
+        unknown.status,
+        unknown.body
+    );
+
+    // Case is never repaired, so a lowercase spelling stays a refusal rather
+    // than quietly becoming the confirmed key.
+    let malformed = Call::get(format!("/v1/projects/{project_id}/epics/asma-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        malformed.status.is_client_error() || malformed.status.is_server_error(),
+        "a non-canonical key is refused: {} {}",
+        malformed.status,
+        malformed.body
+    );
+}

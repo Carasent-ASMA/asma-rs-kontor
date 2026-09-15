@@ -410,6 +410,8 @@ fn check_value(
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        | ArgType::EpicSelector
+        | ArgType::TaskSelector
         | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId
@@ -564,6 +566,12 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::ProjectId => id::ProjectId::parse(text).map(drop),
         ArgType::MiniProjectId => id::MiniProjectId::parse(text).map(drop),
         ArgType::TaskId => id::TaskId::parse(text).map(drop),
+        // A selector is refused here for exactly the reason the note below
+        // gives: a malformed key must not travel to the daemon. Which
+        // subject a well-formed key names is the store's decision, not
+        // this layer's, so only the spelling is checked.
+        ArgType::EpicSelector => kontor_core::selector::EpicSelector::parse(text).map(drop),
+        ArgType::TaskSelector => kontor_core::selector::TaskSelector::parse(text).map(drop),
         ArgType::TeamRunId => id::TeamRunId::parse(text).map(drop),
         ArgType::AgentRunId => id::AgentRunId::parse(text).map(drop),
         ArgType::AccountProfileId => id::AccountProfileId::parse(text).map(drop),
@@ -624,6 +632,51 @@ mod tests {
         assert!(parse_domain(ArgType::EpicBacklogCode, "KOP").is_ok());
         assert!(parse_domain(ArgType::EpicBacklogCode, "kop").is_err());
         assert!(parse_domain(ArgType::EpicBacklogCode, "8001").is_err());
+    }
+
+    #[test]
+    fn a_subject_selector_takes_either_spelling_and_nothing_else() {
+        // Both accepted spellings.
+        assert!(parse_domain(ArgType::TaskSelector, UUID).is_ok());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA-8119").is_ok());
+        assert!(parse_domain(ArgType::EpicSelector, UUID).is_ok());
+        assert!(parse_domain(ArgType::EpicSelector, "ASMA-8049").is_ok());
+        // Case is never repaired, and a bare project key is not a key.
+        assert!(parse_domain(ArgType::TaskSelector, "asma-8119").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA-0").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "").is_err());
+        // Widening the subject must not have widened the plain id types.
+        assert!(parse_domain(ArgType::TaskId, "ASMA-8119").is_err());
+        assert!(parse_domain(ArgType::MiniProjectId, "ASMA-8049").is_err());
+    }
+
+    #[test]
+    fn a_confirmed_key_fills_the_same_route_as_a_uuid() {
+        // The point of the selector: one route, either spelling, no by-key twin.
+        let request = build(
+            spec("kontor_task_get"),
+            &serde_json::json!({ "project_id": UUID, "task_id": "ASMA-8119" }),
+        )
+        .expect("a confirmed key is a well-formed call");
+        assert_eq!(request.method, Method::Get);
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/tasks/ASMA-8119"),
+            "the key is passed through for the server to resolve"
+        );
+    }
+
+    #[test]
+    fn a_malformed_key_never_reaches_the_daemon() {
+        let refusal = build(
+            spec("kontor_task_get"),
+            &serde_json::json!({ "project_id": UUID, "task_id": "asma-8119" }),
+        );
+        assert!(
+            refusal.is_err(),
+            "a lowercase key is refused before dispatch"
+        );
     }
 
     #[test]

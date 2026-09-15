@@ -52,6 +52,7 @@ use kontor_core::id::{
     TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
+use kontor_core::selector::{EpicSelector, TaskSelector};
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance,
@@ -59,6 +60,7 @@ use kontor_core::spec::{
 use kontor_core::state::{PlacementState, TopologyLifecycle};
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{MessageId, PermissionDecision};
+use kontor_store::JiraBindingSubject;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -8291,7 +8293,7 @@ pub async fn code_help(
 ) -> Result<Json<CodeHelpProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(state.applications().code_help(project_id, epic_id)?))
 }
 
@@ -8487,7 +8489,7 @@ pub async fn preview_topology_upgrade(
 ) -> Result<Json<TopologyUpgradePreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -8613,7 +8615,7 @@ pub async fn preview_jira_materialization(
 ) -> Result<Json<JiraMaterializationPreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(state.applications().preview_jira_materialization(
         project_id, epic_id, &request,
     )?))
@@ -8637,7 +8639,7 @@ pub async fn preview_task_description(
 ) -> Result<Json<DescriptionPreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
     Ok(Json(
         state
             .applications()
@@ -8666,7 +8668,7 @@ pub async fn apply_task_description(
 ) -> Result<Json<DescriptionPublishedDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -8694,7 +8696,7 @@ pub async fn preview_epic_description(
 ) -> Result<Json<DescriptionPreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -8723,7 +8725,7 @@ pub async fn apply_epic_description(
 ) -> Result<Json<DescriptionPublishedDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -8753,7 +8755,7 @@ pub async fn apply_jira_materialization(
 ) -> Result<Json<JiraMaterializationAppliedDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -8783,7 +8785,7 @@ pub async fn apply_topology_upgrade(
 ) -> Result<Json<AppliedTopologyUpgradeDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -8813,7 +8815,7 @@ pub async fn preview_native_names(
 ) -> Result<Json<NativeNamesPreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -8844,7 +8846,7 @@ pub async fn apply_native_names(
 ) -> Result<Json<AppliedNativeNamesDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -8872,7 +8874,7 @@ pub async fn preview_team_definition_upgrade(
 ) -> Result<Json<TeamDefinitionUpgradePreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -8901,7 +8903,7 @@ pub async fn apply_team_definition_upgrade(
 ) -> Result<Json<AppliedTeamDefinitionUpgradeDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -9053,7 +9055,7 @@ pub async fn preview_epic_backlog_code_correction(
 ) -> Result<Json<EpicBacklogCodeCorrectionPreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -9083,7 +9085,7 @@ pub async fn apply_epic_backlog_code_correction(
 ) -> Result<Json<AppliedEpicBacklogCodeCorrectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -9517,7 +9519,7 @@ pub async fn materialize_core_team(
 ) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -9549,7 +9551,7 @@ pub async fn preview_core_team_route(
 ) -> Result<Json<CoreTeamRoutePreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -9582,7 +9584,7 @@ pub async fn apply_core_team_route(
 ) -> Result<Json<CoreTeamRouteOutcomeDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -9614,7 +9616,7 @@ pub async fn preview_core_team_seat_claim(
 ) -> Result<Json<CoreTeamSeatClaimPreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -9647,7 +9649,7 @@ pub async fn apply_core_team_seat_claim(
 ) -> Result<Json<CoreTeamSeatClaimOutcomeDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -9834,7 +9836,7 @@ pub async fn preview_roster_upgrade(
 ) -> Result<Json<RosterUpgradePreviewDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
@@ -9866,7 +9868,7 @@ pub async fn apply_roster_upgrade(
 ) -> Result<Json<CoreTeamOutcomeDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -9982,7 +9984,7 @@ pub async fn invoke_advisor_run(
 ) -> Result<Json<AdvisorRunDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -10238,7 +10240,7 @@ pub async fn invoke_committee_run(
         caller.require(&state, CallerCapability::Admin)?;
     }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -10637,7 +10639,7 @@ pub async fn completion(
 ) -> Result<Json<CompletionStateDto>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(state.applications().completion(project_id, epic_id)?))
 }
 
@@ -10665,7 +10667,7 @@ pub async fn advance_completion(
 ) -> Result<Json<CompletionOutcomeDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -10705,7 +10707,7 @@ pub async fn remediate_completion(
         )
     })?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -10848,7 +10850,7 @@ pub async fn read_epic(
 ) -> Result<Json<EpicProjectionDto>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(state.applications().read_epic(project_id, epic_id)?))
 }
 
@@ -10934,7 +10936,7 @@ pub async fn plan(
 ) -> Result<Json<SchedulerPlanDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(state.applications().plan(project_id, epic_id).await?))
 }
 
@@ -11135,9 +11137,36 @@ fn task_scope(
     headers: &HeaderMap,
 ) -> Result<(ProjectId, TaskId, IdempotencyKey), ApiError> {
     let project_id = parse_id(state, ProjectId::parse(project_id))?;
-    let task_id = parse_id(state, TaskId::parse(task_id))?;
+    let task_id = resolve_task_selector(state, project_id, task_id)?;
     let key = idempotency_key(state, headers)?;
     Ok((project_id, task_id, key))
+}
+
+/// Resolve the addressed task, however the caller spelled it.
+///
+/// A UUID is already the identity. A confirmed Jira key is resolved inside the
+/// supplied project by the store's one resolver and then kind-checked, so a key
+/// naming an epic cannot reach a task operation. Resolution happens here, before
+/// the idempotency key is read and before the application operation runs, so the
+/// operation's revision, authority and idempotency checks all apply to the exact
+/// resolved subject rather than to the text the caller typed.
+pub(crate) fn resolve_task_selector(
+    state: &ApiState,
+    project_id: ProjectId,
+    task_id: &str,
+) -> Result<TaskId, ApiError> {
+    match parse_id(state, TaskSelector::parse(task_id))? {
+        TaskSelector::Id(id) => Ok(id),
+        TaskSelector::Key(key) => {
+            match resolve_confirmed_subject(state, project_id, key.as_str())? {
+                JiraBindingSubject::Task(id) => Ok(id),
+                JiraBindingSubject::Epic(_) => Err(state.refuse(
+                    ApiErrorCode::InvalidRequest,
+                    "that confirmed Jira key names an epic, and this route addresses a task",
+                )),
+            }
+        }
+    }
 }
 
 /// Resolve one task's Context Pack.
@@ -11387,7 +11416,7 @@ pub async fn ticket_reconcile_plan(
 ) -> Result<Json<TicketReconcilePlanDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
     Ok(Json(
         state
             .applications()
@@ -12026,7 +12055,7 @@ pub async fn ticket_conflicts(
 ) -> Result<Json<Vec<TicketConflictDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
     Ok(Json(
         state.applications().ticket_conflicts(project_id, task_id)?,
     ))
@@ -12087,7 +12116,7 @@ pub async fn epic_ticket_conflicts(
 ) -> Result<Json<Vec<EpicConflictDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(state.applications().epic_ticket_conflicts(
         project_id,
         epic_id,
@@ -12120,7 +12149,7 @@ pub async fn resolve_epic_ticket_conflict(
 ) -> Result<Json<EpicConflictDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let epic_id = parse_id(&state, MiniProjectId::parse(&epic_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(
         state
@@ -12181,7 +12210,7 @@ pub async fn ticket_comments(
 ) -> Result<Json<Vec<TicketCommentDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
     Ok(Json(
         state.applications().ticket_comments(project_id, task_id)?,
     ))
@@ -12227,9 +12256,49 @@ fn scope(
     headers: &HeaderMap,
 ) -> Result<(ProjectId, MiniProjectId, IdempotencyKey), ApiError> {
     let project_id = parse_id(state, ProjectId::parse(project_id))?;
-    let epic_id = parse_id(state, MiniProjectId::parse(epic_id))?;
+    let epic_id = resolve_epic_selector(state, project_id, epic_id)?;
     let key = idempotency_key(state, headers)?;
     Ok((project_id, epic_id, key))
+}
+
+/// Resolve the addressed epic, however the caller spelled it.
+///
+/// The task counterpart documents the ordering; the kind check is mirrored so a
+/// key naming a task cannot reach an epic operation.
+pub(crate) fn resolve_epic_selector(
+    state: &ApiState,
+    project_id: ProjectId,
+    epic_id: &str,
+) -> Result<MiniProjectId, ApiError> {
+    match parse_id(state, EpicSelector::parse(epic_id))? {
+        EpicSelector::Id(id) => Ok(id),
+        EpicSelector::Key(key) => {
+            match resolve_confirmed_subject(state, project_id, key.as_str())? {
+                JiraBindingSubject::Epic(id) => Ok(id),
+                JiraBindingSubject::Task(_) => Err(state.refuse(
+                    ApiErrorCode::InvalidRequest,
+                    "that confirmed Jira key names a task, and this route addresses an epic",
+                )),
+            }
+        }
+    }
+}
+
+/// The one confirmed-key lookup every selector goes through.
+///
+/// There is deliberately no second implementation anywhere above the store: a
+/// malformed key, a key in another project, a key whose binding is not yet
+/// confirmed, and a key that resolves to more than one subject are all decided
+/// once, by the store, and surface here as the store's own refusal.
+fn resolve_confirmed_subject(
+    state: &ApiState,
+    project_id: ProjectId,
+    key: &str,
+) -> Result<JiraBindingSubject, ApiError> {
+    state
+        .with_store(|store| store.resolve_confirmed_jira_key(project_id, key))
+        .map(|binding| binding.subject)
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))
 }
 
 /// The external identifiers a request carries, parsed once.

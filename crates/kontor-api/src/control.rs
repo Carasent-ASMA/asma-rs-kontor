@@ -16,7 +16,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 
 use crate::body::Json;
 use futures::stream::Stream;
-use kontor_core::id::{AgentRunId, EventCursor, IdempotencyKey, ProjectId, TaskId};
+use kontor_core::id::{AgentRunId, EventCursor, IdempotencyKey, ProjectId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::{RealmRepository, RunInspection, TaskInspection};
 use kontor_core::state::{DerivedRunState, Freshness};
@@ -137,7 +137,7 @@ pub async fn task_snapshot(
 ) -> Result<Json<SnapshotDto<TaskDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = crate::applications::resolve_task_selector(&state, project_id, &task_id)?;
     let snapshot = state
         .with_store(|store| store.snapshot_task_inspection(project_id, task_id))
         .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;

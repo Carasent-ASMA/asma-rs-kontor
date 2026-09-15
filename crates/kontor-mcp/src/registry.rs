@@ -66,6 +66,17 @@ pub enum ArgType {
     MiniProjectId,
     /// A canonical v7 UUID naming a task.
     TaskId,
+    /// How a caller names one epic: its UUID, or its exact confirmed Jira key.
+    ///
+    /// This widens only the addressed subject of a route. It is deliberately not
+    /// [`ArgType::MiniProjectId`] with a looser rule: every other epic argument —
+    /// a parent, a dependency, a run subject — stays UUID-only, so widening the
+    /// id type itself would weaken positions that were never meant to move.
+    EpicSelector,
+    /// How a caller names one task: its UUID, or its exact confirmed Jira key.
+    ///
+    /// The same boundary as [`ArgType::EpicSelector`].
+    TaskSelector,
     /// A canonical v7 UUID naming one run of a team.
     TeamRunId,
     /// A canonical v7 UUID naming one agent run.
@@ -199,6 +210,8 @@ impl ArgType {
             Self::ProjectId
             | Self::MiniProjectId
             | Self::TaskId
+            | Self::EpicSelector
+            | Self::TaskSelector
             | Self::TeamRunId
             | Self::AgentRunId
             | Self::AccountProfileId
@@ -239,6 +252,16 @@ impl ArgType {
         match self {
             Self::EpicBacklogCode => {
                 fragment.insert("pattern".into(), "^[A-Z0-9]{2,32}$".into());
+            }
+            Self::EpicSelector | Self::TaskSelector => {
+                // Either spelling, and nothing else. The two alternatives cannot
+                // overlap: a key starts with an uppercase letter, a UUID with a
+                // lowercase hex digit.
+                fragment.insert(
+                    "pattern".into(),
+                    "^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Z][A-Z0-9]*-[1-9][0-9]*)$"
+                        .into(),
+                );
             }
             Self::LegacyEpicBacklogCode => {
                 fragment.insert("minLength".into(), 1.into());
@@ -809,7 +832,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task to read."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
         ],
         about: "One task's snapshot, at one control-plane position.",
     },
@@ -1015,8 +1043,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic to read.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
         ],
         about: "One epic's whole graph: tasks, phases, gates and required evidence.",
@@ -1612,7 +1640,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -1681,7 +1714,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "authorization_id",
@@ -1745,7 +1783,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
         ],
         about: "What the scheduler would start now, and what blocks the rest. Ready work needs no \
                 kontor_execution_arm. Each blocked row's action names the next tool. Commits nothing.",
@@ -1763,7 +1806,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "plan_hash",
@@ -1788,7 +1836,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -1818,7 +1871,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "action",
@@ -1866,7 +1924,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             opt(
                 "snapshot",
@@ -1891,7 +1954,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "gate_id",
                 Place::Path,
@@ -1958,7 +2026,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "gate_id",
                 Place::Path,
@@ -2419,7 +2492,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
         ],
         about: "The deterministic external-ticket plan. Commits nothing.",
     },
@@ -2439,7 +2517,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "projection_hash",
@@ -2470,7 +2553,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "body",
                 Place::Body,
@@ -2493,7 +2581,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "body",
@@ -2529,7 +2622,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "body",
                 Place::Body,
@@ -2552,7 +2650,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "body",
@@ -2789,7 +2892,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             opt(
                 "include_resolved",
                 Place::Query,
@@ -2812,7 +2920,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "conflict_id",
@@ -2839,7 +2952,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "conflict_id",
@@ -2866,7 +2984,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
         ],
         about: "Mirror new inbound comments for one task's links. Never sends one.",
@@ -2896,7 +3019,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("task_id", Place::Path, ArgType::TaskId, "The task."),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
         ],
         about: "Record Kontor's intent to hold one task's tickets for its own principal.",
@@ -3851,8 +3979,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose pinned revisions are read.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
         ],
         about: "Every controlled code one epic's pinned revisions define, sorted and server-owned.",
@@ -4158,8 +4286,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic to materialize.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             req(
                 "epic",
@@ -4192,8 +4320,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic to materialize.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             IDEMPOTENCY,
             req(
@@ -4233,8 +4361,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose pin would move.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             req(
                 "target_spec",
@@ -4261,8 +4389,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose pin moves.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             IDEMPOTENCY,
             req(
@@ -4296,8 +4424,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose native names and immutable pin would migrate.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             req(
                 "target_definition",
@@ -4336,8 +4464,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose exact previewed migration is applied.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             IDEMPOTENCY,
             req(
@@ -4604,8 +4732,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The legacy epic whose effective code would change.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             req(
                 "expected_revision",
@@ -4650,8 +4778,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The legacy epic whose effective code changes.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             IDEMPOTENCY,
             req(
@@ -4703,8 +4831,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose native names are preflighted.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             req(
                 "expected_revision",
@@ -4731,8 +4859,8 @@ pub static REGISTRY: &[ToolSpec] = &[
             req(
                 "epic_id",
                 Place::Path,
-                ArgType::MiniProjectId,
-                "The epic whose exact preview is applied.",
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
             ),
             IDEMPOTENCY,
             req(
@@ -5191,7 +5319,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -5221,7 +5354,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -5268,7 +5406,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -5322,7 +5465,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -5363,7 +5511,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -5517,7 +5670,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             req(
                 "target",
                 Place::Body,
@@ -5540,7 +5698,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "preview_hash",
@@ -5641,7 +5804,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "profile",
@@ -5859,7 +6027,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "profile",
@@ -6324,7 +6497,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
         ],
         about: "One epic's completion state and what is still blocking it.",
     },
@@ -6341,7 +6519,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -6381,7 +6564,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req("epic_id", Place::Path, ArgType::MiniProjectId, "The epic."),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
             IDEMPOTENCY,
             req(
                 "expected_revision",
@@ -6429,7 +6617,12 @@ static TASK_SCOPE_ARGS: &[ArgSpec] = &[
         ArgType::ProjectId,
         "The owning project.",
     ),
-    req("task_id", Place::Path, ArgType::TaskId, "The task."),
+    req(
+        "task_id",
+        Place::Path,
+        ArgType::TaskSelector,
+        "The task, by UUID or exact confirmed Jira key.",
+    ),
 ];
 
 /// The three selection routes take the same request, so they share one argument
@@ -6441,7 +6634,12 @@ static SELECTION_ARGS: &[ArgSpec] = &[
         ArgType::ProjectId,
         "The owning project.",
     ),
-    req("task_id", Place::Path, ArgType::TaskId, "The task."),
+    req(
+        "task_id",
+        Place::Path,
+        ArgType::TaskSelector,
+        "The task, by UUID or exact confirmed Jira key.",
+    ),
     IDEMPOTENCY,
     req(
         "expected_revision",
@@ -6543,6 +6741,59 @@ pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
 
 #[cfg(test)]
 mod tests {
+    /// The ASMA-8119 boundary: an addressed subject in a path position takes a
+    /// selector; every other epic/task reference stays UUID-only.
+    ///
+    /// Both halves are asserted, because the failure modes are opposite. Missing
+    /// a path position leaves a route that cannot take a key; widening a body
+    /// reference silently admits keys where a graph edge was meant.
+    #[test]
+    fn only_addressed_path_subjects_take_a_selector() {
+        let mut widened = 0_usize;
+        for tool in REGISTRY {
+            for arg in tool.args {
+                let addressed = matches!(arg.name, "task_id" | "epic_id");
+                match (addressed, arg.place, arg.ty) {
+                    (true, Place::Path, ArgType::TaskId | ArgType::MiniProjectId) => {
+                        panic!("{}: path subject `{}` still UUID-only", tool.name, arg.name)
+                    }
+                    (true, Place::Path, ArgType::TaskSelector | ArgType::EpicSelector) => {
+                        widened += 1;
+                    }
+                    (
+                        _,
+                        Place::Body | Place::Query,
+                        ArgType::TaskSelector | ArgType::EpicSelector,
+                    ) => {
+                        panic!(
+                            "{}: `{}` is a reference, not the addressed subject, and must stay UUID-only",
+                            tool.name, arg.name
+                        )
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(widened > 0, "the registry declares addressed path subjects");
+    }
+
+    #[test]
+    fn a_selector_advertises_both_spellings_and_stays_a_string() {
+        for ty in [ArgType::TaskSelector, ArgType::EpicSelector] {
+            assert_eq!(ty.json_type(), "string");
+            let schema = ty.schema();
+            let pattern = schema
+                .get("pattern")
+                .and_then(serde_json::Value::as_str)
+                .expect("a selector advertises its accepted spellings");
+            assert!(pattern.contains("[A-Z]"), "the key spelling is advertised");
+            assert!(
+                pattern.contains("0-9a-f"),
+                "the uuid spelling is advertised"
+            );
+        }
+    }
+
     use super::*;
     use std::collections::BTreeSet;
 
