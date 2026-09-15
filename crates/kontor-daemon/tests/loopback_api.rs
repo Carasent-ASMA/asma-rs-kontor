@@ -14375,6 +14375,184 @@ async fn a_restart_converges_a_workflow_left_fenced_by_the_earlier_predicate() {
     drop(directory);
 }
 
+/// Re-open one already-handed-over follow-up so a restart has real delivery work.
+///
+/// The row is the one the ordinary path derived and delivered; only the
+/// delivered flag is cleared. That is the durable shape a realm carrying old
+/// undelivered handoffs has, and it is what makes the retry below reach a
+/// runtime rather than skip.
+fn reopen_one_dispatch(world: &World, seed: &Bootstrapped) -> usize {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    connection
+        .execute(
+            "UPDATE turn_dispatches SET dispatched = 0 WHERE project_id = ?1",
+            rusqlite::params![seed.project],
+        )
+        .expect("the dispatches are re-opened")
+}
+
+/// R11. The catch-up is durable-only work on this realm's own database, and it
+/// used to run *after* the follow-up retry, which awaits a runtime. A realm
+/// carrying undelivered handoffs whose targets are long gone leaves that retry
+/// waiting, and the catch-up behind it never ran at all — so a workflow stayed
+/// fenced for a reason that had nothing to do with its own evidence.
+///
+/// This holds the retry exactly where the live realm was stuck: inside the
+/// awaited send, with the delivery neither answered nor failed. The workflow
+/// must already have converged by then, and the retry must still complete once
+/// the runtime answers.
+#[tokio::test]
+async fn a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-stall").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-stall-reject").await;
+    let (target, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(target, "high-implementation");
+
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-stall-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (uri, revision, gate) = gate_record_target(&world, seed).await;
+    let gate_spec = active_workflow(&world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let passed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fleet-stall-pass")
+    .send(&world)
+    .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+
+    // The stuck shape, plus a realm that still owes a follow-up delivery.
+    pin_workflow_back_to(&world, seed, &target, routed_revision);
+    let reopened = reopen_one_dispatch(&world, seed);
+    assert!(
+        reopened > 0,
+        "the restart has real delivery work waiting for it"
+    );
+    let before = fence_evidence_census(world.directory.path(), &seed.project);
+
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+
+    // Occupy the awaited delivery. Nothing releases it until this test does, so
+    // reaching `entered()` means startup is sitting exactly where the live realm
+    // sat: inside the retry, with the send unanswered.
+    let stall = fake.pause_next_send();
+    let reconcile = restarted.reconcile();
+    tokio::pin!(reconcile);
+    let phase_while_stalled = tokio::select! {
+        _ = &mut reconcile => panic!("the send was never reached, so nothing was stalled"),
+        () = stall.entered() => restarted
+            .state()
+            .with_store(|store| store.get_active_task_workflow(project, task_id))
+            .expect("the workflow reads")
+            .expect("the task has an active workflow")
+            .current_phase,
+    };
+    assert_ne!(
+        phase_while_stalled.as_str(),
+        target,
+        "the durable catch-up does not queue behind a runtime that has not answered"
+    );
+
+    // The retry is not skipped to achieve that. It is still in flight, and once
+    // the runtime answers, startup finishes normally and the barrier still opens.
+    stall.release();
+    assert_eq!(reconcile.await, BarrierState::Open);
+    let delivered_after: i64 = {
+        let connection = rusqlite::Connection::open(state_root.join(kontor_daemon::DATABASE_FILE))
+            .expect("the realm database opens");
+        connection
+            .query_row(
+                "SELECT count(*) FROM turn_dispatches WHERE project_id = ?1 AND dispatched = 1",
+                rusqlite::params![seed.project],
+                |row| row.get(0),
+            )
+            .expect("the dispatches are countable")
+    };
+    assert!(
+        delivered_after > 0,
+        "the follow-up retry still ran after the catch-up, and delivered"
+    );
+
+    // R9/R10 identity and idempotency still hold on this path.
+    let converged = restarted
+        .state()
+        .with_store(|store| store.get_active_task_workflow(project, task_id))
+        .expect("the workflow reads")
+        .expect("the task has an active workflow");
+    for _ in 0..3 {
+        assert_eq!(restarted.reconcile().await, BarrierState::Open);
+        let again = restarted
+            .state()
+            .with_store(|store| store.get_active_task_workflow(project, task_id))
+            .expect("the workflow reads")
+            .expect("the task has an active workflow");
+        assert_eq!(again.current_phase, converged.current_phase);
+        assert_eq!(
+            again.revision, converged.revision,
+            "a converged realm is not advanced again"
+        );
+    }
+    let after = fence_evidence_census(&state_root, &seed.project);
+    assert_eq!(
+        after, before,
+        "startup replays no turn, re-records no verdict and rewrites no route"
+    );
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
 /// A gate request cites evidence; it does not create that evidence.
 #[tokio::test]
 async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {

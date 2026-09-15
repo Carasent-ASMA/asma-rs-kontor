@@ -812,6 +812,35 @@ impl Daemon {
         // follow-up exists only because a turn was settled — so a restart cannot
         // invent work, and the dispatch table's key makes a retry idempotent.
         if outcome == BarrierState::Open {
+            // First, and deliberately before anything that waits on a runtime.
+            //
+            // A corrected fence predicate only ever runs when something asks it
+            // to, and the realms this correction exists for have nothing left to
+            // ask: their qualifying turn and passing gate verdict are already
+            // durable. This asks once, on the same seam that already owns "what
+            // did this realm leave unfinished?".
+            //
+            // It reads and writes only this realm's own database, so it owes
+            // nothing to a native session and must not queue behind one. The
+            // follow-up retry below does await delivery, and a realm carrying
+            // undelivered handoffs whose targets are long gone can leave it
+            // waiting indefinitely -- which, when the catch-up ran after it,
+            // meant a workflow stayed fenced for a reason that had nothing to do
+            // with its own evidence. Ordering is the whole fix; the retry that
+            // follows is unchanged and still runs.
+            match self.applications.catch_up_fenced_workflows() {
+                Ok(0) => {}
+                Ok(advanced) => info!(
+                    realm_id = %realm_id,
+                    advanced,
+                    "fenced workflows converged on evidence that was already durable"
+                ),
+                Err(error) => warn!(
+                    realm_id = %realm_id,
+                    detail = %error.code.as_str(),
+                    "fenced workflows could not be reconsidered"
+                ),
+            }
             match self
                 .state
                 .applications()
@@ -844,27 +873,6 @@ impl Daemon {
                     realm_id = %realm_id,
                     detail = %error.code.as_str(),
                     "epic completions could not be reconsidered for reopening"
-                ),
-            }
-            // A corrected fence predicate only ever runs when something asks
-            // it to, and the realms this correction exists for have nothing
-            // left to ask: their qualifying turn and passing gate verdict are
-            // already durable. Ask once here, on the same seam that already
-            // owns "what did this realm leave unfinished?". It advances only
-            // what durable evidence already justifies, replays no turn, gate
-            // evaluation or route, and finds nothing to do on a realm that has
-            // already converged.
-            match self.applications.catch_up_fenced_workflows() {
-                Ok(0) => {}
-                Ok(advanced) => info!(
-                    realm_id = %realm_id,
-                    advanced,
-                    "fenced workflows converged on evidence that was already durable"
-                ),
-                Err(error) => warn!(
-                    realm_id = %realm_id,
-                    detail = %error.code.as_str(),
-                    "fenced workflows could not be reconsidered"
                 ),
             }
             match self.state.applications().retry_completion_wakes().await {
