@@ -5,7 +5,7 @@ Artifact: `high-scope-record`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-scope`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: implementation contract amended for identity-preserving replacement, succession, and rejection-fence role resolution
+Status: implementation contract amended for identity-preserving replacement, succession, rejection-fence role resolution, and startup convergence
 
 ## Decision and frozen baseline
 
@@ -612,5 +612,67 @@ The terminal archive-qualified target is candidate
 digest is
 `8b4b116cd0da7ca62eb124d4a29cd9250c273ad398d764504b844a5c6daf2b89`.
 The Gate 9 candidate `18923bd` and its digest remain superseded evidence.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
+
+## Startup convergence addendum (gate rejection sequence 5)
+
+Independent verification rejected candidate `705571d` under receipt
+`01a0a289-db11-7323-ab7b-cfb195087266`. The logical-role mapping correction was
+accepted as correct and is preserved unchanged. The blocking finding, F-8110-R10,
+is that the corrected predicate only ever runs when a caller drives it.
+
+`advance_workflow_from_evidence` is invoked by a settled turn or a non-rejecting
+gate record. A realm whose qualifying turn and passing gate verdict were already
+durable when the corrected binary was installed has no settlement left to make,
+so nothing reprojects the workflow and it stays pinned on its rejection target
+indefinitely. The Gate 10 positive regression did not cover this: its workflow
+advanced at turn settlement, and the later reconcile calls only confirmed it
+stayed advanced. That statement has been corrected in place in
+`HIGH-CHANGE-RECORD.md`.
+
+The bounded addition is a projection on the supported startup seam, inside this
+document's existing `applications.rs` / `lib.rs` / `repository.rs` ownership:
+
+- `list_fenced_task_workflows` enumerates exactly the fenced population, using
+  the same condition the single-workflow fence query already applies, so a realm
+  that never rejected a gate is untouched;
+- `catch_up_fenced_workflows` reprojects each through the existing evidence
+  projection, writing at most the phase advance that durable evidence already
+  justifies;
+- `Daemon::reconcile` asks once per supported startup.
+
+It preserves every guarantee this contract already states. No turn is replayed,
+no gate evaluation re-recorded, and the rejection route is neither rewritten nor
+removed — it remains history. Route-time TeamRun authority, freshness, required
+artifacts and task scoping are unchanged, because the fence predicate itself is
+unchanged. Re-running on a converged realm does nothing, so restart loops are
+safe. Failure is closed in both directions: an unreadable workflow is skipped
+rather than advanced, and the new `PhaseRoute::Unambiguous` mode refuses to
+advance wherever a phase has more than one successor, so the catch-up never
+chooses a workflow branch on a realm's behalf. Both caller-driven call sites keep
+the declared-order behaviour they have always had.
+
+No slot identity rule, scheduler route, topology, gate verdict, Jira projection,
+or ASMA-8100 state is changed, and no TeamRun was created. The protected
+ASMA-8100 receipt remains historical and unconsumed.
+
+The regression constructs the pre-fix durable state from rows the ordinary public
+path wrote — rejection route, qualifying `implement` turn, passing verification
+verdict — pins the workflow's one mutable column back onto `high-implementation`,
+then recovers through the supported `Daemon::start` + `reconcile` restart. It
+proves convergence, then proves three further reconciliations move nothing and
+leave the route, role-turn and gate-evaluation rows identical. With the startup
+hunk reverted it fails while both logical-role regressions still pass, isolating
+the finding to the catch-up.
+
+The terminal archive-qualified target is candidate
+`5d9f9799f6a335c090e23f98bc11985e2ae4e8ed`, tree
+`8c7c38f2bc221d1c0af34f13b889829cc3c78cc3`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 11 exited 0 with
+2482 Rust tests, 333 loopback tests and 300 console tests; its complete log
+digest is
+`3bc0ad3e64bdb85d4fe5f697e02ad57a87c598b41e58a43e35115b520931c68c`.
+The Gate 10 candidate `705571d` and its digest remain superseded evidence.
 Independent verification must evaluate this exact candidate and the separate
 evidence-only commit before gate acceptance or publication.

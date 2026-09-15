@@ -5,7 +5,7 @@ Artifact: `high-change`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-implementation`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: Gate 10 archive-qualified remediation candidate after independent gate rejection sequence 4; awaiting independent verification
+Status: Gate 11 archive-qualified remediation candidate after independent gate rejection sequence 5; awaiting independent verification
 
 ## This turn: repair of the re-verification rejection
 
@@ -769,7 +769,7 @@ seat's recorded HEAD, the new test identities present in the log, the exact test
 count delta, and this separately committed evidence; improving the generic log
 format is deferred as OQ-B and is not part of this candidate.
 
-## Eighth remediation: resolve the fence's role through the frozen template
+## Eighth remediation (superseded): resolve the fence's role through the frozen template
 
 Independent verification rejected candidate `18923bd` at gate sequence 4 under
 receipt `01a0a243-c170-7970-9d17-2bf7675f97eb`. Gate sequence 3 had passed and
@@ -821,6 +821,14 @@ advancing; a fresh `high-change` is settled in slot `implement` on the route's
 own preserved run; the verification gate then passes; and reconciliation keeps
 the workflow past the rejection target while writing no second route row and no
 turn of its own.
+
+> **Correction (ninth remediation).** The claim above is narrower than it reads.
+> That test's workflow advanced **at the moment the rework turn settled**,
+> because a settlement is itself a caller-driven reprojection. The later
+> `reconcile` calls only confirmed the workflow stayed where the settlement had
+> already put it. It therefore proved the corrected predicate, and did **not**
+> prove that a realm already holding durable qualifying evidence recovers when a
+> corrected binary starts against it. That gap is F-8110-R10, recorded below.
 
 `a_slot_spelled_like_the_required_role_cannot_release_the_fence` settles the
 decoy seat with the required artifact, on the route's own run, strictly after
@@ -889,6 +897,135 @@ Gate 10 binding rests on the invoking seat's recorded HEAD, the two new test
 identities present in the log, the exact 2479 → 2481 count delta, and this
 separately committed evidence. OQ-B remains deferred and is not part of this
 candidate.
+
+### Not done here, deliberately
+
+- No topology, TeamRun, Jira change, publication, or deploy.
+- The candidate was not pushed, published, merged, or deployed.
+- No Kontor state was mutated and the protected ASMA-8100 receipt is untouched.
+- Route-time TeamRun authority was not widened, and no gate was waived.
+
+## Ninth remediation: converge realms the earlier predicate already stranded
+
+Independent verification rejected candidate `705571d` at gate sequence 5 under
+receipt `01a0a289-db11-7323-ab7b-cfb195087266`. The logical-role mapping fix is
+correct and is preserved unchanged; the finding is about the realms it was wrong
+about.
+
+### F-8110-R10: a corrected predicate nobody asks
+
+`advance_workflow_from_evidence` runs only when a caller drives it — a settled
+turn, or a gate record that did not reject. That is sufficient while the
+predicate deciding a fence is right, and insufficient the moment it is
+corrected. A realm whose qualifying turn *and* passing gate verdict were already
+durable when the binary was upgraded has no settlement left to make: nothing
+ever asks the question again, so the workflow sits on its rejection target
+indefinitely with every release condition already satisfied on disk. The Gate 10
+regression could not have caught this, because its advance happened at
+settlement time; the correction to that statement is recorded in place above.
+
+### The mechanism
+
+- `SqliteStore::list_fenced_task_workflows` enumerates exactly the stuck
+  population: active workflows sitting on a phase a route returned them to. That
+  is the same join `active_gate_rejection_fence` applies to a single workflow, so
+  it cannot report a workflow that reads as unfenced, and a realm that never
+  rejected a gate is not touched at all.
+- `Services::catch_up_fenced_workflows` reprojects each one through the existing
+  evidence projection and reports how many moved.
+- `Daemon::reconcile` calls it once per supported startup, on the same
+  post-barrier seam that already owns "what did this realm leave unfinished?".
+
+It is a projection, not a repair. It reads durable evidence and writes at most
+the phase advance that evidence already justifies: no turn replayed, no gate
+evaluation re-recorded, and the rejection route neither rewritten nor removed —
+it stays as history exactly as before. A converged realm gives it nothing to do,
+which is what makes a restart loop safe.
+
+It fails closed in both directions. A workflow whose state cannot be read is
+skipped rather than advanced. And the new `PhaseRoute::Unambiguous` mode stops
+the catch-up wherever a phase leads to more than one successor: choosing a branch
+with no turn behind the choice is not a projection of evidence. Both
+caller-driven call sites keep `PhaseRoute::Declared`, so settlement behaviour is
+byte-for-byte what it was.
+
+### The regression, and what makes it honest
+
+`a_restart_converges_a_workflow_left_fenced_by_the_earlier_predicate` builds the
+stuck state out of rows the ordinary public path actually wrote — the rejection
+route, the qualifying `implement` turn, the passing verification verdict — and
+then pins the workflow's one mutable column back onto `high-implementation`.
+That reproduces the database an earlier build would have left rather than
+simulating one. Recovery is then driven through the supported restart:
+`Daemon::start` over the same state root, followed by `reconcile`.
+
+It asserts the workflow converges, then reconciles three more times and asserts
+the phase and revision do not move again, and that the route, role-turn and
+gate-evaluation rows are identical in identity and content to the census taken
+before the restart. The route is additionally compared field by field.
+
+### Red then green
+
+| Condition | Result |
+|---|---|
+| startup catch-up hunk reverted, logical-role fix intact | **fails**: `left: "high-implementation", right: "high-implementation"` — the restarted daemon leaves the workflow stranded |
+| both logical-role regressions, same reverted build | **pass** — which is what isolates this finding to the catch-up rather than to the predicate |
+| catch-up restored | all five regressions pass together |
+
+### Current frozen candidate
+
+| | |
+|---|---|
+| **Candidate SHA** | `5d9f9799f6a335c090e23f98bc11985e2ae4e8ed` |
+| **Tree SHA** | `8c7c38f2bc221d1c0af34f13b889829cc3c78cc3` |
+| **Parent candidate** | `e493d47c4ef2b53d9ca8582854e79c6e1b7befe5` (Gate 10 evidence head) |
+| **Integrated master** | `f78d041e80042417e0d9a059449eb85737571797` (schema **96**) |
+| **Archive exit** | **0** |
+| **Archive log digest** | `3bc0ad3e64bdb85d4fe5f697e02ad57a87c598b41e58a43e35115b520931c68c` |
+
+Code/test only, four files, nothing under `docs/`:
+
+| File | Change |
+|---|---|
+| `crates/kontor-daemon/src/applications.rs` | +104 / -6 |
+| `crates/kontor-daemon/src/lib.rs` | +21 / -0 |
+| `crates/kontor-daemon/tests/loopback_api.rs` | +241 / -0 |
+| `crates/kontor-store/src/repository.rs` | +39 / -0 |
+
+Gates 7 through 10 and their digests remain in this append-only record as
+superseded evidence.
+
+### Gate 11 result
+
+`python3 scripts/verify-tree.py --mode archive` ran exactly once, from a
+`git archive` export of the exact candidate with registry access:
+
+| Gate | Result |
+|---|---|
+| `cargo generate-lockfile` + byte-compare | `Cargo.lock byte-compare: identical` |
+| `cargo fmt --all -- --check` | passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | passed |
+| `cargo test --workspace --locked` | **2482 passed, 0 failed** (9 ignored) |
+| `loopback_api` | **333 passed, 0 failed** (1 ignored) |
+| both MCP journeys | passed |
+| `cargo audit` | passed |
+| `cargo deny check` | passed |
+| `pnpm install --frozen-lockfile` | passed |
+| `pnpm -r typecheck` | passed |
+| `pnpm -r test` | **300 passed** (16 files) |
+| `pnpm audit --prod` | passed |
+
+No gate was waived or skipped; all ten invocations are in the log and the script
+raises on any non-zero. The nine ignored Rust tests are byte-identical to Gate
+10's set, no new regression is ignored, and the test-file change is additive. The
+retained fence family — stale evidence, empty turn, reviewer, other task, later
+TeamRun — and both cross-slot recovery regressions pass unchanged.
+
+The archive-log identity limitation recorded for Gates 9 and 10 applies here too:
+the script prints that it exported `HEAD` without naming the commit or tree. The
+Gate 11 binding rests on the invoking seat's recorded HEAD, the new test identity
+present in the log, the exact 2481 → 2482 count delta, and this separately
+committed evidence. OQ-B remains deferred.
 
 ### Not done here, deliberately
 
