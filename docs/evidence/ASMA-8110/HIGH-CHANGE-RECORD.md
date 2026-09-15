@@ -5,7 +5,7 @@ Artifact: `high-change`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-implementation`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: Gate 11 archive-qualified remediation candidate after independent gate rejection sequence 5; awaiting independent verification
+Status: Gate 12 archive-qualified remediation candidate after live-deployment finding R11; awaiting independent verification
 
 ## This turn: repair of the re-verification rejection
 
@@ -905,7 +905,7 @@ candidate.
 - No Kontor state was mutated and the protected ASMA-8100 receipt is untouched.
 - Route-time TeamRun authority was not widened, and no gate was waived.
 
-## Ninth remediation: converge realms the earlier predicate already stranded
+## Ninth remediation (superseded): converge realms the earlier predicate already stranded
 
 Independent verification rejected candidate `705571d` at gate sequence 5 under
 receipt `01a0a289-db11-7323-ab7b-cfb195087266`. The logical-role mapping fix is
@@ -1033,3 +1033,124 @@ committed evidence. OQ-B remains deferred.
 - The candidate was not pushed, published, merged, or deployed.
 - No Kontor state was mutated and the protected ASMA-8100 receipt is untouched.
 - Route-time TeamRun authority was not widened, and no gate was waived.
+
+## Tenth remediation: the catch-up must not queue behind a runtime
+
+The first finding in this task's history that came from a *live deployment*
+rather than from reading the diff. The LSA installed the exact Gate-11 candidate
+`5d9f979` (binary SHA-256
+`50b685dc20b009c5a20885b7522cfed01f12f3a779cc7aea0b8346c42ca6befb`) at
+02:25:00Z. The listener was healthy and the scheduling barrier opened at
+02:25:10.630832Z. Seven minutes later the workflow was still
+`high-implementation` at revision 9 with its gate rejected, and the log carried
+neither the "fenced workflows converged" line nor the "startup reconciliation
+finished" marker.
+
+### F-8110-R11: correct, reachable in tests, unreachable in production
+
+`Daemon::reconcile` awaited `retry_undelivered_dispatches` before
+`catch_up_fenced_workflows`. That retry hands each undelivered follow-up to a
+runtime and waits for the answer. The live realm holds **61** historical
+undelivered `turn_dispatches`, including targets last contacted on 22 August
+whose seats are long gone, so the retry never returned — and everything behind
+it, the catch-up and the final marker alike, never ran at all.
+
+Nothing was wrong with the catch-up. It was placed behind a wait it has no
+business being behind: it reads and writes only this realm's own database and
+owes nothing to any native session. Ordering was the entire defect, and ordering
+is the entire fix. The catch-up now runs first, immediately after the barrier
+opens and before anything that awaits a runtime.
+
+Everything else is preserved exactly. The retry still runs, unmodified, in the
+same position relative to `reopen_completed_epics` and `retry_completion_wakes`;
+no retry is dropped, skipped or reordered among themselves; and the barrier is
+settled where it always was, so barrier semantics are untouched.
+
+### Why the Gate-11 suite could not have caught this
+
+Every earlier restart regression ran against a realm with no undelivered
+dispatch to retry, so the awaited call returned immediately and the catch-up's
+position behind it never mattered. The new regression removes that accident
+deliberately.
+
+`FakeAdapter::pause_next_send` holds a message send immediately before its
+native effect, mirroring the pause the fake already offers for hosted
+retirement. It lets a test occupy the stall deterministically instead of
+depending on a timeout, which is what makes the red side of this provable rather
+than merely slow.
+
+`a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up` rebuilds the
+stuck state, re-opens an already-delivered dispatch so the restart genuinely owes
+a delivery, and then holds startup inside the awaited send — the exact position
+the live realm was wedged in. It asserts the workflow has *already* converged at
+that instant, then releases the runtime and asserts the retry completed and
+delivered, the barrier still opened, three further reconciliations move nothing,
+and the route, role-turn and gate-evaluation rows are unchanged.
+
+### Red then green
+
+| Condition | Result |
+|---|---|
+| catch-up returned to its Gate-11 position | **fails**: `left: "high-implementation", right: "high-implementation"` — startup is inside the unanswered send and the workflow is still fenced |
+| R9 and R10 regressions, same reverted build | **pass** — which isolates this finding to the ordering, not to the predicate or the catch-up itself |
+| catch-up first | all six regressions pass together |
+
+### Current frozen candidate
+
+| | |
+|---|---|
+| **Candidate SHA** | `741443f1b6b8df122c8425471c6ae7cdadf8d64f` |
+| **Tree SHA** | `405006ebe8ddf892550bd5a941459029cb6143b1` |
+| **Parent candidate** | `11bb3e4e79c0c06e1867b1f6cc50f416746c92bb` (Gate 11 evidence head) |
+| **Integrated master** | `f78d041e80042417e0d9a059449eb85737571797` (schema **96**) |
+| **Archive exit** | **0** |
+| **Archive log digest** | `036965a07453e814ff6cd17183ce8c88d7b36a134d0a8066ef948d6e9f6400a0` |
+
+Code/test only, three files, nothing under `docs/`:
+
+| File | Change |
+|---|---|
+| `crates/kontor-daemon/src/lib.rs` | +29 / -21 |
+| `crates/kontor-daemon/tests/loopback_api.rs` | +178 / -0 |
+| `crates/kontor-runtime/src/fake.rs` | +19 / -0 |
+
+Gates 7 through 11 and their digests remain in this append-only record as
+superseded evidence.
+
+### Gate 12 result
+
+`python3 scripts/verify-tree.py --mode archive` ran exactly once, from a
+`git archive` export of the exact candidate with registry access:
+
+| Gate | Result |
+|---|---|
+| `cargo generate-lockfile` + byte-compare | `Cargo.lock byte-compare: identical` |
+| `cargo fmt --all -- --check` | passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | passed |
+| `cargo test --workspace --locked` | **2483 passed, 0 failed** (9 ignored) |
+| `loopback_api` | **334 passed, 0 failed** (1 ignored) |
+| both MCP journeys | passed |
+| `cargo audit` | passed |
+| `cargo deny check` | passed |
+| `pnpm install --frozen-lockfile` | passed |
+| `pnpm -r typecheck` | passed |
+| `pnpm -r test` | **300 passed** (16 files) |
+| `pnpm audit --prod` | passed |
+
+No gate was waived or skipped; all ten invocations are in the log and the script
+raises on any non-zero. The nine ignored Rust tests are byte-identical to Gate
+11's set. All six ASMA-8110 regressions pass — the two cross-slot recovery cases,
+the logical-role and decoy cases, the restart-convergence case and the new
+stalled-delivery case — as do all four retained fence cases: stale evidence,
+later TeamRun, released-rejection-stays-in-verification, and historical recovery
+across a restart.
+
+The archive-log identity limitation recorded since Gate 9 applies unchanged.
+OQ-B remains deferred.
+
+### Not done here, deliberately
+
+- No topology, TeamRun, Jira change, publication, or deploy.
+- The candidate was not pushed, published, merged, or deployed.
+- The preserved AgentRun, SeatBinding and TeamRun identities are untouched.
+- No gate was waived, and no retry behaviour was weakened to achieve the fix.

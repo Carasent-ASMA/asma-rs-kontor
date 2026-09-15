@@ -5,7 +5,7 @@ Artifact: `high-scope-record`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-scope`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: implementation contract amended for identity-preserving replacement, succession, rejection-fence role resolution, and startup convergence
+Status: implementation contract amended for identity-preserving replacement, succession, rejection-fence role resolution, and reachable startup convergence
 
 ## Decision and frozen baseline
 
@@ -674,5 +674,59 @@ The terminal archive-qualified target is candidate
 digest is
 `3bc0ad3e64bdb85d4fe5f697e02ad57a87c598b41e58a43e35115b520931c68c`.
 The Gate 10 candidate `705571d` and its digest remain superseded evidence.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
+
+## Startup ordering addendum (live-deployment finding R11)
+
+The LSA installed the exact Gate-11 candidate `5d9f979` on the live realm at
+02:25:00Z. The listener was healthy and the barrier opened at 02:25:10.630832Z,
+and seven minutes later the workflow was still `high-implementation` at revision
+9 with its gate rejected and no catch-up log line. This is the first finding in
+this task that came from running the code rather than from reading it.
+
+`Daemon::reconcile` awaited `retry_undelivered_dispatches` before
+`catch_up_fenced_workflows`. That retry hands each undelivered follow-up to a
+runtime and waits; the live realm holds 61 historical undelivered dispatches with
+stale and lost-contact targets, so it never returned and the catch-up behind it
+never ran. The R10 mechanism was correct and operationally unreachable.
+
+The bounded correction is ordering only, inside this document's existing
+`lib.rs` ownership. The catch-up is durable-only work on the realm's own database
+and now runs immediately after the barrier opens, before anything that awaits a
+runtime. Every guarantee this contract already states is preserved:
+
+- **all retry behaviour is kept** — `retry_undelivered_dispatches` still runs,
+  unmodified, and keeps its order relative to `reopen_completed_epics` and
+  `retry_completion_wakes`; no retry is dropped, skipped, or reordered among
+  themselves;
+- **barrier semantics are unchanged** — the barrier is settled exactly where it
+  was, and the reordered work all sits inside the existing `Open` branch;
+- **the catch-up itself is unchanged** — same projection, same fail-closed
+  behaviour, same refusal to choose a workflow branch, same idempotency.
+
+The regression removes the accident that hid this: earlier restart tests ran
+against realms with nothing to retry, so the awaited call returned at once. The
+new `a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up` re-opens a
+delivered dispatch and holds startup inside the awaited send, using a new
+`FakeAdapter::pause_next_send` that mirrors the fake's existing
+hosted-retirement pause. It proves the workflow has already converged at that
+instant, then that the retry still completes and delivers, the barrier still
+opens, three further reconciliations move nothing, and the route, role-turn and
+gate-evaluation rows are unchanged. With the catch-up returned to its Gate-11
+position it fails while the R9 and R10 regressions still pass.
+
+No slot identity rule, scheduler route, topology, gate verdict, Jira projection,
+or ASMA-8100 state is changed. No TeamRun was created, and the preserved
+AgentRun, SeatBinding and TeamRun identities are untouched.
+
+The terminal archive-qualified target is candidate
+`741443f1b6b8df122c8425471c6ae7cdadf8d64f`, tree
+`405006ebe8ddf892550bd5a941459029cb6143b1`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 12 exited 0 with
+2483 Rust tests, 334 loopback tests and 300 console tests; its complete log
+digest is
+`036965a07453e814ff6cd17183ce8c88d7b36a134d0a8066ef948d6e9f6400a0`.
+The Gate 11 candidate `5d9f979` and its digest remain superseded evidence.
 Independent verification must evaluate this exact candidate and the separate
 evidence-only commit before gate acceptance or publication.
