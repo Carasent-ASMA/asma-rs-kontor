@@ -1041,25 +1041,54 @@ rather than from reading the diff. The LSA installed the exact Gate-11 candidate
 `5d9f979` (binary SHA-256
 `50b685dc20b009c5a20885b7522cfed01f12f3a779cc7aea0b8346c42ca6befb`) at
 02:25:00Z. The listener was healthy and the scheduling barrier opened at
-02:25:10.630832Z. Seven minutes later the workflow was still
-`high-implementation` at revision 9 with its gate rejected, and the log carried
-neither the "fenced workflows converged" line nor the "startup reconciliation
-finished" marker.
+02:25:10.630832Z.
 
-### F-8110-R11: correct, reachable in tests, unreachable in production
+### The observed live sequence, start to finish
+
+| Time (2026-09-15) | Observed |
+|---|---|
+| 02:25:00Z | exact Gate-11 candidate installed |
+| 02:25:10.630832Z | scheduling barrier opened |
+| ~02:32Z | workflow still `high-implementation` at revision 9, gate rejected, no "fenced workflows converged" line and no "startup reconciliation finished" marker |
+| 02:39:13.028833Z | **"fenced workflows converged" logged** |
+| 02:39:14.257255Z | **startup reconciliation finished** |
+
+The R10 catch-up therefore *did* run and *did* do its job. Kontor and a
+read-only read of the realm database now show workflow
+`01a07391-328e-74a3-a808-e7cbffc4b828` at **`high-verification`, revision 10**,
+with 15 turns, 5 gate evaluations, 4 immutable rejection routes, and the 61
+dispatches still undelivered. The mid-flight observation at ~02:32Z was taken
+while startup was still inside the retry; it was accurate at that moment and is
+not the final state.
+
+### F-8110-R11: a local durable repair queued behind a network wait
 
 `Daemon::reconcile` awaited `retry_undelivered_dispatches` before
 `catch_up_fenced_workflows`. That retry hands each undelivered follow-up to a
 runtime and waits for the answer. The live realm holds **61** historical
 undelivered `turn_dispatches`, including targets last contacted on 22 August
-whose seats are long gone, so the retry never returned — and everything behind
-it, the catch-up and the final marker alike, never ran at all.
+whose seats are long gone. Working through them took the retry from 02:25:10Z to
+02:39:13Z, so the catch-up behind it was delayed by roughly **14 minutes** on a
+realm where the evidence releasing the fence had been durable the whole time.
 
-Nothing was wrong with the catch-up. It was placed behind a wait it has no
-business being behind: it reads and writes only this realm's own database and
-owes nothing to any native session. Ordering was the entire defect, and ordering
-is the entire fix. The catch-up now runs first, immediately after the barrier
-opens and before anything that awaits a runtime.
+Two things are wrong with that, and the second is the serious one.
+
+- **The delay is unnecessary.** The catch-up reads and writes only this realm's
+  own database and owes nothing to any native session. Fourteen minutes of a
+  workflow sitting fenced is fourteen minutes of an operator reading a state that
+  the realm's own evidence had already disproved.
+- **The bound is not ours to set.** The retry's duration is a property of how
+  many stale targets a realm accumulated and how each runtime answers. Nothing
+  guarantees it terminates: one target that accepts a connection and never
+  replies would hold startup open indefinitely, and the local durable repair
+  behind it would never run at all. This deployment was slow; the next one is
+  not required to be merely slow.
+
+Nothing was wrong with the catch-up itself. It was placed behind a wait it has
+no business being behind. Ordering was the entire defect, and ordering is the
+entire fix. The catch-up now runs first, immediately after the barrier opens and
+before anything that awaits a runtime — so the repair completes in the same
+moment the barrier opens, whatever the retry behind it goes on to do.
 
 Everything else is preserved exactly. The retry still runs, unmodified, in the
 same position relative to `reopen_completed_epics` and `retry_completion_wakes`;
@@ -1070,8 +1099,10 @@ settled where it always was, so barrier semantics are untouched.
 
 Every earlier restart regression ran against a realm with no undelivered
 dispatch to retry, so the awaited call returned immediately and the catch-up's
-position behind it never mattered. The new regression removes that accident
-deliberately.
+position behind it never mattered. No test could observe either the delay or the
+unbounded case. The new regression removes that accident deliberately, and holds
+the send open rather than merely slowing it, because the failure worth excluding
+is the one where the runtime never answers.
 
 `FakeAdapter::pause_next_send` holds a message send immediately before its
 native effect, mirroring the pause the fake already offers for hosted
@@ -1082,7 +1113,9 @@ than merely slow.
 `a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up` rebuilds the
 stuck state, re-opens an already-delivered dispatch so the restart genuinely owes
 a delivery, and then holds startup inside the awaited send — the exact position
-the live realm was wedged in. It asserts the workflow has *already* converged at
+the live realm spent fourteen minutes in, held open here rather than merely
+slowed, because the case worth excluding is the one that never returns. It
+asserts the workflow has *already* converged at
 that instant, then releases the runtime and asserts the retry completed and
 delivered, the barrier still opened, three further reconciliations move nothing,
 and the route, role-turn and gate-evaluation rows are unchanged.

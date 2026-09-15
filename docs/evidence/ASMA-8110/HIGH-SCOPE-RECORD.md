@@ -680,16 +680,26 @@ evidence-only commit before gate acceptance or publication.
 ## Startup ordering addendum (live-deployment finding R11)
 
 The LSA installed the exact Gate-11 candidate `5d9f979` on the live realm at
-02:25:00Z. The listener was healthy and the barrier opened at 02:25:10.630832Z,
-and seven minutes later the workflow was still `high-implementation` at revision
-9 with its gate rejected and no catch-up log line. This is the first finding in
-this task that came from running the code rather than from reading it.
+02:25:00Z and the barrier opened at 02:25:10.630832Z. This is the first finding
+in this task that came from running the code rather than from reading it.
 
-`Daemon::reconcile` awaited `retry_undelivered_dispatches` before
-`catch_up_fenced_workflows`. That retry hands each undelivered follow-up to a
-runtime and waits; the live realm holds 61 historical undelivered dispatches with
-stale and lost-contact targets, so it never returned and the catch-up behind it
-never ran. The R10 mechanism was correct and operationally unreachable.
+The R10 catch-up ran and did its job: "fenced workflows converged" was logged at
+02:39:13.028833Z and startup reconciliation finished at 02:39:14.257255Z. Kontor
+and a read-only database read now show workflow
+`01a07391-328e-74a3-a808-e7cbffc4b828` at `high-verification` revision 10, with
+15 turns, 5 gate evaluations, 4 immutable rejection routes, and 61 dispatches
+still undelivered. An observation taken at ~02:32Z, while startup was still
+inside the retry, showed the workflow at `high-implementation` revision 9; that
+was true in the moment and is not the final state.
+
+What the deployment exposed is placement, not correctness. `Daemon::reconcile`
+awaited `retry_undelivered_dispatches` before `catch_up_fenced_workflows`, and
+working through 61 historical dispatches with stale and lost-contact targets took
+from 02:25:10Z to 02:39:13Z — about **14 minutes** during which a workflow sat
+fenced against evidence that had been durable throughout. The duration is also
+not a property this contract controls: a target that accepts a connection and
+never answers would hold startup open with no bound at all, and the local durable
+repair behind it would never run.
 
 The bounded correction is ordering only, inside this document's existing
 `lib.rs` ownership. The catch-up is durable-only work on the realm's own database
