@@ -5,7 +5,7 @@ Artifact: `high-scope-record`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-scope`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: implementation contract amended for identity-preserving replacement and succession
+Status: implementation contract amended for identity-preserving replacement, succession, and rejection-fence role resolution
 
 ## Decision and frozen baseline
 
@@ -555,5 +555,62 @@ proves the old launch call site fails red as `400 invalid_request`, subject
 recovery chain. Gate 9 exited 0 with 2479 Rust tests and 300 console tests; its
 complete log digest is
 `5eb052058249b07362877140784c742e2886f70dbe9455341cf3ed2257b48c46`.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
+
+## Rejection-fence role resolution addendum (gate rejection sequence 4)
+
+Independent verification rejected candidate `18923bd` under receipt
+`01a0a243-c170-7970-9d17-2bf7675f97eb`. The blocking finding, F-8110-R9, is
+inside this document's existing `crates/kontor-daemon/src/applications.rs` and
+`loopback_api.rs` ownership and changes no scope boundary.
+
+`rejection_fence_holds` compared the workflow edge's logical `handoff_role` to a
+settled turn's concrete `role_slot_id`. Those are two distinct identities in the
+frozen team template — this task's template maps slot `implement` onto role
+`fleet-implementer` — so the entitled rework could never match and the workflow
+stayed at `high-implementation@7` even though gate sequence 3 had passed and the
+fresh high-change turn satisfied freshness, the route-time TeamRun and the
+artifact conditions.
+
+The bounded correction resolves the turn's concrete slot through the immutable
+team template pinned by `route.team_run_id` and compares that slot's logical
+role to the edge. It preserves every existing check in this contract:
+
+- **route-time TeamRun authority** is unchanged — the template is read from the
+  route row's own run, never the task's latest run and never the mutable
+  catalog, so a later definition cannot decide who answers an earlier rejection;
+- **freshness, required artifacts and task scoping** are byte-identical;
+- **fail-closed** is added, not relaxed: an unreadable route run, a frozen
+  template that does not verify against its snapshot, and a slot the template
+  never declared each leave the fence standing;
+- **entry-phase targets** still name no role, consult no template, and rest on
+  the remaining conditions exactly as before.
+
+No slot identity rule, scheduler route, topology, gate verdict, Jira projection,
+or ASMA-8100 state is changed. The protected ASMA-8100 receipt remains
+historical and unconsumed.
+
+Two regressions were added on a new pack fixture whose rejection target is not
+the entry phase, because every pre-existing fence case routes to an entry phase
+with no inbound edge and therefore never evaluates the role comparison at all.
+The fixture separates the identities deliberately: slot `implement` carries role
+`fleet-implementer`, and a decoy slot spelled `fleet-implementer` carries
+`fleet-reviewer`. The positive regression walks the recorded incident — rejection
+route, fresh `high-change` settlement, passed verification gate, then
+reconciliation past `high-implementation` writing no second route and no turn of
+its own. The decoy regression proves slot spelling alone cannot release a fence.
+Against the pre-fix comparison the first fails to release and the second
+releases wrongly; both pass after the correction, alongside the retained
+stale-evidence, empty-turn, reviewer, other-task and later-TeamRun cases.
+
+The terminal archive-qualified target is candidate
+`705571de51f9e152ba3029a1f36961807a333e8e`, tree
+`1cc762b0fa3f537217d36aa9a9a16959344e6ef3`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 10 exited 0 with
+2481 Rust tests, 332 loopback tests and 300 console tests; its complete log
+digest is
+`8b4b116cd0da7ca62eb124d4a29cd9250c273ad398d764504b844a5c6daf2b89`.
+The Gate 9 candidate `18923bd` and its digest remain superseded evidence.
 Independent verification must evaluate this exact candidate and the separate
 evidence-only commit before gate acceptance or publication.

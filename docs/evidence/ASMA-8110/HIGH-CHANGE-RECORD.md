@@ -5,7 +5,7 @@ Artifact: `high-change`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-implementation`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: Gate 9 archive-qualified recovery candidate; awaiting independent verification
+Status: Gate 10 archive-qualified remediation candidate after independent gate rejection sequence 4; awaiting independent verification
 
 ## This turn: repair of the re-verification rejection
 
@@ -692,7 +692,7 @@ restore the supported seat-replacement route in the same realm; final delivery
 still requires independent verification, audit, publication, merged-SHA
 deployment, and identity-preserving readback.
 
-## Seventh remediation: preserve lineage through quota succession
+## Seventh remediation (superseded): preserve lineage through quota succession
 
 Independent inspection of Gate 8 found the same premature pre-filter in
 `launch_succession_successor`. That path hydrates the whole TeamRun before a
@@ -768,3 +768,131 @@ commit or tree SHA. The Gate 9 binding is therefore established by the invoking
 seat's recorded HEAD, the new test identities present in the log, the exact test
 count delta, and this separately committed evidence; improving the generic log
 format is deferred as OQ-B and is not part of this candidate.
+
+## Eighth remediation: resolve the fence's role through the frozen template
+
+Independent verification rejected candidate `18923bd` at gate sequence 4 under
+receipt `01a0a243-c170-7970-9d17-2bf7675f97eb`. Gate sequence 3 had passed and
+the fresh high-change turn met freshness, the route-time TeamRun and the
+artifact conditions, yet the workflow stayed pinned at `high-implementation@7`.
+
+### F-8110-R9: two identities compared as one string
+
+`rejection_fence_holds` reads the logical role off the workflow edge leading
+*into* the rejection target — for this task, `fleet-implementer` — and compared
+it directly to the settled turn's `role_slot_id.as_role_key()`, whose durable
+value is the concrete slot `implement`. A team template maps a slot onto a
+logical role; the two are deliberately separate identities, and one role may be
+carried by several slots. Comparing the strings meant no qualifying rework could
+ever match, so the fence could not be released by the only turn entitled to
+release it. The gate that would have cleared the phase had already passed.
+
+The correction resolves each candidate turn's concrete slot through the
+immutable team template pinned by `route.team_run_id`, then compares that
+slot's logical role to the edge's `handoff_role`.
+
+- **Route-time authority is unchanged.** The template comes from the route row's
+  own TeamRun, never the task's latest run and never the mutable catalog, so a
+  definition published after a rejection cannot decide who may answer it.
+- **Resolution fails closed at every step.** A route TeamRun that cannot be read
+  and a snapshot whose frozen template does not verify both return the fence
+  held; a slot the template never declared cannot match. An identity nobody can
+  check does not release a fence.
+- **Everything else is untouched.** Freshness, required artifacts, task and the
+  exact route-time TeamRun checks are byte-identical, and an entry phase still
+  names no role, consults no template, and rests on the other conditions exactly
+  as before.
+
+### Why the existing suite could not have caught it
+
+Every pre-existing fence case routes to the bundled profile's **entry** phase,
+which has no inbound edge. `handoff_role` is therefore `None` on all of them and
+the role comparison is never evaluated. The new regressions run on a purpose-built
+pack fixture, `crates/kontor-profiles/tests/fixtures/custom-pack-f.json`, whose
+rejection target `high-implementation` is *not* the entry phase, so the edge into
+it genuinely names a role — and whose team separates the two identities on
+purpose: slot `implement` carries role `fleet-implementer`, while a decoy slot
+*spelled* `fleet-implementer` carries `fleet-reviewer` instead.
+
+`a_fresh_high_change_turn_releases_a_non_entry_fence_through_its_logical_role`
+walks the recorded incident in order: the verification gate rejects and routes
+to `high-implementation`; pre-rejection evidence is re-read three times without
+advancing; a fresh `high-change` is settled in slot `implement` on the route's
+own preserved run; the verification gate then passes; and reconciliation keeps
+the workflow past the rejection target while writing no second route row and no
+turn of its own.
+
+`a_slot_spelled_like_the_required_role_cannot_release_the_fence` settles the
+decoy seat with the required artifact, on the route's own run, strictly after
+the route — every condition satisfied except the one that matters — and proves
+the fence stays closed, then that the seat actually carrying the role opens it.
+
+### Red then green
+
+| Regression | Against the pre-fix comparison | With the correction |
+|---|---|---|
+| positive release | `left: "high-implementation", right: "high-verification"` — the entitled rework cannot release the fence | passes |
+| decoy slot | `left: ("high-verification", 5), right: ("high-implementation", 4)` — the wrong seat releases it | passes |
+
+Both directions of the defect are reproduced, not just the reported one. The
+retained stale-evidence, empty-turn, reviewer, other-task and later-TeamRun
+cases are unchanged and pass alongside them.
+
+### Current frozen candidate
+
+| | |
+|---|---|
+| **Candidate SHA** | `705571de51f9e152ba3029a1f36961807a333e8e` |
+| **Tree SHA** | `1cc762b0fa3f537217d36aa9a9a16959344e6ef3` |
+| **Parent candidate** | `36ddec5ad519c300d77a57e0b7e8afa8e0180966` (Gate 9 evidence head) |
+| **Integrated master** | `f78d041e80042417e0d9a059449eb85737571797` (schema **96**) |
+| **Archive exit** | **0** |
+| **Archive log digest** | `8b4b116cd0da7ca62eb124d4a29cd9250c273ad398d764504b844a5c6daf2b89` |
+
+The candidate is code/test only. It changes
+`crates/kontor-daemon/src/applications.rs` (+39/-3),
+`crates/kontor-daemon/tests/loopback_api.rs` (+464/-0) and adds
+`crates/kontor-profiles/tests/fixtures/custom-pack-f.json` (+180). These evidence
+documents are committed separately above it, and the candidate changes no file
+under `docs/`. Gates 7, 8 and 9 and their digests remain in this append-only
+record as superseded evidence.
+
+### Gate 10 result
+
+`python3 scripts/verify-tree.py --mode archive` ran from a `git archive` export
+of the exact candidate with registry access:
+
+| Gate | Result |
+|---|---|
+| `cargo generate-lockfile` + byte-compare | `Cargo.lock byte-compare: identical` |
+| `cargo fmt --all -- --check` | passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | passed |
+| `cargo test --workspace --locked` | **2481 passed, 0 failed** (9 ignored) |
+| `loopback_api` | **332 passed, 0 failed** (1 ignored) |
+| both MCP journeys | passed |
+| `cargo audit` | passed |
+| `cargo deny check` | passed |
+| `pnpm install --frozen-lockfile` | passed |
+| `pnpm -r typecheck` | passed |
+| `pnpm -r test` | **300 passed** (16 files) |
+| `pnpm audit --prod` | passed |
+
+No gate was waived or skipped. All ten gate invocations are in the log and the
+script raises on any non-zero, so exit 0 entails every gate passed. The nine
+ignored Rust tests are byte-identical to Gate 9's set; neither new regression is
+ignored, and the test-file change is additive, so no existing assertion was
+removed or weakened.
+
+The archive-log identity limitation recorded for Gate 9 applies unchanged here:
+the script prints that it exported `HEAD` without naming the commit or tree. The
+Gate 10 binding rests on the invoking seat's recorded HEAD, the two new test
+identities present in the log, the exact 2479 → 2481 count delta, and this
+separately committed evidence. OQ-B remains deferred and is not part of this
+candidate.
+
+### Not done here, deliberately
+
+- No topology, TeamRun, Jira change, publication, or deploy.
+- The candidate was not pushed, published, merged, or deployed.
+- No Kontor state was mutated and the protected ASMA-8100 receipt is untouched.
+- Route-time TeamRun authority was not widened, and no gate was waived.
