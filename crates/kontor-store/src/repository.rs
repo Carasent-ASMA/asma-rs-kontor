@@ -1590,6 +1590,19 @@ impl ProjectRepository for SqliteStore {
 
 const TOPOLOGY_NODE_COLUMNS: &str = "id, project_id, mini_project_id, spec_id, spec_version, \
     spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at, task_id";
+/// The immutable facts one hosted-seat route replacement was previewed against.
+///
+/// Carried separately from the two seat rows because it describes the *logical*
+/// seat rather than either native occupant: the occupancy generation the active
+/// row must still be at, and the revision its SeatBinding must still report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedSeatRouteFence {
+    /// Active occupancy generation read when the correction was previewed.
+    pub occupancy_generation: u64,
+    /// SeatBinding revision read when the correction was previewed.
+    pub seat_binding_revision: AggregateRevision,
+}
+
 const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_id, \
     role_catalog_id, role_catalog_version, role_code, standard_title, custom_display_name, \
     task_id, team_run_id, lifecycle, attach_deadline, last_attached_at, last_activity_at, \
@@ -4415,7 +4428,7 @@ impl SqliteStore {
                 "SELECT native_id
                  FROM hosted_topology_seat_history
                  WHERE project_id = ?1 AND seat_binding_id = ?2
-                 ORDER BY retired_at, native_id",
+                 ORDER BY retired_at, rowid",
             )
             .map_err(backend)?;
         let rows = statement
@@ -4433,12 +4446,21 @@ impl SqliteStore {
 
     /// Atomically move the exact predecessor to history and make its successor
     /// the active native filler of the same logical SeatBinding.
+    ///
+    /// `fence`, when supplied, is re-checked inside this transaction. The
+    /// caller's pre-effect comparison happened before it retired and launched
+    /// anything, which leaves a window the active-native check alone does not
+    /// close: the seat can be re-observed, or another occupancy recorded,
+    /// while the runtime work is in flight. Proving the occupancy generation
+    /// and SeatBinding revision are still the previewed ones *here* is what
+    /// makes that drift fail to commit instead of committing silently.
     pub fn replace_hosted_topology_seat_route(
         &self,
         predecessor: &StoredHostedTopologySeat,
         successor: &StoredHostedTopologySeat,
         retired_at: Timestamp,
         reason: &str,
+        fence: Option<&HostedSeatRouteFence>,
     ) -> RepositoryResult<Applied> {
         if predecessor.project_id != successor.project_id
             || predecessor.seat_binding_id != successor.seat_binding_id
@@ -4470,6 +4492,46 @@ impl SqliteStore {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
             });
+        }
+        if let Some(fence) = fence {
+            let occupancy: i64 = transaction
+                .query_row(
+                    "SELECT 1 + (
+                         SELECT COUNT(*) FROM hosted_topology_seat_history h
+                         WHERE h.project_id = ?1 AND h.seat_binding_id = ?2
+                     )",
+                    params![
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if u64::try_from(occupancy).ok() != Some(fence.occupancy_generation) {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted topology seat route",
+                    rule: "the seat occupancy generation moved since the correction was previewed",
+                });
+            }
+            let revision: Option<i64> = transaction
+                .query_row(
+                    "SELECT revision FROM seat_bindings WHERE project_id = ?1 AND id = ?2",
+                    params![
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            if revision.and_then(|revision| u64::try_from(revision).ok())
+                != Some(fence.seat_binding_revision.get())
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted topology seat route",
+                    rule: "the logical SeatBinding moved since the correction was previewed",
+                });
+            }
         }
         let predecessor_model =
             serde_json::to_string(&predecessor.model_rung).map_err(|error| {
@@ -9475,6 +9537,27 @@ impl CapacityRepository for SqliteStore {
                     account_profile_id.to_string(),
                     provider
                 ],
+                |row| Ok(read_provider_usage_observation(row)),
+            )
+            .optional()
+            .map_err(backend)?;
+        observation.transpose()
+    }
+
+    fn get_provider_usage_observation(
+        &self,
+        project_id: ProjectId,
+        observation_id: ProviderUsageObservationId,
+    ) -> RepositoryResult<Option<ProviderUsageObservation>> {
+        let observation: Option<RepositoryResult<ProviderUsageObservation>> = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT {PROVIDER_USAGE_OBSERVATION_COLUMNS}
+                     FROM provider_usage_observations
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![project_id.to_string(), observation_id.to_string()],
                 |row| Ok(read_provider_usage_observation(row)),
             )
             .optional()

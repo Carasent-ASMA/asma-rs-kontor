@@ -908,6 +908,36 @@ pub struct CoreTeamRoutePreviewRequest {
     pub desired_model_route: RuntimeModelRouteRequest,
 }
 
+/// The exact immutable provider reading one stale-native preview committed to.
+///
+/// Returned so the apply can name it back. The apply does not carry the digest
+/// or the numbers — it carries the id, and the server loads this row again and
+/// re-checks that it still belongs to the same project, account and provider.
+/// That keeps the preview hash stable across ordinary provider-report refreshes
+/// without ever trusting a caller-supplied digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamRouteHeadroomEvidenceDto {
+    /// Server-issued id of the immutable observation the preview selected.
+    #[schema(value_type = String)]
+    pub observation_id: kontor_core::id::ProviderUsageObservationId,
+    /// The exact governed account the reading belongs to.
+    #[schema(value_type = String)]
+    pub account_profile_id: AccountProfileId,
+    /// The exact selectable provider alias it reports on.
+    pub provider: String,
+    /// Digest of the provider evidence. Raw provider output is never retained.
+    #[schema(value_type = String)]
+    pub evidence_hash: ContentHash,
+    /// Which authority concluded it.
+    pub source: String,
+    /// Capacity state the reading established.
+    pub state: String,
+    /// Freshness instant of the reading.
+    pub observed_at: String,
+    /// Instant past which this reading is no longer fresh evidence.
+    pub fresh_through: String,
+}
+
 /// Read-only route-correction or stale-native recovery plan for one persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamRoutePreviewDto {
@@ -932,6 +962,13 @@ pub struct CoreTeamRoutePreviewDto {
     pub desired_model_route: RuntimeModelRouteRequest,
     /// Whether a native archive/launch is required.
     pub would_replace_native: bool,
+    /// The provider reading this preview committed to.
+    ///
+    /// Present only for stale-native succession, which is the one branch that
+    /// must prove capacity before it retires the seat's only occupant. An
+    /// ordinary correction of a live seat carries none and needs none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headroom_evidence: Option<CoreTeamRouteHeadroomEvidenceDto>,
     /// Hash the apply must name.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
@@ -960,6 +997,14 @@ pub struct CoreTeamRouteApplyRequest {
     /// Hash returned by preview.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
+    /// The observation id the preview returned, when it returned one.
+    ///
+    /// A checked server reference rather than caller-supplied evidence: the
+    /// server reloads this immutable row and refuses it unless it still belongs
+    /// to the same project, account and provider the preview fenced.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub headroom_observation_id: Option<kontor_core::id::ProviderUsageObservationId>,
 }
 
 impl CoreTeamRouteApplyRequest {

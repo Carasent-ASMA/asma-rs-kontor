@@ -66,20 +66,20 @@ use kontor_api::applications::{
     ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
     CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
-    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
-    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
-    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
-    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
-    IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
-    PartialAdmissionSeatDto, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
-    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
-    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
-    RecordedCloseoutDto, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
-    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    CoreTeamRouteHeadroomEvidenceDto, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
+    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
+    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
+    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
+    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
+    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
+    InvokeConsultationRequest, NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest,
+    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
+    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RecordedCloseoutDto, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
+    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -154,11 +154,11 @@ use kontor_core::id::{
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
     DescriptionPublicationId, ExecutionAuthorizationId, ExternalId, ExternalName, GateKey,
     IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, ProjectId,
-    PublicationAttestationId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
-    RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId, SpecVersion,
-    StatusConflictId, SuccessionAttemptId, SuccessionReceiptId, TaskId, TeamDefinitionId,
-    TeamDefinitionMigrationId, TeamRunId, TicketProjectionId, Timestamp, TopologyKindKey,
-    TopologyNodeId, TopologySpecId, TriggerKey,
+    ProviderUsageObservationId, PublicationAttestationId, QuickSessionId, RoleCatalogId, RoleCode,
+    RoleKey, RoleSlotId, RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId,
+    SpecVersion, StatusConflictId, SuccessionAttemptId, SuccessionReceiptId, TaskId,
+    TeamDefinitionId, TeamDefinitionMigrationId, TeamRunId, TicketProjectionId, Timestamp,
+    TopologyKindKey, TopologyNodeId, TopologySpecId, TriggerKey,
 };
 use kontor_core::naming::{
     NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
@@ -644,6 +644,17 @@ struct CoreTeamRoutePlan {
     successor: Option<StoredHostedTopologySeat>,
     desired: ModelRung,
     stale_native_recovery: bool,
+    /// The exact ECP placement the preview was taken against. Retirement is
+    /// fenced on it, so a predecessor that moved workspace, directory or
+    /// provider conversation since the preview is refused by the runtime
+    /// rather than archived from its new home.
+    container: NativeContainerBinding,
+    /// Active occupancy generation at preview time, carried so the atomic
+    /// store transition can fence on it after the runtime work is done.
+    occupancy_generation: u64,
+    /// The exact immutable provider reading this plan committed to, for
+    /// stale-native succession only.
+    headroom: Option<ProviderUsageObservation>,
     preview_hash: ContentHash,
 }
 
@@ -6800,6 +6811,7 @@ impl Services {
         project_id: ProjectId,
         epic_id: MiniProjectId,
         request: &CoreTeamRoutePreviewRequest,
+        pinned_headroom: Option<ProviderUsageObservationId>,
     ) -> Result<CoreTeamRoutePlan, ApiError> {
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
@@ -6836,7 +6848,6 @@ impl Services {
                     "the SeatBinding is not hosted by this epic's control plane",
                 )
             })?;
-        let _ = node;
         if !roster.revision.seats.iter().any(|seat| {
             seat.presence != EpicPresence::OnDemand
                 && seat.role_slot_id == binding.role_slot_id
@@ -6902,7 +6913,7 @@ impl Services {
                         "the hosted-seat runtime is not configured in this daemon",
                     )
                 })?;
-            adapter
+            match adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
@@ -6910,9 +6921,19 @@ impl Services {
                     requested_at: kontor_api::now(),
                 })
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                .state
-                .is_live()
+            {
+                Ok(inspection) => inspection.state.is_live(),
+                // The runtime holds a native for this seat that is not the
+                // exact predecessor. That *is* the answer to "is the
+                // predecessor still live", not a failure to answer it: a launch
+                // whose acknowledgement was lost leaves precisely this state,
+                // and refusing here would wedge the seat on the very retry that
+                // exists to recover it.
+                Err(RuntimeError::CorrelationFailed) => false,
+                Err(error) => {
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            }
         };
         let stale_native_recovery =
             predecessor.model_rung == desired && (successor.is_some() || !native_is_live);
@@ -6931,6 +6952,81 @@ impl Services {
                 },
             ));
         }
+        // Apply re-plans and compares this hash before its first native effect,
+        // so every value folded in here is a compare-and-swap fence: a drifted
+        // seat revision, occupancy generation, provider conversation or ECP
+        // placement changes the hash and refuses with no runtime or store write.
+        let occupancy_generation = state
+            .with_store(|store| {
+                store.hosted_topology_seat_occupancy_generation(project_id, binding.id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the logical Core Team seat has no active native occupancy generation",
+                )
+            })?;
+        let container = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control plane has no persisted native container",
+                )
+            })?;
+        // Absent rather than invented: an epic that has frozen no completion
+        // contract has no profile pin to fence, and saying so is not the same
+        // as fencing on a profile nobody published.
+        let completion_pin = state
+            .with_store(|store| store.get_epic_completion(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|completion| {
+                serde_json::json!({
+                    "profile_id": completion.profile_id.as_str(),
+                    "profile_version": completion.profile_version.get(),
+                    "definition_hash": completion.definition_hash.as_str(),
+                })
+            });
+        // The exact resolved seats document, digested server-side. The roster
+        // version and the catalog hash say *which* revision and *which*
+        // catalog; only the document itself proves the seats resolved from
+        // them did not change.
+        let core_team_definition = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "core_team": roster.revision,
+        }))?;
+        // Stale-native succession commits to one exact immutable reading. The
+        // preview selects it; the apply names it back and the server reloads
+        // it, so the hash stays computable from the same row after newer
+        // readings land. An ordinary live correction commits to none.
+        let headroom = if stale_native_recovery {
+            Some(match pinned_headroom {
+                Some(observation_id) => {
+                    self.pinned_core_team_route_headroom(project_id, observation_id, &desired)?
+                }
+                None => self.core_team_route_headroom(project_id, &desired)?,
+            })
+        } else {
+            None
+        };
+        let headroom_document = headroom.as_ref().map(|observation| {
+            serde_json::json!({
+                "observation": observation.id.to_string(),
+                "account": observation.account_profile_id.to_string(),
+                "provider": observation.provider,
+                "evidence_hash": observation.evidence_hash.as_str(),
+                "source": kontor_core::spec::ProviderQuotaSource::ProviderReport.as_str(),
+                "state": observation.state.as_str(),
+                "observed_at": observation.observed_at.to_string(),
+                // Derived from the pinned row and this realm's evidence window,
+                // so it is as stable as the reading itself.
+                "fresh_through": (observation.observed_at
+                    + jiff::SignedDuration::from_secs(state.evidence_window_seconds()))
+                .to_string(),
+            })
+        });
         let mut preview_document = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_route_correction",
@@ -6938,13 +7034,62 @@ impl Services {
             "epic": epic_id.to_string(),
             "epic_revision": epic.revision.get(),
             "seat_binding": binding.id.to_string(),
+            "seat_binding_revision": binding.revision.get(),
+            "occupancy_generation": occupancy_generation,
+            "core_team_revision": roster.revision_of_epic.get(),
             "predecessor": {
                 "runtime_kind": predecessor.native_identity.runtime_kind.as_str(),
                 "host": predecessor.native_identity.host.as_str(),
                 "generation": predecessor.native_identity.generation,
                 "native_id": predecessor.native_identity.native_id.as_str(),
+                "provider_session_id": predecessor
+                    .provider_session_id
+                    .as_ref()
+                    .map(ExternalId::as_str),
                 "model": predecessor.model_rung,
             },
+            "ecp": {
+                "topology_node": node.id.to_string(),
+                "container_binding": container.container_binding_id.as_str(),
+                "container_runtime_kind": container.identity.runtime_kind.as_str(),
+                "container_host": container.identity.host.as_str(),
+                "container_generation": container.identity.generation,
+                "container_native_id": container.identity.native_id.as_str(),
+                // Deliberately not the container or node revision: those are
+                // readback counters that ordinary reconciliation moves. Fencing
+                // them would expire a preview for a reason that has nothing to
+                // do with where this seat is placed.
+                "canonical_cwd": container.canonical_cwd.as_ref().map(ExternalName::as_str),
+            },
+            // The frozen topology this seat is placed in, by published spec
+            // identity rather than by node id alone: a node that was
+            // re-specified still has the same id.
+            "topology": {
+                "spec_id": node.topology.spec_id.to_string(),
+                "spec_version": node.topology.version.get(),
+                "spec_hash": node.topology.canonical_hash.as_str(),
+            },
+            // The logical role this succession preserves. A control-plane Core
+            // Team seat carries no TeamRun, and that absence is itself fenced:
+            // a seat that acquired one is not the seat that was previewed.
+            "binding": {
+                "role_slot": binding.role_slot_id.as_str(),
+                "role_catalog_id": binding.role.catalog_id.to_string(),
+                "role_catalog_version": binding.role.catalog_revision.get(),
+                "role_code": binding.role.role_code.as_str(),
+                "team_run": binding.team_run_id.map(|id| id.to_string()),
+            },
+            // The frozen identities this repair may not move. The completion
+            // profile is pinned by identity and digest only: generation, round
+            // and state are evidence this task must not fence, because the
+            // remediation it unblocks advances them.
+            "pins": {
+                "core_team_version": roster.revision.version.get(),
+                "core_team_catalog_hash": roster.revision.catalog_hash.as_str(),
+                "core_team_definition_hash": core_team_definition.hash().as_str(),
+                "completion_profile": completion_pin,
+            },
+            "headroom": headroom_document,
             "desired": desired,
         });
         if stale_native_recovery {
@@ -6959,7 +7104,130 @@ impl Services {
             successor,
             desired,
             stale_native_recovery,
+            container,
+            occupancy_generation,
+            headroom,
             preview_hash,
+        })
+    }
+
+    /// Reload the exact immutable reading a preview committed to.
+    ///
+    /// The caller names an id, never a digest: everything this fence rests on
+    /// is read back from the stored row. A row that belongs to another project,
+    /// another account, or another provider alias than the approved route is
+    /// refused rather than adopted, and so is an account that is no longer the
+    /// single selectable authority for that alias.
+    fn pinned_core_team_route_headroom(
+        &self,
+        project_id: ProjectId,
+        observation_id: ProviderUsageObservationId,
+        rung: &ModelRung,
+    ) -> Result<ProviderUsageObservation, ApiError> {
+        let observation = self
+            .state()?
+            .with_store(|store| store.get_provider_usage_observation(project_id, observation_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the previewed provider reading is not a stored observation of this project",
+                )
+            })?;
+        if observation.provider != rung.provider.0 {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the previewed provider reading reports on another provider than the approved route",
+            ));
+        }
+        let account = self.approved_route_account(project_id, rung)?;
+        if observation.account_profile_id != account.account_profile_id {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the previewed provider reading belongs to another account than the approved route's",
+            ));
+        }
+        Ok(observation)
+    }
+
+    /// The single enabled account that may be selected for one governed route.
+    ///
+    /// Ambiguity refuses rather than picks. A launch freezes a provider alias,
+    /// not an account id, so two enabled profiles able to select the same alias
+    /// leave a provider report unattributable to the account whose capacity is
+    /// actually being spent. Resolving this at preview is deliberate: the
+    /// alternative is handing back a hash that could never be applied.
+    fn approved_route_account(
+        &self,
+        project_id: ProjectId,
+        rung: &ModelRung,
+    ) -> Result<kontor_scheduler::headroom::EligibleAccount, ApiError> {
+        let accounts = self.eligible_accounts(project_id)?;
+        let mut selectable = accounts
+            .into_iter()
+            .filter(|account| account.selectable_providers.contains(&rung.provider.0));
+        let account = selectable.next().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no enabled account profile can select the approved route's provider",
+            )
+        })?;
+        if selectable.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "more than one enabled account profile can select the approved route's provider",
+            ));
+        }
+        Ok(account)
+    }
+
+    /// Fresh provider-reported headroom for one exact approved Core Team route.
+    ///
+    /// Stale-native succession is the only branch that consults this. An
+    /// ordinary correction of a live seat keeps its existing contract, because
+    /// the seat it replaces is still answering and its capacity was already
+    /// proven when it launched. Recovery is different: it relaunches into
+    /// capacity nobody has re-checked since the predecessor went stale, so the
+    /// exact approved account must still report room before anything is
+    /// archived. Missing, stale, exhausted, ambiguous or wrong-account evidence
+    /// all resolve to `None` here and refuse.
+    fn core_team_route_headroom(
+        &self,
+        project_id: ProjectId,
+        rung: &ModelRung,
+    ) -> Result<ProviderUsageObservation, ApiError> {
+        let state = self.state()?;
+        let account = self.approved_route_account(project_id, rung)?;
+        let quota_states = state
+            .with_store(|store| store.list_provider_quota_states(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let observations = state
+            .with_store(
+                |store| -> Result<Vec<ProviderUsageObservation>, RepositoryError> {
+                    Ok(store
+                        .latest_provider_usage_observation(
+                            project_id,
+                            account.account_profile_id,
+                            &rung.provider.0,
+                        )?
+                        .into_iter()
+                        .collect())
+                },
+            )
+            .map_err(|error| self.refuse(&error))?;
+        has_fresh_provider_reported_headroom(
+            rung,
+            std::slice::from_ref(&account),
+            &quota_states,
+            &observations,
+            kontor_api::now(),
+            state.evidence_window_seconds(),
+        )
+        .ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "stale-native Core Team succession has no fresh provider-reported headroom for its exact approved account and route",
+            )
         })
     }
 
@@ -21031,8 +21299,25 @@ impl ApplicationOperations for Services {
     ) -> Result<CoreTeamRoutePreviewDto, ApiError> {
         let state = self.state()?;
         let plan = self
-            .core_team_route_plan(project_id, epic_id, request)
+            .core_team_route_plan(project_id, epic_id, request, None)
             .await?;
+        let headroom_evidence =
+            plan.headroom
+                .as_ref()
+                .map(|observation| CoreTeamRouteHeadroomEvidenceDto {
+                    observation_id: observation.id,
+                    account_profile_id: observation.account_profile_id,
+                    provider: observation.provider.clone(),
+                    evidence_hash: observation.evidence_hash.clone(),
+                    source: kontor_core::spec::ProviderQuotaSource::ProviderReport
+                        .as_str()
+                        .to_owned(),
+                    state: observation.state.as_str().to_owned(),
+                    observed_at: observation.observed_at.to_string(),
+                    fresh_through: (observation.observed_at
+                        + jiff::SignedDuration::from_secs(state.evidence_window_seconds()))
+                    .to_string(),
+                });
         Ok(CoreTeamRoutePreviewDto {
             realm_id: state.realm_id(),
             project_id,
@@ -21042,6 +21327,7 @@ impl ApplicationOperations for Services {
             current_model_route: runtime_model_route_dto(&plan.predecessor.model_rung),
             desired_model_route: runtime_model_route_dto(&plan.desired),
             would_replace_native: plan.needs_native_replacement(),
+            headroom_evidence,
             preview_hash: plan.preview_hash,
             snapshot_cursor: self.cursor()?,
         })
@@ -21056,8 +21342,122 @@ impl ApplicationOperations for Services {
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
+        // The intent is what the caller asked for, so it is derivable from the
+        // request alone — the same document the pre-succession plan produced.
+        // Deriving it here is what lets the idempotency ledger be consulted
+        // *before* the compare-and-swap fence: a completed succession moves the
+        // seat revision and occupancy generation the fence covers, so a replay
+        // that re-planned first would refuse its own recorded effect.
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_route_correction",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": request.seat_binding_id.to_string(),
+            "predecessor": request.expected_native_id.as_str(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            // An exact completed replay is answered from its durable receipt and
+            // the current authoritative occupancy: no plan, no provider probe,
+            // no runtime call and no store write.
+            let epic = self.epic_row(project_id, epic_id)?;
+            let roster = self.frozen_roster(project_id, epic_id)?;
+            let active = state
+                .with_store(|store| {
+                    store.get_hosted_topology_seat(project_id, request.seat_binding_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the recorded Core Team succession has no active native occupant to read back",
+                    )
+                })?;
+            // The successor this receipt recorded, not whoever holds the seat
+            // now. Two facts make that answerable from append-only evidence:
+            // the fenced predecessor is retired into history under a key that
+            // admits it exactly once per seat, and history is ordered by the
+            // retirements themselves. The occupancy recorded immediately after
+            // it is therefore this command's own result, even once later
+            // successions have moved the seat on to generation three.
+            //
+            // Everything that cannot be proved that way fails closed. Reading
+            // "whoever is active now" would answer a replay of the command that
+            // produced generation two with generation three.
+            let recorded_predecessor = state
+                .with_store(|store| {
+                    store.get_hosted_topology_seat_history(
+                        project_id,
+                        request.seat_binding_id,
+                        &request.expected_native_id,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .filter(|recorded| {
+                    recorded.native_identity.generation == request.expected_generation
+                });
+            let history = state
+                .with_store(|store| {
+                    store.list_hosted_topology_seat_history_native_ids(
+                        project_id,
+                        request.seat_binding_id,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            let position = history
+                .iter()
+                .position(|native_id| native_id == &request.expected_native_id);
+            let successor_native_id = match (recorded_predecessor, position) {
+                // Retired, and still the newest retirement: the active row is
+                // the very next occupancy, which is this command's successor.
+                (Some(_), Some(index)) if index + 1 == history.len() => {
+                    active.native_identity.native_id.clone()
+                }
+                // Retired, and succeeded again since: the next recorded
+                // retirement is this command's successor.
+                (Some(_), Some(index)) => history[index + 1].clone(),
+                // Never retired, and still the exact active occupant: the
+                // recorded command replaced no native, so it is its own
+                // successor. This is the replay of a correction that found the
+                // seat already on its approved route.
+                (None, None)
+                    if active.native_identity.native_id == request.expected_native_id
+                        && active.native_identity.generation == request.expected_generation =>
+                {
+                    active.native_identity.native_id.clone()
+                }
+                _ => {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the recorded Core Team succession cannot be proved from this seat's append-only history",
+                    ));
+                }
+            };
+            return Ok(CoreTeamRouteOutcomeDto {
+                core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
+                seat_binding_id: request.seat_binding_id,
+                predecessor_native_id: request.expected_native_id.clone(),
+                successor_native_id,
+                receipt: MutationReceiptDto {
+                    realm_id: state.realm_id(),
+                    receipt_id: existing.id.to_string(),
+                    applied: AppliedDto::Unchanged,
+                    revision: epic.revision,
+                    snapshot_cursor: self.cursor()?,
+                },
+            });
+        }
         let plan = self
-            .core_team_route_plan(project_id, epic_id, &request.correction())
+            .core_team_route_plan(
+                project_id,
+                epic_id,
+                &request.correction(),
+                request.headroom_observation_id,
+            )
             .await?;
         if plan.preview_hash != request.preview_hash {
             return Err(self.deny(
@@ -21065,19 +21465,6 @@ impl ApplicationOperations for Services {
                 "the Core Team route correction no longer matches its preview",
             ));
         }
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "core_team_route_correction",
-            "project": project_id.to_string(),
-            "epic": epic_id.to_string(),
-            "seat_binding": plan.binding.id.to_string(),
-            "predecessor": plan.predecessor.native_identity.native_id.as_str(),
-            "preview": request.preview_hash.as_str(),
-        }))?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
-        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
 
         let replaced_native = plan.needs_native_replacement();
         let successor = if let Some(successor) = plan.successor.clone() {
@@ -21092,16 +21479,111 @@ impl ApplicationOperations for Services {
                     "the hosted seat runtime is not configured in this daemon",
                 )
             })?;
-            let retired = adapter
-                .retire_hosted_seat(&HostedSeatRetireRequest {
-                    placement: None,
+            // Immediately before the first archive attempt, and never from the
+            // preview: a cached capacity reading is not authority to retire the
+            // only occupant this seat has. An exact completed replay returned at
+            // the idempotency ledger above, so it never probes at all.
+            if plan.stale_native_recovery {
+                let fresh = self.core_team_route_headroom(project_id, &plan.desired)?;
+                // A newer reading is expected and welcome — it does not disturb
+                // the preview hash, which is pinned to the immutable row the
+                // preview named. What must not change is *whose* capacity is
+                // being spent.
+                if let Some(previewed) = &plan.headroom
+                    && (fresh.account_profile_id != previewed.account_profile_id
+                        || fresh.provider != previewed.provider)
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the admissible provider account moved away from the one this succession previewed",
+                    ));
+                }
+            }
+            // A predecessor is archived only once the runtime proves it has
+            // nothing in flight. "Stale" is a conclusion about a native that
+            // stopped answering; a session that is mid-turn, or waiting on a
+            // permission request someone was asked to answer, is neither stale
+            // nor safe to discard. A runtime that cannot say reads as not
+            // idle, so the unknown case refuses rather than archives.
+            // Step five: archive the exact predecessor, or prove it is already
+            // gone. Those are the only two ways past this point — archiving
+            // anything else to make the operation proceed is precisely what the
+            // logical seat must never do.
+            let present = match adapter
+                .inspect_hosted_seat(&HostedSeatInspectRequest {
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
                     requested_at: kontor_api::now(),
                 })
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            {
+                Ok(inspection) => inspection.state.is_live().then_some(inspection),
+                // The seat's native is no longer this predecessor at all. A
+                // launch whose acknowledgement was lost leaves exactly that,
+                // and the retry it needs must not be refused as if the
+                // predecessor were still holding the seat.
+                Err(RuntimeError::CorrelationFailed) => None,
+                Err(error) => {
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            };
+            let retired_at = match present {
+                Some(inspection) => {
+                    if !inspection.is_retirable() {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the exact Core Team predecessor is still working or waiting on a permission request",
+                        ));
+                    }
+                    adapter
+                        .retire_hosted_seat(&HostedSeatRetireRequest {
+                            // The exact placement this succession was previewed
+                            // against. Without it the runtime archives whatever
+                            // now answers to the native id, which is how a
+                            // predecessor that moved workspace, directory or
+                            // provider conversation gets retired from a home
+                            // nobody previewed.
+                            placement: Some(
+                                kontor_runtime::adapter::HostedSeatRetirePlacement {
+                                    workspace_native_id: plan
+                                        .container
+                                        .identity
+                                        .native_id
+                                        .clone(),
+                                    canonical_cwd: WorkspaceRoot::parse(
+                                        plan.container
+                                            .canonical_cwd
+                                            .as_ref()
+                                            .ok_or_else(|| {
+                                                self.deny(
+                                                    ApiErrorCode::StaleBinding,
+                                                    "the Core Team control plane has no persisted directory",
+                                                )
+                                            })?
+                                            .as_str(),
+                                    )
+                                    .map_err(|error| self.refuse_domain(&error))?,
+                                    provider_session_id: plan
+                                        .predecessor
+                                        .provider_session_id
+                                        .clone(),
+                                },
+                            ),
+                            seat_binding_id: plan.binding.id,
+                            identity: plan.predecessor.native_identity.clone(),
+                            model_rung: plan.predecessor.model_rung.clone(),
+                            requested_at: kontor_api::now(),
+                        })
+                        .await
+                        .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                        .archived_at
+                }
+                // Already terminal, or displaced by a successor an earlier
+                // attempt launched. Either way there is nothing of this
+                // predecessor left to archive.
+                None => kontor_api::now(),
+            };
             let control = state
                 .with_store(|store| {
                     store.get_topology_node(project_id, plan.binding.topology_node_id)
@@ -21202,8 +21684,16 @@ impl ApplicationOperations for Services {
                     store.replace_hosted_topology_seat_route(
                         &plan.predecessor,
                         &successor,
-                        retired.archived_at,
+                        retired_at,
                         "authorized Core Team provider/model route correction",
+                        // Re-proved inside the transaction: the pre-effect
+                        // comparison above ran before the runtime retired and
+                        // launched, so only this check can refuse drift that
+                        // appeared while that work was in flight.
+                        Some(&kontor_store::HostedSeatRouteFence {
+                            occupancy_generation: plan.occupancy_generation,
+                            seat_binding_revision: plan.binding.revision,
+                        }),
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -21240,10 +21730,10 @@ impl ApplicationOperations for Services {
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
-                applied: if replayed || !replaced_native {
-                    AppliedDto::Unchanged
-                } else {
+                applied: if replaced_native {
                     AppliedDto::Updated
+                } else {
+                    AppliedDto::Unchanged
                 },
                 revision: plan.epic.revision,
                 snapshot_cursor: self.cursor()?,
@@ -21355,6 +21845,9 @@ impl ApplicationOperations for Services {
                             &successor,
                             successor.observed_at,
                             "authorized existing-session Core Team seat claim",
+                            // The seat-claim command keeps its existing
+                            // contract; its own preview fences elsewhere.
+                            None,
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;

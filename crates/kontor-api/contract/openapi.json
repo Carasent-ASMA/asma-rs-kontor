@@ -14504,6 +14504,13 @@
             "description": "Epic revision the caller read.",
             "minimum": 0
           },
+          "headroom_observation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The observation id the preview returned, when it returned one.\n\nA checked server reference rather than caller-supplied evidence: the\nserver reloads this immutable row and refuses it unless it still belongs\nto the same project, account and provider the preview fenced."
+          },
           "preview_hash": {
             "type": "string",
             "description": "Hash returned by preview."
@@ -14514,6 +14521,54 @@
           }
         },
         "additionalProperties": false
+      },
+      "CoreTeamRouteHeadroomEvidenceDto": {
+        "type": "object",
+        "description": "The exact immutable provider reading one stale-native preview committed to.\n\nReturned so the apply can name it back. The apply does not carry the digest\nor the numbers — it carries the id, and the server loads this row again and\nre-checks that it still belongs to the same project, account and provider.\nThat keeps the preview hash stable across ordinary provider-report refreshes\nwithout ever trusting a caller-supplied digest.",
+        "required": [
+          "observation_id",
+          "account_profile_id",
+          "provider",
+          "evidence_hash",
+          "source",
+          "state",
+          "observed_at",
+          "fresh_through"
+        ],
+        "properties": {
+          "account_profile_id": {
+            "type": "string",
+            "description": "The exact governed account the reading belongs to."
+          },
+          "evidence_hash": {
+            "type": "string",
+            "description": "Digest of the provider evidence. Raw provider output is never retained."
+          },
+          "fresh_through": {
+            "type": "string",
+            "description": "Instant past which this reading is no longer fresh evidence."
+          },
+          "observation_id": {
+            "type": "string",
+            "description": "Server-issued id of the immutable observation the preview selected."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "Freshness instant of the reading."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The exact selectable provider alias it reports on."
+          },
+          "source": {
+            "type": "string",
+            "description": "Which authority concluded it."
+          },
+          "state": {
+            "type": "string",
+            "description": "Capacity state the reading established."
+          }
+        }
       },
       "CoreTeamRouteOutcomeDto": {
         "type": "object",
@@ -14575,6 +14630,17 @@
           "epic_id": {
             "type": "string",
             "description": "Epic whose ECP hosts the seat."
+          },
+          "headroom_evidence": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteHeadroomEvidenceDto",
+                "description": "The provider reading this preview committed to.\n\nPresent only for stale-native succession, which is the one branch that\nmust prove capacity before it retires the seat's only occupant. An\nordinary correction of a live seat carries none and needs none."
+              }
+            ]
           },
           "predecessor_native_id": {
             "type": "string",

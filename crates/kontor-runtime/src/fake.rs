@@ -703,6 +703,13 @@ struct FakeState {
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Exact hosted natives a test has put mid-turn. Absence means idle, which
+    /// is what a freshly launched fake seat is.
+    busy_hosted_seats: BTreeSet<ExternalId>,
+    /// Open permission requests per exact hosted native.
+    hosted_seat_permissions: BTreeMap<ExternalId, Vec<ExternalId>>,
+    /// Seats whose next launch takes effect and then loses its acknowledgement.
+    lose_hosted_launch_ack_once: BTreeSet<SeatBindingId>,
     /// Stable message ledger per exact hosted native. A logical seat may be
     /// replaced, so keying this by SeatBinding would incorrectly make a
     /// successor inherit its predecessor's deliveries.
@@ -1203,6 +1210,9 @@ impl ScriptedFakeRuntime {
                 consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
+                busy_hosted_seats: BTreeSet::new(),
+                hosted_seat_permissions: BTreeMap::new(),
+                lose_hosted_launch_ack_once: BTreeSet::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
@@ -1687,6 +1697,18 @@ impl ScriptedFakeRuntime {
         pause
     }
 
+    /// Lose one acknowledgement after an exact hosted native launch has taken
+    /// effect.
+    ///
+    /// The native exists and is bound to the seat; only the answer is lost. A
+    /// retry must recover that same native through the existing launch
+    /// correlation rather than minting a second one.
+    pub fn lose_next_hosted_launch_ack(&self, seat_binding_id: SeatBindingId) {
+        self.lock()
+            .lose_hosted_launch_ack_once
+            .insert(seat_binding_id);
+    }
+
     /// Lose one acknowledgement after exact hosted native retirement has taken effect.
     pub fn lose_next_hosted_retire_ack(&self, seat_binding_id: SeatBindingId) {
         self.lock()
@@ -1761,6 +1783,20 @@ impl ScriptedFakeRuntime {
             state.archived_hosted_seats.insert(binding, seat);
             state.archived_seats.insert(native_id.clone());
         }
+    }
+
+    /// Put one exact hosted native mid-turn, so retirement sees work in flight.
+    pub fn occupy_hosted_seat(&self, native_id: &ExternalId) {
+        self.lock().busy_hosted_seats.insert(native_id.clone());
+    }
+
+    /// Leave one exact hosted native waiting on a permission request.
+    pub fn block_hosted_seat_on_permission(&self, native_id: &ExternalId, request: &ExternalId) {
+        self.lock()
+            .hosted_seat_permissions
+            .entry(native_id.clone())
+            .or_default()
+            .push(request.clone());
     }
 
     /// Reproduce a native archive for any persistent hosted or consultation
@@ -2825,6 +2861,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 request.display_name.as_str().to_owned(),
             ),
         );
+        if state
+            .lose_hosted_launch_ack_once
+            .remove(&request.seat_binding_id)
+        {
+            // The native is already bound above, which is what makes this a
+            // lost acknowledgement rather than a failed launch.
+            return Err(RuntimeError::Transport {
+                rule: "the native launch acknowledgement was lost",
+            });
+        }
         Ok(outcome)
     }
 
@@ -2857,6 +2903,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(HostedSeatInspection {
             identity: request.identity.clone(),
             state: disposition,
+            idle: disposition.is_live()
+                && !state
+                    .busy_hosted_seats
+                    .contains(&request.identity.native_id),
+            pending_permissions: state
+                .hosted_seat_permissions
+                .get(&request.identity.native_id)
+                .cloned()
+                .unwrap_or_default(),
             observed_at: request.requested_at,
         })
     }

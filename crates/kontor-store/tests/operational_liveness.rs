@@ -897,6 +897,7 @@ fn newest_completion_wake_is_stable_per_hosted_tpm_occupancy() {
             &successor,
             at("2026-08-16T01:05:00Z"),
             "stale native recovery",
+            None,
         )
         .expect("the exact successor takes the logical TPM seat");
     let successor_candidate = StoredCompletionWakeDelivery {

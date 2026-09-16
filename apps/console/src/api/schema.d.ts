@@ -5033,10 +5033,45 @@ export interface components {
              * @description Epic revision the caller read.
              */
             expected_revision: number;
+            /**
+             * @description The observation id the preview returned, when it returned one.
+             *
+             *     A checked server reference rather than caller-supplied evidence: the
+             *     server reloads this immutable row and refuses it unless it still belongs
+             *     to the same project, account and provider the preview fenced.
+             */
+            headroom_observation_id?: string | null;
             /** @description Hash returned by preview. */
             preview_hash: string;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+        };
+        /**
+         * @description The exact immutable provider reading one stale-native preview committed to.
+         *
+         *     Returned so the apply can name it back. The apply does not carry the digest
+         *     or the numbers — it carries the id, and the server loads this row again and
+         *     re-checks that it still belongs to the same project, account and provider.
+         *     That keeps the preview hash stable across ordinary provider-report refreshes
+         *     without ever trusting a caller-supplied digest.
+         */
+        CoreTeamRouteHeadroomEvidenceDto: {
+            /** @description The exact governed account the reading belongs to. */
+            account_profile_id: string;
+            /** @description Digest of the provider evidence. Raw provider output is never retained. */
+            evidence_hash: string;
+            /** @description Instant past which this reading is no longer fresh evidence. */
+            fresh_through: string;
+            /** @description Server-issued id of the immutable observation the preview selected. */
+            observation_id: string;
+            /** @description Freshness instant of the reading. */
+            observed_at: string;
+            /** @description The exact selectable provider alias it reports on. */
+            provider: string;
+            /** @description Which authority concluded it. */
+            source: string;
+            /** @description Capacity state the reading established. */
+            state: string;
         };
         /** @description Completed in-place route correction with exact identity readback. */
         CoreTeamRouteOutcomeDto: {
@@ -5059,6 +5094,7 @@ export interface components {
             desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Epic whose ECP hosts the seat. */
             epic_id: string;
+            headroom_evidence?: null | components["schemas"]["CoreTeamRouteHeadroomEvidenceDto"];
             /** @description Exact predecessor native identity. */
             predecessor_native_id: string;
             /** @description Hash the apply must name. */

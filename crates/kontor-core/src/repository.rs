@@ -3063,6 +3063,19 @@ pub trait CapacityRepository {
         provider: &str,
     ) -> RepositoryResult<Option<ProviderUsageObservation>>;
 
+    /// Load one exact immutable provider-usage observation by its own id.
+    ///
+    /// The freshness seam above answers "what is the newest reading", which is
+    /// the wrong question for a two-step preview/apply command: the reading a
+    /// preview committed to must still be loadable verbatim after a newer one
+    /// lands. This is that lookup, and the caller is expected to re-check that
+    /// the row it returns belongs to the account and provider it fenced.
+    fn get_provider_usage_observation(
+        &self,
+        project_id: ProjectId,
+        observation_id: ProviderUsageObservationId,
+    ) -> RepositoryResult<Option<ProviderUsageObservation>>;
+
     /// Resolve one explicit probe replay globally without touching the provider.
     ///
     /// Probe keys are globally unique. The returned observation therefore

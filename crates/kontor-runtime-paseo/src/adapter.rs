@@ -5586,13 +5586,30 @@ impl RuntimeAdapter for PaseoAdapter {
             &OperationContext::new(RuntimeCapability::Inspect),
         )?;
         let native = self.hosted_seat_agent(request).await?;
+        let (state, idle, pending_permissions) = match native {
+            Some(agent) if agent.is_archived() => {
+                (HostedSeatNativeState::Archived, false, Vec::new())
+            }
+            Some(agent) => {
+                // Only `idle` is a seat waiting between turns. `initializing`
+                // and `running` both have something in flight, and `error`,
+                // `closed` and anything this adapter has not audited are
+                // dispositions retirement must not read as consent.
+                let idle = agent.status == PaseoAgentStatus::Idle;
+                let pending = agent
+                    .pending_permissions
+                    .iter()
+                    .map(|pending| ExternalId::parse(&pending.id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (HostedSeatNativeState::Live, idle, pending)
+            }
+            None => (HostedSeatNativeState::Missing, false, Vec::new()),
+        };
         Ok(HostedSeatInspection {
             identity: request.identity.clone(),
-            state: match native {
-                Some(agent) if agent.is_archived() => HostedSeatNativeState::Archived,
-                Some(_) => HostedSeatNativeState::Live,
-                None => HostedSeatNativeState::Missing,
-            },
+            state,
+            idle,
+            pending_permissions,
             observed_at: request.requested_at,
         })
     }

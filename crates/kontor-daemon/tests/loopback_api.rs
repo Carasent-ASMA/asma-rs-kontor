@@ -34100,6 +34100,11 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "attention refreshed attachment from the container rather than the exact hosted native"
     );
 
+    // Succession into a stale native relaunches on capacity nobody has
+    // re-checked since the predecessor died, so the exact approved account has
+    // to still report room. Preview is where that reading is selected and
+    // committed to. The ordinary live correction above needs no such evidence.
+    provider_reported_headroom(world, project, "opencode", "asma-8187-promotion-opencode").await;
     let recovery_request = serde_json::json!({
         "expected_revision": 1,
         "seat_binding_id": tpm_binding,
@@ -34127,6 +34132,10 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     );
     let mut recovery_body = recovery_request;
     recovery_body["preview_hash"] = recovery_preview.json()["preview_hash"].clone();
+    // Stale-native succession names back the exact reading its preview
+    // committed to; the live correction above carries none.
+    recovery_body["headroom_observation_id"] =
+        recovery_preview.json()["headroom_evidence"]["observation_id"].clone();
     let calls_before_recovery = world.fake.calls().len();
     let recovered = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
@@ -35627,6 +35636,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
                 &lsa_successor,
                 at("2026-08-18T09:01:00Z"),
                 "test the remediation authority generation fence",
+                None,
             )
         })
         .expect("the LSA occupancy is replaced");
@@ -36049,6 +36059,69 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     assert_ne!(
         recorded_recovery["authorization"]["lsa_actor"]["seat_binding_id"],
         recorded_recovery["authorization"]["tpm_actor"]["seat_binding_id"]
+    );
+    // ---- the remediation-generation fence is read at submission time ----
+    // Succeeding the TPM's native occupant moves neither the logical seat nor
+    // the round it is answering: it moves which generation may speak for that
+    // seat. The predecessor's credential stops being authority the moment
+    // generation two is current, and the successor's starts — decided when the
+    // route is submitted, not when the round was opened.
+    let tpm_predecessor = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_topology_seat(project_id, tpm))
+        .expect("the TPM occupancy reads")
+        .expect("the TPM is hosted");
+    let mut tpm_successor = tpm_predecessor.clone();
+    tpm_successor.native_identity.native_id =
+        ExternalId::parse("op06-tpm-successor").expect("a TPM successor native id");
+    tpm_successor.provider_session_id =
+        Some(ExternalId::parse("op06-tpm-successor-session").expect("a provider session"));
+    tpm_successor.observed_at = at("2026-08-18T09:05:00Z");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.replace_hosted_topology_seat_route(
+                &tpm_predecessor,
+                &tpm_successor,
+                at("2026-08-18T09:05:00Z"),
+                "test the TPM remediation authority generation fence",
+                None,
+            )
+        })
+        .expect("the TPM occupancy is replaced");
+
+    let fenced_route = serde_json::json!({
+        "expected_revision": awaiting_revision + 1,
+        "action": {"action": "tpm_route", "round": 1, "route": ContentHash::of(b"route-3").as_str()}
+    });
+    let fenced_tpm = remediate(fenced_route.clone(), "op06-tpm-generation-one", tpm, 1)
+        .send(world)
+        .await;
+    assert_eq!(fenced_tpm.status, 409, "{}", fenced_tpm.body);
+    assert_eq!(
+        fenced_tpm.code(),
+        "stale_binding",
+        "a generation-one credential still spoke for a seat now on generation two"
+    );
+
+    // Generation two clears the authority fence. What it meets afterwards is
+    // ordinary round state, which is the point: the credential is no longer
+    // what stands in its way.
+    let successor_tpm = remediate(fenced_route, "op06-tpm-generation-two", tpm, 2)
+        .send(world)
+        .await;
+    assert_ne!(
+        successor_tpm.code(),
+        "stale_binding",
+        "the current occupancy generation was refused as a fenced predecessor: {}",
+        successor_tpm.body
+    );
+    assert_ne!(
+        successor_tpm.status, 403,
+        "the current occupancy generation was refused as a foreign seat: {}",
+        successor_tpm.body
     );
 }
 
@@ -46225,4 +46298,1235 @@ async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
         )),
         "an unnameable consultation must refuse before any native effect",
     );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 — bounded repair of the admin Core Team route preview/apply flow
+// for one stale native occupant.
+//
+// The mutants these kill:
+//
+// * retiring the only occupant a logical seat has before proving the exact
+//   approved account still reports room, or proving it once at preview and
+//   treating that cached reading as authority at apply;
+// * applying a preview whose fenced seat revision, occupancy generation,
+//   provider conversation or ECP placement moved underneath it.
+// ---------------------------------------------------------------------------
+
+/// Bring up a realm holding one hosted Core Team TPM seat on an exact route.
+async fn hosted_tpm_seat(root: &str, key: &str) -> (Composed, String, ExternalId, u64) {
+    let composed = compose_realm(root).await;
+    adopt_session_base(
+        &composed.world,
+        &composed.project,
+        composed.project_revision,
+    )
+    .await;
+    publish_core_team(
+        &composed.world,
+        &composed.project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    let control = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(&composed.world, "admin")
+    .with_key(key)
+    .send(&composed.world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+    let tpm = control.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the materialized Core Team seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "TPM")
+        .expect("the hosted TPM seat")
+        .clone();
+    let binding = tpm["seat_binding_id"]
+        .as_str()
+        .expect("the durable TPM SeatBinding")
+        .to_owned();
+    let native = ExternalId::parse(
+        tpm["native_seat"]["native_id"]
+            .as_str()
+            .expect("the hosted TPM native id"),
+    )
+    .expect("a canonical native id");
+    let generation = tpm["native_seat"]["generation"]
+        .as_u64()
+        .expect("the hosted TPM generation");
+    (composed, binding, native, generation)
+}
+
+/// Declare one account that is the exact selectable authority for `provider`,
+/// then give it a fresh provider-reported availability projection.
+async fn provider_reported_headroom(world: &World, project: &str, provider: &str, label: &str) {
+    seed_provider_report(
+        world,
+        project,
+        provider,
+        label,
+        ProviderQuotaKind::Available,
+        kontor_api::now(),
+    )
+    .await;
+}
+
+/// The same declaration, with the exact capacity state and freshness instant
+/// the case under test needs.
+async fn seed_provider_report(
+    world: &World,
+    project: &str,
+    provider: &str,
+    label: &str,
+    state: ProviderQuotaKind,
+    observed_at: Timestamp,
+) {
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": label,
+            "harness": "fake.runtime",
+            "credential_alias": label,
+            "enabled": true,
+            "selectable_providers": [provider],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("headroom-account-{label}"))
+    .send(world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_profile_id = AccountProfileId::parse(
+        account.json()["account_profile_id"]
+            .as_str()
+            .expect("the governed account id"),
+    )
+    .expect("a canonical account id");
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let evidence_hash = ContentHash::of(b"ASMA-8187 provider availability report");
+    // A spent plan allowance recovers on a clock and has to carry the instant it
+    // does; the schema enforces that pairing rather than trusting the caller.
+    let resets_at = (state == ProviderQuotaKind::Exhausted).then(|| at("2030-01-01T00:00:00Z"));
+    world.daemon.state().with_store(|store| {
+        store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id,
+                    account_profile_id,
+                    provider: provider.to_owned(),
+                    evidence_hash: evidence_hash.clone(),
+                    state,
+                    resets_at,
+                    windows: Vec::new(),
+                    observed_at,
+                },
+                quota_state: Some(NewProviderQuotaState {
+                    project_id,
+                    account_profile_id,
+                    provider: provider.to_owned(),
+                    state,
+                    resets_at,
+                    windows: Vec::new(),
+                    credit: None,
+                    evidence_hash,
+                    source: ProviderQuotaSource::ProviderReport,
+                    observed_at,
+                    expected_revision: AggregateRevision::INITIAL,
+                    updated_at: observed_at,
+                    provenance: None,
+                }),
+                idempotency_key: None,
+                intent_hash: None,
+            })
+            .expect("the exact provider availability report records")
+    });
+}
+
+/// Stale-native succession relaunches into capacity nobody has re-checked since
+/// the predecessor went stale, so the exact approved account must still report
+/// room *before* anything is archived. The refusal is the whole point: it has
+/// to reach zero runtime calls, or the seat has been emptied on the strength of
+/// a reading that was never taken.
+#[tokio::test]
+async fn stale_core_team_succession_proves_provider_headroom_before_it_retires_anything() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-stale-headroom",
+        "asma-8187-headroom-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+
+    // The exact occupant goes stale: archived in the runtime while the logical
+    // seat still records it as the active generation-1 native.
+    world.fake.archive_hosted_seat(&native);
+
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    });
+    // With no provider reading at all there is nothing to commit to, so the
+    // preview itself refuses: an operator never receives a hash for a
+    // succession whose capacity was never established.
+    let calls_before_refusal = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert!(
+        !world.fake.calls()[calls_before_refusal..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::RetireHostedSeat(_))),
+        "a missing-headroom refusal retired the predecessor"
+    );
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // Once the exact approved account reports room the same succession is
+    // admissible, which is what proves this is a capacity fence rather than a
+    // blanket refusal of the recovery path.
+    provider_reported_headroom(world, project, "codex", "asma-8187-codex").await;
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["would_replace_native"],
+        true,
+        "an archived exact occupant must preview as a native replacement"
+    );
+    assert_eq!(
+        preview.json()["current_model_route"],
+        preview.json()["desired_model_route"],
+        "this case must exercise succession on an unchanged approved route"
+    );
+    let evidence = preview.json()["headroom_evidence"].clone();
+    assert_eq!(evidence["provider"], "codex");
+    assert_eq!(evidence["state"], "available");
+    assert_eq!(evidence["source"], "provider_report");
+    assert!(
+        evidence["observation_id"].is_string()
+            && evidence["evidence_hash"].is_string()
+            && evidence["observed_at"].is_string()
+            && evidence["fresh_through"].is_string()
+            && evidence["account_profile_id"].is_string(),
+        "the preview must return the whole reading it committed to: {}",
+        preview.body
+    );
+
+    let mut body = request.clone();
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+    body["headroom_observation_id"] = evidence["observation_id"].clone();
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-succession-with-headroom")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["seat_binding_id"], binding);
+    assert_eq!(recovered.json()["predecessor_native_id"], native.as_str());
+    assert_ne!(recovered.json()["successor_native_id"], native.as_str());
+    assert!(
+        world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat_history(project_id, binding_id, &native)
+                .expect("the generation-1 history reads")
+                .is_some()
+        }),
+        "succession did not preserve the exact predecessor as immutable history"
+    );
+}
+
+/// The previewed intent is the compare-and-swap fence. A seat revision that
+/// moved between preview and apply must refuse before any native effect, even
+/// though the epic revision, the exact predecessor and the route are all
+/// unchanged — those were the only values the narrower preview ever covered.
+#[tokio::test]
+async fn a_core_team_succession_refuses_a_preview_whose_seat_revision_moved() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-seat-revision-cas", "asma-8187-cas-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    provider_reported_headroom(world, project, "codex", "asma-8187-cas-codex").await;
+    world.fake.archive_hosted_seat(&native);
+
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, binding_id)
+            .expect("the TPM binding reads before attention")
+            .expect("the TPM binding exists before attention")
+    });
+    let attention = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{binding}/attention"),
+        &serde_json::json!({
+            "expected_revision": before.revision,
+            "reason": "Confirm the exact hosted TPM native before recovery",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma-8187-cas-attention")
+    .send(world)
+    .await;
+    assert_eq!(attention.status, 200, "{}", attention.body);
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, binding_id)
+            .expect("the TPM binding reads after attention")
+            .expect("the TPM binding exists after attention")
+    });
+    assert_ne!(
+        before.revision, after.revision,
+        "this case needs a SeatBinding whose revision actually moved"
+    );
+
+    let mut body = request.clone();
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+    body["headroom_observation_id"] = preview.json()["headroom_evidence"]["observation_id"].clone();
+    let calls_before_refusal = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-cas-drifted-seat-revision")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_refusal,
+        "a drifted compare-and-swap refusal reached the runtime"
+    );
+    let held = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .expect("the hosted TPM reads after the refusal")
+            .expect("the hosted TPM still exists after the refusal")
+    });
+    assert_eq!(
+        held.native_identity.native_id, native,
+        "a refused succession replaced the durable occupant anyway"
+    );
+}
+
+/// The exact evidence the succession fence demands, and what each way of
+/// failing to have it must do: refuse before the runtime is touched at all.
+///
+/// Absent evidence is covered by the admissible case above. These are the three
+/// ways evidence can be *present* and still be no authority to retire the only
+/// occupant a logical seat has.
+#[tokio::test]
+async fn stale_core_team_succession_refuses_unusable_provider_evidence_before_retirement() {
+    for (case, provider, state, observed_at) in [
+        (
+            "stale",
+            "codex",
+            ProviderQuotaKind::Available,
+            at("2020-01-01T00:00:00Z"),
+        ),
+        (
+            "exhausted",
+            "codex",
+            ProviderQuotaKind::Exhausted,
+            kontor_api::now(),
+        ),
+        (
+            "wrong-account",
+            "opencode",
+            ProviderQuotaKind::Available,
+            kontor_api::now(),
+        ),
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8187-headroom-{case}"),
+            &format!("asma-8187-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+
+        // The route under succession is always `codex`. The wrong-account case
+        // reports capacity for an account that can only select another alias,
+        // which is evidence about a different account rather than this one.
+        seed_provider_report(
+            world,
+            project,
+            provider,
+            &format!("asma-8187-{case}"),
+            state,
+            observed_at,
+        )
+        .await;
+        world.fake.archive_hosted_seat(&native);
+
+        let request = serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            },
+        });
+        // The preview is where the reading is selected, so unusable evidence
+        // refuses there — before an operator ever holds a hash to apply.
+        let calls_before_refusal = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+            &request,
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 409, "{case}: {}", refused.body);
+        assert_eq!(refused.code(), "placement_blocked", "{case}");
+        assert!(
+            !world.fake.calls()[calls_before_refusal..]
+                .iter()
+                .any(|call| matches!(call, AdapterCall::RetireHostedSeat(_))),
+            "{case}: an unusable-evidence refusal retired the predecessor"
+        );
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        let held = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .expect("the hosted TPM reads after the refusal")
+                .expect("the hosted TPM still exists after the refusal")
+        });
+        assert_eq!(
+            held.native_identity.native_id, native,
+            "{case}: a refused succession replaced the durable occupant anyway"
+        );
+    }
+}
+
+/// A predecessor that is still working, or still waiting on a permission
+/// request someone was asked to answer, is not a stale occupant. Retiring it
+/// answers the prompt by destroying the asker, so the correction refuses before
+/// any archive and the durable seat keeps its occupant.
+#[tokio::test]
+async fn a_core_team_correction_refuses_to_retire_a_predecessor_with_work_in_flight() {
+    for case in ["mid-turn", "awaiting-permission"] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8187-inflight-{case}"),
+            &format!("asma-8187-inflight-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+
+        if case == "mid-turn" {
+            world.fake.occupy_hosted_seat(&native);
+        } else {
+            world.fake.block_hosted_seat_on_permission(
+                &native,
+                &ExternalId::parse("permission-request-1").expect("a canonical request id"),
+            );
+        }
+
+        // A live predecessor on a *different* desired route is the ordinary
+        // correction path, which is the only path that retires a live native.
+        let request = serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"
+            },
+        });
+        let preview = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+            &request,
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert_eq!(preview.status, 200, "{case}: {}", preview.body);
+        assert_eq!(preview.json()["would_replace_native"], true, "{case}");
+
+        let mut body = request.clone();
+        body["preview_hash"] = preview.json()["preview_hash"].clone();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+            &body,
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("asma-8187-inflight-{case}"))
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 409, "{case}: {}", refused.body);
+        assert_eq!(refused.code(), "placement_blocked", "{case}");
+        assert!(
+            !world
+                .fake
+                .calls()
+                .iter()
+                .any(|call| matches!(call, AdapterCall::RetireHostedSeat(_))),
+            "{case}: a predecessor with work in flight was retired anyway"
+        );
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        let held = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .expect("the hosted TPM reads after the refusal")
+                .expect("the hosted TPM still exists after the refusal")
+        });
+        assert_eq!(
+            held.native_identity.native_id, native,
+            "{case}: a refused correction replaced the durable occupant anyway"
+        );
+    }
+}
+
+/// A replay answers for the succession its own receipt recorded. Once the seat
+/// has moved on to a later generation, reading "the current occupant" would
+/// report generation three as the result of the command that produced
+/// generation two.
+#[tokio::test]
+async fn a_replayed_core_team_succession_returns_its_own_successor_after_the_seat_moves_on() {
+    let (composed, binding, first_native, first_generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-replay-after-movement",
+        "asma-8187-replay-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    provider_reported_headroom(world, project, "codex", "asma-8187-replay-codex").await;
+
+    let (first_body, first) = succeed_stale_core_team_seat(
+        world,
+        project,
+        epic,
+        &binding,
+        &first_native,
+        first_generation,
+        "asma-8187-succession-1",
+    )
+    .await;
+    let second_native = ExternalId::parse(
+        first.json()["successor_native_id"]
+            .as_str()
+            .expect("the generation-2 successor"),
+    )
+    .expect("a canonical successor id");
+
+    // The seat legitimately moves on to generation three under its own key.
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let second_generation = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .expect("the hosted TPM reads")
+                .expect("the hosted TPM exists")
+        })
+        .native_identity
+        .generation;
+    let (_, second) = succeed_stale_core_team_seat(
+        world,
+        project,
+        epic,
+        &binding,
+        &second_native,
+        second_generation,
+        "asma-8187-succession-2",
+    )
+    .await;
+    let third_native = second.json()["successor_native_id"]
+        .as_str()
+        .expect("the generation-3 successor")
+        .to_owned();
+    assert_ne!(third_native, second_native.as_str());
+
+    // Replaying the first key must still answer with *its* successor.
+    let calls_before_replay = world.fake.calls().len();
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &first_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-succession-1")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["predecessor_native_id"],
+        first_native.as_str()
+    );
+    assert_eq!(
+        replayed.json()["successor_native_id"],
+        second_native.as_str(),
+        "the replay reported a later occupancy as its own recorded successor"
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before_replay,
+        "a replay touched the runtime"
+    );
+}
+
+/// Archive the exact occupant, then preview and apply its succession on the
+/// unchanged approved route. Answers with the applied body and the outcome.
+async fn succeed_stale_core_team_seat(
+    world: &World,
+    project: &str,
+    epic: &str,
+    binding: &str,
+    native: &ExternalId,
+    generation: u64,
+    key: &str,
+) -> (serde_json::Value, Answer) {
+    world.fake.archive_hosted_seat(native);
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let mut body = request.clone();
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+    body["headroom_observation_id"] = preview.json()["headroom_evidence"]["observation_id"].clone();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key(key.to_owned())
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    (body, applied)
+}
+
+/// Two enabled accounts able to select the same governed alias leave a provider
+/// report unattributable to the account whose capacity is actually spent. That
+/// is refused at preview, so no operator is ever handed a hash that could not
+/// have been applied.
+#[tokio::test]
+async fn stale_core_team_succession_refuses_an_ambiguous_provider_account_at_preview() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-ambiguous-account",
+        "asma-8187-ambiguous-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    provider_reported_headroom(world, project, "codex", "asma-8187-ambiguous-a").await;
+    // A second enabled profile claiming the very same alias.
+    let rival = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "asma-8187-ambiguous-b",
+            "harness": "fake.runtime",
+            "credential_alias": "asma-8187-ambiguous-b",
+            "enabled": true,
+            "selectable_providers": ["codex"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-ambiguous-rival")
+    .send(world)
+    .await;
+    assert_eq!(rival.status, 200, "{}", rival.body);
+    world.fake.archive_hosted_seat(&native);
+
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            },
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "an ambiguous provider account previewed as admissible: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::RetireHostedSeat(_))),
+        "an ambiguity refusal retired the predecessor"
+    );
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let held = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .expect("the hosted TPM reads after the refusal")
+            .expect("the hosted TPM still exists after the refusal")
+    });
+    assert_eq!(held.native_identity.native_id, native);
+}
+
+/// A preview's reading is authority to *plan*, never authority to retire. Once
+/// the same account's current capacity has gone, the succession refuses before
+/// it archives anything — even though the pinned reading it previewed is still
+/// perfectly loadable and still belongs to the right account.
+#[tokio::test]
+async fn stale_core_team_succession_refuses_when_capacity_lapsed_after_its_preview() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-capacity-lapsed", "asma-8187-lapsed-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    provider_reported_headroom(world, project, "codex", "asma-8187-lapsed").await;
+    world.fake.archive_hosted_seat(&native);
+
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let observation_id = preview.json()["headroom_evidence"]["observation_id"].clone();
+    assert!(observation_id.is_string());
+
+    // The allowance runs out after the preview was taken.
+    seed_provider_report(
+        world,
+        project,
+        "codex",
+        "asma-8187-lapsed",
+        ProviderQuotaKind::Exhausted,
+        kontor_api::now(),
+    )
+    .await;
+
+    let mut body = request.clone();
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+    body["headroom_observation_id"] = observation_id;
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-capacity-lapsed")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::RetireHostedSeat(_))),
+        "a lapsed-capacity refusal retired the predecessor anyway"
+    );
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let held = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .expect("the hosted TPM reads after the refusal")
+            .expect("the hosted TPM still exists after the refusal")
+    });
+    assert_eq!(held.native_identity.native_id, native);
+}
+
+/// The retirement takes effect and its acknowledgement is lost.
+///
+/// Archiving only ever happens to a predecessor that is still present, which is
+/// the live route-correction path — a stale predecessor is proved already gone
+/// and never archived at all. The operator retries the same key, and the seat
+/// must converge on exactly one successor with one retirement behind it.
+#[tokio::test]
+async fn a_lost_archive_acknowledgement_converges_on_one_core_team_successor() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-lost-archive-ack",
+        "asma-8187-lostack-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+
+    // A live predecessor moving to a different approved route: the one flow
+    // that archives a native which is still answering.
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let mut body = request;
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.lose_next_hosted_retire_ack(binding_id);
+    let lost = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-archive-ack")
+    .send(world)
+    .await;
+    assert_ne!(
+        lost.status, 200,
+        "a lost retirement acknowledgement reported success: {}",
+        lost.body
+    );
+    // Only the runtime half of the step got through, so the logical seat still
+    // records its generation-1 occupant.
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, native.as_str());
+    assert!(history.is_empty());
+    assert_eq!(occupancy, 1);
+
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-archive-ack")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["predecessor_native_id"], native.as_str());
+    let successor = recovered.json()["successor_native_id"]
+        .as_str()
+        .expect("a successor")
+        .to_owned();
+    assert_ne!(successor, native.as_str());
+
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active, successor,
+        "the recovered native did not take the seat"
+    );
+    assert_eq!(
+        history,
+        vec![native.as_str().to_owned()],
+        "recovery wrote more than one retirement for one succession"
+    );
+    assert_eq!(
+        occupancy, 2,
+        "one succession must add exactly one generation"
+    );
+}
+
+/// Preview one stale-native succession and answer with the body an apply needs.
+async fn previewed_succession(
+    world: &World,
+    project: &str,
+    epic: &str,
+    binding: &str,
+    native: &ExternalId,
+    generation: u64,
+) -> serde_json::Value {
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let mut body = request;
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+    body["headroom_observation_id"] = preview.json()["headroom_evidence"]["observation_id"].clone();
+    body
+}
+
+/// One succession's durable shape: the active occupant, its retirements, and
+/// the occupancy generation the seat has reached.
+fn succession_shape(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> (String, Vec<String>, u64) {
+    world.daemon.state().with_store(|store| {
+        let active = store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .expect("the hosted seat reads")
+            .expect("the hosted seat exists")
+            .native_identity
+            .native_id
+            .as_str()
+            .to_owned();
+        let history = store
+            .list_hosted_topology_seat_history_native_ids(project_id, binding_id)
+            .expect("the seat history reads")
+            .iter()
+            .map(|native| native.as_str().to_owned())
+            .collect();
+        let generation = store
+            .hosted_topology_seat_occupancy_generation(project_id, binding_id)
+            .expect("the occupancy generation reads")
+            .expect("the seat is occupied");
+        (active, history, generation)
+    })
+}
+
+/// The launch takes effect and its acknowledgement is lost. The retry must
+/// recover that same native through the existing launch correlation: a second
+/// mint would leave two natives claiming one logical seat.
+#[tokio::test]
+async fn a_lost_launch_acknowledgement_recovers_the_same_core_team_successor() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-lost-launch-ack",
+        "asma-8187-lostlaunch-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    provider_reported_headroom(world, project, "codex", "asma-8187-lostlaunch").await;
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.lose_next_hosted_launch_ack(binding_id);
+    let lost = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-launch-ack")
+    .send(world)
+    .await;
+    assert_ne!(
+        lost.status, 200,
+        "a lost launch acknowledgement reported success: {}",
+        lost.body
+    );
+    // The store never moved: the successor exists natively but was never made
+    // this seat's occupant.
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, native.as_str());
+    assert!(history.is_empty());
+    assert_eq!(occupancy, 1);
+
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-launch-ack")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let successor = recovered.json()["successor_native_id"]
+        .as_str()
+        .expect("a successor")
+        .to_owned();
+    assert_ne!(successor, native.as_str());
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active, successor,
+        "the recovered native did not take the seat"
+    );
+    assert_eq!(
+        history,
+        vec![native.as_str().to_owned()],
+        "recovery wrote more than one retirement for one succession"
+    );
+    assert_eq!(
+        occupancy, 2,
+        "one succession must add exactly one generation"
+    );
+}
+
+/// No second transition can reach a seat whose succession already committed.
+///
+/// The scope names a lost acknowledgement between the store transition and the
+/// durable receipt. That intermediate state is unreachable here rather than
+/// untested, and this pins the two facts that make it so: a committed
+/// succession always keeps its receipt, because command receipts have been
+/// undeletable by database trigger since `0001_init`; and a command that does
+/// *not* find that receipt is one carrying a different key, whose spent preview
+/// the compare-and-swap fence refuses. Both doors are closed here, so neither
+/// can produce a second retirement or a second occupancy.
+#[tokio::test]
+async fn a_committed_succession_admits_no_second_transition_through_either_door() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-lost-receipt",
+        "asma-8187-lostreceipt-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    provider_reported_headroom(world, project, "codex", "asma-8187-lostreceipt").await;
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-receipt")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let successor = applied.json()["successor_native_id"]
+        .as_str()
+        .expect("a successor")
+        .to_owned();
+    let (_, history_before, occupancy_before) = succession_shape(world, project_id, binding_id);
+    assert_eq!(history_before, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy_before, 2);
+
+    // Door one: the receipt cannot be removed, so the committed succession
+    // cannot be made to look as though it never happened.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(&database).expect("the realm database opens");
+    let refused = connection.execute(
+        "DELETE FROM command_receipts WHERE idempotency_key = ?1",
+        rusqlite::params!["asma-8187-lost-receipt"],
+    );
+    assert!(
+        refused.is_err(),
+        "a command receipt was deletable, so receipts are no longer evidence"
+    );
+    let receipts: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM command_receipts WHERE idempotency_key = ?1",
+            rusqlite::params!["asma-8187-lost-receipt"],
+            |row| row.get(0),
+        )
+        .expect("the receipt census reads");
+    assert_eq!(receipts, 1);
+    drop(connection);
+
+    // Door two: a different key presenting the same spent preview is refused by
+    // the fence, not honoured as a second succession.
+    let calls_before_retry = world.fake.calls().len();
+    let reentered = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-receipt-reentry")
+    .send(world)
+    .await;
+    assert_eq!(reentered.status, 400, "{}", reentered.body);
+    assert_eq!(reentered.code(), "invalid_request");
+    assert!(
+        !world.fake.calls()[calls_before_retry..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "a refused re-entry produced a native effect"
+    );
+
+    // And the same key still answers with the one transition that happened.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-lost-receipt")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replayed.json()["successor_native_id"], successor);
+    let (active, history_after, occupancy_after) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, successor);
+    assert_eq!(history_after, history_before);
+    assert_eq!(occupancy_after, occupancy_before);
+}
+
+/// One representative drift per fenced identity family.
+///
+/// The seat-revision family is covered separately by a real `attention` call.
+/// These two have no ordinary route that moves them mid-preview — a republished
+/// topology spec and a re-slotted binding are exactly the frozen identities this
+/// repair may not move — so the stored row is drifted directly, which is the
+/// same staging this suite uses elsewhere for states no endpoint will produce.
+#[tokio::test]
+async fn a_core_team_succession_refuses_drift_in_each_fenced_identity_family() {
+    for (case, statement) in [
+        (
+            "topology",
+            "UPDATE topology_nodes SET spec_hash = 'd1f7ed0000000000000000000000000000000000000000000000000000000000'
+             WHERE project_id = ?1 AND id = (
+                 SELECT topology_node_id FROM seat_bindings
+                 WHERE project_id = ?1 AND id = ?2
+             )",
+        ),
+        (
+            "binding",
+            "UPDATE seat_bindings SET role_slot_id = 'drifted-role-slot'
+             WHERE project_id = ?1 AND id = ?2",
+        ),
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8187-drift-{case}"),
+            &format!("asma-8187-drift-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        provider_reported_headroom(world, project, "codex", &format!("asma-8187-drift-{case}"))
+            .await;
+        world.fake.archive_hosted_seat(&native);
+        let body =
+            previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+        let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+        let drifted = connection
+            .execute(statement, rusqlite::params![project, binding])
+            .unwrap_or_else(|error| panic!("{case} drift is stageable: {error}"));
+        assert_eq!(drifted, 1, "{case}: the drift matched no row");
+        drop(connection);
+
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+            &body,
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("asma-8187-drift-{case}"))
+        .send(world)
+        .await;
+        assert_ne!(
+            refused.status, 200,
+            "{case}: a drifted frozen identity applied anyway: {}",
+            refused.body
+        );
+        assert!(
+            !world.fake.calls()[calls_before..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                )),
+            "{case}: a drift refusal produced a native effect"
+        );
+        let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+        assert_eq!(active, native.as_str(), "{case}: the occupant was replaced");
+        assert!(history.is_empty(), "{case}: a refusal wrote history");
+        assert_eq!(occupancy, 1, "{case}: a refusal moved the generation");
+    }
 }

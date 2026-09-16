@@ -566,8 +566,32 @@ pub struct HostedSeatInspection {
     pub identity: NativeRuntimeIdentity,
     /// Authoritative native disposition at the inspection instant.
     pub state: HostedSeatNativeState,
+    /// Whether a live native is between turns with nothing in flight.
+    ///
+    /// Meaningful only for [`HostedSeatNativeState::Live`], and deliberately
+    /// `false` for a runtime that cannot answer the question. Retirement reads
+    /// this as permission to archive, so an unknown disposition has to fail
+    /// closed: archiving a session that is mid-turn discards the turn.
+    pub idle: bool,
+    /// Permission requests the live native is still waiting on.
+    ///
+    /// A seat blocked on a prompt is not idle work that can be discarded — it
+    /// is a decision someone was asked for. Retiring it answers the prompt by
+    /// destroying the asker.
+    pub pending_permissions: Vec<ExternalId>,
     /// When the runtime census was taken.
     pub observed_at: Timestamp,
+}
+
+impl HostedSeatInspection {
+    /// Whether this exact native may be archived without discarding work.
+    ///
+    /// A native that is not live is already terminal, so there is nothing to
+    /// interrupt. A live one must be idle and free of open permission requests.
+    #[must_use]
+    pub fn is_retirable(&self) -> bool {
+        !self.state.is_live() || (self.idle && self.pending_permissions.is_empty())
+    }
 }
 
 /// Retire the exact native session currently filling one persistent Core Team

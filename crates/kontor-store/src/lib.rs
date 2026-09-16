@@ -90,6 +90,7 @@ pub use reconciliation::{
     CensusItem, CensusOutcome, EpochKey, EpochStatus, EpochSummary, OpenBinding,
     ReconciliationEpoch, ReconciliationEpochId,
 };
+pub use repository::HostedSeatRouteFence;
 pub use scheduler::{
     AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,
     RecordedRejection, RecoverableAdmission, ResourceLease,
