@@ -103,7 +103,7 @@ idempotency key and rereads every fenced value before its first native effect.
 | occupancy | active occupancy generation, required to equal generation 1 for the production case |
 | predecessor | runtime kind, native id, runtime generation, provider session id and stored observed identity |
 | ECP placement | logical ECP node id, native project id, native workspace id, canonical `cwd`, container generation and provider conversation/session correlation |
-| approved route | account, provider, model, reasoning effort and approved route digest |
+| approved route | account, provider, model, reasoning effort and the live server-derived approved model-route digest |
 | Team Definition | pinned id, version and canonical document digest |
 | topology/Core Team | pinned topology revision/hash plus Core Team roster revision, definition version and catalog hash |
 | completion profile | pinned profile id, version and definition digest; completion generation, round and state are evidence only and are not changed by this task |
@@ -203,7 +203,8 @@ against exactly:
 | expected current occupancy | generation 1 |
 | expected predecessor native id | `f8c211e4-e41e-4897-ba58-4656eb35192e` |
 | approved route | `codex-personal/gpt-5.6-sol/high` |
-| approved route digest | `b341d4909a562e3d0ea3ccead843944e275fd6e7f5988c4d12bb198e49b08327` |
+| approved model-route digest | live server-derived preview/apply CAS value; do not hard-code a digest from this record |
+| TPM remediation route document digest | `b341d4909a562e3d0ea3ccead843944e275fd6e7f5988c4d12bb198e49b08327`, the SHA-256 of `remediation-route-ASMA-8098-round1.json` |
 | expected successor occupancy | generation 2 |
 
 The old apply key
@@ -218,6 +219,12 @@ binding/ECP/route/pins, immutable generation-1 history and one active
 generation-2 successor. The authorized completion owner may then use the
 generation-2 scoped TPM credential through the existing completion API; that is
 a separate operation and receipt.
+
+The TPM remediation route document digest authenticates only that remediation
+document. It is not an approved provider/model route digest and must never be
+used, copied or accepted by route-attestation logic. Preview derives the current
+approved model-route digest from server authority and apply compares that exact
+returned value.
 
 ## Required refusal and recovery tests
 
@@ -302,4 +309,3 @@ start with the focused refusal/replay tests, make the minimum change in the
 existing Core Team route flow, and return `high-change` plus verification and
 mutation evidence. Do not create replacement topology or another implementation
 seat.
-
