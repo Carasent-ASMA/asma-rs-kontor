@@ -191,6 +191,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
     TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
 };
+use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
     ContextPolicySnapshot, EffectiveContextPolicy, EffortLevel, EpicPresence, IntakeReceipt,
@@ -2035,7 +2036,7 @@ impl Services {
         )
         .await?;
         let disarm_key = self.epic_apply_child_key(parent_key, "initial-hold-disarm")?;
-        <Self as ApplicationOperations>::disarm(
+        let held = <Self as ApplicationOperations>::disarm(
             self,
             &disarm_key,
             project_id,
@@ -2046,7 +2047,29 @@ impl Services {
                 reason: request.reason.clone(),
             },
         )
-        .await
+        .await?;
+        // After the revocation, never before it: the condition's foreign key
+        // points at the revocation, which is what makes "a lift condition on
+        // something that is not a hold" unrepresentable.
+        //
+        // Recorded even when it is `manual`, so the hold states its terms
+        // explicitly rather than by saying nothing. The read path still treats
+        // an absent row as manual, because holds predating this table said
+        // nothing and must not acquire a self-lift they were never given.
+        let condition = request.lift_condition.unwrap_or(HoldLiftCondition::Manual);
+        let authorization_id = ExecutionAuthorizationId::parse(&held.authorization_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        self.state()?
+            .with_store(|store| {
+                store.record_hold_lift_condition(
+                    project_id,
+                    authorization_id,
+                    condition,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(held)
     }
 
     /// Every agent run in one team run, loaded whole.
@@ -6425,6 +6448,169 @@ impl Services {
             )?,
         )?;
         self.materialize_roster_seats(project_id, &control, &roster, now)?;
+        Ok(())
+    }
+
+    /// Whether one hold's recorded condition is now true.
+    ///
+    /// Every arm reads only Kontor's own durable state — no runtime call, no
+    /// external fetch. That bound is what makes this safe to evaluate on every
+    /// scheduler pass: it cannot fail for a reason that has nothing to do with
+    /// the epic, and it cannot turn a busy Jira into a stuck epic.
+    ///
+    /// [`HoldLiftCondition::Manual`] is always false. It is not "no condition",
+    /// it is the statement that a person decides, and the whole point of the
+    /// type is that a hold cannot lift itself without having said it would.
+    fn hold_lift_satisfied(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        condition: HoldLiftCondition,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        match condition {
+            HoldLiftCondition::Manual => Ok(false),
+            HoldLiftCondition::JiraGraphConfirmed => {
+                let epic_bound = state
+                    .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .is_some();
+                let tasks = state
+                    .with_store(|store| store.list_tasks(project_id))
+                    .map_err(|error| self.refuse(&error))?;
+                let mut every_task_bound = true;
+                for task in tasks
+                    .into_iter()
+                    .filter(|task| task.mini_project_id == Some(epic_id))
+                {
+                    if state
+                        .with_store(|store| store.confirmed_jira_task_key(project_id, task.id))
+                        .map_err(|error| self.refuse(&error))?
+                        .is_none()
+                    {
+                        every_task_bound = false;
+                        break;
+                    }
+                }
+                Ok(jira_graph_is_confirmed(epic_bound, every_task_bound))
+            }
+            HoldLiftCondition::LeadershipStaffed => {
+                for role_code in [MANDATORY_PROGRAM_ROLE, MANDATORY_LEAD_ROLE] {
+                    // A role with no live seat at all is unstaffed, not an
+                    // error: "the control plane is not ready yet" is precisely
+                    // the state this condition waits on.
+                    let seat = match self.epic_control_seat(project_id, epic_id, role_code) {
+                        Ok(seat) => seat,
+                        Err(error)
+                            if matches!(
+                                error.code,
+                                ApiErrorCode::PlacementBlocked | ApiErrorCode::RoleSlotUnbound
+                            ) =>
+                        {
+                            return Ok(false);
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    // A binding is a row. Only a native is a seat that could
+                    // take the handoff this condition exists to wait for.
+                    if state
+                        .with_store(|store| store.get_hosted_topology_seat(project_id, seat))
+                        .map_err(|error| self.refuse(&error))?
+                        .is_none()
+                    {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// Lift every hold on this epic whose recorded condition has come true.
+    ///
+    /// A hold is a covering authorization persisted already revoked. Lifting it
+    /// is arming a replacement, which is exactly what the human did by hand —
+    /// so this mints an ordinary grant with an ordinary command receipt, and
+    /// the evidence a lift leaves is the same evidence an `execution-arm`
+    /// leaves. Nothing about the governance bar moves: the replacement covers
+    /// the epic, and every gate, gate evaluator and completion rule still
+    /// applies to what runs under it.
+    ///
+    /// Idempotent twice over. An epic that already holds a live grant is left
+    /// alone, because it is no longer held and a second grant would only widen
+    /// concurrency behind the operator's back. And the arm's key is derived
+    /// from the hold it lifts, so a retry after any interruption converges the
+    /// same authorization instead of minting another.
+    async fn lift_satisfied_holds(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let stored = state
+            .with_store(|store| store.list_authorizations(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let covering = stored.iter().filter(|entry| {
+            entry.authorization.scope
+                == WorkScope::MiniProject {
+                    mini_project_id: epic_id,
+                }
+        });
+        // Already armed is already lifted. Checked before any condition is
+        // evaluated, so the common case costs nothing.
+        if covering
+            .clone()
+            .any(|entry| entry.arms(now, Some(epic_id), None))
+        {
+            return Ok(());
+        }
+        for entry in covering {
+            if entry.revocation.is_none() {
+                continue;
+            }
+            let id = entry.authorization.id;
+            let condition = state
+                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            if !self.hold_lift_satisfied(project_id, epic_id, condition)? {
+                continue;
+            }
+            let epic = self.epic_row(project_id, epic_id)?;
+            let key = IdempotencyKey::parse(&format!("hold-lift-{id}"))
+                .map_err(|error| self.refuse_domain(&error))?;
+            let reason = ExternalName::parse(&format!(
+                "self-lifted: the recorded condition {condition} is satisfied"
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            <Self as ApplicationOperations>::arm(
+                self,
+                &key,
+                project_id,
+                epic_id,
+                &ArmRequest {
+                    expected_revision: epic.revision,
+                    tasks: Vec::new(),
+                    allowed_start: None,
+                    allowed_end: None,
+                    max_concurrency: Some(entry.authorization.max_concurrency),
+                    budget: None,
+                    // The owner the hold recorded. A self-lift is the hold's
+                    // own terms being met, not a new party deciding.
+                    granted_by: entry
+                        .revocation
+                        .as_ref()
+                        .map_or(entry.authorization.created_by, |revocation| {
+                            revocation.revoked_by
+                        }),
+                    reason,
+                },
+            )
+            .await?;
+            // One lift per pass. The epic now holds a live grant, so every
+            // remaining hold on it is moot until that grant is itself revoked.
+            return Ok(());
+        }
         Ok(())
     }
 
@@ -12224,6 +12410,19 @@ async fn freeze_seat_context_policy(
 /// that already said what a seat may do keeps saying it, and a realm that
 /// declares nothing at either level behaves exactly as it did before either
 /// existed. A `runtimes.json` still at generation 4 can only reach step 3.
+/// Whether a whole epic graph is externally bound.
+///
+/// Separated from the reads that answer its two questions, because the state
+/// that matters most cannot be built through a supported call: Kontor's Jira
+/// materialization batches cover an epic *and every one of its tasks* at once
+/// and refuse anything narrower, so "the epic is bound and a task is not" is
+/// unreachable from the outside. It is reachable in life — a task added after a
+/// batch confirmed is unbound — and it is precisely the case a check that
+/// looked only at the epic would get wrong.
+const fn jira_graph_is_confirmed(epic_bound: bool, every_task_bound: bool) -> bool {
+    epic_bound && every_task_bound
+}
+
 fn freeze_seat_autonomy(
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
@@ -25444,6 +25643,9 @@ impl ApplicationOperations for Services {
                     state: "revoked".to_owned(),
                     held_by: hold.held_by,
                     reason: hold.reason.clone(),
+                    // Resolved, not echoed: a caller that named no condition
+                    // sees `manual` rather than an absence it has to interpret.
+                    lift_condition: hold.lift_condition.unwrap_or(HoldLiftCondition::Manual),
                 }
             }),
             tasks: preview
@@ -25971,6 +26173,12 @@ impl ApplicationOperations for Services {
                 "startup reconciliation has not finished, so nothing may be admitted",
             ));
         }
+        // Before anything is judged: a hold whose recorded condition has come
+        // true stops holding. This is the whole of ASMA-8194 — the condition
+        // was already stated at kickoff, and the only thing missing was
+        // something that looked. It is evaluated here rather than in `plan`
+        // because a plan commits nothing, and lifting a hold is a write.
+        self.lift_satisfied_holds(project_id, epic_id).await?;
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "scheduler_start",
@@ -36686,8 +36894,8 @@ mod tests {
         FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
         eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
-        re_review_remediation_identity, render_legacy_container_name, seat_block,
-        select_committee_allocation, slot_prompt,
+        jira_graph_is_confirmed, re_review_remediation_identity, render_legacy_container_name,
+        seat_block, select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -37107,5 +37315,28 @@ mod tests {
             freeze_seat_autonomy(&declared, &slot, None).expect("resolves"),
             SeatAutonomy::Advisory,
         );
+    }
+
+    /// `jira_graph_confirmed` is about the graph, and every part of it counts.
+    ///
+    /// The whole truth table, because the interesting row cannot be reached
+    /// end to end: a Jira materialization batch covers an epic and every one of
+    /// its tasks and refuses anything narrower, so a loopback test can only
+    /// produce "none bound" or "all bound". `(true, false)` — the epic's issue
+    /// exists while a task's does not — is reachable in life, when a task is
+    /// added after a batch confirmed, and it is exactly what a check that
+    /// looked only at the epic would get wrong.
+    #[test]
+    fn a_jira_graph_is_confirmed_only_when_the_epic_and_every_task_are() {
+        assert!(jira_graph_is_confirmed(true, true));
+        assert!(
+            !jira_graph_is_confirmed(true, false),
+            "an epic whose own issue exists still has an unbound task: kickoff is not finished"
+        );
+        assert!(
+            !jira_graph_is_confirmed(false, true),
+            "and tasks alone are not the graph either"
+        );
+        assert!(!jira_graph_is_confirmed(false, false));
     }
 }

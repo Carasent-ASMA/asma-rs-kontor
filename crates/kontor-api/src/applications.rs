@@ -53,7 +53,7 @@ use kontor_core::id::{
 };
 use kontor_core::naming::AiShortName;
 use kontor_core::spec::{
-    CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
+    CodeCategory, CodeLifecycle, EpicPresence, HoldLiftCondition, RoleSegment, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance,
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
@@ -4149,12 +4149,25 @@ pub struct EpicExecutionScopeDto {
 /// governable by the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InitialExecutionHoldRequest {
-    /// The account profile recording the kickoff hold.
+    /// The account profile recording the kickoff hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
     /// Why work must remain ineligible after the graph is created.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// What would end the hold, as something Kontor can evaluate.
+    ///
+    /// `reason` is prose: it reads well and decides nothing, so before this
+    /// field the only thing that ever lifted a hold was a human calling
+    /// `execution-arm`, and an epic whose stated condition had been true for
+    /// days sat idle because nobody was asked to look.
+    ///
+    /// Absent means [`HoldLiftCondition::Manual`], which is what every hold
+    /// recorded before this field existed actually meant. A caller that says
+    /// nothing gets exactly the behaviour it already had.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub lift_condition: Option<HoldLiftCondition>,
 }
 
 /// The no-write projection of a requested covering kickoff hold.
@@ -4164,12 +4177,17 @@ pub struct InitialExecutionHoldPreviewDto {
     pub scope: String,
     /// Apply persists the authorization already revoked.
     pub state: String,
-    /// The account profile that will record the hold.
+    /// The account profile that will record the hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
     /// The durable reason apply will record.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// The machine-checkable condition apply will record, resolved — so a
+    /// caller that named none sees `manual` here rather than an absence it has
+    /// to interpret.
+    #[schema(value_type = String)]
+    pub lift_condition: HoldLiftCondition,
 }
 
 /// What `epics:apply` is asked for.
@@ -10259,8 +10277,8 @@ pub async fn respond_consultation_permission(
     // Same rule as the session and seat routes: the response id is the
     // idempotency record, so it comes from the caller's key — but any valid
     // key will do, and one that already is a `MessageId` keeps its identity.
-    let response_id = MessageId::parse(key.as_str())
-        .unwrap_or_else(|_| MessageId::derive(key.as_str()));
+    let response_id =
+        MessageId::parse(key.as_str()).unwrap_or_else(|_| MessageId::derive(key.as_str()));
     Ok(Json(
         state
             .applications()

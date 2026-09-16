@@ -2339,7 +2339,8 @@ async fn a_refused_identifier_names_which_one_it_was() {
     assert_eq!(answer.status, 400, "{}", answer.body);
     assert_eq!(answer.code(), "invalid_request");
     assert_eq!(
-        answer.json()["subject"], "ProjectId",
+        answer.json()["subject"],
+        "ProjectId",
         "a refusal names the type that rejected the value: {}",
         answer.body
     );
@@ -4609,6 +4610,190 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     .send(&world)
     .await;
     assert_eq!(reused.status, 409, "{}", reused.body);
+}
+
+/// Plan, then start on exactly that plan.
+///
+/// A start names the plan it acts on, so the pair has to be taken together;
+/// the interesting answer here is what the epic's authorizations look like
+/// afterwards, not what start itself returned.
+async fn start_epic(world: &World, project: &str, epic: &str, key: &str) -> Answer {
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// Every authorization covering one epic that is not revoked.
+///
+/// A hold is a revoked grant, so "held" is exactly "no live grant" — which is
+/// what makes this the honest oracle for a self-lift rather than looking for a
+/// particular receipt.
+async fn live_epic_grants(world: &World, project: &str, epic: &str) -> Vec<serde_json::Value> {
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    projection.json()["authorizations"]
+        .as_array()
+        .expect("authorizations")
+        .iter()
+        .filter(|grant| grant["revoked_at"].is_null())
+        .cloned()
+        .collect()
+}
+
+/// A hold lifts itself when its recorded condition comes true, and a hold that
+/// recorded no condition never does.
+///
+/// A kickoff hold is a covering authorization persisted already revoked. It
+/// worked; what it never carried was a statement of what would end it. The
+/// reason was prose — this realm's own says "kickoff hold until Jira binding
+/// and worktrees are confirmed" — which reads well and decides nothing, so the
+/// only thing that ever lifted a hold was a human typing `execution-arm`. An
+/// epic whose stated condition had been true for days sat idle because nobody
+/// was asked to look.
+///
+/// Both arms run the identical sequence and differ only in the recorded
+/// condition, which is what makes this evidence rather than a demonstration.
+/// The `manual` arm is the load-bearing one: without it, a `start` that simply
+/// armed everything it found would pass the positive arm perfectly.
+#[tokio::test]
+async fn a_hold_lifts_itself_only_when_its_recorded_condition_comes_true() {
+    for (condition, lifts) in [("manual", false), ("jira_graph_confirmed", true)] {
+        let world = World::open_empty().await;
+        world.daemon.reconcile().await;
+        let created = ensure_project(
+            &world,
+            &format!("lift-{condition}"),
+            "Kontor",
+            &format!("/tmp/kontor-lift-{condition}"),
+        )
+        .await;
+        let project = created.json()["project_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        let revision = created.json()["revision"].as_u64().expect("revision");
+        let category = first_category(&world).await;
+
+        let account = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": "Kickoff holder",
+                "harness": "fake.runtime",
+                "credential_alias": "kickoff-holder",
+                "enabled": true
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("lift-account")
+        .send(&world)
+        .await;
+        assert_eq!(account.status, 200, "{}", account.body);
+        let account_id = account.json()["account_profile_id"]
+            .as_str()
+            .expect("an account id")
+            .to_owned();
+
+        let mut body = epic_body(
+            revision,
+            &format!("Lift {condition}"),
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        );
+        body["initial_hold"] = serde_json::json!({
+            "held_by": account_id,
+            "reason": "Kickoff hold until the graph is bound",
+            "lift_condition": condition,
+        });
+
+        // The preview resolves the condition rather than echoing it, so a
+        // caller reads what will be recorded instead of what it happened to
+        // send.
+        let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+            .signed_as(&world, "admin")
+            .send(&world)
+            .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        assert_eq!(preview.json()["initial_hold"]["lift_condition"], condition);
+
+        let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+            .signed_as(&world, "admin")
+            .with_key("lift-apply")
+            .send(&world)
+            .await;
+        assert_eq!(applied.status, 200, "{}", applied.body);
+        let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+        assert!(
+            live_epic_grants(&world, &project, &epic).await.is_empty(),
+            "the epic starts held: its only authorization is the revoked one"
+        );
+
+        // Nothing is confirmed yet, so neither condition is true and neither
+        // arm may lift. A start that armed here would be arming on schedule
+        // rather than on the condition.
+        let started = start_epic(&world, &project, &epic, "lift-start-before").await;
+        assert!(
+            started.status == 200 || started.status == 409,
+            "{}",
+            started.body
+        );
+        assert!(
+            live_epic_grants(&world, &project, &epic).await.is_empty(),
+            "an unmet condition still holds, whatever the start returned"
+        );
+
+        // The condition becomes true.
+        confirm_test_epic_identity(&world, &project, &epic);
+
+        let after = start_epic(&world, &project, &epic, "lift-start-after").await;
+        assert!(after.status == 200 || after.status == 409, "{}", after.body);
+
+        let grants = live_epic_grants(&world, &project, &epic).await;
+        if lifts {
+            assert_eq!(
+                grants.len(),
+                1,
+                "the recorded condition is satisfied, so the hold stops holding"
+            );
+            assert_eq!(
+                grants[0]["created_by"], account_id,
+                "a self-lift is the hold's own terms being met, not a new party deciding"
+            );
+
+            // And the condition stays true, so a later pass would happily lift
+            // the same hold again. An epic that is no longer held must be left
+            // alone: a second grant would only widen concurrency behind the
+            // operator's back.
+            let again = start_epic(&world, &project, &epic, "lift-start-again").await;
+            assert!(again.status == 200 || again.status == 409, "{}", again.body);
+            assert_eq!(
+                live_epic_grants(&world, &project, &epic).await.len(),
+                1,
+                "already armed is already lifted: one hold lifts to exactly one grant"
+            );
+        } else {
+            assert!(
+                grants.is_empty(),
+                "`manual` is not `no condition`: it is the statement that a person decides"
+            );
+        }
+    }
 }
 
 /// Legacy imports may add one explicit short-code mapping without changing the
@@ -31504,17 +31689,20 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
         .await;
     assert_eq!(after.status, 200, "{}", after.body);
     assert_eq!(
-        after.json()["ceilings"]["mission_max_in_flight"], 12,
+        after.json()["ceilings"]["mission_max_in_flight"],
+        12,
         "the composed ceilings are still what admission uses: {}",
         after.body
     );
     assert_eq!(
-        after.json()["stored_ceilings"]["mission_max_in_flight"], 5,
+        after.json()["stored_ceilings"]["mission_max_in_flight"],
+        5,
         "the stored replacement is reported rather than hidden: {}",
         after.body
     );
     assert_eq!(
-        after.json()["restart_required"], true,
+        after.json()["restart_required"],
+        true,
         "a stored configuration the daemon is not enforcing announces itself: {}",
         after.body
     );
