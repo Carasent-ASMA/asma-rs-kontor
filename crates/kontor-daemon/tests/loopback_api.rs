@@ -31372,10 +31372,16 @@ async fn the_mission_ceiling_counts_team_runs_and_not_the_seats_they_hold() {
         .send(world)
         .await;
     assert_eq!(capacity.status, 200, "{}", capacity.body);
+    // Against the constant, not a literal. This test is about *what the
+    // ceiling counts* — team-run envelopes, not the seats inside them — and
+    // pinning the number here made it fail for the one reason it does not
+    // test: a deliberate policy change to DEFAULT_CAPACITY, made in 3cf246d
+    // because OG-054 leaves a rebuild as the only way to move a ceiling. The
+    // value itself is asserted once, in `the_default_capacity_is_the_operational_set`.
     assert_eq!(
         capacity.json()["mission_ceiling"],
-        7,
-        "the Operational ceiling is seven: {}",
+        kontor_daemon::DEFAULT_CAPACITY.mission_max_in_flight,
+        "the mission ceiling is the composed Operational one: {}",
         capacity.body
     );
     assert_eq!(
