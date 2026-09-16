@@ -4100,6 +4100,7 @@ mod retitle_seat_generation_tests {
                 model: ModelRef("fake-model".to_owned()),
                 effort: None,
             },
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: "2026-08-20T12:01:00Z"
                 .parse::<Timestamp>()
                 .expect("timestamp"),
@@ -4129,6 +4130,7 @@ mod retitle_seat_generation_tests {
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
                 requested_at: request.requested_at,
             })
             .await
@@ -4152,6 +4154,7 @@ mod retitle_seat_generation_tests {
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
                 requested_at: request.requested_at,
             })
             .await

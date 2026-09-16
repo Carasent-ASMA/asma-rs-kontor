@@ -6907,6 +6907,7 @@ impl Services {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
                     model_rung: predecessor.model_rung.clone(),
+                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -9507,6 +9508,7 @@ impl Services {
                         seat_binding_id,
                         identity: hosted.native_identity.clone(),
                         model_rung: hosted.model_rung.clone(),
+                        autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
                         requested_at: now,
                     })
                     .await
@@ -9523,6 +9525,7 @@ impl Services {
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
                     model_rung: hosted.model_rung.clone(),
+                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
                     requested_at: now,
                 })
                 .await
@@ -12229,13 +12232,48 @@ fn freeze_seat_autonomy(
     slot: &RoleSlotId,
     plane_default: Option<SeatAutonomy>,
 ) -> kontor_core::DomainResult<SeatAutonomy> {
-    Ok(
+    Ok(resolve_seat_autonomy(
         kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
             .slot(slot)
-            .and_then(|seat| seat.autonomy)
-            .or(plane_default)
-            .unwrap_or_else(SeatAutonomy::standard),
-    )
+            .and_then(|seat| seat.autonomy),
+        plane_default,
+    ))
+}
+
+/// The three-source order itself, shared by every seat Kontor launches.
+///
+/// Extracted so that "a leadership seat resolves the way a delivery seat does"
+/// is true by construction rather than by two copies of the order agreeing.
+/// A mutant that reverses the first two arms, or that reaches the fallback
+/// early, is one edit that both paths' tests observe.
+const fn resolve_seat_autonomy(
+    declared: Option<SeatAutonomy>,
+    plane_default: Option<SeatAutonomy>,
+) -> SeatAutonomy {
+    match (declared, plane_default) {
+        (Some(autonomy), _) | (None, Some(autonomy)) => autonomy,
+        (None, None) => SeatAutonomy::standard(),
+    }
+}
+
+/// Freeze how much one persistent leadership seat may do before it has to ask.
+///
+/// The same order [`freeze_seat_autonomy`] takes, on the inputs a Core Team
+/// seat actually has. A Core Team role slot carries no `autonomy` declaration —
+/// only a team template's slot does — so step 1 has no input here and the
+/// runtime's `permission_posture` is the most specific answer available.
+///
+/// That is the whole of ASMA-8193. An LSA or TPM seat used to read a hardcoded
+/// [`SeatAutonomy::Supervised`] inside the Paseo adapter: the one seat an epic
+/// has for acting without the operator was the one seat no configuration could
+/// reach, so `runtimes.json` could declare `permission_posture: autonomous` and
+/// leadership would still stop and ask.
+///
+/// A realm that declares nothing still gets [`SeatAutonomy::standard`], so this
+/// grants no authority on its own — it makes the existing declaration apply
+/// where it already should have.
+const fn freeze_hosted_seat_autonomy(plane_default: Option<SeatAutonomy>) -> SeatAutonomy {
+    resolve_seat_autonomy(None, plane_default)
 }
 
 /// Select the primary model rung from the team run's immutable template.
@@ -21050,6 +21088,7 @@ impl ApplicationOperations for Services {
                         ),
                         fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
+                        autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
                     })
@@ -21185,6 +21224,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
+                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -21271,6 +21311,7 @@ impl ApplicationOperations for Services {
                     ),
                     fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
+                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
                     context_policy,
                     requested_at: kontor_api::now(),
                 })
@@ -36665,9 +36706,9 @@ mod tests {
     use super::{
         FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
-        re_review_remediation_identity, render_legacy_container_name, seat_block,
-        select_committee_allocation, slot_prompt,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        freeze_hosted_seat_autonomy, freeze_seat_autonomy, re_review_remediation_identity,
+        render_legacy_container_name, seat_block, select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -37086,6 +37127,44 @@ mod tests {
         assert_eq!(
             freeze_seat_autonomy(&declared, &slot, None).expect("resolves"),
             SeatAutonomy::Advisory,
+        );
+    }
+
+    /// A leadership seat reads the same configuration a delivery seat reads.
+    ///
+    /// Before ASMA-8193 there was nothing to test: the Paseo adapter launched
+    /// every hosted LSA/TPM seat under a hardcoded
+    /// [`SeatAutonomy::Supervised`], so the epic's own architect was the one
+    /// seat `runtimes.json` could not reach. The assertion that matters is the
+    /// *agreement* — a delivery seat that declared nothing at slot level and a
+    /// leadership seat, handed one plane default, answer the same thing. A
+    /// mutant that restores the constant breaks the pair, not one side of it.
+    #[test]
+    fn a_leadership_seat_resolves_the_same_plane_default_a_delivery_seat_does() {
+        let (undeclared, slot) = snapshot_declaring(None);
+
+        for plane_default in [
+            None,
+            Some(SeatAutonomy::Supervised),
+            Some(SeatAutonomy::Bounded),
+            Some(SeatAutonomy::Advisory),
+        ] {
+            assert_eq!(
+                freeze_hosted_seat_autonomy(plane_default),
+                freeze_seat_autonomy(&undeclared, &slot, plane_default).expect("resolves"),
+                "leadership and delivery must read one configuration, not two"
+            );
+        }
+
+        assert_eq!(
+            freeze_hosted_seat_autonomy(None),
+            SeatAutonomy::Supervised,
+            "a realm that declares nothing grants nothing: this is not a new authority"
+        );
+        assert_eq!(
+            freeze_hosted_seat_autonomy(Some(SeatAutonomy::Bounded)),
+            SeatAutonomy::Bounded,
+            "and a realm that did declare one finally reaches its leadership seats"
         );
     }
 }

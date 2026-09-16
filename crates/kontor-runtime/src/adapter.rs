@@ -22,7 +22,7 @@ use kontor_core::id::{
     SeatBindingId, Timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::{ContextPolicySnapshot, ModelRung};
+use kontor_core::spec::{ContextPolicySnapshot, ModelRung, SeatAutonomy};
 use kontor_core::state::NativeRuntimeIdentity;
 
 use crate::admission::AdmissionRequest;
@@ -494,6 +494,16 @@ pub struct HostedSeatLaunchRequest {
     pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
+    /// How much this leadership seat may do before it has to ask a human,
+    /// frozen at launch exactly as a delivery seat's is.
+    ///
+    /// Carried on the request rather than decided by the runtime because the
+    /// resolution reads Kontor's configuration, which the runtime cannot see.
+    /// It was a hardcoded [`SeatAutonomy::Supervised`] inside the Paseo adapter
+    /// until ASMA-8193: an LSA or TPM seat launched supervised whatever
+    /// `runtimes.json` declared, so the one seat an epic has for acting without
+    /// the operator was the one seat that always had to ask them.
+    pub autonomy: SeatAutonomy,
     /// Immutable context policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
@@ -555,6 +565,13 @@ pub struct HostedSeatInspectRequest {
     pub identity: NativeRuntimeIdentity,
     /// Persisted route that a live native must still report.
     pub model_rung: ModelRung,
+    /// Autonomy the live native must still report, resolved exactly as the
+    /// launch resolved it.
+    ///
+    /// Carried rather than assumed for the same reason [`ModelRung`] is: the
+    /// readback compares what the seat was launched under, and a constant here
+    /// would make every seat that is *not* supervised fail its own inspection.
+    pub autonomy: SeatAutonomy,
     /// Inspection instant.
     pub requested_at: Timestamp,
 }
@@ -580,6 +597,8 @@ pub struct HostedSeatRetireRequest {
     pub identity: NativeRuntimeIdentity,
     /// Exact route that predecessor must still report.
     pub model_rung: ModelRung,
+    /// Exact autonomy that predecessor must still report.
+    pub autonomy: SeatAutonomy,
     /// Audited retirement instant.
     pub requested_at: Timestamp,
     /// Additional persisted placement required for explicit topology cleanup.
