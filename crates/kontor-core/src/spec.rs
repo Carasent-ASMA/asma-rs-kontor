@@ -3961,6 +3961,45 @@ pub struct ExecutionCapability {
     pub execution_authorization: ExecutionAuthorizationId,
 }
 
+closed_enum! {
+    /// What must become true before a kickoff hold stops holding.
+    ///
+    /// A hold is a covering authorization persisted already revoked, so a new
+    /// epic is never governable and default-allow at any crash boundary. It
+    /// worked; what it never carried was a statement of what would end it. The
+    /// reason was prose — "kickoff hold until Jira binding and worktrees are
+    /// confirmed" — which reads well and decides nothing, so the only thing
+    /// that ever lifted a hold was a human typing `execution-arm`. An epic
+    /// whose stated condition had been true for days sat idle because nobody
+    /// was asked to look.
+    ///
+    /// Each value is a predicate Kontor can evaluate against its own durable
+    /// state, with no runtime call and no external fetch. That bound is what
+    /// makes a self-lift safe to run on every scheduler pass: evaluating it
+    /// cannot fail for a reason that has nothing to do with the epic.
+    HoldLiftCondition, "HoldLiftCondition" {
+        /// Only a human lifts it, by arming.
+        ///
+        /// The default, and what every existing hold means: a hold recorded
+        /// before this type existed said nothing about lifting, and must not
+        /// acquire a self-lift it was never given.
+        Manual => "manual",
+        /// The epic and every task it owns carry a confirmed external binding.
+        ///
+        /// The condition this realm's own kickoffs actually state. Jira
+        /// materialization is the last step of kickoff, so "the graph is bound"
+        /// is the machine-checkable spelling of "kickoff finished".
+        JiraGraphConfirmed => "jira_graph_confirmed",
+        /// Every mandatory leadership role holds a native session.
+        ///
+        /// The handoff condition. A hold that waits for this lifts when the
+        /// epic has an architect and a program manager that are not the
+        /// operator — which is the state the kickoff contract calls a handoff,
+        /// and which `epic-apply` alone never reaches.
+        LeadershipStaffed => "leadership_staffed",
+    }
+}
+
 /// Whether a trigger may arm work by itself.
 ///
 /// There is deliberately no unbounded variant and no default: auto-arming always
