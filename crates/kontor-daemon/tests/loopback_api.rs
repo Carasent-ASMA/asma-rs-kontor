@@ -13208,6 +13208,243 @@ async fn task_completion_refuses_caller_named_unproduced_artifacts() {
     assert_eq!(after.json()["tasks"][0]["state"], "in_progress");
 }
 
+/// Epic completion may consume a receipt-backed certificate from a task that
+/// already crossed its native closure boundary, without reclassifying the gate
+/// citations as producer evidence.
+///
+/// This is the compatibility seam for native closures written before role-turn
+/// artifacts became the producer ledger. The ordinary task completion route is
+/// still covered above: caller strings and directly seeded verdicts cannot close
+/// a live task.
+#[tokio::test]
+async fn epic_completion_accepts_a_receipt_backed_native_closure_certificate() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "completion-native-certificate").await;
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let agent_run_id = AgentRunId::parse(&runs[0]).expect("an agent run id");
+    let workflow = active_workflow(&world, &seed);
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("the task reads")
+            .expect("the task exists")
+    });
+
+    let artifact_keys = workflow
+        .snapshot
+        .definition
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.key.clone())
+        .collect::<Vec<_>>();
+    for (index, gate) in workflow.snapshot.definition.gates.iter().enumerate() {
+        let evaluator_role = gate
+            .evaluator_roles
+            .first()
+            .expect("every gate has an evaluator")
+            .clone();
+        let evaluator_account = AccountProfileId::parse(&seed.account).expect("an account id");
+        let recorded_at = at(&format!("2026-09-01T10:{index:02}:00Z"));
+        let command_key =
+            IdempotencyKey::parse(&format!("completion-native-certificate-gate-{index}"))
+                .expect("a key");
+        world.daemon.state().with_store(|store| {
+            store
+                .append_gate_evaluation(&NewGateEvaluation {
+                    project_id,
+                    workflow_id: workflow.id,
+                    gate: gate.id.clone(),
+                    verdict: GateVerdict::Passed,
+                    evaluator_role: evaluator_role.clone(),
+                    evaluator_account,
+                    evidence: gate.required_evidence.clone(),
+                    agent_run_id: Some(agent_run_id),
+                    session_evidence: None,
+                    reviewer_principal: None,
+                    policy_evaluation_id: None,
+                    recorded_at,
+                })
+                .expect("the legacy gate pass records");
+            store
+                .record_local_command(&NewLocalCommand {
+                    project_id,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: command_key.clone(),
+                    kind: CommandKind::RecordGateVerdict,
+                    target: AggregateRef::Task { task_id },
+                    target_revision: workflow.revision,
+                    intent: CanonicalDocument::from_value(&serde_json::json!({
+                        "schema_version": 1,
+                        "operation": "gate_record",
+                        "task_id": task_id.to_string(),
+                        "gate": gate.id.as_str(),
+                        "verdict": "passed",
+                        "evaluator_role": evaluator_role.as_str(),
+                        "evaluator_account": evaluator_account.to_string(),
+                        "evidence": gate.required_evidence.iter()
+                            .map(|key| key.as_str())
+                            .collect::<Vec<_>>(),
+                    }))
+                    .expect("the gate intent canonicalizes"),
+                    created_at: recorded_at,
+                })
+                .expect("the legacy gate receipt records");
+            store
+                .complete_local_command(&command_key, recorded_at)
+                .expect("the gate receipt confirms")
+                .expect("the gate receipt exists");
+        });
+    }
+
+    let closed_at = at("2026-09-01T11:00:00Z");
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE tasks
+                    SET state = 'done', revision = revision + 1, updated_at = ?1
+                  WHERE project_id = ?2 AND id = ?3 AND revision = ?4",
+                rusqlite::params![
+                    closed_at.to_string(),
+                    seed.project,
+                    seed.task,
+                    i64::try_from(task.revision.get()).expect("the revision fits SQLite")
+                ],
+            )
+            .expect("the historical native closure is restored"),
+        1
+    );
+    let closure_key = IdempotencyKey::parse("completion-native-certificate-close").expect("a key");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_local_command(&NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: closure_key.clone(),
+                kind: CommandKind::TransitionTask,
+                target: AggregateRef::Task { task_id },
+                target_revision: task.revision,
+                intent: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "operation": "lifecycle",
+                    "action": "complete_task",
+                    "task_id": task_id.to_string(),
+                    "expected_revision": task.revision.get(),
+                    "reason": "receipt-backed historical native closure",
+                    "evidence": artifact_keys.iter()
+                        .map(|key| key.as_str())
+                        .collect::<Vec<_>>(),
+                }))
+                .expect("the closure intent canonicalizes"),
+                created_at: closed_at,
+            })
+            .expect("the historical closure receipt records");
+        store
+            .complete_local_command(&closure_key, closed_at)
+            .expect("the closure receipt confirms")
+            .expect("the closure receipt exists");
+        assert!(
+            store
+                .list_task_artifact_keys(project_id, task_id)
+                .expect("producer evidence reads")
+                .is_empty(),
+            "the certificate did not become producer evidence"
+        );
+    });
+
+    let project_read = Call::get(format!("/v1/projects/{}", seed.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let project_revision = project_read.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    adopt_session_base(&world, &seed.project, project_revision).await;
+    publish_core_team(
+        &world,
+        &seed.project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let materialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-native-certificate-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let tpm = SeatBindingId::parse(
+        materialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a seat id"),
+    )
+    .expect("a valid seat id");
+
+    let requirements = vec![kontor_policy::TicketRequirement {
+        task_id,
+        goals: workflow
+            .snapshot
+            .definition
+            .gates
+            .iter()
+            .map(|gate| ExternalName::parse(gate.id.as_str()).expect("a goal"))
+            .collect(),
+        evidence: artifact_keys
+            .iter()
+            .map(|key| ExternalName::parse(key.as_str()).expect("an evidence key"))
+            .collect(),
+    }];
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let state = kontor_scheduler::start(&compiled, tpm, requirements).expect("a run starts");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: MiniProjectId::parse(&seed.epic).expect("an epic id"),
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("the state serializes"),
+                revision: state.revision,
+                updated_at: at("2026-09-01T12:00:00Z"),
+            })
+        })
+        .expect("the completion run seeds");
+
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": state.revision.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-native-certificate-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["state"]["phase"]["phase"], "integration");
+}
+
 /// Discharge one task's pinned profile through the public routes and complete it.
 ///
 /// Every gate the profile declares is recorded by a role *it* authorizes, citing
