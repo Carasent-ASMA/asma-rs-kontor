@@ -6630,6 +6630,31 @@ impl SqliteStore {
                     AND closure_receipt.kind = 'transition_task'
                     AND closure_receipt.execution_mode = 'local'
                     AND closure_receipt.state = 'confirmed'
+                    AND EXISTS (
+                        SELECT 1
+                          FROM command_receipt_transitions AS closure_transition
+                         WHERE closure_transition.project_id = closure_receipt.project_id
+                           AND closure_transition.receipt_id = closure_receipt.id
+                           AND closure_transition.sequence = (
+                               SELECT max(newer.sequence)
+                                 FROM command_receipt_transitions AS newer
+                                WHERE newer.project_id = closure_receipt.project_id
+                                  AND newer.receipt_id = closure_receipt.id
+                           )
+                           AND closure_transition.state = 'confirmed'
+                           AND closure_transition.evidence_ref = closure_receipt.result_ref
+                    )
+                    AND (
+                        closure_receipt.result_ref = closure_receipt.intent_hash
+                        OR EXISTS (
+                            SELECT 1
+                              FROM legacy_local_command_confirmation_provenance AS closure_provenance
+                             WHERE closure_provenance.project_id = closure_receipt.project_id
+                               AND closure_provenance.receipt_id = closure_receipt.id
+                               AND closure_provenance.disposition = 'certified'
+                               AND closure_provenance.certificate_ref = closure_receipt.result_ref
+                        )
+                    )
                    JOIN task_gate_evaluations AS evaluation
                      ON evaluation.project_id = task.project_id
                     AND evaluation.workflow_id = workflow.id
@@ -6676,6 +6701,31 @@ impl SqliteStore {
                            AND gate_receipt.kind = 'record_gate_verdict'
                            AND gate_receipt.execution_mode = 'local'
                            AND gate_receipt.state = 'confirmed'
+                           AND EXISTS (
+                               SELECT 1
+                                 FROM command_receipt_transitions AS gate_transition
+                                WHERE gate_transition.project_id = gate_receipt.project_id
+                                  AND gate_transition.receipt_id = gate_receipt.id
+                                  AND gate_transition.sequence = (
+                                      SELECT max(newer.sequence)
+                                        FROM command_receipt_transitions AS newer
+                                       WHERE newer.project_id = gate_receipt.project_id
+                                         AND newer.receipt_id = gate_receipt.id
+                                  )
+                                  AND gate_transition.state = 'confirmed'
+                                  AND gate_transition.evidence_ref = gate_receipt.result_ref
+                           )
+                           AND (
+                               gate_receipt.result_ref = gate_receipt.intent_hash
+                               OR EXISTS (
+                                   SELECT 1
+                                     FROM legacy_local_command_confirmation_provenance AS gate_provenance
+                                    WHERE gate_provenance.project_id = gate_receipt.project_id
+                                      AND gate_provenance.receipt_id = gate_receipt.id
+                                      AND gate_provenance.disposition = 'certified'
+                                      AND gate_provenance.certificate_ref = gate_receipt.result_ref
+                               )
+                           )
                            AND json_extract(gate_receipt.intent, '$.operation') = 'gate_record'
                            AND json_extract(gate_receipt.intent, '$.gate') = evaluation.gate_key
                            AND json_extract(gate_receipt.intent, '$.verdict') = 'passed'

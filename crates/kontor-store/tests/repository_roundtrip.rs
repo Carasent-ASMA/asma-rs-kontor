@@ -86,10 +86,27 @@ const PERSONA_SCENARIO: &str =
 /// A bounded, fully pinned trigger.
 const TRIGGER_FIXTURE: &str = include_str!("../../kontor-core/tests/fixtures/trigger.json");
 /// The exact compatibility migration exercised over a populated current-shape
-/// database below. It is DML-only, so applying it here proves the live backfill
-/// without maintaining a second hand-written v96 schema fixture.
+/// database below. Applying the pair here proves the live backfill and its
+/// typed-provenance correction without maintaining a hand-written legacy
+/// schema fixture.
 const MIGRATION_0097: &str =
     include_str!("../migrations/0097_legacy_local_command_confirmation.sql");
+const MIGRATION_0098: &str =
+    include_str!("../migrations/0098_legacy_local_confirmation_provenance.sql");
+
+/// Put a fresh current-schema fixture back at the exact pre-v98 shape before
+/// replaying the compatibility pair. The production migration itself stays
+/// fail-closed when an unexpected table or trigger already occupies its names.
+fn remove_v98_shape(connection: &Connection) {
+    connection
+        .execute_batch(
+            "DROP TRIGGER legacy_local_command_confirmation_provenance_no_update;
+             DROP TRIGGER legacy_local_command_confirmation_provenance_no_delete;
+             DROP TABLE legacy_local_command_confirmation_provenance;
+             PRAGMA user_version = 96;",
+        )
+        .expect("the test fixture returns to the pre-v97 shape");
+}
 
 /// Every table a refused write could conceivably touch.
 ///
@@ -102,6 +119,7 @@ const CENSUS_TABLES: &[&str] = &[
     "calendar_exceptions",
     "calendar_profiles",
     "command_outbox",
+    "legacy_local_command_confirmation_provenance",
     "command_receipts",
     "command_targets",
     "committee_re_review_claims",
@@ -2299,32 +2317,6 @@ fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifac
             ..start
         })
         .expect("the native closure is certified");
-    fixture
-        .store
-        .record_local_command(&NewLocalCommand {
-            project_id: fixture.project,
-            receipt_id: CommandReceiptId::generate(),
-            idempotency_key: IdempotencyKey::parse("closure-certificate-task-without-evidence")
-                .expect("key"),
-            kind: CommandKind::TransitionTask,
-            target: AggregateRef::Task {
-                task_id: fixture.task,
-            },
-            target_revision: started.revision,
-            intent: CanonicalDocument::from_value(&serde_json::json!({
-                "schema_version": 1,
-                "operation": "lifecycle",
-                "action": "complete_task",
-                "task_id": fixture.task.to_string(),
-                "expected_revision": started.revision.get(),
-                "reason": "receipt-backed closure certificate fixture",
-                "evidence": [],
-            }))
-            .expect("canonical closure intent"),
-            created_at: closed_at,
-        })
-        .expect("the closure command without evidence records");
-
     assert_eq!(closed.state, TaskState::Done);
     assert!(
         fixture
@@ -2423,10 +2415,16 @@ fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifac
             .is_empty(),
         "an unconfirmed closure command cannot mint a certificate"
     );
-    Connection::open(&fixture.path)
-        .expect("a migration connection opens")
-        .execute_batch(MIGRATION_0097)
-        .expect("the real v97 compatibility migration applies");
+    let migration_connection =
+        Connection::open(&fixture.path).expect("a migration connection opens");
+    remove_v98_shape(&migration_connection);
+    migration_connection
+        .execute_batch(&format!("{MIGRATION_0097}\n{MIGRATION_0098}"))
+        .expect("the real compatibility migrations apply");
+    assert!(
+        migration_connection.execute_batch(MIGRATION_0098).is_err(),
+        "an unexpected pre-existing provenance schema must fail closed"
+    );
     let receipt_state = |key: &str| {
         fixture
             .store
@@ -2435,11 +2433,7 @@ fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifac
             .expect("the receipt exists")
             .state
     };
-    for key in [
-        "closure-certificate-gate",
-        "closure-certificate-task-without-evidence",
-        "closure-certificate-task",
-    ] {
+    for key in ["closure-certificate-gate", "closure-certificate-task"] {
         assert_eq!(
             receipt_state(key),
             CommandReceiptState::Confirmed,
@@ -2467,6 +2461,81 @@ fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifac
         "the receipt-backed native closure certifies the passed key"
     );
 
+    let connection = Connection::open(&fixture.path).expect("the provenance reads");
+    let reconstructed: Vec<(String, String, String)> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT receipt.kind, provenance.disposition, receipt.result_ref
+                   FROM legacy_local_command_confirmation_provenance AS provenance
+                   JOIN command_receipts AS receipt
+                     ON receipt.project_id = provenance.project_id
+                    AND receipt.id = provenance.receipt_id
+                  WHERE receipt.idempotency_key IN (
+                      'closure-certificate-gate', 'closure-certificate-task'
+                  )
+                  ORDER BY receipt.kind",
+            )
+            .expect("the provenance query prepares");
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("the provenance query runs")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the provenance rows decode")
+    };
+    assert_eq!(reconstructed.len(), 2);
+    assert!(reconstructed.iter().all(|(_, disposition, result_ref)| {
+        disposition == "certified" && result_ref.starts_with("legacy-local-confirmation-v98:")
+    }));
+
+    connection
+        .execute_batch(
+            "INSERT INTO command_receipt_transitions
+                 (project_id, receipt_id, sequence, state, correlation, native_identity,
+                  evidence_ref, recorded_at)
+             SELECT project_id, id,
+                    (SELECT max(existing.sequence) + 1
+                       FROM command_receipt_transitions AS existing
+                      WHERE existing.project_id = command_receipts.project_id
+                        AND existing.receipt_id = command_receipts.id),
+                    'confirmation_unknown', correlation, native_identity, NULL,
+                    '2026-08-09T11:30:00Z'
+               FROM command_receipts
+              WHERE idempotency_key = 'closure-certificate-task';",
+        )
+        .expect("the later uncertainty records");
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the uncertain certificate read succeeds")
+            .is_empty(),
+        "a later uncertainty transition fences the otherwise certified receipt"
+    );
+    connection
+        .execute_batch(
+            "INSERT INTO command_receipt_transitions
+                 (project_id, receipt_id, sequence, state, correlation, native_identity,
+                  evidence_ref, recorded_at)
+             SELECT project_id, id,
+                    (SELECT max(existing.sequence) + 1
+                       FROM command_receipt_transitions AS existing
+                      WHERE existing.project_id = command_receipts.project_id
+                        AND existing.receipt_id = command_receipts.id),
+                    'confirmed', correlation, native_identity, result_ref,
+                    '2026-08-09T11:31:00Z'
+               FROM command_receipts
+              WHERE idempotency_key = 'closure-certificate-task';",
+        )
+        .expect("the later exact confirmation records");
+    assert_eq!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the re-confirmed certificate reads"),
+        [name("zz.output")].into_iter().collect(),
+        "only the latest transition controls the certificate"
+    );
+
     fixture
         .store
         .append_gate_evaluation(&NewGateEvaluation {
@@ -2491,6 +2560,151 @@ fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifac
             .expect("the stale certificate read succeeds")
             .is_empty(),
         "a later rejection fences an earlier passed certificate"
+    );
+}
+
+#[test]
+fn two_legacy_receipts_for_one_native_closure_are_marked_ambiguous() {
+    let run_fixture = with_run(false);
+    let fixture = &run_fixture.fixture;
+    let workflow = with_workflow(fixture);
+    let started = fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            project_id: fixture.project,
+            task_id: fixture.task,
+            expected_revision: AggregateRevision::INITIAL,
+            to: TaskState::InProgress,
+            resume_receipt: None,
+            reopen: false,
+            run_outcome: None,
+            produced_artifacts: BTreeSet::new(),
+            completed_phases: BTreeSet::new(),
+            team_closure: TaskTeamClosure::NoTeam,
+            occurred_at: at("2026-08-09T09:00:00Z"),
+        })
+        .expect("the task starts");
+    fixture
+        .store
+        .append_gate_evaluation(&NewGateEvaluation {
+            project_id: fixture.project,
+            workflow_id: workflow,
+            gate: GateKey::parse("zz.gate").expect("a gate"),
+            verdict: GateVerdict::Passed,
+            evaluator_role: role("zz.reviewer"),
+            evaluator_account: fixture.account,
+            evidence: vec![artifact("zz.output")],
+            agent_run_id: Some(run_fixture.run),
+            session_evidence: None,
+            reviewer_principal: None,
+            policy_evaluation_id: None,
+            recorded_at: at("2026-08-09T10:00:00Z"),
+        })
+        .expect("the gate passes");
+    let closed_at = at("2026-08-09T11:00:00Z");
+    fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            project_id: fixture.project,
+            task_id: fixture.task,
+            expected_revision: started.revision,
+            to: TaskState::Done,
+            resume_receipt: None,
+            reopen: false,
+            run_outcome: None,
+            produced_artifacts: [artifact("zz.output")].into_iter().collect(),
+            completed_phases: [phase("zz.one"), phase("zz.two"), phase("zz.three")]
+                .into_iter()
+                .collect(),
+            team_closure: TaskTeamClosure::NoTeam,
+            occurred_at: closed_at,
+        })
+        .expect("the task closes");
+
+    for key in ["ambiguous-legacy-closure-a", "ambiguous-legacy-closure-b"] {
+        fixture
+            .store
+            .record_local_command(&NewLocalCommand {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: IdempotencyKey::parse(key).expect("a key"),
+                kind: CommandKind::TransitionTask,
+                target: AggregateRef::Task {
+                    task_id: fixture.task,
+                },
+                target_revision: started.revision,
+                intent: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "operation": "lifecycle",
+                    "action": "complete_task",
+                    "task_id": fixture.task.to_string(),
+                    "expected_revision": started.revision.get(),
+                    "reason": "two receipts cannot both have caused one transition",
+                    "evidence": ["zz.output"],
+                }))
+                .expect("a canonical closure intent"),
+                created_at: closed_at,
+            })
+            .expect("the legacy command records");
+    }
+
+    let connection = Connection::open(&fixture.path).expect("a migration connection opens");
+    remove_v98_shape(&connection);
+    connection
+        .execute_batch(MIGRATION_0097)
+        .expect("the v97 behaviour is reproduced");
+    for key in ["ambiguous-legacy-closure-a", "ambiguous-legacy-closure-b"] {
+        assert_eq!(
+            fixture
+                .store
+                .get_receipt_by_key(&IdempotencyKey::parse(key).expect("a key"))
+                .expect("the receipt reads")
+                .expect("the receipt exists")
+                .state,
+            CommandReceiptState::Confirmed,
+            "v97 confirmed both candidates and reproduces the reviewed defect"
+        );
+    }
+
+    connection
+        .execute_batch(MIGRATION_0098)
+        .expect("v98 applies over the ambiguous v97 state");
+    for key in ["ambiguous-legacy-closure-a", "ambiguous-legacy-closure-b"] {
+        assert_eq!(
+            fixture
+                .store
+                .get_receipt_by_key(&IdempotencyKey::parse(key).expect("a key"))
+                .expect("the receipt reads")
+                .expect("the receipt exists")
+                .state,
+            CommandReceiptState::ConfirmationUnknown,
+            "an ambiguous reconstruction may not remain confirmed"
+        );
+    }
+    let ambiguous: i64 = connection
+        .query_row(
+            "SELECT count(*)
+               FROM legacy_local_command_confirmation_provenance AS provenance
+               JOIN command_receipts AS receipt
+                 ON receipt.project_id = provenance.project_id
+                AND receipt.id = provenance.receipt_id
+              WHERE receipt.idempotency_key IN (
+                    'ambiguous-legacy-closure-a', 'ambiguous-legacy-closure-b'
+              )
+                AND provenance.disposition = 'ambiguous'
+                AND provenance.certificate_ref IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the ambiguity provenance reads");
+    assert_eq!(ambiguous, 2);
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the certificate read succeeds")
+            .is_empty(),
+        "an ambiguous pair cannot mint a closure certificate"
     );
 }
 
