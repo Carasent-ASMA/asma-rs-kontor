@@ -85,6 +85,11 @@ const PERSONA_SCENARIO: &str =
     include_str!("../../kontor-core/tests/fixtures/persona_scenario.json");
 /// A bounded, fully pinned trigger.
 const TRIGGER_FIXTURE: &str = include_str!("../../kontor-core/tests/fixtures/trigger.json");
+/// The exact compatibility migration exercised over a populated current-shape
+/// database below. It is DML-only, so applying it here proves the live backfill
+/// without maintaining a second hand-written v96 schema fixture.
+const MIGRATION_0097: &str =
+    include_str!("../migrations/0097_legacy_local_command_confirmation.sql");
 
 /// Every table a refused write could conceivably touch.
 ///
@@ -2037,8 +2042,9 @@ fn a_phase_advances_only_along_a_declared_edge_and_only_under_a_compare_and_swap
 
 #[test]
 fn a_task_closes_only_when_its_pinned_profile_says_it_may() {
-    let fixture = fixture();
-    let workflow = with_workflow(&fixture);
+    let run_fixture = with_run(false);
+    let fixture = &run_fixture.fixture;
+    let workflow = with_workflow(fixture);
     let gate = GateKey::parse("zz.gate").expect("a valid gate key");
 
     let request = |to: TaskState, revision: AggregateRevision| TaskTransitionRequest {
@@ -2084,7 +2090,7 @@ fn a_task_closes_only_when_its_pinned_profile_says_it_may() {
             evaluator_role: role("zz.reviewer"),
             evaluator_account: fixture.account,
             evidence: vec![artifact("zz.output")],
-            agent_run_id: None,
+            agent_run_id: Some(run_fixture.run),
             session_evidence: None,
             reviewer_principal: None,
             policy_evaluation_id: None,
@@ -2102,6 +2108,71 @@ fn a_task_closes_only_when_its_pinned_profile_says_it_may() {
         .transition_task(&request(TaskState::Done, task.revision))
         .expect("a certified task closes");
     assert_eq!(closed.state, TaskState::Done);
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("direct-gate-closure-receipt").expect("key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: task.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "lifecycle",
+                "action": "complete_task",
+                "task_id": fixture.task.to_string(),
+                "expected_revision": task.revision.get(),
+                "reason": "direct gate rows are not a certificate",
+                "evidence": ["zz.output"],
+            }))
+            .expect("canonical closure intent"),
+            created_at: now(),
+        })
+        .expect("the closure receipt records");
+    fixture
+        .store
+        .complete_local_command(
+            &IdempotencyKey::parse("direct-gate-closure-receipt").expect("key"),
+            now(),
+        )
+        .expect("the closure receipt confirms")
+        .expect("the closure receipt exists");
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("direct-gate-unconfirmed-receipt").expect("key"),
+            kind: CommandKind::RecordGateVerdict,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "gate_record",
+                "task_id": fixture.task.to_string(),
+                "gate": "zz.gate",
+                "verdict": "passed",
+                "evaluator_role": "zz.reviewer",
+                "evaluator_account": fixture.account.to_string(),
+                "evidence": ["zz.output"],
+            }))
+            .expect("canonical gate intent"),
+            created_at: now(),
+        })
+        .expect("the unconfirmed gate receipt records");
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the certificate read succeeds")
+            .is_empty(),
+        "a directly-seeded gate and transition have no receipt-backed closure certificate"
+    );
 
     // A terminal task is immutable, in Rust and in SQL.
     assert!(
@@ -2109,6 +2180,317 @@ fn a_task_closes_only_when_its_pinned_profile_says_it_may() {
             .store
             .transition_task(&request(TaskState::Ready, closed.revision))
             .is_err()
+    );
+}
+
+#[test]
+fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifacts() {
+    let run_fixture = with_run(false);
+    let fixture = &run_fixture.fixture;
+    let workflow = with_workflow(fixture);
+    let gate = GateKey::parse("zz.gate").expect("a valid gate key");
+    let start = TaskTransitionRequest {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        expected_revision: AggregateRevision::INITIAL,
+        to: TaskState::InProgress,
+        resume_receipt: None,
+        reopen: false,
+        run_outcome: None,
+        produced_artifacts: BTreeSet::new(),
+        completed_phases: BTreeSet::new(),
+        team_closure: TaskTeamClosure::NoTeam,
+        occurred_at: at("2026-08-09T09:00:00Z"),
+    };
+    let started = fixture
+        .store
+        .transition_task(&start)
+        .expect("the task starts");
+
+    let gate_at = at("2026-08-09T10:00:00Z");
+    let evidence = vec![artifact("zz.output")];
+    fixture
+        .store
+        .append_gate_evaluation(&NewGateEvaluation {
+            project_id: fixture.project,
+            workflow_id: workflow,
+            gate: gate.clone(),
+            verdict: GateVerdict::Passed,
+            evaluator_role: role("zz.reviewer"),
+            evaluator_account: fixture.account,
+            evidence: evidence.clone(),
+            agent_run_id: Some(run_fixture.run),
+            session_evidence: None,
+            reviewer_principal: None,
+            policy_evaluation_id: None,
+            recorded_at: gate_at,
+        })
+        .expect("the authorized pass records");
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("closure-certificate-gate").expect("key"),
+            kind: CommandKind::RecordGateVerdict,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: started.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "gate_record",
+                "task_id": fixture.task.to_string(),
+                "gate": gate.as_str(),
+                "verdict": "passed",
+                "evaluator_role": "zz.reviewer",
+                "evaluator_account": fixture.account.to_string(),
+                "evidence": ["zz.output"],
+            }))
+            .expect("canonical gate intent"),
+            created_at: gate_at,
+        })
+        .expect("the gate command records");
+
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("closure-certificate-before-done").expect("key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "lifecycle",
+                "action": "complete_task",
+                "task_id": fixture.task.to_string(),
+                "expected_revision": AggregateRevision::INITIAL.get(),
+                "reason": "a receipt cannot certify an open task",
+                "evidence": ["zz.output"],
+            }))
+            .expect("canonical pre-closure intent"),
+            created_at: at("2026-08-09T09:00:00Z"),
+        })
+        .expect("the unmatched pre-closure command records");
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the open-task certificate read succeeds")
+            .is_empty(),
+        "a receipt shaped like a closure cannot certify an open task"
+    );
+
+    let closed_at = at("2026-08-09T11:00:00Z");
+    let closed = fixture
+        .store
+        .transition_task(&TaskTransitionRequest {
+            expected_revision: started.revision,
+            to: TaskState::Done,
+            produced_artifacts: evidence.iter().cloned().collect(),
+            completed_phases: [phase("zz.one"), phase("zz.two"), phase("zz.three")]
+                .into_iter()
+                .collect(),
+            occurred_at: closed_at,
+            ..start
+        })
+        .expect("the native closure is certified");
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("closure-certificate-task-without-evidence")
+                .expect("key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: started.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "lifecycle",
+                "action": "complete_task",
+                "task_id": fixture.task.to_string(),
+                "expected_revision": started.revision.get(),
+                "reason": "receipt-backed closure certificate fixture",
+                "evidence": [],
+            }))
+            .expect("canonical closure intent"),
+            created_at: closed_at,
+        })
+        .expect("the closure command without evidence records");
+
+    assert_eq!(closed.state, TaskState::Done);
+    assert!(
+        fixture
+            .store
+            .list_task_artifact_keys(fixture.project, fixture.task)
+            .expect("the producer read succeeds")
+            .is_empty(),
+        "a closure certificate is not producer evidence"
+    );
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the incomplete certificate reads")
+            .is_empty(),
+        "a closure command cannot certify evidence that its own intent omitted"
+    );
+
+    for (key, target_revision, created_at, reason) in [
+        (
+            "closure-certificate-wrong-revision",
+            AggregateRevision::INITIAL,
+            closed_at,
+            "a neighbouring revision cannot certify this closure",
+        ),
+        (
+            "closure-certificate-wrong-time",
+            started.revision,
+            at("2026-08-09T11:00:02Z"),
+            "a nearby command cannot certify this closure",
+        ),
+    ] {
+        fixture
+            .store
+            .record_local_command(&NewLocalCommand {
+                project_id: fixture.project,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: IdempotencyKey::parse(key).expect("key"),
+                kind: CommandKind::TransitionTask,
+                target: AggregateRef::Task {
+                    task_id: fixture.task,
+                },
+                target_revision,
+                intent: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "operation": "lifecycle",
+                    "action": "complete_task",
+                    "task_id": fixture.task.to_string(),
+                    "expected_revision": target_revision.get(),
+                    "reason": reason,
+                    "evidence": ["zz.output"],
+                }))
+                .expect("canonical mismatched closure intent"),
+                created_at,
+            })
+            .expect("the mismatched closure command records");
+        assert!(
+            fixture
+                .store
+                .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+                .expect("the mismatched certificate reads")
+                .is_empty(),
+            "a mismatched closure command cannot mint a certificate"
+        );
+    }
+
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("closure-certificate-task").expect("key"),
+            kind: CommandKind::TransitionTask,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: started.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "lifecycle",
+                "action": "complete_task",
+                "task_id": fixture.task.to_string(),
+                "expected_revision": started.revision.get(),
+                "reason": "receipt-backed closure certificate fixture",
+                "evidence": ["zz.output"],
+            }))
+            .expect("canonical closure intent"),
+            created_at: closed_at,
+        })
+        .expect("the evidence-bearing closure command records");
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the unconfirmed certificate reads")
+            .is_empty(),
+        "an unconfirmed closure command cannot mint a certificate"
+    );
+    Connection::open(&fixture.path)
+        .expect("a migration connection opens")
+        .execute_batch(MIGRATION_0097)
+        .expect("the real v97 compatibility migration applies");
+    let receipt_state = |key: &str| {
+        fixture
+            .store
+            .get_receipt_by_key(&IdempotencyKey::parse(key).expect("a key"))
+            .expect("the receipt reads")
+            .expect("the receipt exists")
+            .state
+    };
+    for key in [
+        "closure-certificate-gate",
+        "closure-certificate-task-without-evidence",
+        "closure-certificate-task",
+    ] {
+        assert_eq!(
+            receipt_state(key),
+            CommandReceiptState::Confirmed,
+            "the exact successful legacy command is confirmed: {key}"
+        );
+    }
+    for key in [
+        "closure-certificate-before-done",
+        "closure-certificate-wrong-revision",
+        "closure-certificate-wrong-time",
+    ] {
+        assert_eq!(
+            receipt_state(key),
+            CommandReceiptState::IntentPersisted,
+            "the migration must not confirm an uncorrelated legacy intent: {key}"
+        );
+    }
+
+    assert_eq!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the certificate reads"),
+        [name("zz.output")].into_iter().collect(),
+        "the receipt-backed native closure certifies the passed key"
+    );
+
+    fixture
+        .store
+        .append_gate_evaluation(&NewGateEvaluation {
+            project_id: fixture.project,
+            workflow_id: workflow,
+            gate,
+            verdict: GateVerdict::Rejected,
+            evaluator_role: role("zz.reviewer"),
+            evaluator_account: fixture.account,
+            evidence: Vec::new(),
+            agent_run_id: Some(run_fixture.run),
+            session_evidence: None,
+            reviewer_principal: None,
+            policy_evaluation_id: None,
+            recorded_at: at("2026-08-09T12:00:00Z"),
+        })
+        .expect("the later rejection records");
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("the stale certificate read succeeds")
+            .is_empty(),
+        "a later rejection fences an earlier passed certificate"
     );
 }
 

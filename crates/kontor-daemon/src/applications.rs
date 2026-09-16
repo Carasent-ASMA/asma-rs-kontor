@@ -14323,9 +14323,25 @@ impl Services {
                     );
                 }
             }
-            let evidence = state
+            let mut evidence = state
                 .with_store(|store| store.list_task_artifact_keys(project_id, requirement.task_id))
                 .map_err(|error| self.refuse(&error))?;
+            // Producer evidence and a native closure certificate are separate
+            // authority classes. Gate recording continues to consume only the
+            // former; epic completion may also consume the latter because the
+            // task already crossed the frozen profile's certified `done`
+            // boundary. The store revision-fences that certificate, so a task
+            // reopen makes it inert until a new closure is certified.
+            evidence.extend(
+                state
+                    .with_store(|store| {
+                        store.list_current_task_closure_artifact_keys(
+                            project_id,
+                            requirement.task_id,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?,
+            );
             recorded.push(TicketEvidence {
                 task_id: requirement.task_id,
                 goals,
