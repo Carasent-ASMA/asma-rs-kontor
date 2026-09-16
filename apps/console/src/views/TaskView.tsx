@@ -96,6 +96,49 @@ function OpenTask({ onOpen }: { onOpen: (projectId: string, taskId: string) => v
   )
 }
 
+/**
+ * The task's reader-facing identity.
+ *
+ * The confirmed Jira key is what a reader is given, because it is the identifier
+ * the rest of the organisation already uses for this work. The UUID does not
+ * disappear — every existing route, script and bookmark still accepts it — but it
+ * becomes a secondary, debug-level fact rather than the thing the eye lands on.
+ *
+ * When no binding is confirmed the view says exactly that. Nothing is derived
+ * from the title, the legacy backlog code or the UUID's shape: a key that no
+ * connector has confirmed is not this task's identity, and guessing one here
+ * would be the console inventing identity the server never granted.
+ *
+ * The state is read straight from the server's `jira_binding` projection. The
+ * console performs no lookup of its own — resolution belongs to the one
+ * server-side resolver, and a second client-side path is precisely what the
+ * identity decision forbids.
+ */
+function TaskIdentityFacts({ task }: { task: Task }) {
+  const binding = task.jira_binding
+  const confirmed = binding?.state === 'confirmed' && binding.jira_key ? binding.jira_key : null
+  return (
+    <>
+      <Fact
+        label="task"
+        value={
+          confirmed ? (
+            <code className="identity-primary">{confirmed}</code>
+          ) : (
+            'Awaiting Jira binding'
+          )
+        }
+        hint={confirmed ? 'confirmed Jira key' : 'no confirmed Jira binding yet'}
+      />
+      <Fact
+        label="task uuid"
+        value={<code className="identity-internal">{task.task_id}</code>}
+        hint="internal identity; still accepted wherever a task is addressed"
+      />
+    </>
+  )
+}
+
 /** One task, in full. */
 export function TaskDetail({
   task,
@@ -112,7 +155,7 @@ export function TaskDetail({
     <article className="task-detail">
       <h2>{task.title}</h2>
       <Facts>
-        <Fact label="task" value={<code>{task.task_id}</code>} />
+        <TaskIdentityFacts task={task} />
         <Fact label="project" value={<code>{task.project_id}</code>} />
         <Fact label="state" value={<StateBadge state={task.state} label="task state" />} />
         <Fact label="revision" value={task.revision} />
