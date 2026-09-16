@@ -9571,10 +9571,13 @@ pub async fn message_hosted_seat(
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
     let key = idempotency_key(&state, &headers)?;
-    let message_id = parse_id(
-        &state,
-        kontor_runtime::request::MessageId::parse(key.as_str()),
-    )?;
+    // The message id *is* this route's idempotency record, so it has to come
+    // from the caller's key rather than be generated per call. A key that is
+    // already a canonical `MessageId` keeps its own identity; every other
+    // valid idempotency key — the vocabulary every other Kontor write takes —
+    // derives one deterministically, so a retry still answers from the ledger.
+    let message_id = kontor_runtime::request::MessageId::parse(key.as_str())
+        .unwrap_or_else(|_| kontor_runtime::request::MessageId::derive(key.as_str()));
     Ok(Json(
         state
             .applications()
