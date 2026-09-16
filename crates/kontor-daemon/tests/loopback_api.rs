@@ -258,15 +258,35 @@ async fn periodic_scanner_reopens_done_completion_after_startup() {
     scanner.await.expect("scanner stops cleanly");
 }
 
+/// With no live TPM to adopt, the wake-producing transition writes nothing.
+///
+/// Adoption is not a licence to guess. When the epic's control plane holds no
+/// live seat for the role, there is no seat the completion could honestly be
+/// answering to, so it refuses before any mutation and names the operation that
+/// resolves it — leaving the run exactly where it stood.
 #[tokio::test]
-async fn completion_with_foreign_tpm_refuses_without_state_wake_or_receipt() {
-    let (world, seed, _tpm) = reopened_completion_fixture("completion-foreign-tpm").await;
+async fn completion_without_a_live_tpm_writes_no_state_wake_or_receipt() {
+    let (world, seed, tpm) = reopened_completion_fixture("completion-no-live-tpm").await;
+    let project_id = ProjectId::parse(&seed.project).expect("project");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("epic");
     let standing = seed_completion_phase(
         &world,
         &seed,
-        SeatBindingId::generate(),
+        tpm,
         kontor_scheduler::CompletionPhase::Tickets,
     );
+
+    // Retire the only TPM, leaving the role unbound.
+    let retired = Call::post(
+        format!("/v1/projects/{}/seat-bindings/{tpm}/retire", seed.project),
+        &serde_json::json!({"expected_revision": 1, "reason": "programme lead stepped away"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-no-live-tpm-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+
     let refused = Call::post(
         format!(
             "/v1/projects/{}/epics/{}/completion:advance",
@@ -275,36 +295,874 @@ async fn completion_with_foreign_tpm_refuses_without_state_wake_or_receipt() {
         &serde_json::json!({"expected_revision": standing.get()}),
     )
     .signed_as(&world, "operator")
-    .with_key("completion-foreign-tpm-advance")
+    .with_key("completion-no-live-tpm-advance")
     .send(&world)
     .await;
-    assert_eq!(refused.code(), "stale_binding", "{}", refused.body);
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused.body.contains("no live seat to adopt"),
+        "the refusal names the missing seat, not a stale pin: {}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("bind or replace the control seat"),
+        "and names the operation that resolves it: {}",
+        refused.body
+    );
+
     let stored = world.daemon.state().with_store(|store| {
         store
-            .get_epic_completion(
-                ProjectId::parse(&seed.project).expect("project"),
-                MiniProjectId::parse(&seed.epic).expect("epic"),
-            )
+            .get_epic_completion(project_id, epic_id)
             .expect("completion reads")
             .expect("completion exists")
     });
-    assert_eq!(stored.revision, standing);
+    assert_eq!(stored.revision, standing, "the run did not move");
     world.daemon.state().with_store(|store| {
         assert!(
             store
-                .list_completion_wakes(stored.project_id, stored.mini_project_id)
+                .list_completion_wakes(project_id, epic_id)
                 .expect("wakes read")
-                .is_empty()
+                .is_empty(),
+            "a refusal writes no wake"
         );
         assert!(
             store
                 .get_receipt_by_key(
-                    &IdempotencyKey::parse("completion-foreign-tpm-advance").expect("key")
+                    &IdempotencyKey::parse("completion-no-live-tpm-advance").expect("key")
                 )
                 .expect("receipt reads")
-                .is_none()
+                .is_none(),
+            "and no receipt"
         );
     });
+}
+
+/// A TPM replaced mid-run is adopted: the forward pin moves, and the wake goes
+/// to the seat that actually leads the epic now.
+///
+/// The frozen `tpm_seat_id` records who led when the run started. Refusing
+/// because that seat has since been replaced left the completion stuck behind a
+/// seat that no longer exists, with no operation an operator could use to move
+/// it. The transition still commits as one unit — state, wake and receipt — and
+/// only the *forward* pin moves; what the run already recorded is untouched.
+#[tokio::test]
+async fn a_replaced_tpm_is_adopted_into_the_forward_pin_and_receives_the_wake() {
+    let (world, seed, original) = reopened_completion_fixture("completion-adopt-tpm").await;
+    let project_id = ProjectId::parse(&seed.project).expect("project");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("epic");
+    let standing = seed_completion_phase(
+        &world,
+        &seed,
+        original,
+        kontor_scheduler::CompletionPhase::Tickets,
+    );
+
+    // The seat that led at freeze time is retired and the team re-materialized,
+    // so a different SeatBinding now holds the role.
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/seat-bindings/{original}/retire",
+            seed.project
+        ),
+        &serde_json::json!({"expected_revision": 1, "reason": "handed over mid-run"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-tpm-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let rematerialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-tpm-rematerialize")
+    .send(&world)
+    .await;
+    assert_eq!(rematerialized.status, 200, "{}", rematerialized.body);
+    let successor = SeatBindingId::parse(
+        rematerialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM"),
+    )
+    .expect("a seat binding id");
+    assert_ne!(successor, original, "the fixture really replaced the seat");
+
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-adopt-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    let state: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert_eq!(
+        state.tpm_seat_id, successor,
+        "the forward pin is the seat that leads now, and it is persisted"
+    );
+    assert_ne!(stored.revision, standing, "the transition committed");
+
+    let wakes = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wakes(project_id, epic_id)
+            .expect("wakes read")
+    });
+    assert_eq!(wakes.len(), 1, "exactly one wake: {wakes:?}");
+    assert_eq!(
+        wakes[0].seat_binding_id, successor,
+        "and it is addressed to the current seat, not the retired one"
+    );
+    assert_eq!(wakes[0].completion_revision, stored.revision);
+
+    // The same key replays without writing a second wake or a second receipt.
+    let replay = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-adopt-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "the same key replays: {}", replay.body);
+    let after = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_epic_completion(project_id, epic_id)
+                .expect("completion reads")
+                .expect("completion exists"),
+            store
+                .list_completion_wakes(project_id, epic_id)
+                .expect("wakes read"),
+        )
+    });
+    assert_eq!(
+        after.0.revision, stored.revision,
+        "the replay moved nothing"
+    );
+    assert_eq!(after.1.len(), 1, "and appended no second wake");
+}
+
+/// Adoption moves the forward pin and leaves recorded history alone.
+///
+/// A reopened completion carries what earlier rounds already found: the verdict,
+/// the exact result and remediation digests, and the era that decided them.
+/// Adopting a replacement TPM changes who the run answers to *next*; a round
+/// already recorded is not the incoming seat's to rewrite.
+#[tokio::test]
+async fn adoption_moves_the_forward_pin_without_disturbing_recorded_rounds() {
+    let (world, seed, original) = reopened_completion_fixture("completion-adopt-history").await;
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("an epic id");
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let mut state = kontor_scheduler::start(&compiled, original, Vec::new()).expect("a run starts");
+    state.rounds.push(kontor_scheduler::CompletionRound {
+        round: 1,
+        verdict: kontor_scheduler::CommitteeVerdict::Fail,
+        evidence: ContentHash::of(b"round-one-evidence"),
+        committee_run_id: None,
+        result_hash: Some(ContentHash::of(b"round-one-result")),
+        remediation_hash: Some(ContentHash::of(b"round-one-remediation")),
+        deliberation: vec![kontor_policy::DeliberationStep {
+            role: ExternalName::parse("reviewer-a").expect("a role"),
+            consultation: ExternalName::parse("independent-review").expect("a consultation"),
+            round: 1,
+            outcome: ExternalName::parse("non-compliant").expect("an outcome"),
+        }],
+        decided_in: Some(kontor_scheduler::EraStamp {
+            generation: state.generation,
+            definition_hash: compiled.definition_hash.clone(),
+            team: None,
+        }),
+    });
+    state.phase = kontor_scheduler::CompletionPhase::Tickets;
+    let recorded_rounds = serde_json::to_value(&state.rounds).expect("the rounds serialize");
+    let era = state.generation;
+    let standing = state.revision;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("the state serializes"),
+                revision: state.revision,
+                updated_at: at("2026-09-03T09:00:00Z"),
+            })
+            .expect("the completion seeds");
+    });
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/seat-bindings/{original}/retire",
+            seed.project
+        ),
+        &serde_json::json!({"expected_revision": 1, "reason": "handed over mid-run"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-history-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let rematerialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-history-rematerialize")
+    .send(&world)
+    .await;
+    assert_eq!(rematerialized.status, 200, "{}", rematerialized.body);
+    let successor = SeatBindingId::parse(
+        rematerialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM"),
+    )
+    .expect("a seat binding id");
+    assert_ne!(successor, original, "the fixture really replaced the seat");
+
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-adopt-history-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    assert_eq!(
+        stored.state["rounds"], recorded_rounds,
+        "adoption rewrote what an earlier round had already recorded"
+    );
+    let next: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert_eq!(next.tpm_seat_id, successor, "the forward pin still moved");
+    assert_eq!(
+        next.generation, era,
+        "adopting a seat is not a reopening: the era is unchanged"
+    );
+}
+
+/// The bundled `independent_review@1` Committee template the operational
+/// completion profile names as its verdict committee.
+const COMMITTEE_PRESET: &str = "01991c00-0000-7000-8000-000000000001";
+
+/// A core-team materialization body that routes both control seats.
+fn control_seat_routes(expected_revision: u64) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": expected_revision,
+        "routes": [
+            {"role_code": "LSA", "model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            }},
+            {"role_code": "TPM", "model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            }}
+        ]
+    })
+}
+
+/// The current revision of a SeatBinding, so a retire presents the revision the
+/// realm actually holds rather than assuming the seat was never observed.
+fn seat_revision(world: &World, project_id: ProjectId, seat: &str) -> u64 {
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_seat_binding(
+                project_id,
+                SeatBindingId::parse(seat).expect("a seat binding id"),
+            )
+        })
+        .expect("the seat binding reads")
+        .expect("the seat binding exists")
+        .revision
+        .get()
+}
+
+/// The SeatBinding a core-team answer bound to `role_code`.
+fn core_seat(answer: &Answer, role_code: &str) -> String {
+    answer.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == role_code)
+        .unwrap_or_else(|| panic!("a {role_code} seat"))["seat_binding_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a bound {role_code} seat"))
+        .to_owned()
+}
+
+/// An epic whose round-one Committee has settled non-compliant, with its
+/// completion parked at the verdict gate that will consume it.
+struct VerdictBoundary {
+    composed: Composed,
+    epic: String,
+    tpm: String,
+    committee_run: String,
+    standing: AggregateRevision,
+    era: u32,
+}
+
+/// Drive a real round-one Committee to a settled non-compliant result.
+///
+/// Every step here is the API a Committee actually goes through — invoke, three
+/// immutable findings, settlement — so the failed verdict the completion later
+/// consumes is one the product produced rather than one a test wrote into the
+/// store. Only the completion's own standing phase is seeded, exactly as the
+/// neighbouring verdict-intake journeys do.
+async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
+    let composed = compose_realm(root).await;
+    let project = composed.project.clone();
+    {
+        let world = &composed.world;
+        adopt_session_base(world, &project, composed.project_revision).await;
+        publish_core_team(
+            world,
+            &project,
+            serde_json::json!([seat("SA", "default", true)]),
+        )
+        .await;
+    }
+    let (quick, preview_hash) = quick_session_ready_to_promote(
+        &composed.world,
+        &project,
+        "Drive the verdict boundary",
+        &format!("{slug}-quick"),
+    )
+    .await;
+    let world = &composed.world;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-promote"))
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_promoted_epic_identity(world, &project, &epic, "PROMO", "ASMA-9001");
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &control_seat_routes(1),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-control-seats"))
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = core_seat(&materialized, "LSA");
+    let tpm = core_seat(&materialized, "TPM");
+
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": COMMITTEE_PRESET, "version": 1},
+            "topic": "Operational gate evidence",
+            "question": "Does this evidence satisfy the operational gate?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-committee-invoke"))
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(invoked.json()["round"], 1);
+    let committee_run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run id")
+        .to_owned();
+    let seats = invoked.json()["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .clone();
+    let reviewers: Vec<String> = seats
+        .iter()
+        .filter(|entry| {
+            entry["role_slot_id"]
+                .as_str()
+                .is_some_and(|slot| slot.starts_with("reviewer"))
+        })
+        .map(|entry| {
+            entry["seat_binding_id"]
+                .as_str()
+                .expect("a reviewer SeatBinding")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(reviewers.len(), 2, "{}", invoked.body);
+    let judge = seats
+        .iter()
+        .find(|entry| entry["role_slot_id"] == "judge")
+        .and_then(|entry| entry["seat_binding_id"].as_str())
+        .expect("the Judge SeatBinding")
+        .to_owned();
+    let mut revision = invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the Committee run revision");
+    for (index, reviewer) in reviewers.iter().enumerate() {
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/committee-runs/{committee_run}/findings:record"),
+            &serde_json::json!({
+                "round": 1,
+                "verdict": if index == 0 { "compliant" } else { "non_compliant" },
+                "evidence_complete": index == 0,
+                "rationale": format!("reviewer {} reported independently", index + 1),
+                "evidence_refs": [format!("evidence:reviewer-{}", index + 1)],
+                "expected_revision": revision,
+            }),
+        )
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
+                ),
+        )
+        .with_key(format!("{slug}-reviewer-{}", index + 1))
+        .send(world)
+        .await;
+        assert_eq!(recorded.status, 200, "{}", recorded.body);
+        revision = recorded.json()["receipt"]["revision"]
+            .as_u64()
+            .expect("the reviewer revision");
+    }
+    let judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{committee_run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "non_compliant",
+            "evidence_complete": false,
+            "rationale": "The conjunctive rule fails on one independent finding.",
+            "evidence_refs": ["evidence:reviewer-1", "evidence:reviewer-2"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&judge).expect("the Judge SeatBinding"),
+            ),
+    )
+    .with_key(format!("{slug}-judge"))
+    .send(world)
+    .await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    let settled = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{committee_run}/settle"),
+        &serde_json::json!({
+            "recommendation": "Re-run the gate after correcting the missing evidence.",
+            "tried_path": "Round one identified the missing operational receipt.",
+            "expected_revision": judged.json()["receipt"]["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-settle"))
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["state"], "settled");
+    assert_eq!(settled.json()["round"], 1);
+    assert_eq!(settled.json()["outcome"], "non_compliant");
+
+    // Only the completion's standing phase is seeded: the verdict it is about
+    // to consume was produced above, over the public API.
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let mut state = kontor_scheduler::start(
+        &compiled,
+        SeatBindingId::parse(&tpm).expect("the TPM seat id"),
+        Vec::new(),
+    )
+    .expect("a run starts");
+    state.phase = kontor_scheduler::CompletionPhase::Verdict(1);
+    let standing = state.revision;
+    let era = state.generation;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id: ProjectId::parse(&project).expect("a project id"),
+                mini_project_id: MiniProjectId::parse(&epic).expect("an epic id"),
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("the state serializes"),
+                revision: state.revision,
+                updated_at: kontor_api::now(),
+            })
+            .expect("the completion seeds at its verdict gate");
+    });
+
+    VerdictBoundary {
+        composed,
+        epic,
+        tpm,
+        committee_run,
+        standing,
+        era,
+    }
+}
+
+/// A TPM replaced while the Committee deliberates is adopted by the very
+/// transition that consumes the failed verdict.
+///
+/// This is the boundary the whole change exists for: the Committee run is
+/// invoked, judged and settled non-compliant over the public API, the seat that
+/// led when completion froze hands over, and the single transition that
+/// consumes the Fail must reach `AwaitRemediation(1)`, record the failed round,
+/// move the forward pin to the seat that leads now, and wake exactly that seat
+/// — all as one committed unit.
+#[tokio::test]
+async fn a_failed_verdict_adopts_the_replacement_tpm_in_one_atomic_transition() {
+    let boundary = committee_verdict_boundary("/tmp/kontor-op22-verdict-adopt", "op22-adopt").await;
+    let world = &boundary.composed.world;
+    let project = boundary.composed.project.clone();
+    let epic = boundary.epic.clone();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let original = SeatBindingId::parse(&boundary.tpm).expect("the frozen TPM seat");
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{project}/seat-bindings/{}/retire",
+            boundary.tpm
+        ),
+        &serde_json::json!({
+            "expected_revision": seat_revision(world, project_id, &boundary.tpm),
+            "reason": "handed over mid-verdict",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("op22-adopt-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let rematerialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &control_seat_routes(
+            epic_read.json()["revision"]
+                .as_u64()
+                .expect("an epic revision"),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key("op22-adopt-rematerialize")
+    .send(world)
+    .await;
+    assert_eq!(rematerialized.status, 200, "{}", rematerialized.body);
+    let successor =
+        SeatBindingId::parse(&core_seat(&rematerialized, "TPM")).expect("the successor TPM");
+    assert_ne!(successor, original, "the fixture really replaced the seat");
+
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": boundary.standing.get()}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-adopt-advance")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(
+        advanced.json()["state"]["phase"]["phase"],
+        "awaiting_lsa",
+        "the Fail must reach AwaitRemediation: {}",
+        advanced.body
+    );
+    assert_eq!(advanced.json()["state"]["phase"]["round"], 1);
+    assert_eq!(advanced.json()["state"]["rounds"][0]["verdict"], "fail");
+    assert_eq!(
+        advanced.json()["state"]["rounds"][0]["committee_run_id"],
+        boundary.committee_run,
+        "the round records the exact Committee run that failed"
+    );
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    let next: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert_eq!(
+        next.tpm_seat_id, successor,
+        "the forward pin is the seat that leads now, and it is persisted"
+    );
+    assert_eq!(
+        next.generation, boundary.era,
+        "consuming a verdict is not a reopening"
+    );
+    assert_eq!(next.rounds.len(), 1, "exactly one round was recorded");
+    assert_ne!(
+        stored.revision, boundary.standing,
+        "the transition committed"
+    );
+
+    let wakes = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wakes(project_id, epic_id)
+            .expect("wakes read")
+    });
+    assert_eq!(wakes.len(), 1, "exactly one wake: {wakes:?}");
+    assert_eq!(
+        wakes[0].seat_binding_id, successor,
+        "and it is addressed to the current TPM, not the retired one"
+    );
+    assert_eq!(wakes[0].completion_revision, stored.revision);
+
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .expect("the Realm database opens");
+    let receipts: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = 'op22-adopt-advance'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipt count reads");
+    assert_eq!(receipts, 1, "exactly one receipt stands for the transition");
+}
+
+/// The same boundary with no live TPM to adopt mutates nothing at all.
+///
+/// The Fail is real and waiting, but there is no seat the completion could
+/// honestly answer to. It must refuse before any mutation: the verdict stays
+/// unconsumed, the run stays at its gate, and no wake or receipt is written.
+#[tokio::test]
+async fn a_failed_verdict_without_a_live_tpm_consumes_nothing_at_the_boundary() {
+    let boundary =
+        committee_verdict_boundary("/tmp/kontor-op22-verdict-nolive", "op22-nolive").await;
+    let world = &boundary.composed.world;
+    let project = boundary.composed.project.clone();
+    let epic = boundary.epic.clone();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{project}/seat-bindings/{}/retire",
+            boundary.tpm
+        ),
+        &serde_json::json!({
+            "expected_revision": seat_revision(world, project_id, &boundary.tpm),
+            "reason": "programme lead stepped away",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("op22-nolive-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": boundary.standing.get()}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-nolive-advance")
+    .send(world)
+    .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused.body.contains("no live seat to adopt"),
+        "the refusal names the missing seat: {}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("bind or replace the control seat"),
+        "and names the operation that resolves it: {}",
+        refused.body
+    );
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    assert_eq!(stored.revision, boundary.standing, "the run did not move");
+    let unchanged: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert!(
+        unchanged.rounds.is_empty(),
+        "the failed verdict must not have been consumed: {:?}",
+        unchanged.rounds
+    );
+    assert_eq!(
+        unchanged.phase,
+        kontor_scheduler::CompletionPhase::Verdict(1),
+        "the run still stands at its verdict gate"
+    );
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_completion_wakes(project_id, epic_id)
+                .expect("wakes read")
+                .is_empty(),
+            "a refusal writes no wake"
+        );
+        assert!(
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse("op22-nolive-advance").expect("key"))
+                .expect("receipt reads")
+                .is_none(),
+            "and no receipt"
+        );
+    });
+
+    // The Committee's own settled evidence is untouched and still consumable.
+    let committee = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{}",
+        boundary.committee_run
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(committee.status, 200, "{}", committee.body);
+    assert_eq!(committee.json()["state"], "settled");
+    assert_eq!(committee.json()["round"], 1);
+    assert_eq!(committee.json()["outcome"], "non_compliant");
+}
+
+/// A control role never holds two live seats, so adoption is never ambiguous.
+///
+/// `sole_live_control_seat` refuses rather than guess when a role has more than
+/// one live seat. That branch is defensive: materialization binds *missing*
+/// seats only, so re-running it returns the seat already there instead of
+/// binding a rival, and a successor only appears once the predecessor has been
+/// retired. This pins the constructor behaviour the refusal relies on — if a
+/// future change lets a second live seat in, this test fails before the
+/// ambiguity can reach a completion.
+#[tokio::test]
+async fn a_control_role_never_holds_two_live_seats() {
+    let (world, seed, tpm) = reopened_completion_fixture("completion-single-live-tpm").await;
+    let epic_read = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let again = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-single-live-tpm-again")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    let core_team = again.json();
+    let live_tpms: Vec<&serde_json::Value> = core_team["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .filter(|entry| entry["role"]["role_code"] == "TPM")
+        .collect();
+    assert_eq!(
+        live_tpms.len(),
+        1,
+        "materializing again bound a rival TPM: {}",
+        again.body
+    );
+    assert_eq!(
+        live_tpms[0]["seat_binding_id"],
+        tpm.to_string(),
+        "the seat already there kept its identity"
+    );
+
+    // And the completion path agrees: with one live seat it adopts rather than
+    // refusing for ambiguity.
+    let standing = seed_completion_phase(
+        &world,
+        &seed,
+        tpm,
+        kontor_scheduler::CompletionPhase::Tickets,
+    );
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-single-live-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
 }
 
 #[derive(Default)]
