@@ -31410,8 +31410,8 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
         .send(world)
         .await;
     assert_eq!(current.status, 200, "{}", current.body);
-    assert_eq!(current.json()["ceilings"]["mission_max_in_flight"], 7);
-    assert_eq!(current.json()["ceilings"]["adaptive"]["ceiling"], 7);
+    assert_eq!(current.json()["ceilings"]["mission_max_in_flight"], 12);
+    assert_eq!(current.json()["ceilings"]["adaptive"]["ceiling"], 12);
     assert_eq!(current.json()["revision"], 1);
 
     let mut ceilings = current.json()["ceilings"].clone();
