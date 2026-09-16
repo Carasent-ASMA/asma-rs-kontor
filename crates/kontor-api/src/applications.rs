@@ -2400,8 +2400,23 @@ pub struct CapacityConfigurationDto {
     /// The Realm it governs.
     #[schema(value_type = String)]
     pub realm_id: kontor_core::id::RealmId,
-    /// The effective values.
+    /// The effective values: what this Realm is admitting under right now,
+    /// which are the ceilings it was composed with.
     pub ceilings: CapacityCeilingsDto,
+    /// The stored replacement, when one exists and differs from [`Self::ceilings`].
+    ///
+    /// An applied configuration is persisted and versioned but is not what the
+    /// running daemon enforces, so a read that answered only with the composed
+    /// numbers let `apply` look like it had taken effect when it had not. This
+    /// field is the difference, and [`Self::restart_required`] is the verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_ceilings: Option<CapacityCeilingsDto>,
+    /// Whether a stored configuration exists that the running daemon is not
+    /// enforcing.
+    ///
+    /// True means someone applied ceilings that are inert: the row is durable,
+    /// the revision moved, and admission is still using the composed values.
+    pub restart_required: bool,
     /// The revision a write must present.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -10241,12 +10256,11 @@ pub async fn respond_consultation_permission(
     let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
     let permission_id = parse_id(&state, ExternalId::parse(&permission_id))?;
     let key = idempotency_key(&state, &headers)?;
-    let response_id = MessageId::parse(key.as_str()).map_err(|_| {
-        state.refuse(
-            ApiErrorCode::InvalidRequest,
-            "a Committee permission Idempotency-Key must be a canonical UUID v7",
-        )
-    })?;
+    // Same rule as the session and seat routes: the response id is the
+    // idempotency record, so it comes from the caller's key — but any valid
+    // key will do, and one that already is a `MessageId` keeps its identity.
+    let response_id = MessageId::parse(key.as_str())
+        .unwrap_or_else(|_| MessageId::derive(key.as_str()));
     Ok(Json(
         state
             .applications()

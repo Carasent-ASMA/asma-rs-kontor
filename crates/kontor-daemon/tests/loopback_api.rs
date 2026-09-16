@@ -2325,6 +2325,27 @@ async fn a_mutation_without_an_idempotency_key_is_refused() {
 }
 
 #[tokio::test]
+async fn a_refused_identifier_names_which_one_it_was() {
+    // OG-038 is what an anonymous refusal costs. `message_hosted_seat` parses a
+    // project id, a seat binding id and the `Idempotency-Key`; every one of them
+    // answered "the identifier is not in canonical form". Three investigations
+    // read that, blamed the seat binding, and abandoned the only route to a
+    // leadership seat while the realm stopped scheduling.
+    let world = World::open().await;
+    let answer = Call::get("/v1/projects/not-a-project-id")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert_eq!(answer.code(), "invalid_request");
+    assert_eq!(
+        answer.json()["subject"], "ProjectId",
+        "a refusal names the type that rejected the value: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
 async fn a_stale_revision_reports_the_current_one_and_mutates_nothing() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
@@ -31458,6 +31479,39 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["ceilings"]["mission_max_in_flight"], 5);
     assert_eq!(applied.json()["revision"], 1);
+    // An apply is durable and versioned, and it is *not* in force: the Realm
+    // keeps admitting under the ceilings it composed with. This test used to
+    // assert only the echo above, so a configuration that could never take
+    // effect looked exactly like one that had — which is how a realm sat at 8
+    // envelopes against a ceiling of 7 with an applied 12 that enforced
+    // nothing.
+    assert_eq!(
+        applied.json()["restart_required"],
+        true,
+        "an apply says plainly that it is not yet enforced: {}",
+        applied.body
+    );
+
+    let after = Call::get("/v1/capacity/configuration")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(
+        after.json()["ceilings"]["mission_max_in_flight"], 12,
+        "the composed ceilings are still what admission uses: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["stored_ceilings"]["mission_max_in_flight"], 5,
+        "the stored replacement is reported rather than hidden: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["restart_required"], true,
+        "a stored configuration the daemon is not enforcing announces itself: {}",
+        after.body
+    );
 
     // The same key answers from what is durable rather than conflicting.
     let replayed = Call::post(

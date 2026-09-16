@@ -20335,13 +20335,27 @@ impl ApplicationOperations for Services {
         let stored = state
             .with_store(SqliteStore::get_capacity_configuration)
             .map_err(|error| self.refuse(&error))?;
+        // The ceilings this Realm is *admitting under* are the ones it was
+        // composed with. A stored replacement is a separate fact — but
+        // reporting it only through a revision meant an applied configuration
+        // that nothing enforces was indistinguishable from one that had taken
+        // effect, and a caller had no way to learn the difference. Say it.
+        let composed = ceilings_dto(self.capacity);
+        let stored_ceilings = stored
+            .as_ref()
+            .and_then(|stored| {
+                stored
+                    .ceilings
+                    .deserialize::<StoredCeilings>()
+                    .ok()
+                    .map(|stored| stored.ceilings)
+            })
+            .filter(|stored| *stored != composed);
         Ok(CapacityConfigurationDto {
             realm_id: state.realm_id(),
-            // The ceilings this Realm is *admitting under*, which are the ones
-            // it was composed with. An operator's stored replacement is a
-            // separate fact, and it is reported through its revision rather
-            // than by answering with numbers nothing is enforcing yet.
-            ceilings: ceilings_dto(self.capacity),
+            ceilings: composed,
+            restart_required: stored_ceilings.is_some(),
+            stored_ceilings,
             revision: stored
                 .as_ref()
                 .map_or(AggregateRevision::INITIAL, |stored| stored.revision),
@@ -20458,6 +20472,12 @@ impl ApplicationOperations for Services {
                 .deserialize::<StoredCeilings>()
                 .map(|stored| stored.ceilings)
                 .map_err(|error| self.refuse_domain(&error))?,
+            // What was just written is durable but not composed, so it is not
+            // yet in force. Saying so here is the whole point: an apply that
+            // answers 200 and changes nothing about admission is exactly the
+            // shape that hid this for as long as it did.
+            stored_ceilings: None,
+            restart_required: true,
             revision: stored.revision,
             snapshot_cursor: self.cursor()?,
         })
