@@ -66,8 +66,10 @@ use kontor_api::applications::{
     ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
     CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
-    CoreTeamRouteHeadroomEvidenceDto, CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto,
-    CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
+    CoreTeamRouteCompletionPinDto, CoreTeamRouteHeadroomEvidenceDto, CoreTeamRouteOccupantDto,
+    CoreTeamRouteOutcomeDto, CoreTeamRoutePinsDto, CoreTeamRoutePlacementDto,
+    CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest, CoreTeamRouteReadbackDto,
+    CoreTeamRouteTopologyPinDto, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
     CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
     CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
     DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
@@ -176,20 +178,21 @@ use kontor_core::repository::{
     MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
-    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
-    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
-    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
-    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
-    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    SuccessionRepository, TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
+    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccession, NewGateEvaluation, NewLocalCommand,
+    NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding,
+    NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
+    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
+    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -652,6 +655,21 @@ struct CoreTeamRoutePlan {
     /// Active occupancy generation at preview time, carried so the atomic
     /// store transition can fence on it after the runtime work is done.
     occupancy_generation: u64,
+    /// The control-plane node the seat is placed in, carried for the final
+    /// readback's placement and topology pins.
+    node: SessionTopologyNode,
+    /// The route the *server* resolved, with the governed account it binds to.
+    ///
+    /// Not the caller's echo: the account comes from this project's enabled
+    /// profiles and the runtime from this realm's placement configuration, so
+    /// the digest attests an authority rather than repeating a request.
+    approved_route: CanonicalDocument,
+    /// The epic's pinned Team Definition, fenced by id, version and digest.
+    team_definition: Option<MiniProjectTeamDefinitionSnapshot>,
+    /// The epic's frozen completion contract, by identity and digest only.
+    completion_pin: Option<StoredEpicCompletion>,
+    /// Digest of the exact resolved Core Team seats document.
+    core_team_definition_hash: ContentHash,
     /// The exact immutable provider reading this plan committed to, for
     /// stale-native succession only.
     headroom: Option<ProviderUsageObservation>,
@@ -6952,6 +6970,26 @@ impl Services {
                 },
             ));
         }
+        // The approved route, attested by the server rather than echoed back.
+        //
+        // `desired` says which route was asked for; on its own that is a
+        // caller assertion, and matching it against the stored predecessor
+        // during recovery only proves the seat has not moved. What makes it an
+        // *approved* route is the governed authority it binds to: the single
+        // enabled account profile of this project that may select the
+        // provider, and the runtime this realm places Core Team seats on.
+        // Both are read from server state here, digested, and fenced — so a
+        // route whose account authority changed between preview and apply
+        // refuses rather than launching against capacity nobody approved
+        // (ASMA-8187 F-8187-V2).
+        let approved_route = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "provider": desired.provider.0,
+            "model": desired.model.0,
+            "effort": desired.effort.map(|effort| effort.as_str().to_owned()),
+            "account_authority": self.resolved_route_authority(project_id, &desired),
+            "runtime_kind": runtime_kind.as_str(),
+        }))?;
         // Apply re-plans and compares this hash before its first native effect,
         // so every value folded in here is a compare-and-swap fence: a drifted
         // seat revision, occupancy generation, provider conversation or ECP
@@ -6981,14 +7019,30 @@ impl Services {
         // as fencing on a profile nobody published.
         let completion_pin = state
             .with_store(|store| store.get_epic_completion(project_id, epic_id))
-            .map_err(|error| self.refuse(&error))?
-            .map(|completion| {
-                serde_json::json!({
-                    "profile_id": completion.profile_id.as_str(),
-                    "profile_version": completion.profile_version.get(),
-                    "definition_hash": completion.definition_hash.as_str(),
-                })
-            });
+            .map_err(|error| self.refuse(&error))?;
+        let completion_document = completion_pin.as_ref().map(|completion| {
+            serde_json::json!({
+                "profile_id": completion.profile_id.as_str(),
+                "profile_version": completion.profile_version.get(),
+                "definition_hash": completion.definition_hash.as_str(),
+            })
+        });
+        // A distinct authority from the role catalog, the topology and the
+        // resolved Core Team: those say which roles exist, where they are
+        // placed and which seats resolved. None of them says which Team
+        // Definition revision the epic is governed by, and a succession that
+        // let that move underneath it would re-seat the role under a contract
+        // nobody previewed.
+        let team_definition = state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?;
+        let team_definition_document = team_definition.as_ref().map(|pinned| {
+            serde_json::json!({
+                "definition_id": pinned.definition.definition_id.to_string(),
+                "version": pinned.definition.version.get(),
+                "canonical_hash": pinned.definition.canonical_hash.as_str(),
+            })
+        });
         // The exact resolved seats document, digested server-side. The roster
         // version and the catalog hash say *which* revision and *which*
         // catalog; only the document itself proves the seats resolved from
@@ -7087,8 +7141,18 @@ impl Services {
                 "core_team_version": roster.revision.version.get(),
                 "core_team_catalog_hash": roster.revision.catalog_hash.as_str(),
                 "core_team_definition_hash": core_team_definition.hash().as_str(),
-                "completion_profile": completion_pin,
+                "completion_profile": completion_document,
+                // Absent rather than invented when the epic pinned none: an
+                // epic with no Team Definition has no such authority to fence,
+                // and saying so is not the same as fencing on a definition
+                // nobody pinned.
+                "team_definition": team_definition_document,
             },
+            // The server's own resolution of the approved route, by digest.
+            // Apply re-derives it from the same authorities and compares, so an
+            // account that stopped being the single selectable one for this
+            // provider expires the preview instead of silently re-binding it.
+            "approved_route": approved_route.hash().as_str(),
             "headroom": headroom_document,
             "desired": desired,
         });
@@ -7106,6 +7170,11 @@ impl Services {
             stale_native_recovery,
             container,
             occupancy_generation,
+            node,
+            approved_route,
+            team_definition,
+            completion_pin,
+            core_team_definition_hash: core_team_definition.hash().clone(),
             headroom,
             preview_hash,
         })
@@ -7181,6 +7250,33 @@ impl Services {
         Ok(account)
     }
 
+    /// How the server resolves this route's governed account, as a fact.
+    ///
+    /// [`Self::approved_route_account`] refuses ambiguity, which is right where
+    /// capacity is about to be spent. The *fence* needs something different: a
+    /// value that records whichever resolution the server currently reaches, so
+    /// that a resolution which changes between preview and apply expires the
+    /// preview. Refusing here instead would invent a new precondition on the
+    /// ordinary correction path, which has never needed a governed account
+    /// because the seat it corrects is still answering.
+    ///
+    /// The three outcomes are distinguishable on purpose. Collapsing "no
+    /// enabled account" and "more than one" to the same token would let a realm
+    /// move from zero to two selectable accounts without disturbing the hash.
+    fn resolved_route_authority(&self, project_id: ProjectId, rung: &ModelRung) -> String {
+        let Ok(accounts) = self.eligible_accounts(project_id) else {
+            return "unreadable".to_owned();
+        };
+        let mut selectable = accounts
+            .into_iter()
+            .filter(|account| account.selectable_providers.contains(&rung.provider.0));
+        match (selectable.next(), selectable.next()) {
+            (Some(account), None) => account.account_profile_id.to_string(),
+            (Some(_), Some(_)) => "ambiguous".to_owned(),
+            _ => "none".to_owned(),
+        }
+    }
+
     /// Fresh provider-reported headroom for one exact approved Core Team route.
     ///
     /// Stale-native succession is the only branch that consults this. An
@@ -7229,6 +7325,69 @@ impl Services {
                 "stale-native Core Team succession has no fresh provider-reported headroom for its exact approved account and route",
             )
         })
+    }
+
+    /// The complete evidence one succession produced, as one document.
+    ///
+    /// Assembled once, persisted with the store transition and answered with
+    /// verbatim thereafter. Everything in it is something the scope requires a
+    /// caller to be able to prove after the fact: both native identities and
+    /// their provider conversations, both occupancy generations, the exact
+    /// placement the seat stayed in, and the route and pins it did not move.
+    fn core_team_route_readback(
+        plan: &CoreTeamRoutePlan,
+        successor: &StoredHostedTopologySeat,
+        successor_occupancy_generation: u64,
+        retired_at: Timestamp,
+    ) -> CoreTeamRouteReadbackDto {
+        let occupant = |seat: &StoredHostedTopologySeat, occupancy: u64| CoreTeamRouteOccupantDto {
+            native_id: seat.native_identity.native_id.clone(),
+            runtime_kind: seat.native_identity.runtime_kind.as_str().to_owned(),
+            host: seat.native_identity.host.as_str().to_owned(),
+            generation: seat.native_identity.generation,
+            provider_session_id: seat.provider_session_id.clone(),
+            occupancy_generation: occupancy,
+            model_route: runtime_model_route_dto(&seat.model_rung),
+        };
+        CoreTeamRouteReadbackDto {
+            seat_binding_id: plan.binding.id,
+            predecessor: occupant(&plan.predecessor, plan.occupancy_generation),
+            successor: occupant(successor, successor_occupancy_generation),
+            placement: CoreTeamRoutePlacementDto {
+                topology_node_id: plan.node.id,
+                container_binding_id: plan.container.container_binding_id.clone(),
+                container_native_id: plan.container.identity.native_id.clone(),
+                canonical_cwd: plan
+                    .container
+                    .canonical_cwd
+                    .as_ref()
+                    .map(|cwd| cwd.as_str().to_owned()),
+            },
+            approved_model_route: runtime_model_route_dto(&plan.desired),
+            approved_route_digest: plan.approved_route.hash().clone(),
+            pins: CoreTeamRoutePinsDto {
+                topology: CoreTeamRouteTopologyPinDto {
+                    spec_id: plan.node.topology.spec_id,
+                    spec_version: plan.node.topology.version,
+                    spec_hash: plan.node.topology.canonical_hash.clone(),
+                },
+                core_team_version: plan.roster.revision.version,
+                core_team_catalog_hash: plan.roster.revision.catalog_hash.clone(),
+                core_team_definition_hash: plan.core_team_definition_hash.clone(),
+                team_definition: plan
+                    .team_definition
+                    .as_ref()
+                    .map(|pinned| Self::pinned_team_definition_dto(&pinned.definition)),
+                completion_profile: plan.completion_pin.as_ref().map(|completion| {
+                    CoreTeamRouteCompletionPinDto {
+                        profile_id: completion.profile_id.clone(),
+                        profile_version: completion.profile_version,
+                        definition_hash: completion.definition_hash.clone(),
+                    }
+                }),
+            },
+            retired_at: retired_at.to_string(),
+        }
     }
 
     async fn core_team_seat_claim_plan(
@@ -21327,6 +21486,12 @@ impl ApplicationOperations for Services {
             current_model_route: runtime_model_route_dto(&plan.predecessor.model_rung),
             desired_model_route: runtime_model_route_dto(&plan.desired),
             would_replace_native: plan.needs_native_replacement(),
+            approved_model_route: runtime_model_route_dto(&plan.desired),
+            approved_route_digest: plan.approved_route.hash().clone(),
+            team_definition: plan
+                .team_definition
+                .as_ref()
+                .map(|pinned| Self::pinned_team_definition_dto(&pinned.definition)),
             headroom_evidence,
             preview_hash: plan.preview_hash,
             snapshot_cursor: self.cursor()?,
@@ -21360,6 +21525,78 @@ impl ApplicationOperations for Services {
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
+        // The durable succession ledger is consulted before the receipt, because
+        // it is the only evidence that exists in the interval this operation
+        // used to be unrecoverable in: the store transition commits with this
+        // row, and the receipt is recorded after it. A key that finds a row here
+        // has already moved the seat, whether or not it ever got a receipt
+        // (ASMA-8187 F-8187-V1).
+        if let Some(recorded) = state
+            .with_store(|store| store.get_core_team_route_succession(key))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if recorded.intent_hash != *intent.hash()
+                || recorded.project_id != project_id
+                || recorded.mini_project_id != epic_id
+                || recorded.seat_binding_id != request.seat_binding_id
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key already recorded a different Core Team succession",
+                ));
+            }
+            let epic = self.epic_row(project_id, epic_id)?;
+            let roster = self.frozen_roster(project_id, epic_id)?;
+            // Finish what the lost process started. `record` is keyed, so a
+            // receipt that did land is returned rather than written twice, and
+            // the ledger refuses a second binding — which makes this safe to
+            // run on every replay rather than only on the one that resumes.
+            let receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::CorrectCoreTeamRoute,
+                target,
+                epic.revision,
+                &intent,
+            )?;
+            if recorded.receipt_id.is_none() {
+                state
+                    .with_store(|store| {
+                        store.bind_core_team_route_succession_receipt(
+                            key,
+                            receipt_id,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
+            // The readback this command produced, not the seat's current shape.
+            // Deserializing the stored bytes rather than re-deriving them is
+            // what makes the answer identical however many successions have
+            // happened since (F-8187-V3).
+            let readback: CoreTeamRouteReadbackDto =
+                serde_json::from_value(recorded.readback.clone()).map_err(|_| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the recorded Core Team succession readback could not be decoded",
+                    )
+                })?;
+            return Ok(CoreTeamRouteOutcomeDto {
+                core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
+                seat_binding_id: recorded.seat_binding_id,
+                predecessor_native_id: recorded.predecessor_native_id.clone(),
+                successor_native_id: recorded.successor_native_id.clone(),
+                readback: Some(readback),
+                readback_hash: Some(recorded.readback_hash.clone()),
+                receipt: MutationReceiptDto {
+                    realm_id: state.realm_id(),
+                    receipt_id: receipt_id.to_string(),
+                    applied: AppliedDto::Unchanged,
+                    revision: epic.revision,
+                    snapshot_cursor: self.cursor()?,
+                },
+            });
+        }
         if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
             // An exact completed replay is answered from its durable receipt and
             // the current authoritative occupancy: no plan, no provider probe,
@@ -21442,6 +21679,11 @@ impl ApplicationOperations for Services {
                 seat_binding_id: request.seat_binding_id,
                 predecessor_native_id: request.expected_native_id.clone(),
                 successor_native_id,
+                // A command that replaced no native recorded no succession, so
+                // there is no durable readback to answer with. The ledger path
+                // above is what answers every replay that did replace one.
+                readback: None,
+                readback_hash: None,
                 receipt: MutationReceiptDto {
                     realm_id: state.realm_id(),
                     receipt_id: existing.id.to_string(),
@@ -21467,6 +21709,7 @@ impl ApplicationOperations for Services {
         }
 
         let replaced_native = plan.needs_native_replacement();
+        let mut succession_evidence: Option<(CoreTeamRouteReadbackDto, ContentHash)> = None;
         let successor = if let Some(successor) = plan.successor.clone() {
             successor
         } else if !replaced_native {
@@ -21679,6 +21922,40 @@ impl ApplicationOperations for Services {
                 provider_session_id: outcome.provider_session_id,
                 observed_at: outcome.observed_at,
             };
+            // Assembled before the transition, so the bytes that prove what
+            // this command did commit together with the command doing it.
+            let readback = Self::core_team_route_readback(
+                &plan,
+                &successor,
+                successor_occupancy_generation,
+                retired_at,
+            );
+            let readback_value = serde_json::to_value(&readback).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Core Team succession readback could not be encoded",
+                )
+            })?;
+            // Digested inside a versioned envelope, which is what every
+            // canonical document in this realm carries. The stored bytes stay
+            // the readback itself, so the row deserializes straight back into
+            // the DTO a replay answers with.
+            let readback_document = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "readback": readback_value,
+            }))?;
+            let succession = NewCoreTeamRouteSuccession {
+                idempotency_key: key.clone(),
+                intent_hash: intent.hash().clone(),
+                project_id,
+                mini_project_id: epic_id,
+                seat_binding_id: plan.binding.id,
+                predecessor_occupancy_generation: plan.occupancy_generation,
+                successor_occupancy_generation,
+                readback: readback_value,
+                readback_hash: readback_document.hash().clone(),
+                recorded_at: kontor_api::now(),
+            };
             state
                 .with_store(|store| {
                     store.replace_hosted_topology_seat_route(
@@ -21694,9 +21971,14 @@ impl ApplicationOperations for Services {
                             occupancy_generation: plan.occupancy_generation,
                             seat_binding_revision: plan.binding.revision,
                         }),
+                        // Written in that same transaction. Committing the
+                        // transition without this row is what left a process
+                        // loss before the receipt unrecoverable.
+                        Some(&succession),
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
+            succession_evidence = Some((readback, readback_document.hash().clone()));
             state
                 .with_store(|store| {
                     store.observe_seat_binding(
@@ -21721,12 +22003,34 @@ impl ApplicationOperations for Services {
             plan.epic.revision,
             &intent,
         )?;
+        // Binds the receipt to the exact evidence it is the receipt *for*. The
+        // intent stays derivable from the request alone — that is what lets the
+        // ledger be consulted before the fence — so the readback digest is
+        // bound here, through the succession row, rather than folded into a
+        // document the replay has to reproduce without having seen the outcome.
+        if succession_evidence.is_some() {
+            state
+                .with_store(|store| {
+                    store.bind_core_team_route_succession_receipt(
+                        key,
+                        receipt_id,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         self.try_drain_completion_wake(project_id, epic_id).await;
+        let (readback, readback_hash) = match succession_evidence {
+            Some((readback, hash)) => (Some(readback), Some(hash)),
+            None => (None, None),
+        };
         Ok(CoreTeamRouteOutcomeDto {
             core_team: self.epic_core_team_dto(project_id, epic_id, &plan.roster)?,
             seat_binding_id: plan.binding.id,
             predecessor_native_id: plan.predecessor.native_identity.native_id,
             successor_native_id: successor.native_identity.native_id,
+            readback,
+            readback_hash,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
@@ -21847,6 +22151,10 @@ impl ApplicationOperations for Services {
                             "authorized existing-session Core Team seat claim",
                             // The seat-claim command keeps its existing
                             // contract; its own preview fences elsewhere.
+                            None,
+                            // A seat claim records no succession: it adopts a
+                            // native that is already running rather than
+                            // producing a new occupancy of its own.
                             None,
                         )
                     })

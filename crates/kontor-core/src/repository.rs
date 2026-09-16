@@ -548,6 +548,76 @@ pub struct StoredHostedTopologySeat {
     pub observed_at: Timestamp,
 }
 
+/// The durable outcome of one Core Team route succession.
+///
+/// Written inside the same transaction as the history append and the active-row
+/// replacement, so a process loss after the seat has moved cannot leave the
+/// command unreconstructable. The receipt is still the idempotency authority;
+/// this is what the resume path rebuilds it *from*, and what an exact replay
+/// answers with once the seat has advanced past it (ASMA-8187 F-8187-V1/V3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewCoreTeamRouteSuccession {
+    /// The apply key a replay arrives holding.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent this succession was admitted under.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose control plane hosts the seat.
+    pub mini_project_id: MiniProjectId,
+    /// The logical seat the succession preserved.
+    pub seat_binding_id: SeatBindingId,
+    /// Active occupancy generation the predecessor held.
+    pub predecessor_occupancy_generation: u64,
+    /// Occupancy generation this command installed.
+    pub successor_occupancy_generation: u64,
+    /// The complete final readback, persisted rather than recomputed.
+    pub readback: serde_json::Value,
+    /// Digest of that readback.
+    pub readback_hash: ContentHash,
+    /// Commit instant.
+    pub recorded_at: Timestamp,
+}
+
+/// One recorded Core Team route succession, with its receipt binding when the
+/// command got far enough to record one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCoreTeamRouteSuccession {
+    /// The apply key this succession was admitted under.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose control plane hosts the seat.
+    pub mini_project_id: MiniProjectId,
+    /// The preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor_native_id: ExternalId,
+    /// Runtime generation of that predecessor.
+    pub predecessor_generation: u64,
+    /// Exact installed successor.
+    pub successor_native_id: ExternalId,
+    /// Runtime generation of that successor.
+    pub successor_generation: u64,
+    /// Occupancy generation the predecessor held.
+    pub predecessor_occupancy_generation: u64,
+    /// Occupancy generation this command installed.
+    pub successor_occupancy_generation: u64,
+    /// The complete final readback this command produced.
+    pub readback: serde_json::Value,
+    /// Digest of that readback.
+    pub readback_hash: ContentHash,
+    /// The receipt this succession was finally bound to, absent exactly for the
+    /// interval between the committed transition and the recorded receipt.
+    pub receipt_id: Option<CommandReceiptId>,
+    /// Commit instant of the store transition.
+    pub recorded_at: Timestamp,
+    /// Instant the receipt binding was completed.
+    pub receipted_at: Option<Timestamp>,
+}
+
 /// One immutable Committee finding or Judge aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredCommitteeFinding {

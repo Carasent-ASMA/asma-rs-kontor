@@ -5047,6 +5047,24 @@ export interface components {
             seat_binding_id: string;
         };
         /**
+         * @description The frozen completion contract a succession may not move.
+         *
+         *     Identity and digest only. Generation, round and state are deliberately
+         *     absent: the remediation this repair unblocks advances them, so fencing them
+         *     would make the operation refuse the thing it exists to enable.
+         */
+        CoreTeamRouteCompletionPinDto: {
+            /** @description Hash of the exact canonical definition. */
+            definition_hash: string;
+            /** @description Pinned completion profile. */
+            profile_id: string;
+            /**
+             * Format: int32
+             * @description Exact pinned revision.
+             */
+            profile_version: number;
+        };
+        /**
          * @description The exact immutable provider reading one stale-native preview committed to.
          *
          *     Returned so the apply can name it back. The apply does not carry the digest
@@ -5073,12 +5091,38 @@ export interface components {
             /** @description Capacity state the reading established. */
             state: string;
         };
+        /** @description One exact native occupant of a logical Core Team seat. */
+        CoreTeamRouteOccupantDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation of this native.
+             */
+            generation: number;
+            /** @description Host it was placed on. */
+            host: string;
+            /** @description Frozen provider/model/effort route it runs on. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact native session identity. */
+            native_id: string;
+            /**
+             * Format: int64
+             * @description Which occupancy of the logical seat this native is.
+             */
+            occupancy_generation: number;
+            /** @description Provider conversation, when the runtime exposes one. */
+            provider_session_id?: string | null;
+            /** @description Runtime that holds it. */
+            runtime_kind: string;
+        };
         /** @description Completed in-place route correction with exact identity readback. */
         CoreTeamRouteOutcomeDto: {
             /** @description Core Team projection after correction. */
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description Archived predecessor native identity. */
             predecessor_native_id: string;
+            readback?: null | components["schemas"]["CoreTeamRouteReadbackDto"];
+            /** @description Digest of that readback, bound to the receipt through the ledger. */
+            readback_hash?: string | null;
             /** @description Audited mutation receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Preserved logical SeatBinding. */
@@ -5086,8 +5130,45 @@ export interface components {
             /** @description Active successor native identity; equal to predecessor for an unchanged route. */
             successor_native_id: string;
         };
+        /** @description Every frozen authority one in-place Core Team succession preserves. */
+        CoreTeamRoutePinsDto: {
+            completion_profile?: null | components["schemas"]["CoreTeamRouteCompletionPinDto"];
+            /** @description Role catalog the roster resolved against. */
+            core_team_catalog_hash: string;
+            /** @description Server-derived digest of the exact resolved seats document. */
+            core_team_definition_hash: string;
+            /**
+             * Format: int32
+             * @description Frozen Core Team roster revision.
+             */
+            core_team_version: number;
+            team_definition?: null | components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Published topology this seat is placed in. */
+            topology: components["schemas"]["CoreTeamRouteTopologyPinDto"];
+        };
+        /** @description The exact ECP placement a succession kept its seat in. */
+        CoreTeamRoutePlacementDto: {
+            /** @description Canonical working directory, when one is persisted. */
+            canonical_cwd?: string | null;
+            /** @description Durable container binding. */
+            container_binding_id: string;
+            /** @description Exact native workspace identity. */
+            container_native_id: string;
+            /** @description Control-plane node hosting the seat. */
+            topology_node_id: string;
+        };
         /** @description Read-only route-correction or stale-native recovery plan for one persistent Core Team seat. */
         CoreTeamRoutePreviewDto: {
+            /**
+             * @description The approved route the *server* resolved, never the caller's echo.
+             *
+             *     Derived from this project's enabled account profiles and the runtime
+             *     this realm places Core Team seats on, so it attests which governed
+             *     authority the route binds to rather than repeating what was asked for.
+             */
+            approved_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Digest of that server-derived authority, folded into the preview hash. */
+            approved_route_digest: string;
             /** @description Frozen current route. */
             current_model_route: components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Requested successor route, which may equal the current route during recovery. */
@@ -5110,6 +5191,7 @@ export interface components {
              * @description Projection cursor read by the preview.
              */
             snapshot_cursor: number;
+            team_definition?: null | components["schemas"]["PinnedTeamDefinitionDto"];
             /** @description Whether a native archive/launch is required. */
             would_replace_native: boolean;
         };
@@ -5131,6 +5213,45 @@ export interface components {
             expected_revision: number;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+        };
+        /**
+         * @description The complete durable evidence one Core Team succession produced.
+         *
+         *     Persisted in the same transaction as the store transition and returned
+         *     verbatim by an exact replay, however many successions have happened since:
+         *     recomputing it would answer with the seat's *current* occupant, which is
+         *     precisely the wrong answer to "what did this command do" (ASMA-8187
+         *     F-8187-V3).
+         */
+        CoreTeamRouteReadbackDto: {
+            /** @description The server-derived approved route this succession was admitted under. */
+            approved_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Digest of that server-derived approved-route authority. */
+            approved_route_digest: string;
+            /** @description Every frozen pin the succession preserved. */
+            pins: components["schemas"]["CoreTeamRoutePinsDto"];
+            /** @description Unchanged ECP placement. */
+            placement: components["schemas"]["CoreTeamRoutePlacementDto"];
+            /** @description Exact archived predecessor. */
+            predecessor: components["schemas"]["CoreTeamRouteOccupantDto"];
+            /** @description Instant the predecessor was retired. */
+            retired_at: string;
+            /** @description The preserved logical seat. */
+            seat_binding_id: string;
+            /** @description Exact installed successor; equal to the predecessor for an unchanged route. */
+            successor: components["schemas"]["CoreTeamRouteOccupantDto"];
+        };
+        /** @description The exact topology publication one Core Team seat is placed in. */
+        CoreTeamRouteTopologyPinDto: {
+            /** @description Hash of the exact canonical spec. */
+            spec_hash: string;
+            /** @description Published spec lineage. */
+            spec_id: string;
+            /**
+             * Format: int32
+             * @description Exact published revision.
+             */
+            spec_version: number;
         };
         /** @description Apply one still-current existing-session Core Team claim. */
         CoreTeamSeatClaimApplyRequest: {

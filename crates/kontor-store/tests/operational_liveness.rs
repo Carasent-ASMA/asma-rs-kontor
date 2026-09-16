@@ -898,6 +898,9 @@ fn newest_completion_wake_is_stable_per_hosted_tpm_occupancy() {
             at("2026-08-16T01:05:00Z"),
             "stale native recovery",
             None,
+            // This suite proves the wake projection, not the succession
+            // ledger, so it records no durable succession of its own.
+            None,
         )
         .expect("the exact successor takes the logical TPM seat");
     let successor_candidate = StoredCompletionWakeDelivery {

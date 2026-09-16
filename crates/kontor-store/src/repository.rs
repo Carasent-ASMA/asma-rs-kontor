@@ -57,20 +57,21 @@ use kontor_core::repository::{
     MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile,
     NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride, NewCapacityObservation,
     NewCommandIntent, NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
-    NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation,
-    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject,
-    NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
-    NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault,
-    ProviderQuotaState, ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage,
-    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
-    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
-    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
+    NewCoreTeamRouteSuccession, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
+    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredCoreTeamRouteSuccession,
+    StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
     StoredLegacyEpicBacklogCodeCorrection, StoredPromotion, StoredQuickSession,
     StoredRemediationProposal, StoredTopologyContainerRecovery, SuccessionRepository, Task,
     TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
@@ -4454,6 +4455,12 @@ impl SqliteStore {
     /// while the runtime work is in flight. Proving the occupancy generation
     /// and SeatBinding revision are still the previewed ones *here* is what
     /// makes that drift fail to commit instead of committing silently.
+    ///
+    /// `succession`, when supplied, is written in this same transaction. It is
+    /// the durable evidence a replay reconstructs the command receipt from when
+    /// the process is lost between this commit and that receipt: committing the
+    /// transition and the means to recover it together is what removes the
+    /// window entirely rather than narrowing it (ASMA-8187 F-8187-V1).
     pub fn replace_hosted_topology_seat_route(
         &self,
         predecessor: &StoredHostedTopologySeat,
@@ -4461,6 +4468,7 @@ impl SqliteStore {
         retired_at: Timestamp,
         reason: &str,
         fence: Option<&HostedSeatRouteFence>,
+        succession: Option<&NewCoreTeamRouteSuccession>,
     ) -> RepositoryResult<Applied> {
         if predecessor.project_id != successor.project_id
             || predecessor.seat_binding_id != successor.seat_binding_id
@@ -4601,8 +4609,203 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        if let Some(succession) = succession {
+            if succession.project_id != predecessor.project_id
+                || succession.seat_binding_id != predecessor.seat_binding_id
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "a succession record cannot name another project or logical seat",
+                });
+            }
+            let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a succession readback could not be encoded: {error}"),
+                }
+            })?;
+            transaction
+                .execute(
+                    "INSERT INTO core_team_route_successions
+                         (idempotency_key, intent_hash, project_id, mini_project_id,
+                          seat_binding_id, predecessor_native_id, predecessor_generation,
+                          successor_native_id, successor_generation,
+                          predecessor_occupancy_generation, successor_occupancy_generation,
+                          readback, readback_hash, receipt_id, recorded_at, receipted_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                             NULL, ?14, NULL)",
+                    params![
+                        succession.idempotency_key.as_str(),
+                        succession.intent_hash.as_str(),
+                        succession.project_id.to_string(),
+                        succession.mini_project_id.to_string(),
+                        succession.seat_binding_id.to_string(),
+                        predecessor.native_identity.native_id.as_str(),
+                        i64::try_from(predecessor.native_identity.generation).unwrap_or(i64::MAX),
+                        successor.native_identity.native_id.as_str(),
+                        i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
+                        i64::try_from(succession.predecessor_occupancy_generation)
+                            .unwrap_or(i64::MAX),
+                        i64::try_from(succession.successor_occupancy_generation)
+                            .unwrap_or(i64::MAX),
+                        readback,
+                        succession.readback_hash.as_str(),
+                        text(succession.recorded_at),
+                    ],
+                )
+                .map_err(backend)?;
+        }
         transaction.commit().map_err(backend)?;
+        // A crash here is indistinguishable, from the caller, from the commit
+        // never having happened — which is exactly the interval the succession
+        // row above exists to make recoverable. Simulating it deterministically
+        // is the only way a test can stand in that interval; production builds
+        // never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .faults
+            .lose_next_core_team_succession_ack
+            .replace(false)
+        {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault immediately after the succession commit".to_owned(),
+            });
+        }
         Ok(Applied::Updated)
+    }
+
+    /// Read the durable succession one apply key recorded, if it got that far.
+    ///
+    /// The lookup is by key alone for the same reason the receipt lookup is: a
+    /// replay arrives holding a key and nothing else that is guaranteed to
+    /// still be true. Containment is proved by the caller against the row it
+    /// reads back, not assumed by the query.
+    pub fn get_core_team_route_succession(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        let Some(row) = self
+            .connection
+            .query_row(
+                "SELECT intent_hash, project_id, mini_project_id, seat_binding_id,
+                        predecessor_native_id, predecessor_generation,
+                        successor_native_id, successor_generation,
+                        predecessor_occupancy_generation, successor_occupancy_generation,
+                        readback, readback_hash, receipt_id, recorded_at, receipted_at
+                   FROM core_team_route_successions
+                  WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        let (
+            intent_hash,
+            project_id,
+            mini_project_id,
+            seat_binding_id,
+            predecessor_native_id,
+            predecessor_generation,
+            successor_native_id,
+            successor_generation,
+            predecessor_occupancy_generation,
+            successor_occupancy_generation,
+            readback,
+            readback_hash,
+            receipt_id,
+            recorded_at,
+            receipted_at,
+        ) = row;
+        Ok(Some(StoredCoreTeamRouteSuccession {
+            idempotency_key: key.clone(),
+            intent_hash: ContentHash::parse(&intent_hash)?,
+            project_id: ProjectId::parse(&project_id)?,
+            mini_project_id: MiniProjectId::parse(&mini_project_id)?,
+            seat_binding_id: SeatBindingId::parse(&seat_binding_id)?,
+            predecessor_native_id: ExternalId::parse(&predecessor_native_id)?,
+            predecessor_generation: u64::try_from(predecessor_generation).unwrap_or_default(),
+            successor_native_id: ExternalId::parse(&successor_native_id)?,
+            successor_generation: u64::try_from(successor_generation).unwrap_or_default(),
+            predecessor_occupancy_generation: u64::try_from(predecessor_occupancy_generation)
+                .unwrap_or_default(),
+            successor_occupancy_generation: u64::try_from(successor_occupancy_generation)
+                .unwrap_or_default(),
+            readback: serde_json::from_str(&readback).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a succession readback could not be decoded: {error}"),
+                }
+            })?,
+            readback_hash: ContentHash::parse(&readback_hash)?,
+            receipt_id: receipt_id
+                .as_deref()
+                .map(CommandReceiptId::parse)
+                .transpose()?,
+            recorded_at: parse_utc_timestamp(&recorded_at)?,
+            receipted_at: receipted_at
+                .as_deref()
+                .map(parse_utc_timestamp)
+                .transpose()?,
+        }))
+    }
+
+    /// Bind a recorded succession to the receipt that finally completed it.
+    ///
+    /// Idempotent by construction: the row's trigger refuses a second binding,
+    /// so a resume that raced another resume reads the first one's receipt back
+    /// rather than overwriting it.
+    pub fn bind_core_team_route_succession_receipt(
+        &self,
+        key: &IdempotencyKey,
+        receipt_id: CommandReceiptId,
+        receipted_at: Timestamp,
+    ) -> RepositoryResult<StoredCoreTeamRouteSuccession> {
+        let transaction = self.begin()?;
+        let bound: Option<String> = transaction
+            .query_row(
+                "SELECT receipt_id FROM core_team_route_successions WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "core team route succession",
+            })?;
+        if bound.is_none() {
+            transaction
+                .execute(
+                    "UPDATE core_team_route_successions
+                        SET receipt_id = ?2, receipted_at = ?3
+                      WHERE idempotency_key = ?1",
+                    params![key.as_str(), receipt_id.to_string(), text(receipted_at)],
+                )
+                .map_err(backend)?;
+        }
+        transaction.commit().map_err(backend)?;
+        self.get_core_team_route_succession(key)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "core team route succession",
+            })
     }
 
     /// Read the one advice artifact a single-seat Advisor run produced.

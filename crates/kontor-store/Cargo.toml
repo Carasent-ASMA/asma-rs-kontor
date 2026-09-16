@@ -8,6 +8,12 @@ repository.workspace = true
 authors.workspace = true
 description = "SQLite repositories, migrations and event append/replay for the Kontor control plane."
 
+[features]
+# Deterministic crash points for recovery tests (ASMA-8187 F-8187-V1). Off by
+# default and never enabled by a normal dependency edge, so a release build
+# carries neither the field nor the branch.
+fault-injection = []
+
 [lints]
 workspace = true
 

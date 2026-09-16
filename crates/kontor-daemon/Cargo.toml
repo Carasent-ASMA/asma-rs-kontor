@@ -76,7 +76,12 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-kontor-store = { path = "../kontor-store", version = "=0.2.1" }
+# The recovery suite stands inside the interval between a committed
+# succession and its receipt, which is only reachable by losing the process
+# there. `fault-injection` is what lets it do that deliberately.
+kontor-store = { path = "../kontor-store", version = "=0.2.1", features = [
+    "fault-injection",
+] }
 # KON-MVP-16: the wired-api suite seeds a work-calendar assignment directly to
 # prove the scheduling route refuses a project it cannot resolve a window for.
 rusqlite = { workspace = true }

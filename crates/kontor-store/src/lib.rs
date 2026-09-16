@@ -166,6 +166,26 @@ pub struct SqliteStore {
     /// Loaded once at open and never mutated, so every ingress check compares
     /// against the same value for the lifetime of the store.
     realm: RealmMetadata,
+    /// Armed crash points, under the `fault-injection` feature only.
+    #[cfg(feature = "fault-injection")]
+    faults: StoreFaults,
+}
+
+/// Deterministic crash points a recovery test can stand in.
+///
+/// Some durable intervals cannot be entered from outside: the window between a
+/// committed store transition and the command receipt that names it is, by
+/// construction, only reachable by losing the process inside it. Arming a crash
+/// point is how a test stands there deliberately instead of hoping to.
+///
+/// The whole type is behind `fault-injection`, which nothing but a
+/// dev-dependency edge turns on — a release build has no field to set, no
+/// branch to take and no method to call.
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Default)]
+pub(crate) struct StoreFaults {
+    /// Fail the next Core Team succession *after* its transaction commits.
+    pub(crate) lose_next_core_team_succession_ack: std::cell::Cell<bool>,
 }
 
 impl SqliteStore {
@@ -183,7 +203,23 @@ impl SqliteStore {
         let mut connection = Connection::open(path)?;
         migrations::configure_connection(&connection)?;
         let realm = migrations::migrate(&mut connection)?;
-        Ok(Self { connection, realm })
+        Ok(Self {
+            connection,
+            realm,
+            #[cfg(feature = "fault-injection")]
+            faults: StoreFaults::default(),
+        })
+    }
+
+    /// Arm a single deterministic loss of the next succession acknowledgement.
+    ///
+    /// The transaction still commits; only the caller's acknowledgement is
+    /// lost, which is exactly what a process death immediately after the commit
+    /// looks like from the daemon. Consumed by the next succession, so one arm
+    /// is one simulated crash.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_core_team_succession_ack(&self) {
+        self.faults.lose_next_core_team_succession_ack.set(true);
     }
 
     /// This database's immutable Realm identity.

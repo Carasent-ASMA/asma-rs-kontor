@@ -498,7 +498,7 @@ pub struct TeamDefinitionRefDto {
 }
 
 /// One immutable Team Definition revision plus its exact canonical hash.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct PinnedTeamDefinitionDto {
     /// Stable definition lineage.
     #[schema(value_type = String)]
@@ -938,6 +938,128 @@ pub struct CoreTeamRouteHeadroomEvidenceDto {
     pub fresh_through: String,
 }
 
+/// The exact topology publication one Core Team seat is placed in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteTopologyPinDto {
+    /// Published spec lineage.
+    #[schema(value_type = String)]
+    pub spec_id: kontor_core::id::TopologySpecId,
+    /// Exact published revision.
+    #[schema(value_type = u32)]
+    pub spec_version: SpecVersion,
+    /// Hash of the exact canonical spec.
+    #[schema(value_type = String)]
+    pub spec_hash: ContentHash,
+}
+
+/// The frozen completion contract a succession may not move.
+///
+/// Identity and digest only. Generation, round and state are deliberately
+/// absent: the remediation this repair unblocks advances them, so fencing them
+/// would make the operation refuse the thing it exists to enable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteCompletionPinDto {
+    /// Pinned completion profile.
+    #[schema(value_type = String)]
+    pub profile_id: ExternalName,
+    /// Exact pinned revision.
+    #[schema(value_type = u32)]
+    pub profile_version: SpecVersion,
+    /// Hash of the exact canonical definition.
+    #[schema(value_type = String)]
+    pub definition_hash: ContentHash,
+}
+
+/// Every frozen authority one in-place Core Team succession preserves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRoutePinsDto {
+    /// Published topology this seat is placed in.
+    pub topology: CoreTeamRouteTopologyPinDto,
+    /// Frozen Core Team roster revision.
+    #[schema(value_type = u32)]
+    pub core_team_version: SpecVersion,
+    /// Role catalog the roster resolved against.
+    #[schema(value_type = String)]
+    pub core_team_catalog_hash: ContentHash,
+    /// Server-derived digest of the exact resolved seats document.
+    #[schema(value_type = String)]
+    pub core_team_definition_hash: ContentHash,
+    /// The epic's pinned Team Definition, when it has pinned one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_definition: Option<PinnedTeamDefinitionDto>,
+    /// The epic's frozen completion contract, when it has frozen one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_profile: Option<CoreTeamRouteCompletionPinDto>,
+}
+
+/// One exact native occupant of a logical Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteOccupantDto {
+    /// Exact native session identity.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Runtime that holds it.
+    pub runtime_kind: String,
+    /// Host it was placed on.
+    pub host: String,
+    /// Runtime generation of this native.
+    pub generation: u64,
+    /// Provider conversation, when the runtime exposes one.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Which occupancy of the logical seat this native is.
+    pub occupancy_generation: u64,
+    /// Frozen provider/model/effort route it runs on.
+    pub model_route: RuntimeModelRouteRequest,
+}
+
+/// The exact ECP placement a succession kept its seat in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRoutePlacementDto {
+    /// Control-plane node hosting the seat.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// Durable container binding.
+    #[schema(value_type = String)]
+    pub container_binding_id: ExternalId,
+    /// Exact native workspace identity.
+    #[schema(value_type = String)]
+    pub container_native_id: ExternalId,
+    /// Canonical working directory, when one is persisted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_cwd: Option<String>,
+}
+
+/// The complete durable evidence one Core Team succession produced.
+///
+/// Persisted in the same transaction as the store transition and returned
+/// verbatim by an exact replay, however many successions have happened since:
+/// recomputing it would answer with the seat's *current* occupant, which is
+/// precisely the wrong answer to "what did this command do" (ASMA-8187
+/// F-8187-V3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteReadbackDto {
+    /// The preserved logical seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor: CoreTeamRouteOccupantDto,
+    /// Exact installed successor; equal to the predecessor for an unchanged route.
+    pub successor: CoreTeamRouteOccupantDto,
+    /// Unchanged ECP placement.
+    pub placement: CoreTeamRoutePlacementDto,
+    /// The server-derived approved route this succession was admitted under.
+    pub approved_model_route: RuntimeModelRouteRequest,
+    /// Digest of that server-derived approved-route authority.
+    #[schema(value_type = String)]
+    pub approved_route_digest: ContentHash,
+    /// Every frozen pin the succession preserved.
+    pub pins: CoreTeamRoutePinsDto,
+    /// Instant the predecessor was retired.
+    pub retired_at: String,
+}
+
 /// Read-only route-correction or stale-native recovery plan for one persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamRoutePreviewDto {
@@ -962,6 +1084,18 @@ pub struct CoreTeamRoutePreviewDto {
     pub desired_model_route: RuntimeModelRouteRequest,
     /// Whether a native archive/launch is required.
     pub would_replace_native: bool,
+    /// The approved route the *server* resolved, never the caller's echo.
+    ///
+    /// Derived from this project's enabled account profiles and the runtime
+    /// this realm places Core Team seats on, so it attests which governed
+    /// authority the route binds to rather than repeating what was asked for.
+    pub approved_model_route: RuntimeModelRouteRequest,
+    /// Digest of that server-derived authority, folded into the preview hash.
+    #[schema(value_type = String)]
+    pub approved_route_digest: ContentHash,
+    /// The epic's pinned Team Definition, fenced by id, version and digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_definition: Option<PinnedTeamDefinitionDto>,
     /// The provider reading this preview committed to.
     ///
     /// Present only for stale-native succession, which is the one branch that
@@ -1035,6 +1169,18 @@ pub struct CoreTeamRouteOutcomeDto {
     /// Active successor native identity; equal to predecessor for an unchanged route.
     #[schema(value_type = String)]
     pub successor_native_id: ExternalId,
+    /// The complete durable readback this command produced.
+    ///
+    /// Present for every succession that replaced a native, including an exact
+    /// replay of one: the bytes come back from the succession ledger rather
+    /// than from the seat's current state. An unchanged-route correction
+    /// replaced nothing and carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<CoreTeamRouteReadbackDto>,
+    /// Digest of that readback, bound to the receipt through the ledger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub readback_hash: Option<ContentHash>,
     /// Audited mutation receipt.
     pub receipt: MutationReceiptDto,
 }

@@ -14522,6 +14522,31 @@
         },
         "additionalProperties": false
       },
+      "CoreTeamRouteCompletionPinDto": {
+        "type": "object",
+        "description": "The frozen completion contract a succession may not move.\n\nIdentity and digest only. Generation, round and state are deliberately\nabsent: the remediation this repair unblocks advances them, so fencing them\nwould make the operation refuse the thing it exists to enable.",
+        "required": [
+          "profile_id",
+          "profile_version",
+          "definition_hash"
+        ],
+        "properties": {
+          "definition_hash": {
+            "type": "string",
+            "description": "Hash of the exact canonical definition."
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "Pinned completion profile."
+          },
+          "profile_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Exact pinned revision.",
+            "minimum": 0
+          }
+        }
+      },
       "CoreTeamRouteHeadroomEvidenceDto": {
         "type": "object",
         "description": "The exact immutable provider reading one stale-native preview committed to.\n\nReturned so the apply can name it back. The apply does not carry the digest\nor the numbers — it carries the id, and the server loads this row again and\nre-checks that it still belongs to the same project, account and provider.\nThat keeps the preview hash stable across ordinary provider-report refreshes\nwithout ever trusting a caller-supplied digest.",
@@ -14570,6 +14595,55 @@
           }
         }
       },
+      "CoreTeamRouteOccupantDto": {
+        "type": "object",
+        "description": "One exact native occupant of a logical Core Team seat.",
+        "required": [
+          "native_id",
+          "runtime_kind",
+          "host",
+          "generation",
+          "occupancy_generation",
+          "model_route"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation of this native.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Host it was placed on."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Frozen provider/model/effort route it runs on."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact native session identity."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Which occupancy of the logical seat this native is.",
+            "minimum": 0
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider conversation, when the runtime exposes one."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime that holds it."
+          }
+        }
+      },
       "CoreTeamRouteOutcomeDto": {
         "type": "object",
         "description": "Completed in-place route correction with exact identity readback.",
@@ -14589,6 +14663,24 @@
             "type": "string",
             "description": "Archived predecessor native identity."
           },
+          "readback": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteReadbackDto",
+                "description": "The complete durable readback this command produced.\n\nPresent for every succession that replaced a native, including an exact\nreplay of one: the bytes come back from the succession ledger rather\nthan from the seat's current state. An unchanged-route correction\nreplaced nothing and carries none."
+              }
+            ]
+          },
+          "readback_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of that readback, bound to the receipt through the ledger."
+          },
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "Audited mutation receipt."
@@ -14600,6 +14692,88 @@
           "successor_native_id": {
             "type": "string",
             "description": "Active successor native identity; equal to predecessor for an unchanged route."
+          }
+        }
+      },
+      "CoreTeamRoutePinsDto": {
+        "type": "object",
+        "description": "Every frozen authority one in-place Core Team succession preserves.",
+        "required": [
+          "topology",
+          "core_team_version",
+          "core_team_catalog_hash",
+          "core_team_definition_hash"
+        ],
+        "properties": {
+          "completion_profile": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteCompletionPinDto",
+                "description": "The epic's frozen completion contract, when it has frozen one."
+              }
+            ]
+          },
+          "core_team_catalog_hash": {
+            "type": "string",
+            "description": "Role catalog the roster resolved against."
+          },
+          "core_team_definition_hash": {
+            "type": "string",
+            "description": "Server-derived digest of the exact resolved seats document."
+          },
+          "core_team_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Frozen Core Team roster revision.",
+            "minimum": 0
+          },
+          "team_definition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PinnedTeamDefinitionDto",
+                "description": "The epic's pinned Team Definition, when it has pinned one."
+              }
+            ]
+          },
+          "topology": {
+            "$ref": "#/components/schemas/CoreTeamRouteTopologyPinDto",
+            "description": "Published topology this seat is placed in."
+          }
+        }
+      },
+      "CoreTeamRoutePlacementDto": {
+        "type": "object",
+        "description": "The exact ECP placement a succession kept its seat in.",
+        "required": [
+          "topology_node_id",
+          "container_binding_id",
+          "container_native_id"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical working directory, when one is persisted."
+          },
+          "container_binding_id": {
+            "type": "string",
+            "description": "Durable container binding."
+          },
+          "container_native_id": {
+            "type": "string",
+            "description": "Exact native workspace identity."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "Control-plane node hosting the seat."
           }
         }
       },
@@ -14615,10 +14789,20 @@
           "current_model_route",
           "desired_model_route",
           "would_replace_native",
+          "approved_model_route",
+          "approved_route_digest",
           "preview_hash",
           "snapshot_cursor"
         ],
         "properties": {
+          "approved_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The approved route the *server* resolved, never the caller's echo.\n\nDerived from this project's enabled account profiles and the runtime\nthis realm places Core Team seats on, so it attests which governed\nauthority the route binds to rather than repeating what was asked for."
+          },
+          "approved_route_digest": {
+            "type": "string",
+            "description": "Digest of that server-derived authority, folded into the preview hash."
+          },
           "current_model_route": {
             "$ref": "#/components/schemas/RuntimeModelRouteRequest",
             "description": "Frozen current route."
@@ -14667,6 +14851,17 @@
             "format": "int64",
             "description": "Projection cursor read by the preview."
           },
+          "team_definition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PinnedTeamDefinitionDto",
+                "description": "The epic's pinned Team Definition, fenced by id, version and digest."
+              }
+            ]
+          },
           "would_replace_native": {
             "type": "boolean",
             "description": "Whether a native archive/launch is required."
@@ -14710,6 +14905,79 @@
           }
         },
         "additionalProperties": false
+      },
+      "CoreTeamRouteReadbackDto": {
+        "type": "object",
+        "description": "The complete durable evidence one Core Team succession produced.\n\nPersisted in the same transaction as the store transition and returned\nverbatim by an exact replay, however many successions have happened since:\nrecomputing it would answer with the seat's *current* occupant, which is\nprecisely the wrong answer to \"what did this command do\" (ASMA-8187\nF-8187-V3).",
+        "required": [
+          "seat_binding_id",
+          "predecessor",
+          "successor",
+          "placement",
+          "approved_model_route",
+          "approved_route_digest",
+          "pins",
+          "retired_at"
+        ],
+        "properties": {
+          "approved_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The server-derived approved route this succession was admitted under."
+          },
+          "approved_route_digest": {
+            "type": "string",
+            "description": "Digest of that server-derived approved-route authority."
+          },
+          "pins": {
+            "$ref": "#/components/schemas/CoreTeamRoutePinsDto",
+            "description": "Every frozen pin the succession preserved."
+          },
+          "placement": {
+            "$ref": "#/components/schemas/CoreTeamRoutePlacementDto",
+            "description": "Unchanged ECP placement."
+          },
+          "predecessor": {
+            "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
+            "description": "Exact archived predecessor."
+          },
+          "retired_at": {
+            "type": "string",
+            "description": "Instant the predecessor was retired."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The preserved logical seat."
+          },
+          "successor": {
+            "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
+            "description": "Exact installed successor; equal to the predecessor for an unchanged route."
+          }
+        }
+      },
+      "CoreTeamRouteTopologyPinDto": {
+        "type": "object",
+        "description": "The exact topology publication one Core Team seat is placed in.",
+        "required": [
+          "spec_id",
+          "spec_version",
+          "spec_hash"
+        ],
+        "properties": {
+          "spec_hash": {
+            "type": "string",
+            "description": "Hash of the exact canonical spec."
+          },
+          "spec_id": {
+            "type": "string",
+            "description": "Published spec lineage."
+          },
+          "spec_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Exact published revision.",
+            "minimum": 0
+          }
+        }
       },
       "CoreTeamSeatClaimApplyRequest": {
         "type": "object",

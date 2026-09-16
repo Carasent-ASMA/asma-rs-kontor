@@ -9,6 +9,231 @@ Phase: `high-implementation`
 TeamRun: `01a0a945-4a98-70b1-a16d-b087017edb0d`
 Implementation AgentRun: `01a0a946-f58a-7f32-ba69-23b64e3ac185`
 Scope: [`HIGH-SCOPE-RECORD.md`](HIGH-SCOPE-RECORD.md) at `b892d71`, corrected at `52c9c4e`
+Status: verification remediation, after
+[`HIGH-VERIFICATION-REPORT.md`](HIGH-VERIFICATION-REPORT.md) rejected candidate
+`1fcd42d`
+
+## This turn: closing the four verification findings
+
+High-verification gate sequence 1 rejected `1fcd42d` on four blocking findings.
+Its green results stood; what it refused was missing recovery and authority
+evidence. This section records the repair. Everything below it describes the
+first implementation and is retained unchanged, except where a statement it
+makes is now superseded — those are called out here rather than silently
+rewritten.
+
+Authoritative state this turn started from: `high-implementation` at workflow
+revision 4, task revision 2, with `high-verification-gate` sequence 1 rejected.
+
+### F-8187-V1 — closed: the store transition and its recovery evidence commit together
+
+A new durable ledger, `core_team_route_successions` (schema v97, migration
+`0097_core_team_route_succession_recovery.sql`), is written **inside the same
+transaction** as the history append and the active-row replacement. There is no
+longer an interval in which the seat has moved and the means to reconstruct the
+command does not exist: `replace_hosted_topology_seat_route` takes the record
+and commits both or neither.
+
+Apply now consults that ledger *before* the receipt, because in the interval
+this closes the receipt is exactly what is absent. A key that finds a row has
+already moved the seat: the resume records the receipt it never got, binds it to
+the row, and answers from the row's durable readback. `record` is keyed and the
+row's trigger refuses a second binding, so the resume is safe to run on every
+replay rather than only the one that recovers.
+
+The ledger row is undeletable by trigger and its evidence is frozen on commit;
+only `receipt_id`/`receipted_at` may move, once, from absent to present.
+
+### F-8187-V2 — closed: the approved route and Team Definition are server-derived and fenced
+
+The preview document gained two authorities, and the preview DTO now returns
+them:
+
+- **approved model route** — `approved_model_route` and `approved_route_digest`.
+  The digest is over a server-assembled document: provider, model, effort, the
+  runtime this realm places Core Team seats on, and the *governed account
+  authority* this project resolves the provider to. The account is read from
+  stored account profiles, never from the request.
+- **Team Definition** — the epic's pinned `definition_id`, `version` and
+  `canonical_hash`, from `get_mini_project_team_definition`. A distinct
+  authority from the role catalog, the topology and the resolved Core Team,
+  none of which speaks for which Team Definition revision governs the epic.
+
+Apply re-derives both through the same plan and compares the hash, so drift in
+either expires the preview before the first native effect.
+
+One deliberate asymmetry. `approved_route_account` refuses ambiguity, which is
+right where capacity is about to be spent, and the stale-native branch still
+goes through it. The *fence* instead records whichever resolution the server
+currently reaches — the account id, `ambiguous`, `none`, or `unreadable` — so a
+resolution that changes expires the preview without inventing a new
+precondition on the ordinary-correction path, which has never required a
+governed account because the seat it corrects is still answering. The four
+outcomes are distinguishable on purpose: collapsing `none` and `ambiguous` would
+let a realm move from zero to two selectable accounts without disturbing the
+hash.
+
+### F-8187-V3 — closed: the readback is complete, durable and replayable
+
+`CoreTeamRouteOutcomeDto` gained `readback` and `readback_hash`.
+`CoreTeamRouteReadbackDto` carries what the scope requires and the previous
+outcome did not: both native identities with runtime kind, host, runtime
+generation and provider session; **both occupancy generations**; the exact ECP
+placement including container native id and canonical `cwd`; the server-derived
+approved route and its digest; every frozen pin (topology spec triple, Core Team
+version/catalog/definition digests, Team Definition, completion profile); and
+the retirement instant.
+
+It is persisted, not recomputed. A replay deserializes the stored bytes and
+answers with them, so a command that produced generation two still answers with
+generation two after the seat has reached generation three. The digest is bound
+to the receipt through the ledger row rather than folded into the command
+intent: the intent must stay derivable from the request alone, which is what
+lets the ledger be consulted before the fence at all.
+
+The previous history-walk replay path is retained for corrections that replaced
+no native and therefore recorded no succession.
+
+### F-8187-V4 — closed: every named fence and all four loss points
+
+`a_core_team_succession_refuses_drift_in_each_fenced_identity` replaces the
+two-family representative test with twelve independently drifted cases, each
+asserting refusal, no `RetireHostedSeat`/`LaunchHostedSeat` call, unchanged
+durable seat shape, and no succession row:
+
+`topology-spec-hash`, `binding-role-slot`, `binding-role-code`,
+`predecessor-provider-session`, `predecessor-runtime-generation`,
+`occupancy-generation`, `ecp-container-native-id`, `ecp-container-generation`,
+`ecp-canonical-cwd`, `core-team-version`, `core-team-catalog-hash`,
+`core-team-definition`, `completion-profile-digest`, `team-definition-digest`.
+
+Zero-effect is asserted as a before/after comparison captured *after* the drift
+is staged, so a case that stages history of its own is still held to "this apply
+changed nothing".
+
+Two named fences are deliberately absent, with reasons rather than omissions:
+
+- `topology_nodes.spec_version` and `seat_bindings.role_catalog_id`/
+  `role_catalog_version` are foreign keys onto the published spec and catalog.
+  They cannot drift alone in a database state SQLite would accept; the free
+  columns of both families (`spec_hash`, `role_slot_id`, `role_code`) are
+  covered.
+- The TeamRun absence fence has no stageable drift: giving a control-plane seat
+  a TeamRun requires a real `team_runs` row, and no endpoint produces that
+  state. It remains structurally fenced through the preview hash and untested
+  by a focused case.
+
+The approved-route authority is covered by its own test rather than a SQL
+drift, because it moves through the API:
+`a_core_team_succession_refuses_an_approved_route_authority_that_moved` previews
+against one enabled account, enables a second for the same alias, and proves the
+apply refuses with no effect.
+
+Acknowledgement-loss points, all four:
+
+| Point | Test |
+| --- | --- |
+| after archive | `a_lost_archive_acknowledgement_converges_on_one_core_team_successor` |
+| after launch | `a_lost_launch_acknowledgement_recovers_the_same_core_team_successor` |
+| **after store replacement** | `a_succession_lost_after_its_store_commit_converges_on_one_receipt` |
+| **after receipt persistence** | `an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence` |
+
+The third stands inside the interval deliberately, through a new
+`fault-injection` cargo feature on `kontor-store`. `lose_next_core_team_succession_ack`
+lets the transaction commit and then fails the caller, which is what a process
+death immediately after the commit looks like from the daemon. The feature is
+off by default and enabled only on `kontor-daemon`'s dev-dependency edge, so a
+release build carries neither the field nor the branch. The fourth needs no
+seam: a landed receipt with a lost response *is* a same-key retry, and the test
+asserts an identical readback, the same receipt id, zero runtime calls and
+unchanged durable state.
+
+### Contract artefacts, this turn
+
+`CoreTeamRouteReadbackDto`, `CoreTeamRouteOccupantDto`,
+`CoreTeamRoutePlacementDto`, `CoreTeamRoutePinsDto`,
+`CoreTeamRouteTopologyPinDto` and `CoreTeamRouteCompletionPinDto` were added and
+registered; `PinnedTeamDefinitionDto` gained `Deserialize` so a stored readback
+rehydrates. Regenerated with the same two commands as before; both artefacts
+reproduce with no drift.
+
+### Validation run this turn
+
+Observed first-hand, on the exact tree this commit contains:
+
+```text
+$ cargo test -p kontor-daemon --test loopback_api core_team
+PASS: 18 passed, 0 failed
+
+$ cargo test -p kontor-daemon --test loopback_api succession
+PASS: 11 passed, 0 failed
+
+$ cargo test -p kontor-daemon --test loopback_api \
+    a_core_team_succession_refuses_drift_in_each_fenced_identity -- --exact
+PASS: 1 passed, 0 failed (12 independently drifted cases)
+
+$ cargo test -p kontor-daemon --test loopback_api \
+    a_succession_lost_after_its_store_commit_converges_on_one_receipt -- --exact
+PASS: 1 passed, 0 failed
+
+$ cargo test -p kontor-daemon --test loopback_api \
+    an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence -- --exact
+PASS: 1 passed, 0 failed
+
+$ cargo test -p kontor-daemon --test loopback_api \
+    a_core_team_succession_refuses_an_approved_route_authority_that_moved -- --exact
+PASS: 1 passed, 0 failed
+
+$ cargo test -p kontor-store --test operational_liveness
+PASS: 11 passed, 0 failed
+
+$ cargo fmt --all -- --check
+PASS: exit 0
+
+$ KONTOR_UPDATE_CONTRACT=1 cargo test -p kontor-api --test openapi_contract
+PASS: 3 passed, 0 failed
+
+$ pnpm --filter kontor-console generate:api
+PASS: openapi-typescript 7.13.0 regenerated apps/console/src/api/schema.d.ts
+```
+
+The regenerated contract diff is additive: +268 lines in `openapi.json`, +121 in
+`schema.d.ts`, no removals.
+
+### Validation NOT run this turn
+
+This remediation was bounded to the focused evidence above. The following were
+part of the verification exit criteria and have **not** been run against this
+candidate; they are the verify seat's to execute and classify, and nothing in
+this record should be read as claiming them:
+
+- the full `kontor-store` suite — a duplicate invocation deadlocked on the cargo
+  build lock and was terminated. Only `operational_liveness` (11/11) was
+  observed green; the remaining groups are unobserved, not passing;
+- `cargo test -p kontor-api -p kontor-core -p kontor-runtime -p kontor-runtime-paseo`;
+- `cargo test -p kontor-mcp`;
+- `cargo clippy` on the touched crates and on the workspace;
+- the full `cargo test -p kontor-daemon` suite;
+- exact-parent reproduction of the inherited baseline failures;
+- the three named mutants from the first implementation, and any mutant covering
+  the new ledger, authority or readback paths.
+
+### Inherited baseline
+
+Unchanged from the first implementation and untouched here: the seven
+pre-existing `kontor-daemon` failures, the `kontor-tests-e2e` compile break from
+ASMA-8116, and the repository-wide `Cargo.lock` reproducibility gate. Per the
+gate instruction, classifying them is the independent verify seat's task with
+exact-parent reproduction; this turn neither repaired nor re-classified them.
+
+### Superseded statements below
+
+- "no schema migration" in *What this change is* no longer holds: this turn adds
+  schema v97. The rest of that paragraph stands — still no new endpoint, no
+  recovery state machine, no parallel headroom abstraction.
+- The *Replay and convergence* section's account of replay resolving its
+  successor from append-only history now describes only the no-replacement
+  path. A succession that replaced a native answers from its ledger row.
 
 ## What this change is
 
