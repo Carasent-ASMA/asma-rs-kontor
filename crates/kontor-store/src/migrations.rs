@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 99;
+pub const SCHEMA_VERSION: i64 = 100;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -367,6 +367,10 @@ const MIGRATIONS: &[&str] = &[
     // occupancy generation, so inspect, retire, restart and replay read what
     // the seat was launched under instead of recomputing a mutable default.
     include_str!("../migrations/0099_hosted_seat_autonomy_generation.sql"),
+    // Schema v100. The authority a hosted-seat launch resolved is recorded
+    // before the native call and consumed when the occupancy binds, so a lost
+    // acknowledgement cannot leave a live native whose intent nothing holds.
+    include_str!("../migrations/0100_hosted_seat_launch_intents.sql"),
 ];
 
 const _: () = assert!(

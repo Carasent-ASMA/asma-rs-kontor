@@ -716,6 +716,14 @@ struct FakeState {
     archived_containers: BTreeSet<TopologyNodeId>,
     lose_archive_ack_once: BTreeSet<TopologyNodeId>,
     lose_hosted_retire_ack_once: BTreeSet<SeatBindingId>,
+    /// Whether the next hosted *launch* lands natively and then loses its
+    /// answer. The window this reproduces is the one where a native exists and
+    /// nothing durable yet says what authority it was created under.
+    ///
+    /// Unkeyed on purpose: the seat binding a materialization launches does not
+    /// exist until that same call creates it, so a caller arming this failure
+    /// cannot name it in advance.
+    lose_hosted_launch_ack_once: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
@@ -1228,6 +1236,7 @@ impl ScriptedFakeRuntime {
                 archived_containers: BTreeSet::new(),
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
+                lose_hosted_launch_ack_once: false,
                 pause_hosted_retire_once: None,
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
@@ -1719,6 +1728,37 @@ impl ScriptedFakeRuntime {
         let pause = FakeNativePause::default();
         self.lock().pause_hosted_retire_once = Some(pause.clone());
         pause
+    }
+
+    /// Lose one acknowledgement after the hosted native has already been
+    /// created.
+    ///
+    /// The seat exists in the runtime afterwards; only the answer is gone. That
+    /// is the shape of the real failure — a created agent whose caller never
+    /// learned its identity — and it is the one a durable pre-effect launch
+    /// intent exists to survive.
+    pub fn lose_next_hosted_launch_ack(&self) {
+        self.lock().lose_hosted_launch_ack_once = true;
+    }
+
+    /// Exact native currently filling one hosted seat, as the runtime holds it.
+    #[must_use]
+    pub fn hosted_seat_native_id(&self, seat_binding_id: SeatBindingId) -> Option<ExternalId> {
+        self.lock()
+            .hosted_seats
+            .get(&seat_binding_id)
+            .map(|held| held.identity.native_id.clone())
+    }
+
+    /// How many natives this runtime has minted, of every kind.
+    ///
+    /// A replay that created a second agent instead of returning the first one
+    /// is invisible in any per-seat read, because the newer native simply
+    /// replaces the older one under the same key. The count is what makes a
+    /// duplicate observable.
+    #[must_use]
+    pub fn minted_natives(&self) -> u64 {
+        self.lock().minted
     }
 
     /// Lose one acknowledgement after exact hosted native retirement has taken effect.
@@ -2897,6 +2937,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 request.display_name.as_str().to_owned(),
             ),
         );
+        // The native is now real and the caller is about to learn nothing about
+        // it. Everything above this line has already been committed.
+        if std::mem::take(&mut state.lose_hosted_launch_ack_once) {
+            return Err(RuntimeError::Transport {
+                rule: "the native launch acknowledgement was lost",
+            });
+        }
         Ok(outcome)
     }
 

@@ -171,9 +171,9 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
-    LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
-    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    HostedSeatLaunchIntentState, IntakeOutcome, IntakeRepository,
+    LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
+    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
     NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
@@ -185,11 +185,12 @@ use kontor_core::repository::{
     StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
     StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
     StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    SuccessionRepository, TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
@@ -12246,6 +12247,13 @@ fn freeze_seat_autonomy(
     ))
 }
 
+/// The occupancy generation a Core Team materialization creates.
+///
+/// Materialization is a seat's first filler, and the credential it is handed is
+/// fenced to generation 1; the launch intent is keyed the same way so the two
+/// describe one occupancy rather than two.
+const FIRST_HOSTED_OCCUPANCY: u64 = 1;
+
 /// The three-source order itself, shared by every seat Kontor launches.
 ///
 /// Extracted so that "a leadership seat resolves the way a delivery seat does"
@@ -21079,20 +21087,53 @@ impl ApplicationOperations for Services {
                 ))
                 .map_err(|error| self.refuse_domain(&error))?;
                 // Launch intent, not live configuration, survives a lost
-                // acknowledgement. `materialize_roster_seats` runs on replay so
-                // a receipt whose process died between the logical and native
-                // halves can converge; if that process had already launched and
-                // persisted this seat, the generation is the same one and keeps
-                // the authority it was created under. Only a seat with no
-                // persisted occupancy is a new generation, and only a new
-                // generation reads the plane default.
-                let autonomy = match state
+                // acknowledgement and a restart.
+                //
+                // Three sources in order, and the middle one is the whole point.
+                // A bound occupancy is authoritative. Failing that, a *prepared
+                // intent* means a previous attempt already resolved this
+                // generation's authority and may have created the native before
+                // its acknowledgement was lost — so the replay must ask for what
+                // that native was started with, not what the plane says now.
+                // Only a seat with neither is genuinely new, and only then is
+                // the plane default read.
+                let autonomy = if let Some(existing) = state
                     .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
                     .map_err(|error| self.refuse(&error))?
                 {
-                    Some(existing) => existing.autonomy,
-                    None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                    existing.autonomy
+                } else if let Some(intent) = state
+                    .with_store(|store| {
+                        store.get_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    intent.autonomy
+                } else {
+                    freeze_hosted_seat_autonomy(adapter.declared_autonomy())
                 };
+                // Recorded before the effect, so the window between a created
+                // native and its persisted occupancy is never empty. This is
+                // idempotent for the same decision and refuses a different one.
+                state
+                    .with_store(|store| {
+                        store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                            project_id,
+                            seat_binding_id,
+                            occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                            autonomy,
+                            model_rung: model_rung.clone(),
+                            state: HostedSeatLaunchIntentState::Prepared,
+                            observed_native_id: None,
+                            prepared_at: kontor_api::now(),
+                            installed_at: None,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error))?;
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -21126,6 +21167,19 @@ impl ApplicationOperations for Services {
                 };
                 state
                     .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+                    .map_err(|error| self.refuse(&error))?;
+                // The occupancy is durable now, so the intent has done its work
+                // and is reconciled against the native it actually produced.
+                state
+                    .with_store(|store| {
+                        store.install_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                            &hosted.native_identity.native_id,
+                            hosted.observed_at,
+                        )
+                    })
                     .map_err(|error| self.refuse(&error))?;
                 state
                     .with_store(|store| {
@@ -21316,7 +21370,39 @@ impl ApplicationOperations for Services {
                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
                 })
                 .map_err(|error| self.refuse(&error))?;
-            let successor_autonomy = freeze_hosted_seat_autonomy(adapter.declared_autonomy());
+            // A successor is a new generation, so the plane default is the
+            // right source — but only the *first* time this runs. If a previous
+            // attempt already resolved it and lost its acknowledgement, that
+            // decision is what the native out there was created under, and the
+            // replay has to converge on it rather than resolve again.
+            let successor_autonomy = match state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+            {
+                Some(intent) => intent.autonomy,
+                None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+            };
+            state
+                .with_store(|store| {
+                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id: plan.binding.id,
+                        occupancy_generation: successor_occupancy_generation,
+                        autonomy: successor_autonomy,
+                        model_rung: plan.desired.clone(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -21361,6 +21447,17 @@ impl ApplicationOperations for Services {
                         &successor,
                         retired.archived_at,
                         "authorized Core Team provider/model route correction",
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.install_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                        &successor.native_identity.native_id,
+                        successor.observed_at,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;

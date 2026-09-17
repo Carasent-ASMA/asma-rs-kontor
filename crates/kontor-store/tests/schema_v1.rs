@@ -92,6 +92,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // topology seats.
     "hosted_topology_seats",
     "hosted_topology_seat_history",
+    // Schema v100 (ASMA-8193): the authority one hosted launch resolved,
+    // written before the native call and consumed when the occupancy binds.
+    "hosted_topology_seat_launch_intents",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -554,8 +557,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // exact durable mutations prove that their synchronous commands succeeded.
     // v99 freezes a hosted leadership seat's autonomy beside its occupancy
     // generation, in both the active and the historical row, and backfills every
-    // pre-feature row to the only launch mode any of them can have had.
-    assert_eq!(SCHEMA_VERSION, 99);
+    // pre-feature row to the only launch mode any of them can have had. v100
+    // records that authority *before* the native call and consumes it when the
+    // occupancy binds, so a created native whose acknowledgement was lost is
+    // never left with no durable statement of what it was launched under.
+    assert_eq!(SCHEMA_VERSION, 100);
 }
 
 #[test]

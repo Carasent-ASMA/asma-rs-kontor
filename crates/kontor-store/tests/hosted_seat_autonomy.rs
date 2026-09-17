@@ -19,9 +19,9 @@ use kontor_core::id::{
     SeatBindingId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::{
-    MiniProjectTopologySnapshot, NewMiniProject, NewProject, NewSeatBinding,
-    NewSessionTopologyNode, ProjectRepository, ProjectTopologyDefault, StoredHostedTopologySeat,
-    TopologyRepository,
+    HostedSeatLaunchIntentState, MiniProjectTopologySnapshot, NewMiniProject, NewProject,
+    NewSeatBinding, NewSessionTopologyNode, ProjectRepository, ProjectTopologyDefault,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, TopologyRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
@@ -544,6 +544,233 @@ fn a_contradictory_authority_is_refused_by_the_schema() {
 
     assert!(
         refusal.to_string().contains("CHECK"),
+        "the schema itself refuses it: {refusal:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Pre-effect launch intent
+// ---------------------------------------------------------------------------
+
+/// Build one prepared intent for a seat's first occupancy.
+fn intent(
+    fixture: &Fixture,
+    seat: SeatBindingId,
+    autonomy: SeatAutonomy,
+) -> StoredHostedSeatLaunchIntent {
+    StoredHostedSeatLaunchIntent {
+        project_id: fixture.project_id,
+        seat_binding_id: seat,
+        occupancy_generation: 1,
+        autonomy,
+        model_rung: rung(),
+        state: HostedSeatLaunchIntentState::Prepared,
+        observed_native_id: None,
+        prepared_at: at("2026-09-17T01:00:30Z"),
+        installed_at: None,
+    }
+}
+
+/// The window the verification gate rejected: a native exists, its occupancy
+/// does not, and the only durable record of what it was launched under is this.
+#[test]
+fn a_prepared_intent_holds_the_authority_before_any_occupancy_exists() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Bounded))
+        .expect("the intent is recorded before the native call");
+
+    assert!(
+        fixture
+            .store
+            .get_hosted_topology_seat(fixture.project_id, seat)
+            .expect("the occupancy reads")
+            .is_none(),
+        "the occupancy must not exist yet -- that is the window under test"
+    );
+    let recorded = fixture
+        .store
+        .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+        .expect("the intent reads")
+        .expect("the intent exists");
+    assert_eq!(recorded.autonomy, SeatAutonomy::Bounded);
+    assert_eq!(recorded.state, HostedSeatLaunchIntentState::Prepared);
+    assert!(recorded.observed_native_id.is_none());
+}
+
+/// Replaying the same launch converges on the row it already wrote.
+#[test]
+fn preparing_the_same_launch_twice_is_one_intent() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    let first = intent(&fixture, seat, SeatAutonomy::Bounded);
+
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&first)
+        .expect("the first attempt records the intent");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+            prepared_at: at("2026-09-17T01:09:00Z"),
+            ..first
+        })
+        .expect("replaying the same decision is unchanged");
+
+    let recorded = fixture
+        .store
+        .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+        .expect("the intent reads")
+        .expect("the intent exists");
+    assert_eq!(
+        recorded.prepared_at,
+        at("2026-09-17T01:00:30Z"),
+        "a replay keeps the instant the decision was actually made"
+    );
+}
+
+/// No silent escalation. The native this intent describes may already exist,
+/// and it cannot be re-created under a wider authority than it was started
+/// with, so a second resolution for the same generation is refused rather than
+/// allowed to overwrite the first.
+#[test]
+fn one_generation_cannot_be_prepared_under_a_second_authority() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Supervised))
+        .expect("the first decision is recorded");
+
+    let refusal = fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Bounded))
+        .expect_err("a second authority for one generation is refused");
+
+    assert!(
+        refusal.to_string().contains("second autonomy"),
+        "the refusal names the escalation it stopped: {refusal:?}"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+            .expect("the intent reads")
+            .expect("the intent exists")
+            .autonomy,
+        SeatAutonomy::Supervised,
+        "the original decision survives the attempt to widen it"
+    );
+}
+
+/// The occupancy consumes the intent and names the native it produced.
+#[test]
+fn binding_an_occupancy_reconciles_its_intent() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Bounded))
+        .expect("the intent is recorded");
+    let native = ExternalId::parse("lsa-first").expect("a native id");
+
+    fixture
+        .store
+        .install_hosted_seat_launch_intent(
+            fixture.project_id,
+            seat,
+            1,
+            &native,
+            at("2026-09-17T01:02:00Z"),
+        )
+        .expect("the intent is reconciled");
+
+    let recorded = fixture
+        .store
+        .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+        .expect("the intent reads")
+        .expect("the intent exists");
+    assert_eq!(recorded.state, HostedSeatLaunchIntentState::Installed);
+    assert_eq!(recorded.observed_native_id, Some(native.clone()));
+    assert_eq!(
+        recorded.autonomy,
+        SeatAutonomy::Bounded,
+        "reconciliation records the native, never restates the authority"
+    );
+
+    fixture
+        .store
+        .install_hosted_seat_launch_intent(
+            fixture.project_id,
+            seat,
+            1,
+            &native,
+            at("2026-09-17T01:03:00Z"),
+        )
+        .expect("repeating the same reconciliation is unchanged");
+}
+
+/// One intent describes one occupancy. An installed row pointing at a second
+/// native would make the evidence ambiguous exactly where it must be exact.
+#[test]
+fn an_installed_intent_refuses_a_second_native() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Bounded))
+        .expect("the intent is recorded");
+    fixture
+        .store
+        .install_hosted_seat_launch_intent(
+            fixture.project_id,
+            seat,
+            1,
+            &ExternalId::parse("lsa-first").expect("a native id"),
+            at("2026-09-17T01:02:00Z"),
+        )
+        .expect("the intent is reconciled");
+
+    let refusal = fixture
+        .store
+        .install_hosted_seat_launch_intent(
+            fixture.project_id,
+            seat,
+            1,
+            &ExternalId::parse("lsa-duplicate").expect("a native id"),
+            at("2026-09-17T01:04:00Z"),
+        )
+        .expect_err("a duplicate native is refused");
+    assert!(
+        refusal.to_string().contains("another native"),
+        "the refusal names the duplication it stopped: {refusal:?}"
+    );
+}
+
+/// The schema itself refuses a rewritten decision, so no future caller can
+/// restate an authority by going around the repository.
+#[test]
+fn the_schema_refuses_to_rewrite_a_recorded_decision() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Supervised))
+        .expect("the intent is recorded");
+
+    let connection = Connection::open(&fixture.db_path).expect("a second connection opens");
+    let refusal = connection
+        .execute(
+            "UPDATE hosted_topology_seat_launch_intents SET autonomy = 'bounded'
+             WHERE seat_binding_id = ?1",
+            [seat.to_string()],
+        )
+        .expect_err("the trigger refuses a restated authority");
+    assert!(
+        refusal.to_string().contains("never changes it"),
         "the schema itself refuses it: {refusal:?}"
     );
 }
