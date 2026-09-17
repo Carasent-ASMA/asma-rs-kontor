@@ -25997,6 +25997,256 @@ async fn an_early_proof_in_a_long_session_settles_without_reading_the_tail() {
     );
 }
 
+/// OG-061, after the combined deployment. The refetch signal is answered, once.
+///
+/// The bounded scan shipped and the preserved proofs still would not settle:
+/// 503 `proof_scan_incomplete`, with `timeline_refetch_required` underneath it
+/// in the daemon log, while a direct read of the same native sessions returned
+/// every event. The scan mapped *every* runtime read error to "could not be read
+/// to the end", so the one signal that means *ask me which epoch I am addressing
+/// and carry on* was spent as a dead end.
+///
+/// Here the runtime refuses every anchored read until it is asked exactly that,
+/// and answers normally afterwards — the session is wholly readable throughout,
+/// which is the property that made the live failure so misleading. Without the
+/// recovery the settlement cannot get past its first page.
+#[tokio::test]
+async fn a_settlement_answers_a_timeline_refetch_signal_once_and_settles() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-refetch").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+
+    let proof = observe_current_turn(&world, &project, &agent_run);
+
+    // The scope the mapping is keyed under, read from the binding itself so the
+    // assertion below cannot drift from it.
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let agent_run_id = AgentRunId::parse(&agent_run).expect("an agent run id");
+    let run_record = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the settling run reads")
+            .expect("the settling run exists")
+    });
+    let bound = run_record.binding.expect("the settling run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(bound.id)
+        .expect("the process holds the exact settling binding");
+    let kind = held.identity().runtime_kind.as_str().to_owned();
+    let host = held.identity().host.as_str().to_owned();
+
+    // From here every cursor is refused until the epoch is re-read.
+    world.fake.require_timeline_refetch_until_epoch_refresh();
+
+    let calls_before = world.fake.calls().len();
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-refetch-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        settled.status, 200,
+        "a readable session that asked to be re-epoched must still settle: {}",
+        settled.body
+    );
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    let recent = world.fake.calls();
+    let refreshes = recent[calls_before..]
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
+            )
+        })
+        .count();
+    // Once for the scan, not once per refused page. A recovery that fired on
+    // every page would put the session's length back into the cost of a proof,
+    // which is the whole thing the bounded scan removed.
+    assert_eq!(
+        refreshes, 1,
+        "the recovery is one bounded call, not a retry loop: {recent:?}"
+    );
+
+    // And what that call learned was durable before the tuple was consumed. The
+    // recovery read allocates through the same boundary an ordinary history read
+    // does, so it owes the same barrier.
+    let durable = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&kind, &host))
+        .expect("durable epochs read");
+    let claimed_epoch = proof["message_position"]["epoch"]
+        .as_u64()
+        .expect("an epoch");
+    assert!(
+        durable.iter().any(|(_, mapped)| *mapped == claimed_epoch),
+        "the epoch the settled tuple is addressed by is durable: {durable:?}"
+    );
+
+    // The fences the recovery must not have loosened. The same tuple, under a
+    // fresh key, is spent — a scan that recovered its way into settling twice
+    // would be worse than one that refused.
+    let replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision + 1,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-refetch-replay")
+    .send(&world)
+    .await;
+    assert_eq!(
+        replay.status, 409,
+        "the single-use fence still holds after a recovered scan: {}",
+        replay.body
+    );
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert_eq!(turns.len(), 1, "exactly one turn settled: {turns:?}");
+}
+
+/// OG-061. A numbering the runtime no longer has is not an unreadable session.
+///
+/// This is the live shape the deployment itself created. The durable epoch table
+/// arrived empty, so the restarted process renumbered from 1 and the preserved
+/// tuples — `12:6 -> 12:263` and `13:11 -> 13:296` — named epochs nothing maps.
+/// The adapter refuses such a cursor before it reaches the wire, which is why
+/// the plane looked healthy and read fine to everyone else.
+///
+/// One re-read of the epoch is owed, because the signal is indistinguishable
+/// from the recoverable one until it has been answered. After that the refusal
+/// must say what is actually true: not "retry, the scan ran out", but "these
+/// positions name a numbering this runtime no longer has — observe the turn
+/// again". And it must write nothing on the way through.
+#[tokio::test]
+async fn a_settlement_naming_an_unmapped_epoch_is_told_to_observe_the_turn_again() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-dead-epoch").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    // A tuple that is true in every respect except the numbering it is spelled
+    // in — exactly what a proof minted before the renumbering became.
+    let mut stale = observe_current_turn(&world, &project, &agent_run);
+    let live_epoch = stale["message_position"]["epoch"]
+        .as_u64()
+        .expect("an epoch");
+    stale["message_position"]["epoch"] = serde_json::json!(live_epoch + 7);
+    stale["response_position"]["epoch"] = serde_json::json!(live_epoch + 7);
+
+    // And a runtime that has forgotten which numbers it gave out, which is the
+    // half of the live condition that made the recovery read allocate rather
+    // than recognize. It is what puts a *new* mapping on this path, so the
+    // barrier below has something to be owed.
+    world.fake.forget_timeline_epochs();
+
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": stale,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-dead-epoch-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 409,
+        "a dead numbering is a conflict about the tuple, not a runtime outage: {}",
+        refused.body
+    );
+    assert_eq!(
+        refused.code(),
+        "timeline_refetch_required",
+        "an operator must be able to tell this from a scan that ran out of reads: {}",
+        refused.body
+    );
+
+    // Answered once, then believed. A path that kept re-reading the epoch would
+    // hammer the runtime for a mapping that is never coming back.
+    let recent = world.fake.calls();
+    let refreshes = recent[calls_before..]
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
+            )
+        })
+        .count();
+    assert_eq!(
+        refreshes, 1,
+        "the unrecoverable case costs one re-read, not a loop: {recent:?}"
+    );
+
+    // The barrier holds on the recovery seam too, and this is the one path
+    // where it is visible: the read that follows the recovery fails, so the
+    // mapping that recovery allocated is never carried over by a later page. It
+    // has to have been made durable by the recovery itself, refusal or not — a
+    // number left in the adapter's head is one the next process would hand to a
+    // different raw epoch.
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "the recovery persisted what it allocated before returning: {:?}",
+        world.fake.undrained_epochs()
+    );
+
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert!(turns.is_empty(), "the refusal wrote nothing: {turns:?}");
+}
+
 /// ASMA-8203. The negative half of the current-turn proof.
 ///
 /// `settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open` covers the

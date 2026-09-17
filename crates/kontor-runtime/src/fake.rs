@@ -367,6 +367,8 @@ pub enum AdapterCall {
     DiscoverSessions,
     /// A history page was read.
     History(RuntimeBindingId),
+    /// The session's current timeline epoch was re-read, without its content.
+    RefreshTimelineEpoch(RuntimeBindingId),
     /// A live subscription was opened.
     SubscribeLive(RuntimeBindingId),
     /// A permission request was answered.
@@ -779,6 +781,15 @@ struct FakeState {
     /// expose barrier can be exercised without a live runtime.
     epoch_mappings: BTreeMap<String, u64>,
     undrained_epochs: Vec<(String, u64)>,
+    /// Whether an anchored read must declare a refetch until the epoch is
+    /// re-read.
+    ///
+    /// The transient half of the refetch signal: the cursor names an epoch this
+    /// runtime still holds, but the page it addresses cannot be served until the
+    /// reader has re-established which epoch the session is in. Cleared by
+    /// [`RuntimeAdapter::refresh_timeline_epoch`] and by nothing else, so a test
+    /// that never refreshes never gets past it.
+    refetch_until_epoch_refresh: bool,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -1276,6 +1287,7 @@ impl ScriptedFakeRuntime {
                 lose_next_send_ack: false,
                 epoch_mappings: BTreeMap::new(),
                 undrained_epochs: Vec::new(),
+                refetch_until_epoch_refresh: false,
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -2070,6 +2082,41 @@ impl ScriptedFakeRuntime {
         self.lock().fail_next_inspect = true;
     }
 
+    /// Declare a refetch on every anchored read until the epoch is re-read.
+    ///
+    /// The recoverable shape of that signal, and the one a settlement has to
+    /// survive: the session is entirely readable, and a reader that answers the
+    /// runtime's question — *which epoch are you addressing?* — may carry on
+    /// from the same cursor. A reader that only retries stays stuck here, which
+    /// is what makes this hook worth having.
+    pub fn require_timeline_refetch_until_epoch_refresh(&self) {
+        self.lock().refetch_until_epoch_refresh = true;
+    }
+
+    /// Forget every epoch mapping, as a process that restarted with nothing
+    /// durable behind it does.
+    ///
+    /// Not a transport fault and not a runtime change: the sessions and their
+    /// native epochs are untouched, and only this side's memory of what number
+    /// each was given is gone. That is the state a restart leaves when the
+    /// durable table is empty, and it is the one that makes a cursor issued by
+    /// the previous process unspellable.
+    pub fn forget_timeline_epochs(&self) {
+        let mut state = self.lock();
+        state.epoch_mappings.clear();
+        state.undrained_epochs.clear();
+    }
+
+    /// The mappings allocated but not yet handed over for persistence.
+    ///
+    /// A peek, deliberately: [`RuntimeAdapter::drain_new_timeline_epochs`] is
+    /// the control plane's to call, and a test that drained to look would be
+    /// discharging the very obligation it means to check.
+    #[must_use]
+    pub fn undrained_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
+    }
+
     /// Every recorded event of the session behind `binding`.
     #[must_use]
     pub fn content(&self, binding: &RuntimeBindingSnapshot) -> Vec<SessionEvent> {
@@ -2315,6 +2362,47 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         for (raw, epoch) in pairs {
             state.epoch_mappings.insert(raw.clone(), *epoch);
         }
+        Ok(())
+    }
+
+    /// Map the session's current epoch and answer the refetch signal, without
+    /// touching its content.
+    ///
+    /// Reads `session.epoch` and allocates through the same boundary
+    /// [`FakeAdapter::history`] uses, so the mapping this produces is
+    /// indistinguishable from one a read produced — and, like that one, is
+    /// undrained until the control plane takes it.
+    ///
+    /// Off the strict script queue, for the same reason as `fail_next_inspect`:
+    /// this call is reached *through* a read that was refused, so a queued step
+    /// naming it could never be scheduled in the right place.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::RefreshTimelineEpoch(binding.binding_id()));
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        state.refetch_until_epoch_refresh = false;
         Ok(())
     }
 
@@ -4170,6 +4258,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             None => TimelinePosition::start_of(epoch),
         };
         if start.epoch != epoch {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        // Anchored reads only. A cursor-free read names no epoch, so it has
+        // none to be wrong about — which is why it stays available as the way
+        // back even while every cursor is being refused.
+        if request.cursor.is_some() && state.refetch_until_epoch_refresh {
             return Err(RuntimeError::TimelineRefetchRequired {
                 reason: TimelineBreak::EpochChanged,
             });

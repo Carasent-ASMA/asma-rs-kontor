@@ -5382,6 +5382,52 @@ impl RuntimeAdapter for PaseoAdapter {
         self.lock().epochs.adopt(pairs)
     }
 
+    /// One tail entry, read only for the epoch it is stamped with.
+    ///
+    /// Deliberately *not* [`RuntimeAdapter::history`] with no cursor. That path
+    /// walks `start_cursor` backwards until Paseo says nothing older remains,
+    /// because a caller asking for content from the origin must be given the
+    /// origin; this caller wants no content at all. Asking for one entry at the
+    /// tail costs a single request on a session of any length, and
+    /// [`PaseoAdapter::resolve_epoch`] with no expectation is exactly the step
+    /// that maps the session's current raw epoch — allocating a number if it is
+    /// new, returning the known one if it is not.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        let generation = self.generation();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let page = self
+            .fetch_canonical(
+                &native_id,
+                PaseoDirection::Tail,
+                None,
+                1,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        self.resolve_epoch(&page.epoch, None)?;
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],

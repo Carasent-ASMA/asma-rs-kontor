@@ -1178,6 +1178,31 @@ pub trait RuntimeAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// Learn which epoch this session is in *now*, in one bounded call.
+    ///
+    /// The recovery half of [`RuntimeAdapter::drain_new_timeline_epochs`]. A
+    /// caller holding a cursor can be told
+    /// [`RuntimeError::TimelineRefetchRequired`] for two different reasons: the
+    /// runtime declared the page a break, or this process cannot spell the
+    /// cursor's epoch at all. Both say the same thing — *the numbering you are
+    /// addressing is not the one I am in* — and both are answered by asking the
+    /// runtime what its numbering is, not by reading the session again.
+    ///
+    /// That distinction is the point. Re-reading the session canonically means
+    /// walking to its origin, which on a long-lived seat is the unbounded read a
+    /// settlement proof must never take; this asks for the epoch alone, so it
+    /// costs one call whatever the session's length. Newly learned mappings
+    /// surface through the drain like any other, so the caller still owes them
+    /// durability before anything addressed by them is exposed.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the session cannot be reached or the
+    /// binding no longer attests.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let _ = binding;
+        Ok(())
+    }
+
     /// Seed the epoch registry from durable state before any read happens.
     ///
     /// Restores the exact numbers previously allocated, so a raw epoch resolves

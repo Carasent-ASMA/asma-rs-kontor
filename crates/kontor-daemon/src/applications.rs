@@ -16594,6 +16594,81 @@ impl Services {
     /// quietly called terminal.
     const TRAILING_PAGE_BUDGET: usize = 64;
 
+    /// The refusal a proof scan owes when a canonical read did not answer.
+    ///
+    /// Two unlike facts wear the same 503 if they are not separated here. A read
+    /// that simply did not answer is an incomplete scan: the tuple is not in
+    /// question and retrying is the right advice. A read the runtime refused
+    /// *again* after being asked which epoch it is in is not retryable at all —
+    /// the positions name a numbering this runtime no longer maps, which is what
+    /// a restart with no durable epoch mappings leaves behind — and the only way
+    /// forward is to observe the turn again and settle the tuple that
+    /// observation returns. Telling an operator to retry that one would be
+    /// telling them to wait for something that cannot happen.
+    fn unreadable_proof_scan(&self, error: &ApiError, unreadable: &'static str) -> ApiError {
+        if error.code == ApiErrorCode::TimelineRefetchRequired {
+            return self.deny(
+                ApiErrorCode::TimelineRefetchRequired,
+                "the claimed positions name a timeline epoch this runtime no longer maps, so this turn must be observed again before it can settle",
+            );
+        }
+        self.deny(ApiErrorCode::ProofScanIncomplete, unreadable)
+    }
+
+    /// One anchored page of a settlement proof scan, with a single bounded
+    /// recovery when the runtime refuses the cursor.
+    ///
+    /// `timeline_refetch_required` is not "the read failed". It is the runtime
+    /// saying the cursor addresses a numbering it is not in — because it
+    /// declared the page a break, or because this process has no raw epoch for
+    /// the number the cursor names at all. A scan that treats it as a failure
+    /// reports an unreadable session while the very same session reads fine to
+    /// anyone who asks without a cursor, which is precisely the shape this
+    /// settlement path was seen taking after a restart left the epoch registry
+    /// empty.
+    ///
+    /// So it is answered, once: re-read which epoch the session is in — one
+    /// call, no content, no walk to the origin — then ask the anchored question
+    /// again. Once is the whole budget. A second refusal is not transient, and
+    /// it is *not* reported as an incomplete scan either: the positions the
+    /// caller holds name a numbering this runtime no longer has, and the way
+    /// out of that is a fresh observation of the turn, not a retry of the same
+    /// tuple. Nothing here writes, on either outcome.
+    async fn proof_scan_page(
+        &self,
+        state: &kontor_api::state::ApiState,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        issued: &kontor_runtime::capability::IssuedBinding,
+        cursor: Option<HistoryCursor>,
+        page_size: u32,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, ApiError> {
+        let request = HistoryRequest {
+            binding: issued.snapshot().clone(),
+            cursor,
+            page_size,
+        };
+        let identity = issued.snapshot().identity();
+        // Through the same barrier every other history read uses. A settlement
+        // must never consume a position addressed by an epoch number that is
+        // not yet durable: if this process died here, the next one would
+        // resolve the same raw epoch to something else and the tuple would name
+        // different content.
+        match state
+            .history_with_durable_epochs(adapter, identity, &request)
+            .await
+        {
+            Ok(page) => return Ok(page),
+            Err(error) if error.code == ApiErrorCode::TimelineRefetchRequired => {}
+            Err(error) => return Err(error),
+        }
+        state
+            .refresh_timeline_epoch_durably(adapter, identity, issued.snapshot())
+            .await?;
+        state
+            .history_with_durable_epochs(adapter, identity, &request)
+            .await
+    }
+
     /// Re-read the exact bound session and prove that the message named by the
     /// caller is the current completed turn, not a delayed prior notification.
     async fn prove_current_turn(
@@ -16702,21 +16777,8 @@ impl Services {
             ));
         }
         for _ in 0..64 {
-            // Through the same barrier every other history read uses. A
-            // settlement must never consume a position addressed by an epoch
-            // number that is not yet durable: if this process died here, the
-            // next one would resolve the same raw epoch to something else and
-            // the tuple would name different content.
-            let page = state
-                .history_with_durable_epochs(
-                    adapter.as_ref(),
-                    issued.snapshot().identity(),
-                    &HistoryRequest {
-                        binding: issued.snapshot().clone(),
-                        cursor,
-                        page_size,
-                    },
-                )
+            let page = self
+                .proof_scan_page(state, adapter.as_ref(), &issued, cursor, page_size)
                 .await
                 .map_err(|error| {
                     // The plane is not necessarily down: capabilities report it
@@ -16734,8 +16796,8 @@ impl Services {
                         detail = %error,
                         "a settlement proof scan could not reach the end of the session"
                     );
-                    self.deny(
-                        ApiErrorCode::ProofScanIncomplete,
+                    self.unreadable_proof_scan(
+                        &error,
                         "the canonical proof scan could not be read to the end of this session",
                     )
                 })?;
@@ -16813,16 +16875,8 @@ impl Services {
         let mut later_turn_event = false;
         let mut settled_tail = false;
         for _ in 0..Self::TRAILING_PAGE_BUDGET {
-            let page = state
-                .history_with_durable_epochs(
-                    adapter.as_ref(),
-                    issued.snapshot().identity(),
-                    &HistoryRequest {
-                        binding: issued.snapshot().clone(),
-                        cursor: after,
-                        page_size,
-                    },
-                )
+            let page = self
+                .proof_scan_page(state, adapter.as_ref(), &issued, after, page_size)
                 .await
                 .map_err(|error| {
                     tracing::warn!(
@@ -16831,8 +16885,8 @@ impl Services {
                         detail = %error,
                         "a settlement could not read past the claimed response"
                     );
-                    self.deny(
-                        ApiErrorCode::ProofScanIncomplete,
+                    self.unreadable_proof_scan(
+                        &error,
                         "the canonical read after the claimed response did not answer",
                     )
                 })?;
